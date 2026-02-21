@@ -1,0 +1,85 @@
+/* VariationManager Styles */
+
+/* Custom styles that extend shadcn/ui components */
+.attributes-section {
+  background: hsl(0, 0%, 98%);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+  border: 1px solid hsl(210, 4%, 90%);
+}
+
+.attributes-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.attributes-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: hsl(215, 10%, 30%);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.option-input-group {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.options-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.variations-section {
+  margin-top: 2rem;
+}
+
+.variations-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #495057;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Adjust table cell padding */
+.table-cell-first {
+  padding-left: 1.5rem;
+}
+
+.table-cell-last {
+  padding-right: 1.5rem;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .attributes-section,
+  .variations-section {
+    padding: 1rem;
+  }
+
+  .option-input-group {
+    flex-direction: column;
+  }
+
+  .options-container {
+    justify-content: center;
+  }
+
+  /* Adjust table for mobile */
+  .table-cell-first,
+  .table-cell-last {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+}
