@@ -1,0 +1,40 @@
+# nistiprint-frontend/.github/workflows/deploy.yml
+name: Build and Deploy Frontend
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: leandrogbreve/nistiprint-frontend:latest
+
+      # ----- NOVA SEÇÃO DE DEPLOY VIA SSH -----
+      - name: Deploy Frontend Stack via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            # Certifique-se que o diretório no servidor contém o docker-compose.prod.yml
+            # O caminho abaixo é um EXEMPLO. Ajuste para o local real no seu servidor.
+            cd /root/nistiprint-frontend
+            echo "Running docker compose up -d for frontend stack..."
+            docker compose -f docker-compose.prod.yml up -d --build
+            echo "Frontend stack deployment initiated."

@@ -1,0 +1,12 @@
+# nistiprint-frontend/docker-compose.prod.yml
+version: '3.8'
+services:
+  frontend:
+    image: leandrogbreve/nistiprint-frontend:latest # Imagem pública
+    container_name: nistiprint-frontend-prod
+    restart: always
+    networks:
+      - gateway_net
+
+networks:
+  gateway_net: { external: true }
