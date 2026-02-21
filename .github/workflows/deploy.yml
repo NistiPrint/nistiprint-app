@@ -36,5 +36,5 @@ jobs:
             # O caminho abaixo é um EXEMPLO. Ajuste para o local real no seu servidor.
             cd /root/nistiprint-frontend
             echo "Running docker compose up -d for frontend stack..."
-            docker compose -f docker-compose.prod.yml up -d --build
+            docker compose -f docker-compose.prod.yml up -d --build --force-recreate
             echo "Frontend stack deployment initiated."
