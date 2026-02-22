@@ -30,7 +30,7 @@ jobs:
             -t leandrogbreve/nistiprint-frontend:latest . # O '.' aqui significa o contexto atual (nistiprint-frontend)
           docker push leandrogbreve/nistiprint-frontend:latest
     outputs: # Output para que o próximo job dependa do sucesso deste
-      image_pushed: true
+      image_pushed: 'true'
 
   deploy:
     runs-on: ubuntu-latest
