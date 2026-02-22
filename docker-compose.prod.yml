@@ -1,12 +1,37 @@
 # nistiprint-frontend/docker-compose.prod.yml
+# Configuração para produção com Nginx Proxy Manager
+# O NPM faz o proxy do domínio app.nistiprint.neolabs.com.br para este container
 version: '3.8'
 services:
   frontend:
-    image: leandrogbreve/nistiprint-frontend:latest # Imagem pública
+    image: leandrogbreve/nistiprint-frontend:latest
     container_name: nistiprint-frontend-prod
     restart: always
+    expose:
+      - "80"
     networks:
       - gateway_net
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
 
 networks:
-  gateway_net: { external: true }
+  gateway_net:
+    external: true
+    name: gateway_net
