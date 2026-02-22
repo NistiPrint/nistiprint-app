@@ -5,7 +5,7 @@ import { defineConfig } from 'vite';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  base: "/frontend/", // CRÍTICO: Indica que a app será servida de um subcaminho
+  base: "/", // Aplicação servida na raiz do domínio
   plugins: [
     react({
       babel: {
