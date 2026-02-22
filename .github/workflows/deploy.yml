@@ -1,40 +1,43 @@
-# nistiprint-frontend/.github/workflows/deploy.yml
-name: Build and Deploy Frontend
+# .github/workflows/deploy.yml para nistiprint-frontend
+name: Deploy Frontend to Production
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main # Dispara o workflow em push para a branch main
 
 jobs:
-  build-and-push:
+  deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push frontend image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          tags: leandrogbreve/nistiprint-frontend:latest
-
-      # ----- NOVA SEÇÃO DE DEPLOY VIA SSH -----
-      - name: Deploy Frontend Stack via SSH
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            # Certifique-se que o diretório no servidor contém o docker-compose.prod.yml
-            # O caminho abaixo é um EXEMPLO. Ajuste para o local real no seu servidor.
-            cd /root/nistiprint-frontend
-            echo "Running docker compose up -d for frontend stack..."
-            docker compose -f docker-compose.prod.yml up -d --build --force-recreate
+            # Caminho no servidor onde o repositório nistiprint-frontend estará.
+            # Certifique-se de que o repositório esteja clonado/presente neste diretório.
+            cd /root/nistiprint-frontend # AJUSTE ESTE CAMINHO conforme seu servidor
+
+            echo "Stopping and removing existing frontend stack..."
+            # Para e remove containers e volumes antigos para evitar conflitos.
+            docker compose down --remove-orphans || true 
+
+            echo "Starting new frontend stack with --build --force-recreate..."
+            # Executa o docker compose up, passando as variáveis do Vite como build-args.
+            # Essas variáveis serão 'baked in' no frontend durante o build da imagem.
+            VITE_API_URL="${{ secrets.VITE_API_URL }}" \
+            VITE_SUPABASE_URL="${{ secrets.VITE_SUPABASE_URL }}" \
+            VITE_SUPABASE_ANON_KEY="${{ secrets.VITE_SUPABASE_ANON_KEY }}" \
+            docker compose -f docker-compose.prod.yml up -d --build \
+              --force-recreate \
+              --build-arg VITE_API_URL="${{ secrets.VITE_API_URL }}" \
+              --build-arg VITE_SUPABASE_URL="${{ secrets.VITE_SUPABASE_URL }}" \
+              --build-arg VITE_SUPABASE_ANON_KEY="${{ secrets.VITE_SUPABASE_ANON_KEY }}"
             echo "Frontend stack deployment initiated."

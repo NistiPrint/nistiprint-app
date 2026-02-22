@@ -1,10 +1,11 @@
+// nistiprint-frontend/vite.config.js
 import react from '@vitejs/plugin-react';
 import path from "path";
 import { defineConfig } from 'vite';
 
-// https://vite.dev/config/
+// https://vitejs.dev/config/
 export default defineConfig({
-  base: "/frontend/",
+  base: "/frontend/", // CRÍTICO: Indica que a app será servida de um subcaminho
   plugins: [
     react({
       babel: {
@@ -22,7 +23,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://api:8080',  // Nome do serviço Docker
+        target: 'http://localhost:8080',  // Use localhost para o backend rodando localmente
         changeOrigin: true,
         credentials: true,
         ws: true,
@@ -39,14 +40,12 @@ export default defineConfig({
         },
       },
     },
-    // CORS para desenvolvimento
     cors: {
       origin: 'http://localhost:5173',
       credentials: true,
     },
   },
-  // Para desenvolvimento local fora do Docker
-  preview: {
+  preview: { // Para o comando 'vite preview', se usado
     host: '0.0.0.0',
     port: 4173,
     proxy: {
