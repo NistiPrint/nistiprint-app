@@ -1,0 +1,7 @@
+# Nistiprint Shared Library
+# Dependencies for shared package
+
+SQLAlchemy>=2.0.0
+Flask-SQLAlchemy>=3.1.1
+supabase>=2.0.0
+python-dotenv>=1.0.0
