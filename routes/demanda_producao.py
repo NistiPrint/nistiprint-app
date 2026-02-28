@@ -1,14 +1,14 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, session
 import json
-from services.demanda_producao_service import demanda_producao_service
-from services.permissao_service import permissao_service
-from services.product_service import product_service
-from services.canal_venda_service import canal_venda_service
-from services.daily_production_log_service import daily_production_log_service
-from services.unit_of_work import UnitOfWork
-from services.auditoria_service import auditoria_service
-from services.estoque_service import estoque_service
-from services.app_config_service import app_config_service
+from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
+from nistiprint_shared.services.permissao_service import permissao_service
+from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.services.canal_venda_service import canal_venda_service
+from nistiprint_shared.services.daily_production_log_service import daily_production_log_service
+from nistiprint_shared.services.unit_of_work import UnitOfWork
+from nistiprint_shared.services.auditoria_service import auditoria_service
+from nistiprint_shared.services.estoque_service import estoque_service
+from nistiprint_shared.services.app_config_service import app_config_service
 from datetime import datetime, date, timedelta # Needed for data_criacao formatting in template
 from routes.auth import login_required, check_permission
 import pytz
@@ -911,7 +911,7 @@ def get_production_plan():
     """
     try:
         from datetime import datetime, timedelta
-        from services.production_planning_service import production_planning_service
+        from nistiprint_shared.services.production_planning_service import production_planning_service
 
         start_date = request.args.get('start_date', datetime.now().strftime('%Y-%m-%d'))
         end_date = request.args.get('end_date', (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d'))
@@ -930,7 +930,7 @@ def get_gantt_data():
     """
     try:
         from datetime import datetime, timedelta
-        from services.production_planning_service import production_planning_service
+        from nistiprint_shared.services.production_planning_service import production_planning_service
 
         demanda_ids_param = request.args.get('demanda_ids')
         demanda_ids = demanda_ids_param.split(',') if demanda_ids_param else None
@@ -948,7 +948,7 @@ def get_resource_allocation_dashboard():
     Get dashboard data for resource allocation.
     """
     try:
-        from services.production_planning_service import production_planning_service
+        from nistiprint_shared.services.production_planning_service import production_planning_service
 
         dashboard_data = production_planning_service.get_resource_allocation_dashboard()
         return jsonify({'success': True, 'dashboard': dashboard_data})
@@ -963,7 +963,7 @@ def get_production_forecast():
     Forecast production needs based on historical data and demand patterns.
     """
     try:
-        from services.production_planning_service import production_planning_service
+        from nistiprint_shared.services.production_planning_service import production_planning_service
 
         period_days = request.args.get('period_days', 30, type=int)
 
@@ -981,7 +981,7 @@ def get_calendar_data():
     """
     try:
         from datetime import datetime, timedelta
-        from services.calendar_service import calendar_service
+        from nistiprint_shared.services.calendar_service import calendar_service
 
         start_date = request.args.get('start_date', datetime.now().strftime('%Y-%m-%d'))
         end_date = request.args.get('end_date', (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d'))
@@ -999,7 +999,7 @@ def validate_schedule_conflict():
     Validate if the new schedule dates would create conflicts with existing demands.
     """
     try:
-        from services.calendar_service import calendar_service
+        from nistiprint_shared.services.calendar_service import calendar_service
 
         data = request.get_json()
         if not data:
@@ -1024,7 +1024,7 @@ def update_demand_schedule(demanda_id):
     Update the schedule dates for a demand.
     """
     try:
-        from services.calendar_service import calendar_service
+        from nistiprint_shared.services.calendar_service import calendar_service
 
         data = request.get_json()
         if not data:
@@ -1200,7 +1200,7 @@ def api_update_demanda_details(demanda_id):
         print(traceback.format_exc())
         return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
 
-from services.daily_production_log_service import daily_production_log_service # Assuming this service exists
+from nistiprint_shared.services.daily_production_log_service import daily_production_log_service # Assuming this service exists
 
 @demanda_producao_api_bp.route('/registrar-saida', methods=['POST'])
 def registrar_saida_distribuida():
@@ -1513,7 +1513,7 @@ def get_capa_demand_info():
 def get_default_miolo_for_product(product_id):
     try:
         # Import necessário para acessar a função
-        from services.file_processors import get_miolo_from_bom
+        from nistiprint_shared.services.file_processors import get_miolo_from_bom
 
         print(f"[DEBUG MIOLO BACKEND] Buscando miolo para produto ID: {product_id}")
 
@@ -1573,3 +1573,8 @@ def delete_demanda_api(demanda_id):
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
+
+
+
+
+

@@ -2,14 +2,14 @@ from flask import Blueprint, request, jsonify, render_template, flash, redirect,
 import json
 import uuid
 from datetime import datetime, timedelta
-from services.product_service import product_service
-from services.category_service import category_service
-from services.tag_service import tag_service
-from services.unit_of_measure_service import unit_of_measure_service
-from services.bom_service import bom_service
-from services.bling.bling_client import BlingClient
-from services.app_config_service import app_config_service
-from services.conta_bling_service import conta_bling_service
+from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.services.category_service import category_service
+from nistiprint_shared.services.tag_service import tag_service
+from nistiprint_shared.services.unit_of_measure_service import unit_of_measure_service
+from nistiprint_shared.services.bom_service import bom_service
+from nistiprint_shared.services.bling.bling_client import BlingClient
+from nistiprint_shared.services.app_config_service import app_config_service
+from nistiprint_shared.services.conta_bling_service import conta_bling_service
 from routes.auth import login_required
 
 produtos_bp = Blueprint('produtos', __name__, url_prefix='/produtos')
@@ -104,7 +104,7 @@ def api_produtos_por_setor():
         produtos = product_service.get_products_by_sector(setor_usuario)
 
         # Obter saldos de estoque para esses produtos
-        from services.estoque_service import estoque_service
+        from nistiprint_shared.services.estoque_service import estoque_service
         produto_ids = [p['id'] for p in produtos]
         saldos = estoque_service.get_saldos_em_lote(produto_ids)
 
@@ -314,7 +314,7 @@ def api_gerenciar_bom(produto_id):
 def api_get_product_category_rules(produto_id):
     """Retorna as regras de BOM da categoria do produto (API)."""
     try:
-        from services.category_bom_rule_service import category_bom_rule_service
+        from nistiprint_shared.services.category_bom_rule_service import category_bom_rule_service
 
         produto = product_service.get_by_id(produto_id)
         if not produto or not produto.get('category_id'):
@@ -585,7 +585,7 @@ def api_associate_in_bulk(component_id):
 def api_upload_artwork(produto_id):
     """Upload artwork for a product."""
     try:
-        from services.artwork_service import artwork_service
+        from nistiprint_shared.services.artwork_service import artwork_service
 
         if 'artwork' not in request.files:
             return jsonify({'error': 'No artwork file provided'}), 400
@@ -621,7 +621,7 @@ def api_get_artworks(produto_id):
 def api_delete_artwork(artwork_id):
     """Delete an artwork."""
     try:
-        from services.artwork_service import artwork_service
+        from nistiprint_shared.services.artwork_service import artwork_service
 
         success = artwork_service.delete_artwork(artwork_id)
         if success:
@@ -638,9 +638,9 @@ def api_view_artwork(artwork_id):
     """Secure endpoint to view artwork - authenticates user and redirects to signed URL."""
     try:
         from flask import session
-        from services.usuario_service import usuario_service
-        from models.product_artwork import ProductArtwork
-        from services.database.v2.supabase_db_service import get_db_session
+        from nistiprint_shared.services.usuario_service import usuario_service
+        from nistiprint_shared.models.product_artwork import ProductArtwork
+        from nistiprint_shared.database.supabase_db_service import get_db_session
 
         # Check if user is authenticated (this assumes you have user session management)
         # Adjust this check based on your actual authentication mechanism
@@ -657,7 +657,7 @@ def api_view_artwork(artwork_id):
             print(f"Artwork ID: {artwork.id}, Filename: {artwork.filename}, File Path: {artwork.file_path}")
 
             # Get the signed URL for the artwork
-            from services.supabase_storage_service import supabase_storage_service
+            from nistiprint_shared.services.supabase_storage_service import supabase_storage_service
             signed_url = supabase_storage_service.get_file_url(artwork.filename)
 
             if not signed_url:
@@ -701,7 +701,7 @@ def api_create_product_with_variations(produto_id):
 def api_send_to_print(produto_id):
     """Send product artwork to printing workflow."""
     try:
-        from services.print_service import print_service
+        from nistiprint_shared.services.print_service import print_service
 
         data = request.get_json() or {}
         artwork_id = data.get('artwork_id')
@@ -982,3 +982,8 @@ def editar(produto_id):
         print(f"ERROR in editar function - produto_id {produto_id} | {e}")
         flash(f'Erro ao carregar/editar produto: {str(e)}', 'error')
         return redirect(url_for('produtos.index'))
+
+
+
+
+

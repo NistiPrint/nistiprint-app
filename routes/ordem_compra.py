@@ -1,10 +1,10 @@
 from flask import Blueprint, request, jsonify, render_template, flash, redirect, url_for
 from datetime import datetime
 
-from services.ordem_compra_service import ordem_compra_service
-from services.fornecedor_service import fornecedor_service
-from services.product_service import product_service
-from services.deposito_service import deposito_service
+from nistiprint_shared.services.ordem_compra_service import ordem_compra_service
+from nistiprint_shared.services.fornecedor_service import fornecedor_service
+from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.services.deposito_service import deposito_service
 
 ordem_compra_bp = Blueprint('ordem_compra', __name__, url_prefix='/ordens-compra')
 
@@ -175,3 +175,8 @@ def api_fornecedores():
         return jsonify({'results': results})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+
+
+

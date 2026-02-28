@@ -1,9 +1,9 @@
 from flask import Blueprint, request, jsonify, render_template, flash, redirect, url_for, json
 from datetime import datetime, timedelta
 
-from services.estoque_service import estoque_service
-from services.product_service import product_service
-from services.deposito_service import deposito_service
+from nistiprint_shared.services.estoque_service import estoque_service
+from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.services.deposito_service import deposito_service
 from routes.auth import login_required, get_current_user
 
 estoque_bp = Blueprint('estoque', __name__, url_prefix='/estoque')
@@ -164,7 +164,7 @@ def api_movimentar():
 
             # Se o depósito não for especificado, usar o padrão do sistema
             if not deposito_id:
-                from services.app_config_service import app_config_service
+                from nistiprint_shared.services.app_config_service import app_config_service
                 deposito_id = app_config_service.get_config('default_production_deposit_id')
 
             if not all([tipo_movimento, produto_id, quantidade]):
@@ -320,7 +320,7 @@ def api_ajuste():
 
             # Se o depósito não for especificado, usar o padrão do sistema
             if not deposito_id:
-                from services.app_config_service import app_config_service
+                from nistiprint_shared.services.app_config_service import app_config_service
                 deposito_id = app_config_service.get_config('default_production_deposit_id')
 
             if not deposito_id or not adjustments:
@@ -388,7 +388,7 @@ def api_produtos_busca():
 
         # Se o depósito não for especificado, usar o padrão do sistema
         if not deposito_id:
-            from services.app_config_service import app_config_service
+            from nistiprint_shared.services.app_config_service import app_config_service
             deposito_id = app_config_service.get_config('default_production_deposit_id')
 
         produtos = product_service.search_produtos(q, limit=50, only_marketable=only_marketable)
@@ -429,7 +429,7 @@ def api_liberar_reserva():
 
         # Se o depósito não for especificado, usar o padrão do sistema
         if not deposito_id:
-            from services.app_config_service import app_config_service
+            from nistiprint_shared.services.app_config_service import app_config_service
             deposito_id = app_config_service.get_config('default_production_deposit_id')
 
         if not all([produto_id, deposito_id, ordem_id]):
@@ -462,7 +462,7 @@ def api_saldos_batch():
 
         # Se o depósito não for especificado, usar o padrão do sistema
         if not deposito_id:
-            from services.app_config_service import app_config_service
+            from nistiprint_shared.services.app_config_service import app_config_service
             deposito_id = app_config_service.get_config('default_production_deposit_id')
 
         if not all([product_ids, deposito_id]):
@@ -769,3 +769,8 @@ def ajuste():
     # GET request
     depositos = deposito_service.get_all()
     return render_template('estoque/ajuste.html', depositos=depositos)
+
+
+
+
+

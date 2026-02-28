@@ -1,15 +1,15 @@
 from flask import Blueprint, request, jsonify, render_template, redirect, url_for, flash
-from services.fornecedor_service import fornecedor_service
-from services.deposito_service import deposito_service
-from services.conta_bling_service import conta_bling_service
-from services.canal_venda_service import canal_venda_service
-from services.category_service import category_service
-from services.category_bom_rule_service import category_bom_rule_service
-from services.tag_service import tag_service
-from services.unit_of_measure_service import unit_of_measure_service
-from services.plataforma_service import plataforma_service
-from services.setor_service import setor_service
-from services.ponto_coleta_service import ponto_coleta_service
+from nistiprint_shared.services.fornecedor_service import fornecedor_service
+from nistiprint_shared.services.deposito_service import deposito_service
+from nistiprint_shared.services.conta_bling_service import conta_bling_service
+from nistiprint_shared.services.canal_venda_service import canal_venda_service
+from nistiprint_shared.services.category_service import category_service
+from nistiprint_shared.services.category_bom_rule_service import category_bom_rule_service
+from nistiprint_shared.services.tag_service import tag_service
+from nistiprint_shared.services.unit_of_measure_service import unit_of_measure_service
+from nistiprint_shared.services.plataforma_service import plataforma_service
+from nistiprint_shared.services.setor_service import setor_service
+from nistiprint_shared.services.ponto_coleta_service import ponto_coleta_service
 
 cadastros_bp = Blueprint('cadastros', __name__)
 cadastros_api_bp = Blueprint('cadastros_api', __name__, url_prefix='/api/v2/cadastros')
@@ -539,7 +539,7 @@ def api_canal_venda_new():
 
         # Criar as regras logísticas após criar o canal
         if regras_logisticas is not None:
-            from services.regra_logistica_service import regra_logistica_service
+            from nistiprint_shared.services.regra_logistica_service import regra_logistica_service
 
             # Primeiro, deletar todas as regras existentes para este canal (caso existam)
             regra_logistica_service.delete_all_by_canal(new_canal['id'])
@@ -608,7 +608,7 @@ def api_canal_venda_edit(canal_id):
 
         # Atualizar as regras logísticas após atualizar o canal
         if regras_logisticas is not None:
-            from services.regra_logistica_service import regra_logistica_service
+            from nistiprint_shared.services.regra_logistica_service import regra_logistica_service
 
             # Primeiro, deletar todas as regras existentes para este canal
             regra_logistica_service.delete_all_by_canal(canal_id)
@@ -1191,3 +1191,8 @@ def api_canal_venda_search():
         } for c in results])
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+
+
+

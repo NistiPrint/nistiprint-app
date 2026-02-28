@@ -3,7 +3,7 @@ import queue
 from datetime import datetime
 from flask import Blueprint, request, Response, session, jsonify
 from flask_cors import CORS
-from services.notification_service import notification_service
+from nistiprint_shared.services.notification_service import notification_service
 from routes.auth import login_required, get_current_user
 
 
@@ -223,3 +223,8 @@ def trigger_demand_update_notification():
         'notification_id': notification_id,
         'message': 'Demand update notification sent'
     })
+
+
+
+
+

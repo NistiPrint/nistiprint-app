@@ -1,7 +1,7 @@
 """
 Module definitions for supported platforms in the integration marketplace
 """
-from models.integration_module import IntegrationModule
+from nistiprint_shared.models.integration_module import IntegrationModule
 
 
 def get_shopee_module_definition():
@@ -355,3 +355,7 @@ def get_all_platform_modules():
         get_tiktok_shop_module_definition(),
         get_loja_integrada_module_definition()
     ]
+
+
+
+

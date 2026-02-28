@@ -1,7 +1,7 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify
-from services.uom_conversion_service import uom_conversion_service
-from services.product_service import product_service
-from services.unit_of_measure_service import unit_of_measure_service
+from nistiprint_shared.services.uom_conversion_service import uom_conversion_service
+from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.services.unit_of_measure_service import unit_of_measure_service
 
 uom_conversions_bp = Blueprint('uom_conversions_bp', __name__, url_prefix='/cadastros/uom-conversions')
 uom_conversions_api_bp = Blueprint('uom_conversions_api_bp', __name__, url_prefix='/api/v2/cadastros/uom-conversions')
@@ -141,3 +141,8 @@ def delete_conversion(conversion_id):
     except Exception as e:
         flash(f'Erro ao deletar proporção: {e}', 'danger')
     return redirect(url_for('uom_conversions_bp.index'))
+
+
+
+
+

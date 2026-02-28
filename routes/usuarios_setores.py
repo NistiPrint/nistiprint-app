@@ -1,8 +1,8 @@
 from flask import Blueprint, request, jsonify, render_template, redirect, url_for, flash
-from services.setor_service import setor_service
-from services.usuario_service import usuario_service
-from services.permissao_service import permissao_service
-from models.permissao import Recurso
+from nistiprint_shared.services.setor_service import setor_service
+from nistiprint_shared.services.usuario_service import usuario_service
+from nistiprint_shared.services.permissao_service import permissao_service
+from nistiprint_shared.models.permissao import Recurso
 from routes.auth import admin_required
 
 usuarios_setores_bp = Blueprint('usuarios_setores', __name__)
@@ -206,3 +206,8 @@ def api_usuario_delete(usuario_id):
         return jsonify({'success': True, 'message': 'Usuário deletado com sucesso!'})
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+
+
+
+

@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request
-from services.database.v2.supabase_db_service import supabase_db
+from nistiprint_shared.database.supabase_db_service import supabase_db
 from datetime import datetime
 import importlib
 import os
@@ -76,7 +76,7 @@ def sync_firestore():
     """Aciona sincronização com Firestore."""
     try:
         # Agora aponta para a pasta local services/token_manager
-        from services.token_manager.sync_firestore import sync_bling_to_supabase
+        from nistiprint_shared.services.token_manager.sync_firestore import sync_bling_to_supabase
         sync_bling_to_supabase()
         return jsonify({"status": "success", "message": "Sincronização concluída!"})
     except Exception as e:
@@ -86,7 +86,7 @@ def sync_firestore():
 def sync_legacy():
     """Sincroniza pedidos recentes do banco legado MySQL."""
     try:
-        from services.legacy_sync_service import LegacySyncService
+        from nistiprint_shared.services.legacy_sync_service import LegacySyncService
         result = LegacySyncService.sync_recent_orders(days=14)
         if result.get("success"):
             return jsonify({"status": "success", "message": result.get("message"), "count": result.get("count")})
@@ -94,3 +94,8 @@ def sync_legacy():
             return jsonify({"status": "error", "message": result.get("message")}), 500
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+
+
+

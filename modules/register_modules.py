@@ -1,7 +1,7 @@
 """
 Script to register platform modules in the integration marketplace
 """
-from services.integration_module_service import integration_module_service
+from nistiprint_shared.services.integration_module_service import integration_module_service
 from modules.platform_modules import get_all_platform_modules
 
 
@@ -30,3 +30,7 @@ def register_platform_modules():
 
 if __name__ == "__main__":
     register_platform_modules()
+
+
+
+

@@ -2,8 +2,8 @@
 Routes for integration marketplace frontend pages
 """
 from flask import Blueprint, render_template, request, jsonify
-from services.integration_module_service import integration_module_service
-from services.installed_integration_service import installed_integration_service
+from nistiprint_shared.services.integration_module_service import integration_module_service
+from nistiprint_shared.services.installed_integration_service import installed_integration_service
 
 
 marketplace_bp = Blueprint('marketplace', __name__, url_prefix='/marketplace')
@@ -75,3 +75,8 @@ def my_integrations():
     except Exception as e:
         print(f"Error loading user integrations: {e}")
         return render_template('error.html', error=str(e)), 500
+
+
+
+
+

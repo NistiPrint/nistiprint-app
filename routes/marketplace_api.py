@@ -3,11 +3,11 @@ API routes for integration marketplace functionality
 """
 from flask import Blueprint, jsonify, request, redirect, url_for
 from datetime import datetime, timedelta
-from services.integration_module_service import integration_module_service
-from services.installed_integration_service import installed_integration_service
-from models.integration_module import InstalledIntegration
-from services.platform_auth_service import platform_auth_service
-from services.integration_module_service import integration_module_service
+from nistiprint_shared.services.integration_module_service import integration_module_service
+from nistiprint_shared.services.installed_integration_service import installed_integration_service
+from nistiprint_shared.models.integration_module import InstalledIntegration
+from nistiprint_shared.services.platform_auth_service import platform_auth_service
+from nistiprint_shared.services.integration_module_service import integration_module_service
 from utils.api_response import ApiResponse
 
 marketplace_api_bp = Blueprint('marketplace_api', __name__, url_prefix='/api/v2/marketplace')
@@ -376,7 +376,7 @@ def test_integration(instance_id):
 def trigger_sync(instance_id):
     """Trigger a sync for a specific installed integration"""
     try:
-        from models.integration_module import InstalledIntegration
+        from nistiprint_shared.models.integration_module import InstalledIntegration
 
         # Update sync status to pending
         success = installed_integration_service.update_sync_status(
@@ -483,7 +483,7 @@ def get_orders_list():
         filters = data.get('filters') or {}
 
         # Call the generic platform API service
-        from services.platform_api_service import platform_api_service
+        from nistiprint_shared.services.platform_api_service import platform_api_service
         result = platform_api_service.get_orders_list(
             instance_id=instance_id,
             module_id=module_id,
@@ -534,7 +534,7 @@ def get_order_detail():
             return ApiResponse.error(message="Lista de IDs de pedidos inválida.", status_code=400)
 
         # Call the generic platform API service
-        from services.platform_api_service import platform_api_service
+        from nistiprint_shared.services.platform_api_service import platform_api_service
         result = platform_api_service.get_order_detail(
             order_sn_list=order_sn_list,
             instance_id=instance_id,
@@ -559,3 +559,8 @@ def get_order_detail():
         import traceback
         traceback.print_exc()
         return ApiResponse.error(message=str(e), status_code=500)
+
+
+
+
+
