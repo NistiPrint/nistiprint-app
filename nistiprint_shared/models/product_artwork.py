@@ -1,6 +1,6 @@
 from datetime import datetime
-from ..database.database import db
-from services.supabase_storage_service import supabase_storage_service
+from nistiprint_shared.database.database import db
+from nistiprint_shared.services.supabase_storage_service import supabase_storage_service
 
 
 class ProductArtwork(db.Model):

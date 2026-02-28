@@ -1,6 +1,6 @@
 import json
 from datetime import datetime
-from ..database.database import db
+from nistiprint_shared.database.database import db
 
 class ShopeeOrders(db.Model):
     __tablename__ = 'pedidos_shopee'  # shopee_orders → pedidos_shopee

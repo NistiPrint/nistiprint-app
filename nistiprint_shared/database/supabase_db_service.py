@@ -2,15 +2,13 @@
 Supabase Database Service that maintains SQLAlchemy-like interface for backward compatibility
 """
 import os
+from enum import Enum
 from typing import Any, Dict, List, Optional, Type, TypeVar
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from sqlalchemy.orm import sessionmaker
 from contextlib import contextmanager
 import logging
-
-# Load environment variables
-load_dotenv()
 
 # Generic type variable for model classes
 T = TypeVar('T')
@@ -21,28 +19,54 @@ class SupabaseDBService:
     but uses Supabase/PostgreSQL as the underlying database.
     """
 
-    def __init__(self):
-        self.supabase_url = os.environ.get('SUPABASE_URL')
-        self.supabase_key = os.environ.get('SUPABASE_SERVICE_KEY')
+    def __init__(self, url=None, key=None):
+        self.supabase_url = url or os.environ.get('SUPABASE_URL')
+        self.supabase_key = key or os.environ.get('SUPABASE_SERVICE_KEY')
+        self.client = None
 
+        if self.supabase_url and self.supabase_key:
+            try:
+                # Use the default initialization which is more resilient to library updates
+                self.client: Client = create_client(
+                    self.supabase_url,
+                    self.supabase_key
+                )
+                logging.info("Successfully connected to Supabase")
+            except Exception as e:
+                logging.error(f"Failed to connect to Supabase: {e}")
+        else:
+            logging.warning("SUPABASE_URL and SUPABASE_SERVICE_KEY not set during initialization. Supabase operations will fail unless variables are set later.")
+
+    def _ensure_client(self):
+        """
+        Ensure that the Supabase client is initialized.
+        This allows for late initialization if variables were not set during __init__.
+        """
+        if self.client:
+            return True
+            
+        self.supabase_url = self.supabase_url or os.environ.get('SUPABASE_URL')
+        self.supabase_key = self.supabase_key or os.environ.get('SUPABASE_SERVICE_KEY')
+        
         if not self.supabase_url or not self.supabase_key:
-            raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in environment variables")
-
+            logging.error("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in environment variables")
+            return False
+            
         try:
-            # Use the default initialization which is more resilient to library updates
-            self.client: Client = create_client(
-                self.supabase_url,
-                self.supabase_key
-            )
-            logging.info("Successfully connected to Supabase")
+            self.client: Client = create_client(self.supabase_url, self.supabase_key)
+            logging.info("Supabase client initialized via late-binding.")
+            return True
         except Exception as e:
-            logging.error(f"Failed to connect to Supabase: {e}")
-            raise
+            logging.error(f"Failed to late-initialize Supabase client: {e}")
+            return False
 
     def execute_with_retry(self, query, max_retries=3, base_delay=0.5):
         """
         Execute a Supabase/PostgREST query with retry logic for connection errors.
         """
+        if not self._ensure_client():
+            raise ValueError("Supabase client is not initialized and environment variables are missing.")
+            
         import time
         import httpx
         import ssl
@@ -78,12 +102,16 @@ class SupabaseDBService:
         """
         Get a table reference for performing operations
         """
+        if not self._ensure_client():
+            raise ValueError("Supabase client not initialized and environment variables are missing.")
         return self.client.table(table_name)
 
     def get(self, table_name: str, id: int):
         """
         Get a record by ID
         """
+        if not self._ensure_client():
+             return None
         try:
             query = self.client.table(table_name).select("*").eq("id", id).single()
             response = self.execute_with_retry(query)
@@ -96,6 +124,8 @@ class SupabaseDBService:
         """
         Get all records from a table with optional filters
         """
+        if not self._ensure_client():
+            return []
         try:
             query = self.client.table(table_name).select("*")
 
@@ -915,237 +945,44 @@ class MockSQLAlchemy:
 mock_db = MockSQLAlchemy()
 
 
-def setup_mock_query_interface():
+def init_app_with_supabase_db(app):
     """
-    Sets up the query interface for models when using Supabase mode
-    This function is called after all models are loaded to avoid circular imports
+    Initialize a Flask app with Supabase database support
     """
-    # Import models inside the function to avoid circular imports
-    from models.usuario import Usuario
-    from models.setor import Setor
-    from models.permissao import Recurso, PermissaoSetor
-    from models.ai_execution_log import AiExecutionLog
-
-    # Import models for Firestore collections that are now in Supabase
-    try:
-        from models.product import Product
-    except ImportError:
-        # Product model might not exist yet
-        Product = None
-
-    try:
-        from models.venda import Venda
-    except ImportError:
-        # Venda model might not exist yet
-        Venda = None
-
-    try:
-        from models.ordem_producao import OrdemProducao
-    except ImportError:
-        # OrdemProducao model might not exist yet
-        OrdemProducao = None
-
-    try:
-        from models.ordem_compra import OrdemCompra
-    except ImportError:
-        # OrdemCompra model might not exist yet
-        OrdemCompra = None
-
-    try:
-        from models.tag import Tag
-    except ImportError:
-        # Tag model might not exist yet
-        Tag = None
-
-    try:
-        from models.unidade_medida import UnidadeMedida
-    except ImportError:
-        # UnidadeMedida model might not exist yet
-        UnidadeMedida = None
-
-    try:
-        from models.plataforma import Plataforma
-    except ImportError:
-        # Plataforma model might not exist yet
-        Plataforma = None
-
-    try:
-        from models.canal_venda import CanalVenda
-    except ImportError:
-        # CanalVenda model might not exist yet
-        CanalVenda = None
-
-    try:
-        from models.categoria import Categoria
-    except ImportError:
-        # Categoria model might not exist yet
-        Categoria = None
-
-    try:
-        from models.daily_production_log import DailyProductionLog
-    except ImportError:
-        # DailyProductionLog model might not exist yet
-        DailyProductionLog = None
-
-    try:
-        from models.demanda_producao import DemandaProducao
-    except ImportError:
-        # DemandaProducao model might not exist yet
-        DemandaProducao = None
-
-    try:
-        from models.deposito import Deposito
-    except ImportError:
-        # Deposito model might not exist yet
-        Deposito = None
-
-    try:
-        from models.estoque_atual import EstoqueAtual
-    except ImportError:
-        # EstoqueAtual model might not exist yet
-        EstoqueAtual = None
-
-    try:
-        from models.recurso_produtivo import RecursoProdutivo
-    except ImportError:
-        # RecursoProdutivo model might not exist yet
-        RecursoProdutivo = None
-
-    try:
-        from models.notificacao import Notificacao
-    except ImportError:
-        # Notificacao model might not exist yet
-        Notificacao = None
-
-    try:
-        from models.configuracao_aplicacao import ConfiguracaoAplicacao
-    except ImportError:
-        # ConfiguracaoAplicacao model might not exist yet
-        ConfiguracaoAplicacao = None
-
-    try:
-        from models.fornecedor import Fornecedor
-    except ImportError:
-        # Fornecedor model might not exist yet
-        Fornecedor = None
-
-    try:
-        from models.product_artwork import ProductArtwork
-    except ImportError:
-        # ProductArtwork model might not exist yet
-        ProductArtwork = None
-
-    try:
-        from models.bling_pedidos import BlingPedidos
-    except ImportError:
-        BlingPedidos = None
-
-    try:
-        from models.bling_pedido_itens import BlingPedidoItens
-    except ImportError:
-        BlingPedidoItens = None
-
-    try:
-        from models.shopee_orders import ShopeeOrders
-    except ImportError:
-        ShopeeOrders = None
-
-    try:
-        from models.produto_externo import ProdutoExterno
-    except ImportError:
-        ProdutoExterno = None
-
-    try:
-        from models.demanda_item_origem import DemandaItemOrigem
-    except ImportError:
-        DemandaItemOrigem = None
-
-    try:
-        from models.system_events_log import SystemEventsLog
-    except ImportError:
-        SystemEventsLog = None
-
-    # Assign the query interface to each model
-    Usuario.query = SupabaseQueryInterface(Usuario)
-    Setor.query = SupabaseQueryInterface(Setor)
-    Recurso.query = SupabaseQueryInterface(Recurso)
-    PermissaoSetor.query = SupabaseQueryInterface(PermissaoSetor)
-    AiExecutionLog.query = SupabaseQueryInterface(AiExecutionLog)
-
-    # Import models for AI Migration
-    try:
-        from models.supabase_chat import MensagemChatShopee
-    except ImportError:
-        MensagemChatShopee = None
-        
-    try:
-        from models.supabase_ai_log import LogsExecucaoIA
-    except ImportError:
-        LogsExecucaoIA = None
-        
-    try:
-        from models.supabase_personalizacao import PersonalizacaoPedido
-    except ImportError:
-        PersonalizacaoPedido = None
-
-    # Assign query interfaces to models for Firestore collections that are now in Supabase
-    if Product:
-        Product.query = SupabaseQueryInterface(Product)
-    if Venda:
-        Venda.query = SupabaseQueryInterface(Venda)
-    if OrdemProducao:
-        OrdemProducao.query = SupabaseQueryInterface(OrdemProducao)
-    if OrdemCompra:
-        OrdemCompra.query = SupabaseQueryInterface(OrdemCompra)
-    if Tag:
-        Tag.query = SupabaseQueryInterface(Tag)
-    if UnidadeMedida:
-        UnidadeMedida.query = SupabaseQueryInterface(UnidadeMedida)
-    if Plataforma:
-        Plataforma.query = SupabaseQueryInterface(Plataforma)
-    if CanalVenda:
-        CanalVenda.query = SupabaseQueryInterface(CanalVenda)
-    if Categoria:
-        Categoria.query = SupabaseQueryInterface(Categoria)
-    if DailyProductionLog:
-        DailyProductionLog.query = SupabaseQueryInterface(DailyProductionLog)
-    if DemandaProducao:
-        DemandaProducao.query = SupabaseQueryInterface(DemandaProducao)
-    if Deposito:
-        Deposito.query = SupabaseQueryInterface(Deposito)
-    if EstoqueAtual:
-        EstoqueAtual.query = SupabaseQueryInterface(EstoqueAtual)
-    if RecursoProdutivo:
-        RecursoProdutivo.query = SupabaseQueryInterface(RecursoProdutivo)
-    if Notificacao:
-        Notificacao.query = SupabaseQueryInterface(Notificacao)
-    if ConfiguracaoAplicacao:
-        ConfiguracaoAplicacao.query = SupabaseQueryInterface(ConfiguracaoAplicacao)
-    if Fornecedor:
-        Fornecedor.query = SupabaseQueryInterface(Fornecedor)
-    if ProductArtwork:
-        ProductArtwork.query = SupabaseQueryInterface(ProductArtwork)
-    if BlingPedidos:
-        BlingPedidos.query = SupabaseQueryInterface(BlingPedidos)
-    if BlingPedidoItens:
-        BlingPedidoItens.query = SupabaseQueryInterface(BlingPedidoItens)
-    if ShopeeOrders:
-        ShopeeOrders.query = SupabaseQueryInterface(ShopeeOrders)
-    if ProdutoExterno:
-        ProdutoExterno.query = SupabaseQueryInterface(ProdutoExterno)
-    if DemandaItemOrigem:
-        DemandaItemOrigem.query = SupabaseQueryInterface(DemandaItemOrigem)
-    if SystemEventsLog:
-        SystemEventsLog.query = SupabaseQueryInterface(SystemEventsLog)
+    supabase_url = os.environ.get('SUPABASE_URL')
+    supabase_key = os.environ.get('SUPABASE_SERVICE_KEY')
     
-    # AI Models Registration
-    if MensagemChatShopee:
-        MensagemChatShopee.query = SupabaseQueryInterface(MensagemChatShopee)
-    if LogsExecucaoIA:
-        LogsExecucaoIA.query = SupabaseQueryInterface(LogsExecucaoIA)
-    if PersonalizacaoPedido:
-        PersonalizacaoPedido.query = SupabaseQueryInterface(PersonalizacaoPedido)
+    if supabase_url and supabase_key:
+        # Use Supabase (PostgreSQL) - convert http/https to postgresql protocol
+        # Supabase connection string usually starts with postgres:// or postgresql://
+        # but we also accept SUPABASE_URL format for simple configuration
+        if supabase_url.startswith('http'):
+            db_url = supabase_url.replace("http://", "postgresql://").replace("https://", "postgresql://")
+        else:
+            db_url = supabase_url
+            
+        app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+        app.logger.info("Configured Flask app to use Supabase (PostgreSQL) as main database.")
+        
+        # Test connection optionally
+        try:
+             # Just ensures supabase_db global is initialized
+             if supabase_db._ensure_client():
+                 app.logger.info("Supabase client initialized successfully.")
+        except Exception as e:
+             app.logger.error(f"Failed to initialize Supabase client: {e}")
 
+class DatabaseMode(Enum):
+    SUPABASE = "supabase"
+    MYSQL = "mysql"
 
-# Initialize the mock query interface when module loads
-setup_mock_query_interface()
+def get_current_database_mode() -> DatabaseMode:
+    """
+    Returns the current database mode: SUPABASE or MYSQL
+    """
+    supabase_url = os.environ.get('SUPABASE_URL')
+    supabase_key = os.environ.get('SUPABASE_SERVICE_KEY')
+    
+    if supabase_url and supabase_key:
+        return DatabaseMode.SUPABASE
+    return DatabaseMode.MYSQL

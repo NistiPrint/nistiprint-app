@@ -1,4 +1,4 @@
-from ..database.database import db
+from nistiprint_shared.database.database import db
 from datetime import datetime
 
 class Product(db.Model):

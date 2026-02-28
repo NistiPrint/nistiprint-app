@@ -1,5 +1,5 @@
 from datetime import datetime
-from ..database.database import db
+from nistiprint_shared.database.database import db
 from werkzeug.security import generate_password_hash, check_password_hash
 
 class Usuario(db.Model):

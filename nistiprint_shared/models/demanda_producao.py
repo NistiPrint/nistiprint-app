@@ -1,7 +1,7 @@
-from ..database.database import db
+from nistiprint_shared.database.database import db
 from datetime import datetime
 from sqlalchemy import CheckConstraint
-from models import entrega_producao
+from nistiprint_shared.models import entrega_producao
 
 class DemandaProducao(db.Model):
     __tablename__ = 'demandas_producao'

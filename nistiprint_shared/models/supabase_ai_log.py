@@ -1,4 +1,4 @@
-from services.database.v2.supabase_db_service import mock_db
+from nistiprint_shared.database.supabase_db_service import mock_db
 
 class LogsExecucaoIA(mock_db.Model):
     __tablename__ = 'logs_execucao_ia'

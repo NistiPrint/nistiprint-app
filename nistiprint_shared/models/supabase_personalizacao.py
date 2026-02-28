@@ -1,4 +1,4 @@
-from services.database.v2.supabase_db_service import mock_db
+from nistiprint_shared.database.supabase_db_service import mock_db
 
 class PersonalizacaoPedido(mock_db.Model):
     __tablename__ = 'personalizacoes_pedido'

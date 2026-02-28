@@ -1,5 +1,5 @@
 from datetime import datetime
-from ..database.database import db
+from nistiprint_shared.database.database import db
 
 class Setor(db.Model):
     __tablename__ = 'setores'

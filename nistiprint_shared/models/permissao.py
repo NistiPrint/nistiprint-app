@@ -1,5 +1,5 @@
 from datetime import datetime
-from ..database.database import db
+from nistiprint_shared.database.database import db
 
 class Recurso(db.Model):
     __tablename__ = 'recursos'
