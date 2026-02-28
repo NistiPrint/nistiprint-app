@@ -1,9 +1,9 @@
 import os
 from functools import wraps
 from flask import request, redirect, url_for, session, flash, render_template, Blueprint, jsonify
-from services.usuario_service import usuario_service
-from services.permissao_service import permissao_service
-from services.database.supabase_db_service import get_current_database_mode, DatabaseMode
+from nistiprint_shared.services.usuario_service import usuario_service
+from nistiprint_shared.services.permissao_service import permissao_service
+from nistiprint_shared.database.supabase_db_service import get_current_database_mode, DatabaseMode
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -68,7 +68,7 @@ def login():
         # Use different authentication based on database mode
         if get_current_database_mode() == DatabaseMode.SUPABASE:
             # Use Supabase Auth for authentication but MySQL for user details
-            from services.supabase_auth_service import supabase_auth
+            from nistiprint_shared.services.supabase_auth_service import supabase_auth
             auth_result = supabase_auth.authenticate(email, senha)
 
             if auth_result:
@@ -78,7 +78,7 @@ def login():
                     # Ensure setor_nome is properly set for all users
                     if not usuario.get('setor_nome'):
                         # Fetch the setor name from the database if not already populated
-                        from models.setor import Setor
+                        from nistiprint_shared.models.setor import Setor
                         setor_model = Setor.query.get(usuario['setor_id'])
                         if setor_model:
                             usuario['setor_nome'] = setor_model.nome
@@ -118,7 +118,7 @@ def login():
                 # Ensure setor_nome is properly set for all users
                 if not usuario.get('setor_nome'):
                     # Fetch the setor name from the database if not already populated
-                    from models.setor import Setor
+                    from nistiprint_shared.models.setor import Setor
                     setor_model = Setor.query.get(usuario['setor_id'])
                     if setor_model:
                         usuario['setor_nome'] = setor_model.nome
@@ -184,7 +184,7 @@ def current_user():
         # Ensure setor_nome is properly set - it should already be set by get_current_user()
         # which calls usuario_service.get_by_id(), but we double check for safety
         if not usuario.get('setor_nome'):
-            from models.setor import Setor
+            from nistiprint_shared.models.setor import Setor
             setor_model = Setor.query.get(usuario['setor_id'])
             if setor_model:
                 usuario['setor_nome'] = setor_model.nome
@@ -215,3 +215,8 @@ def clear_all_sessions():
         'message': 'Para limpar todas as sessões, reinicie o servidor Flask.',
         'instructions': 'Execute: python app.py (após parar o servidor atual)'
     }), 200
+
+
+
+
+

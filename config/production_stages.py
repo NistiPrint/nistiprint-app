@@ -18,3 +18,7 @@ ESTAGIOS_PRODUCAO = {
     },
     # Adicionar aqui outros estágios, como 'Wire-O Aplicado', se necessário
 }
+
+
+
+

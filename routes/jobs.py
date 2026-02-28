@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request, current_app
-from services.installed_integration_service import installed_integration_service
-from services.app_config_service import app_config_service
+from nistiprint_shared.services.installed_integration_service import installed_integration_service
+from nistiprint_shared.services.app_config_service import app_config_service
 import os
 import logging
 
@@ -53,3 +53,8 @@ def refresh_tokens_job():
             'status': 'error',
             'message': str(e)
         }), 500
+
+
+
+
+

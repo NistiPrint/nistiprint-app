@@ -1,10 +1,10 @@
 from flask import Blueprint, render_template, jsonify, request, flash, redirect, url_for
 from routes.auth import login_required
-from services.ai_personalization_service import process_orders
-from services.product_service import product_service
-from services.category_service import category_service
-from services.tag_service import tag_service
-from services.bling_order_processing_service import import_single_order_by_shop_id
+from nistiprint_shared.services.ai_personalization_service import process_orders
+from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.services.category_service import category_service
+from nistiprint_shared.services.tag_service import tag_service
+from nistiprint_shared.services.bling_order_processing_service import import_single_order_by_shop_id
 
 ferramentas_bp = Blueprint('ferramentas', __name__)
 ferramentas_api_bp = Blueprint('ferramentas_api', __name__, url_prefix='/api/v2/ferramentas')
@@ -152,5 +152,10 @@ def associacao_massa():
     categories = category_service.get_all_categories()
     tags = tag_service.get_all_tags()
     return render_template('ferramentas/associacao_massa.html', categories=categories, tags=tags)
+
+
+
+
+
 
 

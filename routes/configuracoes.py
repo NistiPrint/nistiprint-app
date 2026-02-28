@@ -1,9 +1,9 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify
-from services.app_config_service import app_config_service
-from services.category_service import category_service
-from services.deposito_service import deposito_service
-from services.product_service import product_service
-from services.conta_bling_service import conta_bling_service
+from nistiprint_shared.services.app_config_service import app_config_service
+from nistiprint_shared.services.category_service import category_service
+from nistiprint_shared.services.deposito_service import deposito_service
+from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.services.conta_bling_service import conta_bling_service
 
 configuracoes_bp = Blueprint('configuracoes', __name__, url_prefix='/configuracoes')
 configuracoes_api_bp = Blueprint('configuracoes_api', __name__, url_prefix='/api/v2/configuracoes')
@@ -180,3 +180,8 @@ def bling_config():
         all_bling_accounts=all_bling_accounts,
         selected_bling_account_id=selected_bling_account_id
     )
+
+
+
+
+

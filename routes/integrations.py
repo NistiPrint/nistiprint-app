@@ -1,26 +1,20 @@
 from datetime import datetime
 from flask import Blueprint, render_template, jsonify, request, redirect, url_for, flash
-from services.firebase.firestore_client import firestore_client
-from services.bling.bling_client import BlingClient
-from services.conta_bling_service import conta_bling_service
+# from nistiprint_shared.services.firebase.firestore_client import firestore_client  # Firebase removido
+from nistiprint_shared.services.bling.bling_client import BlingClient
+from nistiprint_shared.services.conta_bling_service import conta_bling_service
+from nistiprint_shared.database.supabase_db_service import supabase_db
 
 integrations_bp = Blueprint('integrations', __name__)
 
 @integrations_bp.route('/admin/integrations')
 def admin_integrations():
-    """Página administrativa das integrações Bling."""
+    """Página administrativa das integrações Bling (Migrando para Supabase)."""
     try:
-        # Buscar contas diretamente da coleção bling_accounts
-        accounts_collection = firestore_client.collection('bling_accounts')
-        docs = accounts_collection.stream()
-
-        accounts = []
-        for doc in docs:
-            account_data = doc.to_dict()
-            account_data['id'] = doc.id
-            accounts.append(account_data)
-
-        # Não imprimir logs relacionados ao Firestore agora
+        # TODO: Implementar busca via Supabase
+        # accounts = supabase_db.get_all('bling_accounts')
+        accounts = [] # Placeholder enquanto a migração não é concluída
+        
         return render_template('integrations.html', accounts=accounts)
     except Exception as e:
         print(f"Erro na rota de integrações: {e}")
@@ -28,24 +22,14 @@ def admin_integrations():
 
 @integrations_bp.route('/api/integrations/status/<account_id>')
 def api_integration_status(account_id):
-    """API para verificar status do token de uma conta específica."""
+    """API para verificar status do token (Migrando para Supabase)."""
     print(f"🔍 Verificando status do token para conta: {account_id}")
 
     try:
-        # Buscar dados da conta específica no Firestore
-        accounts_collection = firestore_client.collection('bling_accounts')
-        account_doc = accounts_collection.document(account_id).get()
-
-        if not account_doc.exists:
-            print(f"❌ Conta {account_id} não encontrada na coleção bling_accounts")
-            return jsonify({'status': 'ACCOUNT_NOT_FOUND'}), 404
-
-        account_data = account_doc.to_dict()
-
-        # Verificar se tem tokens necessários
-        if not account_data.get('access_token'):
-            print("❌ Nenhum token de acesso encontrado")
-            return jsonify({'status': 'NO_TOKEN'})
+        # TODO: Implementar busca via Supabase
+        # account_data = supabase_db.get('bling_accounts', account_id)
+        
+        return jsonify({'status': 'MIGRATION_IN_PROGRESS'}), 200
 
         # Adicionar ID do documento aos dados
         account_data['id'] = account_id
@@ -162,3 +146,8 @@ def new_integration():
             flash(f'Erro ao criar conta: {str(e)}', 'error')
 
     return render_template('integration_edit.html', account=None)
+
+
+
+
+

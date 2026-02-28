@@ -1,6 +1,6 @@
 import json
 from flask import request, jsonify, Blueprint, Response, stream_with_context
-from services.bling.bling_client import BlingClient
+from nistiprint_shared.services.bling.bling_client import BlingClient
 from constants import PLATFORM_X_BLING_VERSION, PLATFORM_X_CNPJ
 
 nfe_bp = Blueprint('nfe', __name__)
@@ -78,3 +78,8 @@ def generate_nfe():
         yield f"data: {json.dumps({'status': 'complete'})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+
+
+

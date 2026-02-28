@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from datetime import datetime
-from services.auditoria_estoque_service import auditoria_estoque_service
+from nistiprint_shared.services.auditoria_estoque_service import auditoria_estoque_service
 from routes.auth import login_required, get_current_user
 
 auditoria_estoque_bp = Blueprint('auditoria_estoque', __name__, url_prefix='/api/v2/auditoria')
@@ -113,3 +113,8 @@ def rejeitar_contagem(contagem_id):
         return jsonify({'success': True, 'data': resultado})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+
+
+

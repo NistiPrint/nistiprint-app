@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from datetime import datetime
-from services.database.v2.supabase_db_service import supabase_db
+from nistiprint_shared.database.supabase_db_service import supabase_db
 import logging
 
 logger = logging.getLogger("WebhookGateway")
@@ -41,3 +41,8 @@ def receive_webhook(platform, instance_id):
         logger.error(f"Erro ao registrar webhook: {str(e)}")
         # Mesmo com erro de log, retornamos 200/202 para a plataforma não desativar o webhook
         return jsonify({"status": "error", "message": "Failed to log but accepted"}), 202
+
+
+
+
+

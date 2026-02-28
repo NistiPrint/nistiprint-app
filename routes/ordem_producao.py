@@ -1,7 +1,7 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify
-from services.ordem_producao_service import ordem_producao_service
-from services.product_service import product_service
-from services.estoque_service import estoque_service
+from nistiprint_shared.services.ordem_producao_service import ordem_producao_service
+from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.services.estoque_service import estoque_service
 import traceback
 
 ordem_producao_bp = Blueprint('ordem_producao', __name__, url_prefix='/ordem-producao')
@@ -266,3 +266,8 @@ def api_search_products():
         return jsonify(products)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+
+
+

@@ -14,3 +14,8 @@ def get_now_iso():
 def get_today():
     """Retorna a data atual no fuso horário da aplicação."""
     return get_now().date()
+
+
+
+
+

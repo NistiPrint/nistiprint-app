@@ -3,11 +3,11 @@ from datetime import datetime, timedelta
 import pandas as pd
 from flask import request, render_template, Blueprint, jsonify
 from routes.auth import login_required
-from services.file_processors import process_mercadolivre, process_shopee, process_amazon, process_shein
+from nistiprint_shared.services.file_processors import process_mercadolivre, process_shopee, process_amazon, process_shein
 from constants import PLATFORM_X_CNPJ
-from services.bling.bling_client import BlingClient
-from services.canal_venda_service import canal_venda_service
-from services.conta_bling_service import conta_bling_service
+from nistiprint_shared.services.bling.bling_client import BlingClient
+from nistiprint_shared.services.canal_venda_service import canal_venda_service
+from nistiprint_shared.services.conta_bling_service import conta_bling_service
 from utils import prepare_ml_file
 import traceback # Import traceback
 
@@ -137,3 +137,8 @@ def consolidar():
             return render_template('error.html', message=error_message)
 
     return render_template('consolidar.html')
+
+
+
+
+

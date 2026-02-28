@@ -1,14 +1,32 @@
+import sys
 import os
 import logging
 from datetime import datetime
 from flask import Flask, send_from_directory
 from flask_cors import CORS
-from dotenv import load_dotenv
-from services.database.database import db, cleanup_session
-from services.database.supabase_db_service import init_app_with_supabase_db
 
-# Load environment variables from .env file
-load_dotenv()
+# 1. Carregamento centralizado do ambiente e inicialização do pacote compartilhado
+try:
+    from nistiprint_shared.utils.env_loader import load_nistiprint_env
+    from nistiprint_shared.database.initializer import setup_mock_query_interface
+    
+    # Carrega variáveis de ambiente (.env)
+    load_nistiprint_env()
+    
+    # Configura a interface de compatibilidade (Mock SQLAlchemy/Supabase)
+    setup_mock_query_interface()
+    
+    print("✓ V3 Infrastructure Initialized (Shared Package)")
+except ImportError as e:
+    print(f"❌ Erro: Pacote nistiprint-shared não localizado ou incompleto: {e}")
+    # Fallback para load_dotenv local caso o shared falhe (útil durante migração)
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception as e:
+    print(f"❌ Erro inesperado na inicialização: {e}")
+
+from nistiprint_shared.database.database import db, cleanup_session
+from nistiprint_shared.database.supabase_db_service import init_app_with_supabase_db
 
 from constants import BLING_ID_LOJA, PLATFORM_ICONS
 
@@ -28,7 +46,8 @@ from routes.auditoria_estoque import auditoria_estoque_bp
 from routes.produtos import produtos_bp, produtos_api_bp
 from routes.ferramentas import ferramentas_bp, ferramentas_api_bp
 from routes.ordem_producao import ordem_producao_bp
-from routes.configuracoes import configuracoes_bp, configuracoes_api_bp
+from routes.configuracoes import configuracoes_bp
+from routes.configuracoes import configuracoes_api_bp
 from routes.producao import producao_bp
 from routes.api import api_bp
 from routes.relatorios import relatorios_api_bp
@@ -45,15 +64,15 @@ from routes.jobs import jobs_bp
 from routes.unified_orders import unified_orders_bp
 
 # Import Models to ensure they are registered
-from models import *
+from nistiprint_shared.models import *
 
 # Import Services to ensure they are initialized
-from services.priority_calculation_service import priority_calculation_service
-from services.capacity_planning_service import capacity_planning_service
-from services.calendar_service import calendar_service
-from services.production_planning_service import production_planning_service
-from services.artwork_service import artwork_service
-from services.print_service import print_service
+from nistiprint_shared.services.priority_calculation_service import priority_calculation_service
+from nistiprint_shared.services.capacity_planning_service import capacity_planning_service
+from nistiprint_shared.services.calendar_service import calendar_service
+from nistiprint_shared.services.production_planning_service import production_planning_service
+from nistiprint_shared.services.artwork_service import artwork_service
+from nistiprint_shared.services.print_service import print_service
 
 # Import utilities for template filters
 from utils import br_currency, br_number
@@ -194,8 +213,6 @@ def create_app():
         from flask import request
         app.logger.info(f'{request.method} {request.url} - {request.remote_addr}')
 
-
-
     return app
 
 if __name__ == "__main__":
@@ -204,3 +221,8 @@ if __name__ == "__main__":
     # In production, debug should be False.
     debug_mode = os.environ.get('FLASK_ENV') == 'development'
     app.run(host='0.0.0.0', port=port, debug=debug_mode)
+
+
+
+
+

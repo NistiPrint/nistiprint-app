@@ -1,17 +1,17 @@
 from flask import Blueprint, jsonify, request
-from services.database.database import db
-from models.bling_pedidos import BlingPedidos
-from models.bling_pedido_itens import BlingPedidoItens
-from models.order_personalizations import OrderPersonalizations
-from models.shopee_orders import ShopeeOrders
-from models.v2_chat_events import V2ChatEvents
+from nistiprint_shared.database.database import db
+from nistiprint_shared.models.bling_pedidos import BlingPedidos
+from nistiprint_shared.models.bling_pedido_itens import BlingPedidoItens
+from nistiprint_shared.models.order_personalizations import OrderPersonalizations
+from nistiprint_shared.models.shopee_orders import ShopeeOrders
+from nistiprint_shared.models.v2_chat_events import V2ChatEvents
 from routes.auth import login_required
 from sqlalchemy import text
 from utils import process_message_content
-from services.bling.bling_client import BlingClient
-from services.uom_conversion_service import uom_conversion_service
-from services.product_service import product_service
-from services.ai_personalization_service import get_logs_by_order_sn
+from nistiprint_shared.services.bling.bling_client import BlingClient
+from nistiprint_shared.services.uom_conversion_service import uom_conversion_service
+from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.services.ai_personalization_service import get_logs_by_order_sn
 from utils.api_response import ApiResponse
 import json
 
@@ -22,13 +22,13 @@ api_bp = Blueprint('api', __name__, url_prefix='/api')
 def get_messages(username):
     # print(f"Fetching messages for user: {username}")
     try:
-        from services.app_config_service import app_config_service
+        from nistiprint_shared.services.app_config_service import app_config_service
         # Prioritize mode from request param
         mode = request.args.get('mode') or app_config_service.get_operational_mode()
         
         rows = []
         if mode == 'legacy':
-            from services.legacy_sync_service import LegacySyncService
+            from nistiprint_shared.services.legacy_sync_service import LegacySyncService
             conn = LegacySyncService._get_legacy_connection()
             with conn:
                 # Use the new MySQL View for chat messages
@@ -67,7 +67,7 @@ def get_messages(username):
                         print(f"Warning: Could not fetch chat bundles: {bundle_err}")
         else:
             # Get all messages for this conversation using the View
-            from services.database.v2.supabase_db_service import supabase_db
+            from nistiprint_shared.database.supabase_db_service import supabase_db
             
             # Query the view which already handles basic filtering and content processing
             result = supabase_db.client.table('view_mensagens_chat').select("*") \
@@ -356,8 +356,8 @@ def api_submit_feedback():
             return ApiResponse.error(message='Dados incompletos', status_code=400)
 
         # Import model here to avoid circular imports if necessary
-        from models.order_feedback import OrderFeedback
-        from services.database.database import db
+        from nistiprint_shared.models.order_feedback import OrderFeedback
+        from nistiprint_shared.database.database import db
 
         new_feedback = OrderFeedback(
             order_id=str(order_id),
@@ -366,9 +366,9 @@ def api_submit_feedback():
         )
         
         # Check database mode
-        from services.database.supabase_db_service import get_current_database_mode
+        from nistiprint_shared.database.supabase_db_service import get_current_database_mode
         if get_current_database_mode().name == 'SUPABASE':
-            from services.database.v2.supabase_db_service import get_db_session
+            from nistiprint_shared.database.supabase_db_service import get_db_session
             with get_db_session() as session:
                 session.add(new_feedback)
         else:
@@ -380,3 +380,8 @@ def api_submit_feedback():
     except Exception as e:
         print(f"Error submitting feedback: {e}")
         return ApiResponse.error(message=str(e), status_code=500)
+
+
+
+
+

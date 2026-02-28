@@ -1,8 +1,8 @@
 from flask import Blueprint, request, jsonify
 from routes.auth import login_required
-from services.order_service import order_service
-from models.situacao_pedido import SituacaoPedido
-from services.database.v2.supabase_db_service import supabase_db
+from nistiprint_shared.services.order_service import order_service
+from nistiprint_shared.models.situacao_pedido import SituacaoPedido
+from nistiprint_shared.database.supabase_db_service import supabase_db
 from utils.api_response import ApiResponse
 
 unified_orders_bp = Blueprint('unified_orders', __name__, url_prefix='/api/v2/order')
@@ -111,3 +111,8 @@ def get_order_details(order_id):
         import traceback
         traceback.print_exc()
         return ApiResponse.error(message=str(e), status_code=500)
+
+
+
+
+

@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
-from services.webhook_service import webhook_service
-from services.redis_queue_tasks import get_redis_client, BLING_WEBHOOK_QUEUE, BLING_WEBHOOK_DEAD_LETTER, BLING_WEBHOOK_FALHAS
+from nistiprint_shared.services.webhook_service import webhook_service
+from nistiprint_shared.services.redis_queue_tasks import get_redis_client, BLING_WEBHOOK_QUEUE, BLING_WEBHOOK_DEAD_LETTER, BLING_WEBHOOK_FALHAS
 import json
 import os
 
@@ -108,3 +108,8 @@ def get_webhook_logs():
         return jsonify({'logs': response.data}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+
+
+

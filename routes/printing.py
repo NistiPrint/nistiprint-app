@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
-from services.print_service import print_service
-from services.database.v2.supabase_db_service import get_db_session
-from models.print_job import PrintJob
+from nistiprint_shared.services.print_service import print_service
+from nistiprint_shared.database.supabase_db_service import get_db_session
+from nistiprint_shared.models.print_job import PrintJob
 
 printing_bp = Blueprint('printing', __name__, url_prefix='/printing')
 printing_api_bp = Blueprint('printing_api', __name__, url_prefix='/api/v2/printing')
@@ -120,3 +120,8 @@ def api_retry_job(job_id):
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         return jsonify({'error': f"Erro interno: {str(e)}"}), 500
+
+
+
+
+

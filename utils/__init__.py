@@ -246,3 +246,8 @@ def br_number(value, decimals=2):
         return formatted
     except (ValueError, TypeError):
         return str(value)
+
+
+
+
+

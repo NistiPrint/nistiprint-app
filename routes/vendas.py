@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template, jsonify, request
 from routes.auth import login_required
-from services.orders_query_service import orders_query_service
+from nistiprint_shared.services.orders_query_service import orders_query_service
 from utils.api_response import ApiResponse
 
 vendas_bp = Blueprint('vendas', __name__, url_prefix='/vendas')
@@ -37,4 +37,9 @@ def personalizadas():
         import traceback
         traceback.print_exc()
         return render_template('error.html', error=str(e)), 500
+
+
+
+
+
 

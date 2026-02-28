@@ -2,7 +2,7 @@
 Database Compatibility Utilities
 Provides database-agnostic functions to handle differences between MySQL and PostgreSQL
 """
-from services.database.supabase_db_service import get_current_database_mode, DatabaseMode
+from nistiprint_shared.services.database.supabase_db_service import get_current_database_mode, DatabaseMode
 from sqlalchemy import text
 
 
@@ -115,3 +115,7 @@ def build_database_aware_query(base_query_parts, db_type=None):
         query = query.replace("{JSON_UNQUOTE_FUNCTION}", "JSON_UNQUOTE")
     
     return text(query)
+
+
+
+

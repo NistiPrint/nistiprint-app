@@ -1,13 +1,13 @@
 from flask import Blueprint, request, jsonify
-from services.report_service import (
+from nistiprint_shared.services.report_service import (
     get_dados_gerenciais_diarios, 
     get_dados_gerenciais_demanda,
     get_sulfite_usage_report,
     get_producao_history
 )
-from services.estoque_service import estoque_service
-from services.consumption_service import consumption_service
-from services.purchasing_advisor_service import purchasing_advisor_service
+from nistiprint_shared.services.estoque_service import estoque_service
+from nistiprint_shared.services.consumption_service import consumption_service
+from nistiprint_shared.services.purchasing_advisor_service import purchasing_advisor_service
 from datetime import datetime, timedelta
 
 relatorios_api_bp = Blueprint('relatorios_api', __name__, url_prefix='/api/v2/relatorios')
@@ -156,3 +156,8 @@ def purchase_suggestions_report():
         }), 200
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+
+
+

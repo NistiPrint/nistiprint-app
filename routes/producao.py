@@ -1,12 +1,12 @@
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app
 from routes.auth import get_current_user # Importar get_current_user
-from services.app_config_service import app_config_service
-from services.category_service import category_service
-from services.product_service import product_service
-from services.daily_production_log_service import daily_production_log_service
-from services.demanda_producao_service import demanda_producao_service
-from services.estoque_service import estoque_service # Importar
-from services.ordem_producao_service import ordem_producao_service # Importar
+from nistiprint_shared.services.app_config_service import app_config_service
+from nistiprint_shared.services.category_service import category_service
+from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.services.daily_production_log_service import daily_production_log_service
+from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
+from nistiprint_shared.services.estoque_service import estoque_service # Importar
+from nistiprint_shared.services.ordem_producao_service import ordem_producao_service # Importar
 from datetime import datetime
 
 producao_bp = Blueprint('producao', __name__, url_prefix='/producao')
@@ -321,7 +321,7 @@ def delete_log_entry(log_id):
 def get_auditoria_logs():
     """Consulta logs de auditoria com filtros opcionais."""
     try:
-        from services.auditoria_service import auditoria_service
+        from nistiprint_shared.services.auditoria_service import auditoria_service
 
         # Parâmetros de filtro
         event_type = request.args.get('event_type')
@@ -361,7 +361,7 @@ def get_auditoria_logs():
 def get_auditoria_por_entidade(entity_type, entity_id):
     """Consulta logs de auditoria para uma entidade específica."""
     try:
-        from services.auditoria_service import auditoria_service
+        from nistiprint_shared.services.auditoria_service import auditoria_service
 
         event_types = request.args.getlist('event_types')  # Lista opcional de tipos de evento
 
@@ -417,3 +417,8 @@ def get_painel_producao_setores():
     except Exception as e:
         # current_app.logger.error(f"ERROR in get_painel_producao_setores: {e}")
         return jsonify({'success': False, 'error': f'Erro interno: {str(e)}'}), 500
+
+
+
+
+
