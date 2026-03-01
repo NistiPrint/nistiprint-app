@@ -10,7 +10,7 @@ import time
 from typing import List
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
-from constants import PLATFORM_X_CNPJ
+from ...constants import PLATFORM_X_CNPJ
 
 
 class BlingClient:
@@ -82,7 +82,7 @@ class BlingClient:
 
     def _get_api_version_for_platform(self, platform: str):
         """Determines the API version for a given platform."""
-        from constants import PLATFORM_X_BLING_VERSION
+        from ...constants import PLATFORM_X_BLING_VERSION
         return PLATFORM_X_BLING_VERSION.get(platform, 'antiga')  # Default to 'antiga'
 
     @staticmethod
@@ -176,7 +176,7 @@ class BlingClient:
         """
         from nistiprint_shared.services.app_config_service import app_config_service
         from nistiprint_shared.services.conta_bling_service import conta_bling_service
-        from constants import PLATFORM_X_CNPJ
+        from ...constants import PLATFORM_X_CNPJ
 
         print(f"🔍 Buscando cliente Bling para plataforma: {platform_name}, instância: {instance_name}")
 

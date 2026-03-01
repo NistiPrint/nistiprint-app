@@ -19,7 +19,7 @@ from nistiprint_shared.models.supabase_chat import MensagemChatShopee
 from nistiprint_shared.models.supabase_ai_log import LogsExecucaoIA
 from nistiprint_shared.models.supabase_personalizacao import PersonalizacaoPedido
 
-from utils import process_message_content
+from nistiprint_shared.utils import process_message_content
 
 # Set up logging
 logging.basicConfig(

@@ -2,8 +2,8 @@ import logging
 import pandas as pd
 import json
 from datetime import datetime
-from utils import apply_date_filter, apply_miolo_fixes, fix_sku_devocional_amazon, generate_ids_chunks, prepare_ml_file, process_string, fix_amazon_25_to_26
-from constants import COLUMNS, COLUMN_SHIP_DATE, CAPAS_GROUP
+from nistiprint_shared.utils import apply_date_filter, apply_miolo_fixes, fix_sku_devocional_amazon, generate_ids_chunks, prepare_ml_file, process_string, fix_amazon_25_to_26
+from ..constants import COLUMNS, COLUMN_SHIP_DATE, CAPAS_GROUP
 from nistiprint_shared.database.database import db
 from nistiprint_shared.database.supabase_db_service import get_current_database_mode
 from nistiprint_shared.models.shopee_orders import ShopeeOrders
@@ -1180,7 +1180,7 @@ def process_shein(file, period_filter, options=None, bling_client=None):
 
 
 def replace_month(date_str):
-    from constants import MONTH_MAP
+    from ..constants import MONTH_MAP
     for pt_month, en_month in MONTH_MAP.items():
         date_str = date_str.replace(pt_month, en_month)
     return date_str

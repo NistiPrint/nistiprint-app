@@ -1604,7 +1604,7 @@ class DemandaProducaoService:
 
     def marcar_como_coletado(self, demanda_id, user_id='System'):
         from pytz import timezone
-        from constants import APP_TIMEZONE
+        from ..constants import APP_TIMEZONE
         tz = timezone(APP_TIMEZONE)
         now_local = datetime.now(tz)
         current_time = now_local.strftime('%H:%M:%S')
@@ -1797,7 +1797,7 @@ class DemandaProducaoService:
 
     def get_dashboard_summary(self):
         from pytz import timezone
-        from constants import APP_TIMEZONE
+        from ..constants import APP_TIMEZONE
 
         tz = timezone(APP_TIMEZONE)
         now_local = datetime.now(tz)
