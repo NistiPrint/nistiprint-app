@@ -28,7 +28,7 @@ except Exception as e:
 from nistiprint_shared.database.database import db, cleanup_session
 from nistiprint_shared.database.supabase_db_service import init_app_with_supabase_db
 
-from constants import BLING_ID_LOJA, PLATFORM_ICONS
+from nistiprint_shared.constants import BLING_ID_LOJA, PLATFORM_ICONS
 
 # Import Blueprints
 from routes.main import main_bp
@@ -137,45 +137,49 @@ def create_app():
         app.logger.setLevel(logging.INFO)
 
     # Register Blueprints
-    app.register_blueprint(api_bp)
+    # Auth Blueprint already has /api/v2 hardcoded in its routes
+    app.register_blueprint(auth_bp) 
+    
+    # Standardizing API prefix for v3
+    app.register_blueprint(api_bp, url_prefix='/api/v2')
+    
     app.register_blueprint(ferramentas_bp)
-    app.register_blueprint(ferramentas_api_bp)
+    app.register_blueprint(ferramentas_api_bp, url_prefix='/api/v2/ferramentas')
     app.register_blueprint(main_bp)
     app.register_blueprint(integrations_bp)
     app.register_blueprint(integracoes_bp)
-    app.register_blueprint(integracoes_api_bp)
+    app.register_blueprint(integracoes_api_bp, url_prefix='/api/v2/integracoes')
     app.register_blueprint(consolidar_bp)
-    app.register_blueprint(auth_bp)
     app.register_blueprint(nfe_bp)
     app.register_blueprint(vendas_bp)
-    app.register_blueprint(vendas_api_bp)
+    app.register_blueprint(vendas_api_bp, url_prefix='/api/v2/vendas')
     app.register_blueprint(cadastros_bp)
-    app.register_blueprint(cadastros_api_bp)
+    app.register_blueprint(cadastros_api_bp, url_prefix='/api/v2/cadastros')
 
     app.register_blueprint(ordem_compra_bp)
     app.register_blueprint(estoque_bp)
-    app.register_blueprint(estoque_api_bp)
+    app.register_blueprint(estoque_api_bp, url_prefix='/api/v2/estoque')
     app.register_blueprint(auditoria_estoque_bp)
     app.register_blueprint(produtos_bp)
-    app.register_blueprint(produtos_api_bp)
+    app.register_blueprint(produtos_api_bp, url_prefix='/api/v2/produtos')
     app.register_blueprint(ordem_producao_bp)
     app.register_blueprint(configuracoes_bp)
     app.register_blueprint(configuracoes_api_bp, url_prefix='/api/v2/configuracoes')
     app.register_blueprint(producao_bp, url_prefix='/api/v2/producao')
-    app.register_blueprint(relatorios_api_bp)
+    app.register_blueprint(relatorios_api_bp, url_prefix='/api/v2/relatorios')
     app.register_blueprint(uom_conversions_bp)
-    app.register_blueprint(uom_conversions_api_bp)
+    app.register_blueprint(uom_conversions_api_bp, url_prefix='/api/v2/uom_conversions')
     app.register_blueprint(demanda_producao_bp)
-    app.register_blueprint(demanda_producao_api_bp)
+    app.register_blueprint(demanda_producao_api_bp, url_prefix='/api/v2/demanda_producao')
     app.register_blueprint(usuarios_setores_bp)
-    app.register_blueprint(usuarios_setores_api_bp)
+    app.register_blueprint(usuarios_setores_api_bp, url_prefix='/api/v2/usuarios_setores')
     app.register_blueprint(notifications_bp)
-    app.register_blueprint(orders_api_bp)
-    app.register_blueprint(marketplace_api_bp)
+    app.register_blueprint(orders_api_bp, url_prefix='/api/v2/orders')
+    app.register_blueprint(marketplace_api_bp, url_prefix='/api/v2/marketplace')
     app.register_blueprint(marketplace_bp)
     app.register_blueprint(webhooks_bp)
     app.register_blueprint(printing_bp)
-    app.register_blueprint(printing_api_bp)
+    app.register_blueprint(printing_api_bp, url_prefix='/api/v2/printing')
     app.register_blueprint(jobs_bp)
     app.register_blueprint(unified_orders_bp)
 
