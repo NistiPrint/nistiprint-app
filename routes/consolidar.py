@@ -103,14 +103,43 @@ def consolidar():
 
             capas, total_capas, miolos, total_miolos, capas_miolos, ids_pedidos, total_pedidos_plataforma, bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found, raw_data = result
 
+            # --- NOVO: VERIFICAÇÃO DE CONFLITOS (SEM ALTERAR ESTRUTURA DE EXIBIÇÃO) ---
+            from nistiprint_shared.services.order_tracker_service import order_tracker_service
+            all_orders_to_check = []
+            
+            # Mapeamento interno para uso futuro se necessário (sem expor no JSON de dados)
+            order_mapping = {} 
+
+            if hasattr(capas_miolos, 'iterrows'):
+                for idx, row in capas_miolos.iterrows():
+                    refs = row.get('order_refs', [])
+                    sku = str(row.get('SKU', ''))
+                    for ref in refs:
+                        all_orders_to_check.append({
+                            'pedido_externo_id': str(ref),
+                            'sku_externo': sku
+                        })
+                
+                # Opcional: Remover a coluna de refs do dataframe para não vazar para o frontend/display
+                if 'order_refs' in capas_miolos.columns:
+                    # Criamos uma cópia para exibição sem a coluna nova
+                    display_capas_miolos = capas_miolos.drop(columns=['order_refs'])
+                else:
+                    display_capas_miolos = capas_miolos
+            else:
+                display_capas_miolos = capas_miolos
+            
+            conflicts = order_tracker_service.check_conflicts(all_orders_to_check, plataforma)
+            # -------------------------------------------------------------------------
+
             if plataforma:
                 results[plataforma] = {
                     'total_capas': total_capas,
                     'total_miolos': total_miolos,
-                    # JSON serializable data - replace NaN with None for valid JSON
+                    # JSON serializable data - USANDO display_capas_miolos para manter estrutura original
                     'capas_data': capas.where(pd.notnull(capas), None).to_dict('records') if hasattr(capas, 'to_dict') else capas,
                     'miolos_data': miolos.where(pd.notnull(miolos), None).to_dict('records') if hasattr(miolos, 'to_dict') else miolos,
-                    'capas_miolos_data': capas_miolos.where(pd.notnull(capas_miolos), None).to_dict('records') if hasattr(capas_miolos, 'to_dict') else capas_miolos,
+                    'capas_miolos_data': display_capas_miolos.where(pd.notnull(display_capas_miolos), None).to_dict('records') if hasattr(display_capas_miolos, 'to_dict') else display_capas_miolos,
                     'ids_pedidos': ids_pedidos,
                     'total_pedidos_plataforma': total_pedidos_plataforma,
                     'bling_orders_id': bling_orders_id,
@@ -118,7 +147,8 @@ def consolidar():
                     'bling_orders_id_numero': bling_orders_id_numero,
                     'bling_orders_not_found': bling_orders_not_found,
                     'raw_data': raw_data.where(pd.notnull(raw_data), None).to_dict('records') if hasattr(raw_data, 'to_dict') else raw_data,
-                    'options': options
+                    'options': options,
+                    'conflicts': conflicts # Adicionado como campo extra, geralmente ignorado por renderizadores de tabela estritos
                 }
 
             os.remove(filepath)
