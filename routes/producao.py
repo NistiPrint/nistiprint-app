@@ -165,7 +165,7 @@ def registrar_item_producao():
         user_id = str(user.get('id')) if user else 'System'
 
         # Chama o serviço para registrar produção (cria OP, movimenta estoque, loga)
-        ordem_producao_service.registrar_producao_imediata(product_id, quantity, date_str, user_id)
+        result = ordem_producao_service.registrar_producao_imediata(product_id, quantity, date_str, user_id)
         
         # Re-fetch stock details for the response
         deposito_id = app_config_service.get_config('default_production_deposit_id') or 'principal'
@@ -181,14 +181,18 @@ def registrar_item_producao():
         return jsonify({
             'success': True, 
             'message': 'Produção registrada com sucesso!', 
+            'warning': result.get('warning'),
             'new_stock': new_stock,
             'new_stock_available': new_stock_available,
             'new_daily_produced': new_daily_produced,
             'new_daily_removed': new_daily_removed
         })
 
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 200
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        current_app.logger.error(f"Erro no endpoint {request.path}: {str(e)}")
+        return jsonify({'success': False, 'error': f"Erro no processamento: {str(e)}"}), 500
 
 @producao_bp.route('/registrar-saida-estoque', methods=['POST'])
 def registrar_saida_estoque():
@@ -257,8 +261,11 @@ def registrar_saida_estoque():
             'new_daily_removed': new_daily_removed
         })
 
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 200
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        current_app.logger.error(f"Erro no endpoint {request.path}: {str(e)}")
+        return jsonify({'success': False, 'error': f"Erro no processamento: {str(e)}"}), 500
 
 @producao_bp.route('/components/<product_id>', methods=['GET'])
 def get_product_components(product_id):
@@ -273,8 +280,11 @@ def get_daily_logs(product_id, date_str):
         selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
         logs = daily_production_log_service.get_detailed_logs_for_product(product_id, selected_date)
         return jsonify({'success': True, 'logs': logs})
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 200
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        current_app.logger.error(f"Erro no endpoint {request.path}: {str(e)}")
+        return jsonify({'success': False, 'error': f"Erro no processamento: {str(e)}"}), 500
 
 @producao_bp.route('/logs/reverter/<int:log_id>', methods=['POST'])
 def reverter_lancamento(log_id):
