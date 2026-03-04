@@ -1,3 +1,6 @@
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -21,7 +24,15 @@ const ControleProducaoPage = ({tipo}) => {
   const [filter, setFilter] = useState('');
   const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [totalActive, setTotalActive] = useState(0);
+  
+  // Controle de Reversão de Log
+  const [revertDialogOpen, setRevertDialogOpen] = useState(false);
+  const [logToRevert, setLogToRevert] = useState(null);
+  const [revertStock, setRevertStock] = useState(true);
+  const [isReverting, setIsReverting] = useState(false);
+
   const [activeTab, setActiveTab] = useState('estoque'); // Adiciona estado para controle das abas
+  const [capaSubTab, setCapaSubTab] = useState('impressao'); // Nova sub-aba para Capas: 'impressao' ou 'fechamento'
   const [demandSubTab, setDemandSubTab] = useState(tipo === 'miolo' ? 'miolo' : 'capa');
 
 
@@ -56,13 +67,24 @@ const ControleProducaoPage = ({tipo}) => {
 
   // Inputs state for quantities
   const [inputs, setInputs] = useState({});
-  const pageTitle = tipo === 'miolo' ? 'Controle de Produção de Miolos' : 'Controle de Produção de Capas';
-  const totalLabel = tipo === 'miolo' ? 'Total de Miolos Ativos' : 'Total de Capas Ativas';
+  
+  // Títulos dinâmicos considerando sub-aba
+  const getPageTitle = () => {
+    if (tipo === 'miolo') return 'Controle de Produção de Miolos';
+    return capaSubTab === 'impressao' ? 'Impressão de Capas' : 'Fechamento de Capas';
+  };
+  
+  const pageTitle = getPageTitle();
+  const totalLabel = tipo === 'miolo' ? 'Total de Miolos Ativos' : 
+                    capaSubTab === 'impressao' ? 'Total de Capas p/ Imprimir' : 'Total de Capas p/ Fechar';
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const data = await ProductionService.getControleData(tipo);
+      // Se for capa e a sub-aba for fechamento, passamos o parâmetro correto para o service
+      const subtipo = (tipo === 'capa' && capaSubTab === 'fechamento') ? 'capa_acabada' : tipo;
+      const data = await ProductionService.getControleData(subtipo);
+      
       if (data.success) {
         setProducts(data.products || []);
         setTotalActive(data.total_active_cores || 0);
@@ -85,7 +107,7 @@ const ControleProducaoPage = ({tipo}) => {
 
   useEffect(() => {
     fetchData();
-  }, [tipo, activeTab]); // Adicionado activeTab para garantir que os dados sejam atualizados quando a aba mudar
+  }, [tipo, activeTab, capaSubTab]); // Adicionado capaSubTab para recarregar ao trocar de sub-aba
 
   // Resetar sub-aba de demandas quando o tipo da página mudar
   useEffect(() => {
@@ -117,11 +139,19 @@ const ControleProducaoPage = ({tipo}) => {
     }
 
     try {
+      // Determinar o campo de progresso baseado no contexto
+      let field = null;
+      if (tipo === 'miolo') field = 'miolos_prontos_retirada_qtd';
+      else if (capaSubTab === 'impressao') field = 'capas_impressas_qtd';
+      else if (capaSubTab === 'fechamento') field = 'capas_produzidas_qtd';
+
       const result = await ProductionService.registerProduction({
         product_id: productId,
         quantity: quantity,
-        date: selectedDate
+        date: selectedDate,
+        field: field // Enviamos o campo específico para o motor JIT recursivo
       });
+
 
       if (result.success) {
         toast.success(result.message);
@@ -253,13 +283,19 @@ const ControleProducaoPage = ({tipo}) => {
     }
   };
 
-  const handleRevertLog = async (logId) => {
-    if (!confirm('Deseja realmente excluir este lançamento? O estoque será revertido.')) return;
-    
+  const handleRevertLog = (logId) => {
+    setLogToRevert(logId);
+    setRevertStock(true);
+    setRevertDialogOpen(true);
+  };
+
+  const confirmRevertLog = async () => {
+    setIsReverting(true);
     try {
-      const result = await ProductionService.deleteLog(logId);
+      const result = await ProductionService.deleteLog(logToRevert, revertStock);
       if (result.success) {
         toast.success(result.message);
+        setRevertDialogOpen(false);
         // Refresh logs
         handleLogClick(selectedProductForLog);
         // Update product totals in main list
@@ -270,6 +306,8 @@ const ControleProducaoPage = ({tipo}) => {
     } catch (error) {
       const errorMessage = error.response?.data?.error || error.message || 'Erro ao excluir lançamento.';
       toast.error(errorMessage);
+    } finally {
+      setIsReverting(false);
     }
   };
 
@@ -431,6 +469,28 @@ const ControleProducaoPage = ({tipo}) => {
       {/* Conteúdo baseado na aba selecionada */}
       {activeTab === 'estoque' ? (
         <>
+          {/* Sub-abas para Capas */}
+          {tipo === 'capa' && (
+            <div className="flex gap-2 mb-4 bg-gray-50 p-2 rounded-lg border">
+              <Button
+                variant={capaSubTab === 'impressao' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => setCapaSubTab('impressao')}
+                className="flex-1 sm:flex-none"
+              >
+                1. Impressão
+              </Button>
+              <Button
+                variant={capaSubTab === 'fechamento' ? 'default' : 'ghost'}
+                size="sm"
+                onClick={() => setCapaSubTab('fechamento')}
+                className="flex-1 sm:flex-none"
+              >
+                2. Fechamento
+              </Button>
+            </div>
+          )}
+
           {filteredProducts.length === 0 && !loading ? (
             <Card className="border-gray-200 bg-gray-50/50">
               <CardContent className="pt-6">
@@ -1027,6 +1087,46 @@ const ControleProducaoPage = ({tipo}) => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Confirmação de Reversão de Log */}
+      <AlertDialog open={revertDialogOpen} onOpenChange={setRevertDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar Exclusão de Lançamento</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja excluir este registro de produção? Esta ação não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          
+          <div className="flex items-center space-x-2 py-4">
+            <Checkbox 
+              id="revertStock" 
+              checked={revertStock} 
+              onCheckedChange={setRevertStock} 
+            />
+            <div className="grid gap-1.5 leading-none">
+              <Label htmlFor="revertStock" className="text-sm font-medium">
+                Reverter movimentações de estoque
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Se marcado, o sistema devolverá os insumos e retirará o produto final do estoque.
+              </p>
+            </div>
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction 
+              className="bg-red-600 hover:bg-red-700" 
+              onClick={confirmRevertLog}
+              disabled={isReverting}
+            >
+              {isReverting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+              Confirmar Exclusão
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
     </div>
   );
