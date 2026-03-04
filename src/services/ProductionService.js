@@ -28,8 +28,10 @@ const ProductionService = {
     return response.data;
   },
 
-  deleteLog: async (logId) => {
-    const response = await api.post(`/producao/logs/delete/${logId}`);
+  deleteLog: async (logId, revertStock = true) => {
+    const response = await api.post(`/producao/logs/reverter/${logId}`, {
+      reverter_estoque: revertStock
+    });
     return response.data;
   },
 

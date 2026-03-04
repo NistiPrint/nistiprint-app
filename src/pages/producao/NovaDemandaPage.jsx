@@ -21,14 +21,13 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from '@/components/ui/textarea';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Briefcase, ClipboardPaste, Edit, Loader2, PlusCircle, Trash2, Check } from 'lucide-react';
+import { Briefcase, ClipboardPaste, Edit, Loader2, PlusCircle, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useFieldArray, useForm } from 'react-hook-form';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { z } from 'zod';
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ScrollArea } from '@/components/ui/scroll-area';
+import ProductSearchInput from '@/components/produtos/ProductSearchInput';
 
 const INTERACAO_STATUS_OPTIONS = [
     'Aguardando arte',
@@ -100,59 +99,24 @@ function NovaDemandaPage() {
   const [users, setUsers] = useState([]);
   const [loadingInitialData, setLoadingInitialData] = useState(true);
   const [loadingSubmit, setLoadingSubmit] = useState(false);
-  
-  // State for product search cache/results
-  const [searchResults, setSearchResults] = useState({});
-  const [searching, setSearching] = useState(false);
-  const [openPopovers, setOpenPopovers] = useState({}); // Track open state per row
-  const [mioloSearchResults, setMioloSearchResults] = useState({});
-  const [mioloOpenPopovers, setMioloOpenPopovers] = useState({});
 
-  // Function to search products
-  const searchProducts = async (query) => {
-    if (!query || query.length < 3) return [];
-
-    setSearching(true);
+  // Function to search product by SKU (for clipboard paste enrichment)
+  const searchProductBySku = async (sku) => {
     try {
-      const response = await fetch(`/api/v2/estoque/produtos-busca?q=${encodeURIComponent(query)}&only_marketable=true`);
+      const response = await fetch(`/api/v2/estoque/produtos-busca?q=${encodeURIComponent(sku)}&only_marketable=true`);
       const data = await response.json();
-
-      if (data.results) {
-        return data.results.map(item => ({
+      if (data.results && data.results.length > 0) {
+        const item = data.results[0];
+        return {
           id: item.id,
-          name: item.text,
-          sku: item.text.split(' - ')[0] || '', // Simple heuristic if needed, but text has everything
-          full_text: item.text
-        }));
+          name: item.text.split(' - ').slice(1).join(' - ') || item.text,
+          sku: item.text.split(' - ')[0] || '',
+        };
       }
-      return [];
+      return null;
     } catch (error) {
-      console.error('Error searching products:', error);
-      return [];
-    } finally {
-        setSearching(false);
-    }
-  };
-
-  const searchMioloProducts = async (query) => {
-    if (!query || query.length < 3) return [];
-
-    try {
-      const response = await fetch(`/api/v2/estoque/produtos-busca?q=${encodeURIComponent(query)}&only_marketable=true`);
-      const data = await response.json();
-
-      if (data.results) {
-        return data.results.map(item => ({
-          id: item.id,
-          name: item.text,
-          sku: item.text.split(' - ')[0] || '', // Simple heuristic if needed, but text has everything
-          full_text: item.text
-        }));
-      }
-      return [];
-    } catch (error) {
-      console.error('Error searching miolo products:', error);
-      return [];
+      console.error('Error searching product by SKU:', error);
+      return null;
     }
   };
 
@@ -395,10 +359,10 @@ function NovaDemandaPage() {
           if (item.sku) {
             // Search for product by SKU
             try {
-                const products = await searchProducts(item.sku);
-                if (products && products.length > 0) {
+                const product = await searchProductBySku(item.sku);
+                if (product) {
                   // Use the first match
-                  await handleProductSelect(itemIndex, products[0]);
+                  await handleProductSelect(itemIndex, product);
                 }
             } catch (searchErr) {
                 console.warn("Auto-enrichment failed for SKU", item.sku, searchErr);
@@ -418,18 +382,11 @@ function NovaDemandaPage() {
   };
 
   const handleProductSelect = async (index, product) => {
-      const parts = product.full_text.split(' - ');
-      const sku = parts[0] || '';
-      const name = parts.slice(1).join(' - ') || product.name;
-
       form.setValue(`itens.${index}.product_id`, String(product.id));
-      form.setValue(`itens.${index}.descricao`, name);
-      form.setValue(`itens.${index}.sku`, sku);
+      form.setValue(`itens.${index}.descricao`, product.name);
+      form.setValue(`itens.${index}.sku`, product.sku);
 
-      // Close popover
-      setOpenPopovers(prev => ({...prev, [index]: false}));
-
-      // 2. Fetch default miolo for this product from its BOM
+      // Fetch default miolo for this product from its BOM
       try {
         const response = await fetch(`/api/v2/demanda_producao/products/${product.id}/default-miolo`);
         const data = await response.json();
@@ -844,62 +801,17 @@ function NovaDemandaPage() {
                                         control={form.control}
                                         name={`itens.${index}.descricao`}
                                         render={({ field }) => (
-                                            <FormItem className="flex flex-col">
-                                                <Popover 
-                                                  open={openPopovers[index] && searchResults[index]?.length > 0} 
-                                                  onOpenChange={(open) => {
-                                                    if (!open) setOpenPopovers(prev => ({...prev, [index]: false}));
-                                                  }}
-                                                >
-                                                  <PopoverTrigger asChild>
-                                                    <FormControl>
-                                                      <div className="relative w-full">
-                                                        <Input
-                                                            {...field}
-                                                            placeholder="Digite para buscar ou descrever..."
-                                                            className="h-8 pr-8"
-                                                            autoComplete="off"
-                                                            onChange={(e) => {
-                                                                field.onChange(e.target.value);
-                                                                
-                                                                if (e.target.value.length >= 3) {
-                                                                    searchProducts(e.target.value).then(res => {
-                                                                        setSearchResults(prev => ({...prev, [index]: res}));
-                                                                        setOpenPopovers(prev => ({...prev, [index]: true}));
-                                                                    });
-                                                                } else {
-                                                                    setOpenPopovers(prev => ({...prev, [index]: false}));
-                                                                }
-                                                            }}
-                                                        />
-                                                         {form.getValues(`itens.${index}.product_id`) && (
-                                                            <div className="absolute right-2 top-1/2 transform -translate-y-1/2 text-xs text-green-600 font-bold px-1 bg-green-100 rounded">
-                                                                <Check className="h-3 w-3" />
-                                                            </div>
-                                                        )}
-                                                      </div>
-                                                    </FormControl>
-                                                  </PopoverTrigger>
-                                                  <PopoverContent 
-                                                    className="p-0 w-[500px]"
-                                                    align="start"
-                                                    onOpenAutoFocus={(e) => e.preventDefault()}
-                                                  >
-                                                      <ScrollArea className="h-[200px]">
-                                                          <div className="p-1">
-                                                              {searchResults[index]?.map((prod) => (
-                                                                  <div
-                                                                      key={prod.id}
-                                                                      className="cursor-pointer px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm"
-                                                                      onClick={() => handleProductSelect(index, prod)}
-                                                                  >
-                                                                      {prod.full_text}
-                                                                  </div>
-                                                              ))}
-                                                          </div>
-                                                      </ScrollArea>
-                                                  </PopoverContent>
-                                                </Popover>
+                                            <FormItem>
+                                                <FormControl>
+                                                    <ProductSearchInput
+                                                        value={field.value}
+                                                        selectedProductId={form.getValues(`itens.${index}.product_id`)}
+                                                        onChange={field.onChange}
+                                                        onProductSelect={(product) => handleProductSelect(index, product)}
+                                                        placeholder="Digite para buscar ou descrever..."
+                                                        showProductLevelBadge={false}
+                                                    />
+                                                </FormControl>
                                                 <FormMessage />
                                             </FormItem>
                                         )}
@@ -936,66 +848,21 @@ function NovaDemandaPage() {
                                         control={form.control}
                                         name={`itens.${index}.miolo_nome`}
                                         render={({ field }) => (
-                                            <FormItem className="flex flex-col">
-                                                <Popover
-                                                  open={mioloOpenPopovers[index] && mioloSearchResults[index]?.length > 0}
-                                                  onOpenChange={(open) => {
-                                                    if (!open) setMioloOpenPopovers(prev => ({...prev, [index]: false}));
-                                                  }}
-                                                >
-                                                  <PopoverTrigger asChild>
-                                                    <FormControl>
-                                                      <div className="relative w-full">
-                                                        <Input
-                                                            {...field}
-                                                            placeholder="Digite para buscar miolo..."
-                                                            className="h-8 pr-8"
-                                                            autoComplete="off"
-                                                            onChange={(e) => {
-                                                                field.onChange(e.target.value);
-
-                                                                if (e.target.value.length >= 3) {
-                                                                    searchMioloProducts(e.target.value).then(res => {
-                                                                        setMioloSearchResults(prev => ({...prev, [index]: res}));
-                                                                        setMioloOpenPopovers(prev => ({...prev, [index]: true}));
-                                                                    });
-                                                                } else {
-                                                                    setMioloOpenPopovers(prev => ({...prev, [index]: false}));
-                                                                }
-                                                            }}
-                                                        />
-                                                         {form.getValues(`itens.${index}.id_produto_miolo`) && (
-                                                            <div className="absolute right-2 top-1/2 transform -translate-y-1/2 text-xs text-green-600 font-bold px-1 bg-green-100 rounded">
-                                                                <Check className="h-3 w-3" />
-                                                            </div>
-                                                        )}
-                                                      </div>
-                                                    </FormControl>
-                                                  </PopoverTrigger>
-                                                  <PopoverContent
-                                                    className="p-0 w-[500px]"
-                                                    align="start"
-                                                    onOpenAutoFocus={(e) => e.preventDefault()}
-                                                  >
-                                                      <ScrollArea className="h-[200px]">
-                                                          <div className="p-1">
-                                                              {mioloSearchResults[index]?.map((prod) => (
-                                                                  <div
-                                                                      key={prod.id}
-                                                                      className="cursor-pointer px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground rounded-sm"
-                                                                      onClick={() => {
-                                                                        form.setValue(`itens.${index}.miolo_nome`, prod.name);
-                                                                        form.setValue(`itens.${index}.id_produto_miolo`, String(prod.id));
-                                                                        setMioloOpenPopovers(prev => ({...prev, [index]: false}));
-                                                                      }}
-                                                                  >
-                                                                      {prod.full_text}
-                                                                  </div>
-                                                              ))}
-                                                          </div>
-                                                      </ScrollArea>
-                                                  </PopoverContent>
-                                                </Popover>
+                                            <FormItem>
+                                                <FormControl>
+                                                    <ProductSearchInput
+                                                        value={field.value}
+                                                        selectedProductId={form.getValues(`itens.${index}.id_produto_miolo`)}
+                                                        onChange={field.onChange}
+                                                        onProductSelect={(product) => {
+                                                            form.setValue(`itens.${index}.miolo_nome`, product.name);
+                                                            form.setValue(`itens.${index}.id_produto_miolo`, String(product.id));
+                                                        }}
+                                                        placeholder="Digite para buscar miolo..."
+                                                        showProductLevelBadge={false}
+                                                        showCheckIndicator={true}
+                                                    />
+                                                </FormControl>
                                                 <FormMessage />
                                             </FormItem>
                                         )}
