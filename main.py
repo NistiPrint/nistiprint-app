@@ -172,7 +172,7 @@ def create_app():
     app.register_blueprint(demanda_producao_bp)
     app.register_blueprint(demanda_producao_api_bp, url_prefix='/api/v2/demanda_producao')
     app.register_blueprint(usuarios_setores_bp)
-    app.register_blueprint(usuarios_setores_api_bp, url_prefix='/api/v2/usuarios_setores')
+    app.register_blueprint(usuarios_setores_api_bp, url_prefix='/api/v2/usuarios-setores')
     app.register_blueprint(notifications_bp)
     app.register_blueprint(orders_api_bp, url_prefix='/api/v2/orders')
     app.register_blueprint(marketplace_api_bp, url_prefix='/api/v2/marketplace')
