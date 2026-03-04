@@ -50,7 +50,7 @@ class SupabaseStorageService:
             # If none of the common buckets worked, try to list what's available
             try:
                 buckets_response = self.client.storage.list_buckets()
-                available_buckets = [bucket.name for bucket in buckets_response.data]
+                available_buckets = [bucket.name for bucket in buckets_response] # storage3 returns list of buckets directly
                 print(f"Available buckets: {available_buckets}")
 
                 # Use the first available bucket if any exist
@@ -58,10 +58,10 @@ class SupabaseStorageService:
                     self.bucket_name = available_buckets[0]
                     print(f"Using first available bucket: {self.bucket_name}")
                 else:
-                    raise ValueError("No storage buckets available in Supabase project")
+                    print("WARNING: No storage buckets available. Storage operations will fail.")
             except Exception as list_error:
-                print(f"Could not list buckets: {list_error}")
-                raise ValueError("Could not access or create any storage bucket")
+                print(f"WARNING: Could not list buckets: {list_error}. Storage operations will fail.")
+                self.bucket_name = "artworks" # Fallback default
 
     def upload_artwork(self, file, product_id):
         """

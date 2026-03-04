@@ -55,18 +55,26 @@ class DemandaProducaoService:
             d['itens_totalmente_concluidos'] = sum(i.get('quantidade', 0) for i in itens if i.get('status_item') == 'Concluído')
             
             # Itens prontos (unidades completas: capa + miolo) - suporte para finalização parcial
-            d['itens_prontos_total'] = sum(min(i.get('capas_produzidas_qtd') or 0, i.get('miolos_prontos_retirada_qtd') or 0) for i in itens)
+            # REGRA: Um item está pronto para retirar quando a CAPA ESTÁ PRONTA (casada com pedido) E o MIOLO ESTÁ PRONTO.
+            d['itens_prontos_total'] = sum(min(i.get('capas_prontas_retirada_qtd') or 0, i.get('miolos_prontos_retirada_qtd') or 0) for i in itens)
             # Aliase para o frontend usar o campo itens_concluidos como "unidades prontas"
             d['itens_concluidos'] = d['itens_prontos_total']
 
             d['capas_impressas_qtd'] = sum(i.get('capas_impressas_qtd', 0) for i in itens)
-            d['capas_produzidas_qtd'] = sum(i.get('capas_produzidas_qtd', 0) or i.get('capas_prontas_retirada_qtd', 0) for i in itens)
-            d['capas_prontas_retirada_qtd'] = d['capas_produzidas_qtd']
+            d['capas_produzidas_qtd'] = sum(i.get('capas_produzidas_qtd', 0) for i in itens)
+            d['capas_prontas_retirada_qtd'] = sum(i.get('capas_prontas_retirada_qtd', 0) for i in itens)
             d['miolos_produzidos_qtd'] = sum(i.get('miolos_prontos_retirada_qtd', 0) for i in itens)
             d['miolos_prontos_retirada_qtd'] = d['miolos_produzidos_qtd']
             
             # completed_quantidade agora vem do somatório consolidado da demanda
             d['completed_quantidade'] = d.get('quantidade_coletada_total', 0)
+
+            # Itens em fechamento: soma do menor valor entre exp. capas e exp. miolos de cada item
+            # Representa itens que a expedição está processando em paralelo
+            d['itens_em_fechamento'] = sum(
+                min(i.get('expedicao_capas_retiradas_qtd') or 0, i.get('expedicao_miolos_retirados_qtd') or 0)
+                for i in itens
+            )
 
             progresso = 0
             if d['total_itens'] > 0:

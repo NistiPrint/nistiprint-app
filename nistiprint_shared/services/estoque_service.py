@@ -159,8 +159,8 @@ class EstoqueService:
         )
 
     def registrar_balanco(self, produto_id: Any, deposito_id: Any, quantidade_ajuste: float,
-                         motivo: str = "", usuario_id: Optional[int] = None, unit_name: Optional[str] = None,
-                         user_context: dict = None) -> str:
+                         motivo: str = "", observacao: str = "", usuario_id: Optional[int] = None, 
+                         unit_name: Optional[str] = None, user_context: dict = None) -> str:
         """Registra ajuste/balanço de inventário."""
         self._validate_stock_eligibility(produto_id)
         self._validate_sector_permission(produto_id, user_context)  # Nova validação
@@ -186,6 +186,7 @@ class EstoqueService:
             tipo_movimentacao='BALANCO',
             quantidade=final_quantity_ajuste,
             motivo=motivo,
+            observacao=observacao,
             usuario_id=usuario_id,
             user_context=user_context
         )
@@ -337,8 +338,8 @@ class EstoqueService:
             saldo_anterior = 0
             saldo_posterior = quantidade_movimento if tipo_movimentacao != 'BALANCO' else quantidade_movimento
             
-            if saldo_posterior < 0 and tipo_movimentacao != 'BALANCO':
-                raise ValueError(f"Não é possível iniciar estoque com saldo negativo para o produto {produto_id}")
+            # O sistema permite saldo negativo para não travar a operação.
+            # O aviso é logado acima para fins de auditoria.
 
             insert_data = {
                 'produto_id': produto_id,
@@ -355,7 +356,7 @@ class EstoqueService:
         return saldo_anterior, saldo_posterior
 
     def _registrar_movimento(self, produto_id: Any, deposito_id: Any, tipo_movimentacao: str,
-                           quantidade: float, motivo: str = "",
+                           quantidade: float, motivo: str = "", observacao: str = "",
                            documento_referencia: Optional[str] = None,
                            usuario_id: Optional[int] = None,
                            user_context: dict = None) -> str:
@@ -374,6 +375,7 @@ class EstoqueService:
                 'saldo_depois': float(saldo_depois),
                 'documento_referencia': str(documento_referencia) if documento_referencia else None,
                 'motivo': motivo,
+                'observacao': observacao,
                 'usuario_id': usuario_id,
                 'data_movimentacao': get_now_iso(),
                 'created_at': get_now_iso()
@@ -671,8 +673,12 @@ class EstoqueService:
                 record = saldos_map[pid]
 
             disponivel = float(record.get('disponivel', record['saldo_atual'] - record.get('reservado', 0)))
-            if not allow_backorder and qtd > disponivel:
-                raise ValueError(f"Estoque insuficiente para {pid}. Disponível: {disponivel}")
+            # O sistema agora permite reserva mesmo sem saldo (backorder automático)
+            # if not allow_backorder and qtd > disponivel:
+            #     raise ValueError(f"Estoque insuficiente para {pid}. Disponível: {disponivel}")
+            
+            if qtd > disponivel:
+                print(f"AVISO: Reserva de {qtd} para o produto {pid} excede o disponível ({disponivel}).")
             
             novo_reservado = float(record.get('reservado', 0)) + qtd
             self.saldos_table.update({'reservado': novo_reservado, 'updated_at': get_now_iso()}).eq('id', record['id']).execute()

@@ -159,8 +159,9 @@ class EstoqueServiceAtomic:
         )
 
     def registrar_balanco(self, produto_id: Any, deposito_id: Any, quantidade_ajuste: float,
-                         motivo: str = "", usuario_id: Optional[int] = None, unit_name: Optional[str] = None,
-                         user_context: dict = None, allow_negative_stock: bool = False) -> str:
+                         motivo: str = "", observacao: str = "", usuario_id: Optional[int] = None, 
+                         unit_name: Optional[str] = None, user_context: dict = None, 
+                         allow_negative_stock: bool = False) -> str:
         """Registra ajuste/balanço de inventário."""
         self._validate_stock_eligibility(produto_id)
         self._validate_sector_permission(produto_id, user_context)  # Nova validação
@@ -186,6 +187,7 @@ class EstoqueServiceAtomic:
             tipo_movimentacao='BALANCO',
             quantidade=final_quantity_ajuste,
             motivo=motivo,
+            observacao=observacao,
             usuario_id=usuario_id,
             user_context=user_context,
             allow_negative_stock=allow_negative_stock
@@ -413,7 +415,7 @@ class EstoqueServiceAtomic:
         return saldo_anterior, saldo_posterior
 
     def _registrar_movimento(self, produto_id: Any, deposito_id: Any, tipo_movimentacao: str,
-                           quantidade: float, motivo: str = "",
+                           quantidade: float, motivo: str = "", observacao: str = "",
                            documento_referencia: Optional[str] = None,
                            usuario_id: Optional[int] = None,
                            user_context: dict = None,
@@ -441,6 +443,7 @@ class EstoqueServiceAtomic:
                 'saldo_depois': float(saldo_depois),
                 'documento_referencia': documento_referencia,
                 'motivo': motivo,
+                'observacao': observacao,
                 'usuario_id': usuario_id,
                 'data_movimentacao': datetime.utcnow().isoformat(),
                 'created_at': datetime.utcnow().isoformat()

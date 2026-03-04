@@ -111,8 +111,11 @@ class OrdemProducaoService:
                     'quantidade_utilizada': 0.0
                 })
 
+        # if insufficient:
+        #     raise ValueError(f"Estoque insuficiente para: {', '.join(insufficient)}")
+        
         if insufficient:
-            raise ValueError(f"Estoque insuficiente para: {', '.join(insufficient)}")
+            print(f"AVISO: Iniciando OP {po_id} com estoque insuficiente para os componentes: {', '.join(insufficient)}")
 
         # 3. Reservar componentes usando o EstoqueService EM LOTE
         try:
@@ -412,7 +415,26 @@ class OrdemProducaoService:
         # Como o Supabase não suporta transações verdadeiras, faremos uma implementação manual
         # com lógica de compensação para garantir atomicidade
 
+        # --- VERIFICAÇÃO DE ESTOQUE (Aviso, não trava) ---
+        warning_msg = None
+        insufficient_stock = []
+        for comp in bom_components:
+            qty_required = float(comp['quantity']) * float(quantidade)
+            saldo = estoque_service.get_saldo_atual(comp['component_id'], deposito_id)
+            available = float(saldo.get('quantidade_disponivel', 0))
+            
+            if qty_required > available:
+                shortage = qty_required - available
+                comp_name = comp.get('name') or comp.get('descricao') or comp['component_id']
+                insufficient_stock.append(f"{comp_name} (Faltam {shortage:.2f})")
+        
+        if insufficient_stock:
+            warning_msg = f"Aviso: Os seguintes componentes ficaram com estoque negativo: {', '.join(insufficient_stock)}."
+        # -------------------------------------------------------
+
         componentes_registrados = []  # Para rastrear componentes já registrados
+        entrada_acabado_realizada = False
+        
         try:
             # 3. Processa BOM e Movimenta Estoque
 
@@ -435,12 +457,12 @@ class OrdemProducaoService:
                     'componente_id': comp['component_id'],
                     'sku': comp.get('sku', ''),
                     'descricao': comp.get('name', ''),
-                    'quantidade_necessaria': int(qty_required),  # Converter para inteiro
-                    'quantidade_utilizada': int(qty_required),  # Converter para inteiro
+                    'quantidade_necessaria': int(qty_required),
+                    'quantidade_utilizada': int(qty_required),
                     'status': 'CONCLUIDO'
                 }
 
-                # Armazena para rastreamento
+                # Armazena para rastreamento (lógica de reversão)
                 componentes_registrados.append(comp_data)
 
                 # Insere no banco de dados
@@ -454,42 +476,7 @@ class OrdemProducaoService:
                 observacao=f"Conclusão OP {po_id} (Imediata)",
                 usuario_id=int(user_id) if str(user_id).isdigit() else None
             )
-
-        except Exception as e:
-            # Em caso de erro, tentamos reverter as operações realizadas
-            print(f"Erro durante produção imediata: {str(e)}. Tentando reverter...")
-
-            # Reverter os componentes registrados
-            for comp_data in componentes_registrados:
-                try:
-                    # Devolver os componentes ao estoque (reverter saída)
-                    estoque_service.registrar_entrada(
-                        produto_id=comp_data['componente_id'],
-                        deposito_id=deposito_id,
-                        quantidade=comp_data['quantidade_necessaria'],
-                        observacao=f"Reversão da OP {po_id} - Erro na produção",
-                        usuario_id=int(user_id) if str(user_id).isdigit() else None
-                    )
-
-                    # Remover o registro do componente
-                    self.components_table.delete().eq('ordem_producao_id', po_id).eq('componente_id', comp_data['componente_id']).execute()
-                except Exception as revert_error:
-                    print(f"Erro ao reverter componente {comp_data['componente_id']}: {str(revert_error)}")
-
-            # Remover a entrada do produto acabado, se foi registrada
-            try:
-                estoque_service.registrar_saida(
-                    produto_id=produto_id,
-                    deposito_id=deposito_id,
-                    quantidade=float(quantidade),
-                    motivo=f"Reversão da OP {po_id} - Erro na produção",
-                    usuario_id=int(user_id) if str(user_id).isdigit() else None
-                )
-            except Exception as revert_error:
-                print(f"Erro ao reverter entrada do produto acabado: {str(revert_error)}")
-
-            # Lançar a exceção original
-            raise e
+            entrada_acabado_realizada = True
 
             # --- INTEGRAÇÃO COM DASHBOARD DE DEMANDA ---
             try:
@@ -505,18 +492,15 @@ class OrdemProducaoService:
                         quantidade=float(quantidade),
                         user_id=user_id
                     )
-            except Exception as e:
-                print(f"Erro ao alocar produção imediata de {produto_id} para demandas: {e}")
-            # --------------------------------------------
+            except Exception as demanda_error:
+                print(f"Erro ao alocar produção imediata de {produto_id} para demandas: {demanda_error}")
             
             # 3. Log de Produção Diária
             from nistiprint_shared.services.daily_production_log_service import daily_production_log_service
             
-            # Conversão segura da data
             try:
                 log_date = datetime.strptime(data_producao, '%Y-%m-%d').date()
             except ValueError:
-                # Fallback se vier timestamp ISO
                 log_date = datetime.fromisoformat(data_producao).date()
 
             daily_production_log_service.create_log(
@@ -532,21 +516,50 @@ class OrdemProducaoService:
             return {
                 'success': True,
                 'op': op_created,
-                'message': 'Produção registrada com sucesso.'
+                'message': 'Produção registrada com sucesso.',
+                'warning': warning_msg
             }
 
         except Exception as e:
             # Lógica de Compensação (Rollback Manual)
-            print(f"Erro ao registrar produção imediata: {e}. Tentando reverter...")
-            
-            # Deletar OP (o resto já foi ou não persistido, idealmente teríamos transação)
+            print(f"Erro durante produção imediata: {str(e)}. Tentando reverter...")
+
+            # 1. Reverter os componentes registrados (devolver ao estoque)
+            for comp_data in componentes_registrados:
+                try:
+                    estoque_service.registrar_entrada(
+                        produto_id=comp_data['componente_id'],
+                        deposito_id=deposito_id,
+                        quantidade=comp_data['quantidade_necessaria'],
+                        observacao=f"Reversão da OP {po_id} - Erro na produção",
+                        usuario_id=int(user_id) if str(user_id).isdigit() else None
+                    )
+                except Exception as revert_comp_error:
+                    print(f"CRITICAL: Erro ao reverter componente {comp_data['componente_id']}: {str(revert_comp_error)}")
+
+            # 2. Reverter a entrada do produto acabado (se ocorreu)
+            if entrada_acabado_realizada:
+                try:
+                    estoque_service.registrar_saida(
+                        produto_id=produto_id,
+                        deposito_id=deposito_id,
+                        quantidade=float(quantidade),
+                        motivo=f"Reversão da OP {po_id} - Erro na produção",
+                        usuario_id=int(user_id) if str(user_id).isdigit() else None
+                    )
+                except Exception as revert_prod_error:
+                    print(f"CRITICAL: Erro ao reverter entrada do produto acabado: {str(revert_prod_error)}")
+
+            # 3. Limpeza do Banco de Dados (OP e Componentes)
             try:
-                self.table.delete().eq('id', po_id).execute()
                 self.components_table.delete().eq('ordem_producao_id', po_id).execute()
-            except:
-                pass
+                self.table.delete().eq('id', po_id).execute()
+            except Exception as db_cleanup_error:
+                print(f"Erro ao limpar registros da OP {po_id} no banco: {db_cleanup_error}")
             
-            raise Exception(f"Erro no processamento da produção: {str(e)}")
+            # Re-lança a exceção original para o chamador
+            raise e
+
 
 
 ordem_producao_service = OrdemProducaoService()
