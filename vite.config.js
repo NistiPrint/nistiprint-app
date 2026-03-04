@@ -23,7 +23,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',  // Use localhost para o backend rodando localmente
+        target: 'http://api:8080',  // Usa o nome do serviço Docker na rede interna
         changeOrigin: true,
         credentials: true,
         ws: true,
@@ -50,7 +50,7 @@ export default defineConfig({
     port: 4173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: 'http://api:8080',
         changeOrigin: true,
       },
     },

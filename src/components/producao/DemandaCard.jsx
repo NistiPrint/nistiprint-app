@@ -77,15 +77,25 @@ const DemandaCard = React.memo(({
   const isNext = priorityScore >= 50 && priorityScore < 100;
 
   const totalItens = demanda.total_itens || demanda.total_quantidade || 1;
-  const itensConcluidos = demanda.itens_concluidos || 0;
-  const percentualConcluido = (itensConcluidos / totalItens) * 100;
+  // itens_concluidos = itens com capa + miolo prontos (prontos para retirada)
+  const itensProntosParaRetirar = demanda.itens_concluidos || 0;
+  // completed_quantidade = itens que a expedição já fechou/retirou (coleta consolidada)
+  const itensFechados = demanda.completed_quantidade || 0;
+  // itens_em_fechamento = soma do menor valor entre exp. capas e exp. miolos de cada item
+  const itensEmFechamento = demanda.itens_em_fechamento || 0;
+
+  // Progresso total considera apenas itens finalizados (fechados pela expedição)
+  const percentualConcluido = (itensFechados / totalItens) * 100;
 
   const isStuck = demanda.is_stuck === true;
 
-  // Lógica de Descompasso entre setores
-  const capasProntas = demanda.capas_produzidas_qtd || 0;
-  const miolosProntos = demanda.miolos_produzidos_qtd || 0;
-  const temDescompasso = Math.abs(capasProntas - miolosProntos) > (totalItens * 0.2) && percentualConcluido < 100;
+  const capasImpressas = demanda.capas_impressas_qtd || 0;
+  const capasProduzidas = demanda.capas_produzidas_qtd || 0;
+  const capasProntas = demanda.capas_prontas_retirada_qtd || 0;
+  const miolosProntos = demanda.miolos_prontos_retirada_qtd || 0;
+
+  // Lógica de Descompasso entre setores (Compara componentes produzidos)
+  const temDescompasso = Math.abs(capasProduzidas - miolosProntos) > (totalItens * 0.2) && percentualConcluido < 100;
 
   const canalColor = demanda.canal_venda_color || '#6b7280';
 
@@ -109,30 +119,28 @@ const DemandaCard = React.memo(({
   );
 
   const setoresData = [
-    { label: 'Capas impressas', val: demanda.capas_impressas_qtd || 0, color: '#3b82f6', bgColor: 'bg-blue-500' },
-    { label: 'Capas finalizadas', val: demanda.capas_produzidas_qtd || demanda.capas_prontas_retirada_qtd || 0, color: '#eab308', bgColor: 'bg-yellow-500' },
-    { label: 'Miolos entregues', val: demanda.miolos_produzidos_qtd || demanda.miolos_prontos_retirada_qtd || 0, color: '#ec4899', bgColor: 'bg-pink-500' },
-    { label: 'Itens completos retirados', val: demanda.completed_quantidade || 0, color: '#6b7280', bgColor: 'bg-gray-500' }
+    { label: 'Capas Imp.', val: demanda.capas_impressas_qtd || 0, color: '#3b82f6', bgColor: 'bg-blue-500' },
+    { label: 'Capas Prod.', val: demanda.capas_produzidas_qtd || 0, color: '#10b981', bgColor: 'bg-emerald-500' },
+    { label: 'Capas Prontas', val: demanda.capas_prontas_retirada_qtd || 0, color: '#eab308', bgColor: 'bg-yellow-500' },
+    { label: 'Miolos Prontos', val: demanda.miolos_prontos_retirada_qtd || 0, color: '#ec4899', bgColor: 'bg-pink-500' },
   ];
-
-  const capasImpressas = demanda.capas_impressas_qtd || 0;
-  const capasFinalizadas = demanda.capas_produzidas_qtd || demanda.capas_prontas_retirada_qtd || 0;
-  const miolosEntregues = demanda.miolos_produzidos_qtd || demanda.miolos_prontos_retirada_qtd || 0;
-  const itensProntos = demanda.itens_concluidos || 0;
-  const itensRetirados = demanda.completed_quantidade || 0;
 
   const doneData = [
     { label: 'Capas impressas', val: capasImpressas, scope: totalItens, color: '#3b82f6', bgColor: 'bg-blue-500' },
-    { label: 'Capas finalizadas', val: capasFinalizadas, scope: totalItens, color: '#eab308', bgColor: 'bg-yellow-500' },
-    { label: 'Miolos entregues', val: miolosEntregues, scope: totalItens, color: '#ec4899', bgColor: 'bg-pink-500' },
-    { label: 'Itens fechados', val: itensRetirados, scope: totalItens, color: '#6b7280', bgColor: 'bg-gray-500' }
+    { label: 'Capas produzidas', val: capasProduzidas, scope: totalItens, color: '#10b981', bgColor: 'bg-emerald-500' },
+    { label: 'Capas prontas', val: capasProntas, scope: totalItens, color: '#eab308', bgColor: 'bg-yellow-500' },
+    { label: 'Miolos prontos', val: miolosProntos, scope: totalItens, color: '#ec4899', bgColor: 'bg-pink-500' },
+    { label: 'Itens prontos p/ retirar', val: itensProntosParaRetirar, scope: totalItens, color: '#6b7280', bgColor: 'bg-gray-500' },
+    { label: 'Itens em fechamento', val: itensEmFechamento, scope: totalItens, color: '#8b5cf6', bgColor: 'bg-violet-500' }
   ];
 
   const todoData = [
     { label: 'Capas a imprimir', val: Math.max(0, totalItens - capasImpressas), scope: totalItens, color: '#ef4444', bgColor: 'bg-red-500' },
-    { label: 'Capas a finalizar', val: Math.max(0, capasImpressas - capasFinalizadas), scope: capasImpressas, color: '#f97316', bgColor: 'bg-orange-500' },
-    { label: 'Miolos a entregar', val: Math.max(0, totalItens - miolosEntregues), scope: totalItens, color: '#ec4899', bgColor: 'bg-pink-500' },
-    { label: 'Itens disponíveis pra retirar', val: Math.max(0, itensProntos - itensRetirados), scope: itensProntos, color: '#6b7280', bgColor: 'bg-gray-500' }
+    { label: 'Capas a finalizar', val: Math.max(0, capasImpressas - capasProduzidas), scope: totalItens, color: '#f97316', bgColor: 'bg-orange-500' },
+    { label: 'Capas a casar', val: Math.max(0, capasProduzidas - capasProntas), scope: totalItens, color: '#fbbf24', bgColor: 'bg-yellow-400' },
+    { label: 'Miolos a entregar', val: Math.max(0, totalItens - miolosProntos), scope: totalItens, color: '#ec4899', bgColor: 'bg-pink-500' },
+    { label: 'Itens a retirar', val: Math.max(0, itensProntosParaRetirar - itensFechados), scope: itensProntosParaRetirar, color: '#6b7280', bgColor: 'bg-gray-500' },
+    { label: 'Itens a fechar', val: Math.max(0, itensProntosParaRetirar - itensEmFechamento), scope: itensProntosParaRetirar, color: '#8b5cf6', bgColor: 'bg-violet-500' }
   ];
 
   const progressData = viewMode === 'done' ? doneData : todoData;
@@ -395,7 +403,7 @@ const DemandaCard = React.memo(({
                   PRONTIDÃO: {demanda.readiness_score}%
                 </span>
               )}
-              <span className="text-[10px] font-bold text-gray-900">{Math.round(percentualConcluido)}% ({itensConcluidos}/{totalItens})</span>
+              <span className="text-[10px] font-bold text-gray-900">{Math.round(percentualConcluido)}% ({itensFechados}/{totalItens})</span>
             </div>
           </div>
           <Progress value={percentualConcluido} className="h-1.5" indicatorClassName={percentualConcluido === 100 ? 'bg-green-500' : ''} />

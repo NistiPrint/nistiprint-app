@@ -73,7 +73,8 @@ const ControleProducaoPage = ({tipo}) => {
         setTotalActive(0);
       }
     } catch (error) {
-      toast.error('Erro de comunicação com o servidor.');
+      const errorMessage = error.response?.data?.error || error.message || 'Erro ao carregar dados.';
+      toast.error(errorMessage);
       console.error('ControleProducaoPage - Fetch Error:', error);
       setProducts([]);
       setTotalActive(0);
@@ -124,13 +125,17 @@ const ControleProducaoPage = ({tipo}) => {
 
       if (result.success) {
         toast.success(result.message);
+        if (result.warning) {
+          toast.warning(result.warning, { duration: 6000 });
+        }
         setInputs(prev => ({ ...prev, [productId]: '' }));
         updateProductState(productId, result);
       } else {
-        toast.error(result.error);
+        toast.error(result.error || 'Erro ao registrar produção.');
       }
     } catch (error) {
-      toast.error('Erro ao registrar produção.');
+      const errorMessage = error.response?.data?.error || error.message || 'Erro ao registrar produção.';
+      toast.error(errorMessage);
       console.error('Erro ao registrar produção:', error);
     }
   };
@@ -161,7 +166,8 @@ const ControleProducaoPage = ({tipo}) => {
         toast.error(data.message);
       }
     } catch (error) {
-      toast.error('Erro ao buscar demandas.');
+      const errorMessage = error.response?.data?.error || error.message || 'Erro ao buscar demandas.';
+      toast.error(errorMessage);
     } finally {
       setDistributionLoading(false);
     }
@@ -218,10 +224,11 @@ const ControleProducaoPage = ({tipo}) => {
           return p;
         }));
       } else {
-        toast.error(result.error);
+        toast.error(result.error || 'Erro ao registrar saída distribuída.');
       }
     } catch (error) {
-      toast.error('Erro ao registrar saída distribuída.');
+      const errorMessage = error.response?.data?.error || error.message || 'Erro ao registrar saída distribuída.';
+      toast.error(errorMessage);
     } finally {
       setIsDistributing(false);
     }
@@ -236,10 +243,11 @@ const ControleProducaoPage = ({tipo}) => {
       if (data.success) {
         setProductLogs(data.logs || []);
       } else {
-        toast.error(data.error);
+        toast.error(data.error || 'Erro ao carregar logs.');
       }
     } catch (error) {
-      toast.error('Erro ao carregar logs.');
+      const errorMessage = error.response?.data?.error || error.message || 'Erro ao carregar logs.';
+      toast.error(errorMessage);
     } finally {
       setLogLoading(false);
     }
@@ -257,10 +265,11 @@ const ControleProducaoPage = ({tipo}) => {
         // Update product totals in main list
         updateProductState(selectedProductForLog.id, result);
       } else {
-        toast.error(result.error);
+        toast.error(result.error || 'Erro ao excluir lançamento.');
       }
     } catch (error) {
-      toast.error('Erro ao excluir lançamento.');
+      const errorMessage = error.response?.data?.error || error.message || 'Erro ao excluir lançamento.';
+      toast.error(errorMessage);
     }
   };
 
@@ -305,7 +314,8 @@ const ControleProducaoPage = ({tipo}) => {
         setMioloDemandSummary([]);
       }
     } catch (error) {
-      toast.error('Erro ao carregar resumo da demanda de miolos.');
+      const errorMessage = error.response?.data?.error || error.message || 'Erro ao carregar resumo da demanda de miolos.';
+      toast.error(errorMessage);
       console.error('Erro ao carregar resumo da demanda de miolos:', error);
       setMioloDemandSummary([]);
     } finally {
@@ -324,7 +334,8 @@ const ControleProducaoPage = ({tipo}) => {
         setCapaDemandInfo([]);
       }
     } catch (error) {
-      toast.error('Erro ao carregar informações da demanda de capas.');
+      const errorMessage = error.response?.data?.error || error.message || 'Erro ao carregar informações da demanda de capas.';
+      toast.error(errorMessage);
       console.error('Erro ao carregar informações da demanda de capas:', error);
       setCapaDemandInfo([]);
     } finally {
@@ -348,7 +359,8 @@ const ControleProducaoPage = ({tipo}) => {
         setActiveDemands([]);
       }
     } catch (error) {
-      toast.error('Erro de comunicação com o servidor.');
+      const errorMessage = error.message || 'Erro de comunicação com o servidor.';
+      toast.error(errorMessage);
       console.error('Erro ao carregar demandas ativas:', error);
       setActiveDemands([]);
     } finally {
@@ -924,7 +936,8 @@ const ControleProducaoPage = ({tipo}) => {
                                   setDistributionQuantities(dists);
                                   handleDistributionSubmit(dists);
                                 } catch (err) {
-                                  toast.error("Erro ao processar demanda.");
+                                  const errorMessage = err.message || 'Erro ao processar demanda.';
+                                  toast.error(errorMessage);
                                 }
                               }}
                             >
