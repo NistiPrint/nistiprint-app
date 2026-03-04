@@ -452,9 +452,12 @@ def process_mercadolivre(file, period_filter=None, options=None, bling_client=No
         # Order Miolos
         miolo_order = {miolo: i for i, miolo in enumerate(miolos_data["Miolo"])}
 
-        # Capas x Miolos
-        capas_miolos_data = filtered_data.groupby(['Título do anúncio', 'SKU', 'Variação', 'Miolo'])['Unidades'].sum(
-        ).reset_index(name='Total').copy()
+    # Capas x Miolos
+        capas_miolos_data = filtered_data.groupby(['Título do anúncio', 'SKU', 'Variação', 'Miolo']).agg({
+            'Unidades': 'sum',
+            'N.º de venda': lambda x: list(x.astype(str))
+        }).reset_index().rename(columns={'Unidades': 'Total', 'N.º de venda': 'order_refs'}).copy()
+        
         capas_miolos_data["Miolo"] = capas_miolos_data["Miolo"].str.strip().str.upper()
         capas_miolos_data["Miolo_Ordem"] = capas_miolos_data["Miolo"].map(miolo_order).astype('Int64')
         capas_miolos_data = capas_miolos_data.sort_values(['Miolo_Ordem', 'Total'], ascending=[True, False]).drop(columns=['Miolo_Ordem'])
@@ -704,8 +707,11 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
 
     # Use appropriate column name based on what's available in the dataframe
     sku_column = 'Número de referência SKU' if 'Número de referência SKU' in filtered_data.columns else 'Nº de referência do SKU principal'
-    capas_miolos_data = filtered_data.groupby(['Nome do Produto', sku_column, 'Nome da variação', 'Miolo'])['Quantidade'].sum(
-    ).reset_index(name='Total').copy()
+    capas_miolos_data = filtered_data.groupby(['Nome do Produto', sku_column, 'Nome da variação', 'Miolo']).agg({
+        'Quantidade': 'sum',
+        'ID do pedido': lambda x: list(x.astype(str))
+    }).reset_index().rename(columns={'Quantidade': 'Total', 'ID do pedido': 'order_refs'}).copy()
+    
     capas_miolos_data["Miolo"] = capas_miolos_data["Miolo"].str.strip().str.upper()
     capas_miolos_data["Miolo_Ordem"] = capas_miolos_data["Miolo"].map(miolo_order).astype('Int64')
     capas_miolos_data = capas_miolos_data.sort_values(['Miolo_Ordem', 'Total'], ascending=[True, False]).drop(columns=['Miolo_Ordem'])
@@ -908,8 +914,11 @@ def process_amazon(file, period_filter, options=None, bling_client=None):
 
     miolo_order = {miolo: i for i, miolo in enumerate(miolos_data["Miolo"])}
 
-    capas_miolos_data = filtered_data.groupby(['Título', 'SKU', 'Miolo'])['Unidades'].sum(
-    ).reset_index(name='Total').copy()
+    capas_miolos_data = filtered_data.groupby(['Título', 'SKU', 'Miolo']).agg({
+        'Unidades': 'sum',
+        'ID do pedido do cliente': lambda x: list(x.astype(str))
+    }).reset_index().rename(columns={'Unidades': 'Total', 'ID do pedido do cliente': 'order_refs'}).copy()
+    
     capas_miolos_data["Miolo"] = capas_miolos_data["Miolo"].str.strip().str.upper()
     capas_miolos_data["Miolo_Ordem"] = capas_miolos_data["Miolo"].map(miolo_order).astype('Int64')
     capas_miolos_data = capas_miolos_data.sort_values(['Miolo_Ordem', 'Total'], ascending=[True, False]).drop(columns=['Miolo_Ordem'])
@@ -1085,8 +1094,11 @@ def process_shein(file, period_filter, options=None, bling_client=None):
 
     miolo_order = {miolo: i for i, miolo in enumerate(miolos_data["Miolo"])}
 
-    capas_miolos_data = filtered_data.groupby(['Nome do produto', 'SKU do vendedor', 'Miolo']).size(
-    ).reset_index(name='Total').copy()
+    capas_miolos_data = filtered_data.groupby(['Nome do produto', 'SKU do vendedor', 'Miolo']).agg({
+        'Número do pedido': lambda x: list(x.astype(str))
+    }).reset_index().rename(columns={'Número do pedido': 'order_refs'}).copy()
+    capas_miolos_data['Total'] = capas_miolos_data['order_refs'].apply(len)
+    
     capas_miolos_data["Miolo"] = capas_miolos_data["Miolo"].str.strip().str.upper()
     capas_miolos_data["Miolo_Ordem"] = capas_miolos_data["Miolo"].map(miolo_order).astype('Int64')
     capas_miolos_data = capas_miolos_data.sort_values(['Miolo_Ordem', 'Total'], ascending=[True, False]).drop(columns=['Miolo_Ordem'])

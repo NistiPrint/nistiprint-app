@@ -27,6 +27,60 @@ class OrderTrackerService:
         if 'bling' in p: return 'Bling'
         return platform.title()
 
+    def check_conflicts(self, orders_list: List[Dict[str, Any]], platform: str) -> List[Dict[str, Any]]:
+        """
+        Checks for orders that have already been processed and returns conflict details.
+        
+        Args:
+            orders_list: List of dictionaries with 'pedido_externo_id' and 'items'.
+            platform: Platform name.
+            
+        Returns:
+            List of conflict objects: {
+                'pedido_externo_id': str,
+                'sku_externo': str,
+                'quantidade_atendida': int,
+                'demanda_id': int,
+                'demanda_nome': str
+            }
+        """
+        if not orders_list:
+            return []
+
+        norm_platform = self.normalize_platform_name(platform)
+        order_ids = list(set(order.get('pedido_externo_id') for order in orders_list if order.get('pedido_externo_id')))
+        
+        if not order_ids:
+            return []
+
+        try:
+            # Join with demandas_producao to get the demand name/description
+            query = """
+                SELECT 
+                    orig.pedido_externo_id, 
+                    orig.sku_externo, 
+                    orig.quantidade_atendida, 
+                    dem.id as demanda_id, 
+                    dem.descricao as demanda_nome
+                FROM public.demandas_item_origem orig
+                JOIN public.itens_demanda item ON orig.demanda_item_id = item.id
+                JOIN public.demandas_producao dem ON item.demanda_id = dem.id
+                WHERE orig.plataforma = %s AND orig.pedido_externo_id = ANY(%s)
+            """
+            
+            from nistiprint_shared.database.database import db
+            with db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, (norm_platform, order_ids))
+                    columns = [desc[0] for desc in cur.description]
+                    conflicts = [dict(zip(columns, row)) for row in cur.fetchall()]
+            
+            return conflicts
+
+        except Exception as e:
+            logging.error(f"Error checking conflicts: {e}")
+            return []
+
     def filter_processed_items(self, orders_list: List[Dict[str, Any]], platform: str) -> List[Dict[str, Any]]:
         """
         Filters out items that have already been processed based on the external order ID.
@@ -112,6 +166,38 @@ class OrderTrackerService:
             # Fail safe: return original list but log error. 
             # Ideally should verify why it failed to avoid duplication.
             return orders_list
+
+    def _ensure_order_record(self, pedido_externo_id: str, platform: str, session: Any):
+        """
+        Ensures a record exists in the 'public.pedidos' table for this external order.
+        Acts as the centralized order registry.
+        """
+        norm_platform = self.normalize_platform_name(platform)
+        
+        # Check if exists
+        query = "SELECT id FROM public.pedidos WHERE codigo_pedido_externo = %s AND origem = %s"
+        from nistiprint_shared.database.database import db
+        
+        with db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (pedido_externo_id, norm_platform))
+                if cur.fetchone():
+                    return
+
+                # Insert basic record if missing
+                import uuid
+                insert_query = """
+                    INSERT INTO public.pedidos (uuid_pedido, codigo_pedido_externo, origem, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                """
+                cur.execute(insert_query, (
+                    str(uuid.uuid4()),
+                    pedido_externo_id,
+                    norm_platform,
+                    datetime.utcnow(),
+                    datetime.utcnow()
+                ))
+                conn.commit()
 
     def register_processed_items(self, demanda_id: int, orders_list: List[Dict[str, Any]], platform: str):
         """

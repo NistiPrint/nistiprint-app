@@ -659,8 +659,40 @@ class DemandaProducaoService:
             })
 
         if itens_payload:
-            supabase_db.execute_with_retry(self.itens_table.insert(itens_payload))
-            
+            res_itens = supabase_db.execute_with_retry(self.itens_table.insert(itens_payload))
+            if res_itens.data:
+                # Map inserted item IDs back to the original item data to handle order_refs
+                inserted_items = res_itens.data
+                
+                # --- NOVO: REGISTRO DE ORIGEM DOS PEDIDOS ---
+                all_order_registrations = []
+                plataforma = kwargs.get('plataforma') or 'Desconhecida'
+                
+                for i, item_data in enumerate(lista_de_itens):
+                    order_refs = item_data.get('order_refs')
+                    if order_refs and i < len(inserted_items):
+                        inserted_item_id = inserted_items[i]['id']
+                        sku_externo = item_data.get('sku')
+                        
+                        # order_refs is a list of external order IDs
+                        for ext_order_id in order_refs:
+                            all_order_registrations.append({
+                                'pedido_externo_id': ext_order_id,
+                                'items': [{
+                                    'sku_externo': sku_externo,
+                                    'quantidade': 1, # Na consolidação, tratamos como 1 atendimento por ref na lista? 
+                                    # Se a lista tiver duplicatas, somamos.
+                                    'produto_id': item_data.get('produto_id')
+                                }]
+                            })
+                
+                if all_order_registrations:
+                    try:
+                        order_tracker_service.register_processed_items(new_demanda_id, all_order_registrations, plataforma)
+                    except Exception as e:
+                        logging.error(f"Erro ao registrar origens dos pedidos para demanda {new_demanda_id}: {e}")
+                # --------------------------------------------
+
             # --- INTEGRAÇÃO COM ESTOQUE (RESERVAS EM LOTE) ---
             itens_reserva = [
                 {'produto_id': item['produto_id'], 'quantidade': item['quantidade']}
