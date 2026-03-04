@@ -92,31 +92,22 @@ class DailyProductionLogService:
 
         return None
 
-    def registrar_producao_e_criar_op(self, log_date: date, product_id: str, product_name: str, quantity: float, user_email: str = None):
-        """Orchestrates the creation of a production order and logs the daily production."""
+    def registrar_producao(self, log_date: date, product_id: str, product_name: str, quantity: float, user_email: str = None):
+        """Orchestrates the creation of an immediate production order and logs the daily production."""
         if float(quantity) <= 0:
             return
 
-        op_note = f"OP gerada automaticamente pela tela de controle de produção em {log_date.strftime('%d/%m/%Y')}."
-        op_draft = ordem_producao_service.create_draft(product_id, quantity, notes=op_note)
-        po_id = op_draft['id']
-
         try:
-            ordem_producao_service.start_production(po_id)
-            _, component_snapshot = ordem_producao_service.deliver_production(po_id, quantity)
-
-            self.create_log(
-                log_date=log_date,
-                product_id=product_id,
-                product_name=product_name,
-                quantity=float(quantity),
-                production_order_id=po_id,
-                component_stock_snapshot=component_snapshot,
-                user_email=user_email
+            # Usar registrar_producao_imediata que já faz todo o fluxo de BOM, Estoque e OP finalizada
+            result = ordem_producao_service.registrar_producao_imediata(
+                produto_id=product_id,
+                quantidade=quantity,
+                data_producao=log_date.isoformat(),
+                user_id=user_email # Usando e-mail como ID conforme contexto
             )
+            return result
         except Exception as e:
-            ordem_producao_service.cancel_production(po_id)
-            raise Exception(f"Falha ao processar OP {po_id} para o produto {product_name}. A OP foi cancelada. Erro: {str(e)}")
+            raise Exception(f"Falha ao registrar produção imediata para {product_name}: {str(e)}")
 
     def registrar_saida_simples(self, log_date: date, product_id: str, product_name: str, quantity: float, user_email: str = None):
         """Registers a simple stock removal without creating a production order."""
@@ -185,8 +176,8 @@ class DailyProductionLogService:
         product_log = logs.get(p_id_int) or logs.get(str(product_id)) or {}
         return product_log.get('quantityRemoved', 0.0)
 
-    def reverter_lancamento(self, log_id: str, user_id: str):
-        """Reverte um lançamento de produção, executando todas as operações de forma atômica."""
+    def reverter_lancamento(self, log_id: str, user_id: str, reverter_estoque: bool = True):
+        """Reverte um lançamento de produção, executando as operações de forma atômica."""
         from nistiprint_shared.services.unit_of_work import UnitOfWork
 
         response = self.table.select("*").eq('id', log_id).execute()
@@ -202,7 +193,7 @@ class DailyProductionLogService:
         production_order_id = log_data.get('ordem_producao_id')
 
         deposito_id = app_config_service.get_config('default_production_deposit_id')
-        if not deposito_id:
+        if not deposito_id and reverter_estoque:
             raise ValueError("O depósito de produção padrão não está configurado.")
 
         with UnitOfWork(user_id=user_id) as uow:
@@ -210,40 +201,42 @@ class DailyProductionLogService:
                 'log_id': log_id,
                 'product_id': product_id,
                 'tipo_original': 'ENTRADA' if quantity > 0 else 'SAIDA',
-                'quantidade_original': abs(quantity)
+                'quantidade_original': abs(quantity),
+                'reverter_estoque': reverter_estoque
             })
 
-            if quantity > 0: # ENTRADA
-                uow.execute_in_transaction(
-                    estoque_service.registrar_saida,
-                    product_id,
-                    deposito_id,
-                    quantity,
-                    motivo=f"Estorno de produção referente ao log ID: {log_id}.",
-                    usuario_id=user_id
-                )
-                for component in log_data.get('snapshot_estoque_componentes', []):
+            if reverter_estoque:
+                if quantity > 0: # ENTRADA
+                    uow.execute_in_transaction(
+                        estoque_service.registrar_saida,
+                        product_id,
+                        deposito_id,
+                        quantity,
+                        motivo=f"Estorno de produção referente ao log ID: {log_id}.",
+                        usuario_id=user_id
+                    )
+                    for component in log_data.get('snapshot_estoque_componentes', []):
+                        uow.execute_in_transaction(
+                            estoque_service.registrar_entrada,
+                            component['component_id'],
+                            deposito_id,
+                            float(component['quantity_used']),
+                            observacao=f"Estorno de componentes referente ao log ID: {log_id}.",
+                            ordem_compra_id=None,
+                            usuario_id=user_id,
+                            unit_name=None
+                        )
+                else: # SAIDA
                     uow.execute_in_transaction(
                         estoque_service.registrar_entrada,
-                        component['component_id'],
+                        product_id,
                         deposito_id,
-                        float(component['quantity_used']),
-                        observacao=f"Estorno de componentes referente ao log ID: {log_id}.",
+                        abs(quantity),
+                        observacao=f"Estorno de saída manual referente ao log ID: {log_id}.",
                         ordem_compra_id=None,
                         usuario_id=user_id,
                         unit_name=None
                     )
-            else: # SAIDA
-                uow.execute_in_transaction(
-                    estoque_service.registrar_entrada,
-                    product_id,
-                    deposito_id,
-                    abs(quantity),
-                    observacao=f"Estorno de saída manual referente ao log ID: {log_id}.",
-                    ordem_compra_id=None,
-                    usuario_id=user_id,
-                    unit_name=None
-                )
 
             self.table.update({
                 'deleted': True,
@@ -251,7 +244,7 @@ class DailyProductionLogService:
                 'deleted_by': user_id
             }).eq('id', log_id).execute()
 
-            if production_order_id:
+            if production_order_id and reverter_estoque:
                 try:
                     ordem_producao_service.cancel_production(str(production_order_id))
                 except Exception as e:

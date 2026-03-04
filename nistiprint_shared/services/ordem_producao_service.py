@@ -145,8 +145,8 @@ class OrdemProducaoService:
                 'componente_id': need['componente_id'],
                 'sku': need['sku'],
                 'descricao': need['descricao'],
-                'quantidade_necessaria': need['quantidade_necessaria'],
-                'quantidade_utilizada': need['quantidade_utilizada'],
+                'quantidade_necessaria': float(need['quantidade_necessaria']),
+                'quantidade_utilizada': float(need['quantidade_utilizada']),
                 'status': 'PENDENTE'
             } for need in needs]
             supabase_db.execute_with_retry(self.components_table.insert(components_to_insert))
@@ -395,7 +395,7 @@ class OrdemProducaoService:
             'produto_id': produto_id,
             'sku': product.get('sku', ''),
             'descricao': f"Produção imediata registrada em {data_producao}",
-            'quantidade': int(float(quantidade)),  # Converter para inteiro
+            'quantidade': float(quantidade),  # Usar float para compatibilidade com numeric(15,4)
             'status': 'COMPLETED',
             'data_inicio': datetime.utcnow().date().isoformat(),
             'data_fim': datetime.utcnow().date().isoformat(),
@@ -457,8 +457,8 @@ class OrdemProducaoService:
                     'componente_id': comp['component_id'],
                     'sku': comp.get('sku', ''),
                     'descricao': comp.get('name', ''),
-                    'quantidade_necessaria': int(qty_required),
-                    'quantidade_utilizada': int(qty_required),
+                    'quantidade_necessaria': int(round(float(qty_required))),
+                    'quantidade_utilizada': int(round(float(qty_required))),
                     'status': 'CONCLUIDO'
                 }
 

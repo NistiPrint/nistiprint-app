@@ -9,6 +9,7 @@ from nistiprint_shared.services.order_tracker_service import order_tracker_servi
 from nistiprint_shared.services.daily_production_log_service import daily_production_log_service
 from nistiprint_shared.services.app_config_service import app_config_service
 from nistiprint_shared.services.system_events_log_service import system_events_log_service
+from nistiprint_shared.services.unit_of_work import UnitOfWork
 from typing import List, Dict, Any, Optional
 import uuid
 from utils.date_utils import get_now, get_now_iso
@@ -872,7 +873,7 @@ class DemandaProducaoService:
             # Importante: Esta atualização é feita dentro da transação para garantir consistência
             progresso_result = self._atualizar_progresso_simples(item_id, campo, incremento)
 
-            uow.commit()  # Efetiva todas as operações de estoque e atualização de progresso
+        # O UnitOfWork fará o commit automaticamente ao sair do bloco 'with'
 
         return {
             'campo': campo,
@@ -1165,27 +1166,78 @@ class DemandaProducaoService:
             'results': results
         }
 
+    def processar_alocacao_avulsa_otimizado(self, product_id: str, campo: str, quantidade: float, user_id: str):
+        """
+        Processa uma produção avulsa (fora de demanda específica) com lógica recursiva e fail-safe.
+        Usado principalmente pela tela de Controle de Produção (estoque geral).
+        """
+        from config.production_stages import ESTAGIOS_PRODUCAO
+        
+        if campo not in ESTAGIOS_PRODUCAO:
+            # Caso simples: apenas log diário
+            selected_date = datetime.now().date()
+            product = product_service.get_by_id(product_id)
+            daily_production_log_service.registrar_producao(
+                log_date=selected_date,
+                product_id=product_id,
+                product_name=product.get('name', 'Produto'),
+                quantity=quantidade,
+                user_email=user_id
+            )
+            return {'success': True}
+
+        # Execução com recursividade de estoque
+        try:
+            with UnitOfWork(user_id=user_id) as uow:
+                # Carregar dados necessários para a recursividade
+                # deve_sair_no_final=False pois na tela de controle queremos que o item entre no estoque e fique lá.
+                self._executar_movimentacao_estoque_recursiva(
+                    item_id="AVULSO",
+                    produto_id=product_id,
+                    quantidade=quantidade,
+                    demanda_id=None,
+                    saldos_produtos={}, 
+                    boms_produtos={},
+                    deve_sair_no_final=False
+                )
+                
+                # Registrar no log diário para aparecer na coluna "Produzido" da tela
+                # IMPORTANTE: Usamos create_log em vez de registrar_producao para NÃO duplicar os movimentos
+                selected_date = datetime.now().date()
+                product = product_service.get_by_id(product_id)
+                daily_production_log_service.create_log(
+                    log_date=selected_date,
+                    product_id=product_id,
+                    product_name=product.get('name', 'Produto'),
+                    quantity=quantidade,
+                    production_order_id=None,
+                    component_stock_snapshot=[],
+                    user_email=user_id
+                )
+            
+            return {'success': True}
+        except Exception as e:
+            print(f"ERRO NA PRODUÇÃO AVULSA RECURSIVA: {e}")
+            raise e
+
     def processar_alocacao_de_demanda_otimizado(self, item_id: str, campo: str, incremento: float, user_id: str,
                                                itens_dict: dict, saldos_produtos: dict, boms_produtos: dict):
         """
-        Versão otimizada de processar_alocacao_de_demanda que usa dados pré-carregados.
-        Retorna um dicionário com detalhes sobre o processamento realizado.
+        Versão otimizada e evoluída de processar_alocacao_de_demanda que usa dados pré-carregados.
+        Implementa recursividade para itens produzíveis na BOM e cascata de estágios.
         """
         print(f"DEBUG: processar_alocacao_otimizado item={item_id} campo={campo} inc={incremento}")
         from config.production_stages import ESTAGIOS_PRODUCAO
-        from nistiprint_shared.services.unit_of_work import UnitOfWork
         from nistiprint_shared.services.bom_service import bom_service
 
         # ETAPA 1: VALIDAÇÃO E IDENTIFICAÇÃO
         if campo not in ESTAGIOS_PRODUCAO:
-            # Se o campo (ex: 'expedicao_capas_retiradas_qtd') não é um estágio de produção,
-            # ele apenas registra o avanço visualmente, sem movimentar estoque de componentes.
             self._atualizar_progresso_simples(item_id, campo, incremento)
             return {
                 'campo': campo,
                 'incremento': incremento,
                 'status': 'VISUAL_ONLY',
-                'message': f"Atualização visual apenas para campo {campo}, não requer movimentação de estoque"
+                'message': f"Atualização visual apenas para campo {campo}"
             }
 
         estagio = ESTAGIOS_PRODUCAO[campo]
@@ -1193,16 +1245,40 @@ class DemandaProducaoService:
         if not item_demanda:
             raise ValueError(f"Item {item_id} não encontrado nos dados pré-carregados")
 
+        # 1.1. LÓGICA DE CASCATA (Preenchimento Automático de Estágios Anteriores)
+        dependencia = estagio.get('depende_de')
+        if dependencia and dependencia in item_demanda:
+            valor_atual_dep = float(item_demanda.get(dependencia, 0) or 0)
+            valor_atual_foco = float(item_demanda.get(campo, 0) or 0)
+            novo_foco = valor_atual_foco + incremento
+            
+            if novo_foco > valor_atual_dep:
+                diff = novo_foco - valor_atual_dep
+                # Chama recursivamente para o estágio dependente
+                print(f"DEBUG: Cascata detectada. Campo {campo} depende de {dependencia}. Incrementando {dependencia} em {diff}")
+                self.processar_alocacao_de_demanda_otimizado(
+                    item_id, dependencia, diff, user_id, itens_dict, saldos_produtos, boms_produtos
+                )
+                # Atualiza o dicionário local para refletir a mudança da cascata antes de prosseguir
+                item_demanda[dependencia] = novo_foco
+
+        # Se não há produto gerado associado (ex: etapa administrativa), apenas atualiza o visual
+        if not estagio.get('role_produto_gerado'):
+            self._atualizar_progresso_simples(item_id, campo, incremento)
+            return {
+                'campo': campo,
+                'incremento': incremento,
+                'status': 'SUCCESS',
+                'message': f"Atualização visual de etapa administrativa {campo}"
+            }
+
         # ETAPA 2: IDENTIFICAÇÃO DO PRODUTO INTERMEDIÁRIO
         produto_intermediario = None
-        
-        # 2.1. Prioridade: ID direto se disponível para Miolo
         if estagio['role_produto_gerado'] == 'MIOLO' and item_demanda.get('id_produto_miolo'):
             produto_intermediario = product_service.get_by_id(str(item_demanda['id_produto_miolo']))
         
-        # 2.2. Fallback: Buscar na BOM do produto final
         if not produto_intermediario:
-            produto_final_id = item_demanda['produto_id']  # ID da "Agenda Feminina" do item da demanda
+            produto_final_id = item_demanda['produto_id']
             if produto_final_id:
                 produto_intermediario = bom_service.get_component_by_role(produto_final_id, estagio['role_produto_gerado'])
 
@@ -1212,93 +1288,137 @@ class DemandaProducaoService:
                 'campo': campo,
                 'incremento': incremento,
                 'status': 'WARNING',
-                'message': f"Alocação para item {item_id} não processada: Produto com role '{estagio['role_produto_gerado']}' não encontrado na BOM do produto final {produto_final_id}."
+                'message': f"Produto com role '{estagio['role_produto_gerado']}' não encontrado na BOM."
             }
 
-        produto_intermediario_id = str(produto_intermediario['id'])
-        deposito_id = app_config_service.get_config('default_production_deposit_id')
-
-        # Usar saldo pré-carregado
-        saldo_info = saldos_produtos.get(produto_intermediario_id, {})
-        saldo_disponivel = saldo_info.get('quantidade_disponivel', 0)
-
-        qtd_do_estoque = min(saldo_disponivel, incremento)
-        qtd_a_produzir = incremento - qtd_do_estoque
-
-        # Obter informações da demanda para inclusão nas observações
-        item_demanda = itens_dict.get(str(item_id))
-        demanda_id = item_demanda.get('demanda_id') if item_demanda else None
-        demanda_ref = f"da demanda {demanda_id}" if demanda_id else "de demanda desconhecida"
-
-        # ETAPA 3: EXECUÇÃO ATÔMICA
-        with UnitOfWork() as uow:  # Ponto de Atenção 2: Essencial usar um gerenciador de transação
-            mensagem_acoes = []
-
-            # 3.1. Consumir do Estoque Existente (Cenário A)
-            if qtd_do_estoque > 0:
-                estoque_service.registrar_saida(
-                    produto_id=produto_intermediario_id,
-                    deposito_id=deposito_id,
-                    quantidade=qtd_do_estoque,
-                    motivo=f"Alocação de estoque para item {item_id} {demanda_ref}",
-                    documento_referencia=demanda_id
+        # ETAPA 3: EXECUÇÃO COM FAIL-SAFE E UNIT OF WORK NO TOPO
+        try:
+            with UnitOfWork(user_id=user_id) as uow:
+                self._executar_movimentacao_estoque_recursiva(
+                    item_id=item_id,
+                    produto_id=str(produto_intermediario['id']),
+                    quantidade=incremento,
+                    demanda_id=item_demanda.get('demanda_id'),
+                    saldos_produtos=saldos_produtos,
+                    boms_produtos=boms_produtos
                 )
-                mensagem_acoes.append(f"Alocadas {qtd_do_estoque} unidades do estoque")
-
-            # 3.2. Produzir o Restante (Cenário B)
-            if qtd_a_produzir > 0:
-                componentes = boms_produtos.get(produto_intermediario_id, [])
-
-                if not componentes:
-                    mensagem_acoes.append(f"Produção JIT de {qtd_a_produzir} unidades não executada por falta de BOM.")
-                else:
-                    # SAÍDA DOS COMPONENTES
-                    for comp in componentes:
-                        # Correção do bug: acessar os atributos do objeto BOMItem corretamente
-                        estoque_service.registrar_saida(
-                            produto_id=comp.componente_id,
-                            deposito_id=deposito_id,
-                            quantidade=(comp.quantidade * qtd_a_produzir),
-                            motivo=f"Consumo JIT para item {item_id} {demanda_ref}",
-                            documento_referencia=demanda_id
-                        )
-
-                    # ENTRADA DO PRODUTO GERADO
-                    estoque_service.registrar_entrada(
-                        produto_id=produto_intermediario_id,
-                        deposito_id=deposito_id,
-                        quantidade=qtd_a_produzir,
-                        observacao=f"Produção JIT para item {item_id} {demanda_ref}"
-                    )
-
-                    # SAÍDA IMEDIATA PARA ALOCAÇÃO
-                    estoque_service.registrar_saida(
-                        produto_id=produto_intermediario_id,
-                        deposito_id=deposito_id,
-                        quantidade=qtd_a_produzir,
-                        motivo=f"Alocação JIT para item {item_id} {demanda_ref}",
-                        documento_referencia=demanda_id
-                    )
-                    mensagem_acoes.append(f"Produzidas e alocadas {qtd_a_produzir} unidades")
-
-            # 3.3. Atualização do Progresso Visual
-            # Esta função apenas atualiza o campo `..._qtd` na tabela `itens_demanda`
-            # Importante: Esta atualização é feita dentro da transação para garantir consistência
-            self._atualizar_progresso_simples(item_id, campo, incremento)
-
-            uow.commit()  # Efetiva todas as operações de estoque e atualização de progresso
+                # Atualização visual garantida dentro da transação
+                self._atualizar_progresso_simples(item_id, campo, incremento)
+        except Exception as e:
+            # FAIL-SAFE: Loga o erro mas tenta permitir a atualização visual fora da transação
+            print(f"ERRO DE ESTOQUE (Não bloqueante): {str(e)}")
+            system_events_log_service.log_event(
+                event_type='ERRO_ESTOQUE_PRODUCAO_JIT',
+                details={'item_id': item_id, 'campo': campo, 'erro': str(e)},
+                user_id=user_id
+            )
+            # Tenta forçar o visual se a transação falhou
+            try:
+                self._atualizar_progresso_simples(item_id, campo, incremento)
+            except:
+                pass
 
         return {
             'campo': campo,
             'incremento': incremento,
             'status': 'SUCCESS',
-            'message': f"Processamento concluído: {', '.join(mensagem_acoes) if mensagem_acoes else 'Apenas atualização visual'}",
-            'detalhes': {
-                'qtd_do_estoque': qtd_do_estoque,
-                'qtd_a_produzir': qtd_a_produzir,
-                'saldo_disponivel': saldo_disponivel
-            }
+            'message': "Processamento concluído (Estoque processado em modo best-effort)"
         }
+
+    def _executar_movimentacao_estoque_recursiva(self, item_id, produto_id, quantidade, demanda_id, 
+                                               saldos_produtos, boms_produtos, deve_sair_no_final=True):
+        """
+        Motor de movimentação de estoque com suporte a produção JIT recursiva.
+        
+        deve_sair_no_final: 
+            True  -> (ENTRADA + SAÍDA) Usado para Dashboard (progresso) e para sub-componentes 
+                     que estão sendo produzidos para serem consumidos pelo pai imediatamente.
+            False -> (APENAS ENTRADA) Usado para Entrada Manual no Controle de Produção, 
+                     onde o item final deve permanecer no estoque.
+        """
+        deposito_id = app_config_service.get_config('default_production_deposit_id')
+        produto = product_service.get_by_id(produto_id)
+        nome_produto = produto.get('name', f"Produto {produto_id}")
+        
+        # 1. PRIORIDADE: CONSUMIR DO ESTOQUE EXISTENTE
+        saldo_info = saldos_produtos.get(str(produto_id))
+        if saldo_info:
+            saldo_disponivel = float(saldo_info.get('quantidade_disponivel', 0))
+        else:
+            res_saldo = estoque_service.get_saldo_atual(produto_id, deposito_id)
+            saldo_disponivel = float(res_saldo.get('quantidade_disponivel', 0))
+
+        qtd_do_estoque = min(saldo_disponivel, quantidade)
+        qtd_a_produzir = max(0.0, quantidade - qtd_do_estoque)
+
+        # 1.1. Se temos estoque, realizamos a SAÍDA (Consumo)
+        # Nota: Se for o item final de uma "Entrada Manual", não queremos tirar do estoque o que já existia lá.
+        # Mas se for um componente sendo consumido, ou progresso de dashboard, precisamos tirar.
+        if qtd_do_estoque > 0 and deve_sair_no_final:
+            estoque_service.registrar_saida(
+                produto_id=produto_id,
+                deposito_id=deposito_id,
+                quantidade=qtd_do_estoque,
+                motivo=f"Consumo de estoque para produção" if not demanda_id else f"Alocação item {item_id} demanda {demanda_id}",
+                documento_referencia=demanda_id
+            )
+
+        # 2. SEGUNDA OPÇÃO: PRODUZIR O RESTANTE (RECURSIVIDADE)
+        if qtd_a_produzir > 0:
+            componentes = boms_produtos.get(str(produto_id), [])
+            if not componentes:
+                from nistiprint_shared.services.bom_service import bom_service
+                componentes = bom_service.get_bom_for_produto(int(produto_id))
+
+            if componentes:
+                # 2.1. Processar cada componente da BOM recursivamente
+                for comp in componentes:
+                    comp_id = str(comp.componente_id)
+                    qtd_comp_necessaria = float(comp.quantidade) * qtd_a_produzir
+                    
+                    role_comp = product_service.identify_product_role(comp_id)
+                    
+                    if role_comp in ['MIOLO', 'CAPA_IMPRESSAO', 'CAPA_ACABADA']:
+                        # CHAMADA RECURSIVA: Componente deve ser consumido pelo pai (deve_sair_no_final=True)
+                        self._executar_movimentacao_estoque_recursiva(
+                            item_id=item_id,
+                            produto_id=comp_id,
+                            quantidade=qtd_comp_necessaria,
+                            demanda_id=demanda_id,
+                            saldos_produtos=saldos_produtos,
+                            boms_produtos=boms_produtos,
+                            deve_sair_no_final=True
+                        )
+                    else:
+                        # Saída simples de insumo/materia-prima básica
+                        estoque_service.registrar_saida(
+                            produto_id=comp_id,
+                            deposito_id=deposito_id,
+                            quantidade=qtd_comp_necessaria,
+                            motivo=f"Consumo insumo para: {nome_produto}",
+                            documento_referencia=demanda_id
+                        )
+
+                # 2.2. ENTRADA do item que acabamos de produzir (independente da origem)
+                estoque_service.registrar_entrada(
+                    produto_id=produto_id,
+                    deposito_id=deposito_id,
+                    quantidade=qtd_a_produzir,
+                    observacao=f"Produção JIT automática: {nome_produto}" if demanda_id else f"Entrada de produção: {nome_produto}"
+                )
+                
+                # 2.3. SAÍDA imediata se for para Alocação de Demanda ou Consumo pelo Pai
+                # Se for Entrada Manual (deve_sair_no_final=False), o item FICA no estoque.
+                if deve_sair_no_final:
+                    estoque_service.registrar_saida(
+                        produto_id=produto_id,
+                        deposito_id=deposito_id,
+                        quantidade=qtd_a_produzir,
+                        motivo=f"Consumo JIT produção" if not demanda_id else f"Alocação JIT demanda {demanda_id}",
+                        documento_referencia=demanda_id
+                    )
+
+        return True
 
     def update_demanda_details(self, demanda_id: str, updates: Dict[str, Any], user_id: str = 'System') -> Dict[str, Any]:
         # 0. Resolver o ID interno (PK) se necessário
