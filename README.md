@@ -1,18 +1,45 @@
-# React + Vite
+# NistiPrint Frontend - V2 (React + Vite)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Este é o frontend da aplicação NistiPrint, desenvolvido com React e Vite.
 
-Currently, two official plugins are available:
+## 🚀 Setup e Execução Local
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+### Pré-requisitos
+- Node.js (versão 18 ou superior)
+- npm ou yarn
 
-## React Compiler
+### Instalação de Dependências
+```bash
+cd nistiprint-frontend
+npm install
+# ou yarn install
+```
 
-The React Compiler is enabled on this template. See [this documentation](https://react.dev/learn/react-compiler) for more information.
+### Executar em Modo de Desenvolvimento
+```bash
+npm run dev
+# ou yarn dev
+```
+A aplicação estará disponível em `http://localhost:5173`.
 
-Note: This will impact Vite dev & build performances.
+### Construir para Produção
+```bash
+npm run build
+# ou yarn build
+```
+Os arquivos estáticos serão gerados na pasta `dist/`.
 
-## Expanding the ESLint configuration
+## ⚙️ Configuração
+As variáveis de ambiente são configuradas via `.env` e `.env.production`. Consulte `nistiprint-frontend/.env.example` para as variáveis necessárias.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## 📝 Documentação
+- Guia de Componentes: `guia-componentes.md`
+- **Para informações detalhadas sobre setup de ambiente e variáveis, consulte:**
+  - `docs/development/local_setup.md`
+  - `docs/configuration/environment_variables.md`
+
+## 🐳 Docker
+Para construir a imagem Docker e executar em ambiente conteinerizado, consulte:
+- `nistiprint-frontend/Dockerfile`
+- `docs/deployment/overview.md`
+- `docs/deployment/infrastructure_setup.md`
