@@ -86,10 +86,11 @@ def get_controle_data_api():
     if tipo == 'miolo':
         category_id_config_key = 'producao_miolos_category_id'
     elif tipo == 'capa':
-        category_id_config_key = 'producao_capas_category_id' # New config key needed
+        category_id_config_key = 'producao_capas_impressas_category_id'
+    elif tipo == 'capa_acabada':
+        category_id_config_key = 'producao_capas_category_id'
     else:
-        # current_app.logger.warning(f"API: Unrecognized 'tipo' parameter: {tipo}. Defaulting to 'miolo'.")
-        category_id_config_key = 'producao_miolos_category_id' # Fallback to miolo
+        category_id_config_key = 'producao_miolos_category_id'
 
     category_id = app_config_service.get_config(category_id_config_key)
 
@@ -149,6 +150,7 @@ def registrar_item_producao():
     product_id = data.get('product_id')
     quantity_str = data.get('quantity')
     date_str = data.get('date')
+    field = data.get('field') # Opcional, vindo da tela de controle
 
     if not all([product_id, quantity_str, date_str]):
         return jsonify({'success': False, 'error': 'Dados incompletos.'}), 400
@@ -157,15 +159,28 @@ def registrar_item_producao():
         quantity = int(quantity_str)
         selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
         
-        product = product_service.get_by_id(product_id)
-        if not product:
-            return jsonify({'success': False, 'error': f'Produto com ID {product_id} não encontrado.'}), 404
-
         user = get_current_user()
-        user_id = str(user.get('id')) if user else 'System'
+        user_id = user.get('email') if user else 'System'
 
-        # Chama o serviço para registrar produção (cria OP, movimenta estoque, loga)
-        result = ordem_producao_service.registrar_producao_imediata(product_id, quantity, date_str, user_id)
+        if field:
+            # Caso vindo de uma tela que sensibiliza o dashboard (ex: novas abas de capas)
+            # Usar o serviço que suporta recursividade JIT e cascata de dashboard
+            result = demanda_producao_service.processar_alocacao_avulsa_otimizado(
+                product_id=product_id,
+                campo=field,
+                quantidade=quantity,
+                user_id=user_id
+            )
+        else:
+            # Caso padrão de entrada de estoque simples (miolos ou capas sem vínculo de estágio)
+            product = product_service.get_by_id(product_id)
+            result = daily_production_log_service.registrar_producao(
+                log_date=selected_date,
+                product_id=product_id,
+                product_name=product.get('name', 'Produto'),
+                quantity=quantity,
+                user_email=user_id
+            )
         
         # Re-fetch stock details for the response
         deposito_id = app_config_service.get_config('default_production_deposit_id') or 'principal'
@@ -181,7 +196,6 @@ def registrar_item_producao():
         return jsonify({
             'success': True, 
             'message': 'Produção registrada com sucesso!', 
-            'warning': result.get('warning'),
             'new_stock': new_stock,
             'new_stock_available': new_stock_available,
             'new_daily_produced': new_daily_produced,
@@ -289,11 +303,18 @@ def get_daily_logs(product_id, date_str):
 @producao_bp.route('/logs/reverter/<int:log_id>', methods=['POST'])
 def reverter_lancamento(log_id):
     try:
+        data = request.get_json() or {}
+        reverter_estoque = data.get('reverter_estoque', True)
+
         # Here you would ideally get the user_id from the session
         user = get_current_user()
         user_id = str(user.get('id')) if user else 'system'
 
-        product_id = daily_production_log_service.reverter_lancamento(log_id, user_id)
+        product_id = daily_production_log_service.reverter_lancamento(
+            log_id=log_id, 
+            user_id=user_id, 
+            reverter_estoque=reverter_estoque
+        )
 
         # After reversal, fetch the updated totals and stock
         selected_date = datetime.now().date() # Or get from request if different
