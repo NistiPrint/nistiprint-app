@@ -346,6 +346,47 @@ def api_custo_calculado(produto_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@produtos_api_bp.route('/<produto_id>/clone', methods=['POST'])
+def api_clone_product(produto_id):
+    """
+    Clona um produto copiando todos os dados, incluindo BOM, artworks e links externos.
+    
+    Payload esperado:
+    {
+        "new_sku": "NOVO-SKU",
+        "new_name": "Nome do Produto (opcional)"
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Dados inválidos'}), 400
+        
+        new_sku = data.get('new_sku')
+        new_name = data.get('new_name')
+        
+        if not new_sku:
+            return jsonify({'error': 'SKU é obrigatório'}), 400
+        
+        # Clona o produto
+        cloned_product = product_service.clone_product(produto_id, new_sku, new_name)
+        
+        if cloned_product:
+            return jsonify({
+                'success': True,
+                'message': 'Produto clonado com sucesso!',
+                'product': cloned_product
+            })
+        else:
+            return jsonify({'error': 'Erro ao clonar produto'}), 500
+            
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logging.error(f"Erro ao clonar produto {produto_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @produtos_api_bp.route('/search', methods=['GET'])
 def api_search():
     """API para busca de produtos (autocomplete)"""

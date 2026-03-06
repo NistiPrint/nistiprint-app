@@ -79,7 +79,15 @@ from utils import br_currency, br_number
 
 def create_app():
     app = Flask(__name__)
-    app.secret_key = os.environ.get('SECRET_KEY', 'dev_secret_key_fixed_for_stability')
+    
+    # Prioridade para variável de ambiente, fallback para string fixa
+    secret = os.environ.get('SECRET_KEY')
+    if not secret:
+        app.logger.warning("⚠️ SECRET_KEY não encontrada no ambiente! Usando chave de fallback.")
+        secret = 'dev_secret_key_fixed_for_stability'
+    
+    app.secret_key = secret
+    app.config['SECRET_KEY'] = secret
 
     # Session configuration
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'

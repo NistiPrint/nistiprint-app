@@ -178,6 +178,18 @@ def api_get_coletas_demanda(demanda_id):
         print(traceback.format_exc())
         return jsonify({'success': False, 'message': str(e)}), 500
 
+@demanda_producao_api_bp.route('/coletas/historico', methods=['GET'])
+def api_get_historico_coletas_global():
+    try:
+        limit = request.args.get('limit', default=200, type=int)
+        coletas = demanda_producao_service.get_historico_coletas_global(limit=limit)
+        return jsonify({'success': True, 'coletas': coletas})
+    except Exception as e:
+        import traceback
+        print(f"ERROR in api_get_historico_coletas_global: {e}")
+        print(traceback.format_exc())
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 @demanda_producao_api_bp.route('/', methods=['POST'])
 @login_required
 def create_demanda_api():
@@ -637,9 +649,15 @@ def registrar_producao_incremental(demanda_id, item_id):
 
     data = request.get_json()
     producao_incremental = data.get('producao_incremental', {})
+    origem_tipo = data.get('origem_tipo', 1)
 
     if not producao_incremental:
         return jsonify({'success': False, 'message': 'Dados de produção incremental não fornecidos.'}), 400
+
+    # Determinar se é estorno ou incremento para escolher a origem correta se não fornecida
+    if 'origem_tipo' not in data:
+        is_removal = any(val < 0 for val in producao_incremental.values() if isinstance(val, (int, float)))
+        origem_tipo = 2 if is_removal else 1
 
     # Validate user permissions based on setor
     user_setor = session.get('user_setor')
@@ -695,8 +713,9 @@ def registrar_producao_incremental(demanda_id, item_id):
                     }), 403
 
     try:
-        updated_item = demanda_producao_service.registrar_producao_incremental(demanda_id, item_id, producao_incremental, user_id)
+        updated_item = demanda_producao_service.registrar_producao_incremental(demanda_id, item_id, producao_incremental, user_id, origem_tipo=origem_tipo)
         return jsonify({'success': True, 'message': 'Produção registrada com sucesso!', 'item_id': updated_item['id']}), 200
+
     except ValueError as ve:
         return jsonify({'success': False, 'message': str(ve)}), 400
     except Exception as e:
@@ -714,6 +733,7 @@ def registrar_producao_lote(demanda_id):
 
     data = request.get_json()
     updates = data.get('updates', [])
+    origem_tipo = data.get('origem_tipo', 1)
 
     if not updates:
         return jsonify({'success': False, 'message': 'Dados de produção em lote não fornecidos.'}), 400
@@ -765,7 +785,7 @@ def registrar_producao_lote(demanda_id):
                 }), 403
 
     try:
-        batch_results = demanda_producao_service.registrar_producao_lote(demanda_id, updates, user_id)
+        batch_results = demanda_producao_service.registrar_producao_lote(demanda_id, updates, user_id, origem_tipo=origem_tipo)
         return jsonify({
             'success': True, 
             'message': f'{len(batch_results.get("results", []))} itens processados com sucesso!', 
@@ -1040,16 +1060,55 @@ def update_demand_schedule(demanda_id):
         print(f"ERROR in update_demand_schedule: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
+@demanda_producao_api_bp.route('/fila-estoque', methods=['GET'])
+def api_get_fila_estoque():
+    try:
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        # Usando a sintaxe padrão de join do PostgREST/Supabase
+        # itens_demanda(sku, descricao) - o Supabase resolve o FK automaticamente
+        res = supabase_db.table('fila_processamento_estoque')\
+            .select("*, itens_demanda(sku, descricao)")\
+            .order('created_at', desc=True)\
+            .limit(100)\
+            .execute()
+        
+        # Mapeia 'itens_demanda' para 'item' para manter compatibilidade com o frontend
+        queue_data = []
+        if res.data:
+            for row in res.data:
+                item_info = row.pop('itens_demanda', None)
+                row['item'] = item_info
+                queue_data.append(row)
+
+        return jsonify({'success': True, 'queue': queue_data})
+    except Exception as e:
+        print(f"ERRO ao buscar fila de estoque: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@demanda_producao_api_bp.route('/processar-fila-estoque', methods=['POST'])
+def api_processar_fila_estoque():
+    try:
+        limit = request.args.get('limit', default=20, type=int)
+        count = demanda_producao_service.processar_fila_estoque(limit=limit)
+        return jsonify({'success': True, 'processed_count': count})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 @demanda_producao_api_bp.route('/dashboard-totals', methods=['GET'])
 def get_dashboard_totals():
     try:
         from datetime import date
+        from nistiprint_shared.database.supabase_db_service import supabase_db
         today = date.today()
 
-        # Get all demands
-        all_demandas = demanda_producao_service.get_all_demandas()
-
-        # Initialize totals
+        # 1. Buscar logs de produção de hoje para calcular os totais dos setores
+        # Isso garante que apenas o que foi produzido HOJE seja contabilizado
+        logs_res = supabase_db.table('logs_producao_diaria')\
+            .select("*")\
+            .eq('data', today.isoformat())\
+            .neq('deleted', True)\
+            .execute()
+        
         sector_totals = {
             'CPD': 0,
             'Capas': 0,
@@ -1057,12 +1116,31 @@ def get_dashboard_totals():
             'Expedição': 0
         }
 
+        if logs_res.data:
+            for log in logs_res.data:
+                qty = float(log.get('quantidade_produzida', 0))
+                # Tenta pegar metadados de detalhes_producao (campo do log_service)
+                metadata = log.get('detalhes_producao') or {}
+                campo = metadata.get('campo')
+                
+                if campo:
+                    # Mapeamento de campo para setor seguindo a lógica original
+                    if campo in ['capas_impressas_qtd', 'capas_prontas_retirada_qtd']:
+                        sector_totals['CPD'] += qty
+                    elif campo == 'capas_produzidas_qtd':
+                        sector_totals['Capas'] += qty
+                    elif campo == 'miolos_prontos_retirada_qtd':
+                        sector_totals['Miolos'] += qty
+                    elif campo in ['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd']:
+                        sector_totals['Expedição'] += qty
+
+        # 2. Buscar contagem de demandas (Hoje e Futuro)
         demand_totals = {
             'today': 0,
             'future': 0
         }
-
-        # Process demands
+        
+        all_demandas = demanda_producao_service.get_all_demandas()
         for demanda in all_demandas:
             data_entrega_str = demanda.get('data_entrega')
             if data_entrega_str:
@@ -1074,20 +1152,7 @@ def get_dashboard_totals():
                     elif data_entrega > today:
                         demand_totals['future'] += 1
                 except ValueError:
-                    pass  # Invalid date format, skip
-
-            # Get items for sector totals
-            demanda_with_itens = demanda_producao_service.get_demanda_with_itens(demanda['id'])
-            if demanda_with_itens and 'itens' in demanda_with_itens:
-                for item in demanda_with_itens['itens']:
-                    # For each item, check updates today (this is simplified; in reality, we'd need to track update history)
-                    # Since we don't have update timestamps, we'll sum the current values for the day
-                    # But the requirement is "marked on the day" - probably need to track daily logs
-                    # For now, approximate by summing quantities that have been updated
-                    sector_totals['CPD'] += item.get('capas_impressas_qtd', 0) + item.get('capas_prontas_retirada_qtd', 0)
-                    sector_totals['Capas'] += item.get('capas_produzidas_qtd', 0)
-                    sector_totals['Miolos'] += item.get('miolos_prontos_retirada_qtd', 0)
-                    sector_totals['Expedição'] += item.get('expedicao_capas_retiradas_qtd', 0) + item.get('expedicao_miolos_retirados_qtd', 0)
+                    pass
 
         return jsonify({
             'success': True,
@@ -1414,31 +1479,42 @@ def get_miolo_demand_summary():
                     
                     if faltante <= 0: continue
 
-                    demand_info = {
-                        'demanda_id': demanda['id'],
-                        'demanda_nome': demanda.get('nome') or demanda.get('descricao'),
-                        'quantidade_total': quantity,
-                        'quantidade_faltante': faltante,
-                        'data_entrega': demanda['data_entrega']
-                    }
-                    
-                    if key in miolo_summary:
-                        miolo_summary[key]['quantity'] += quantity
-                        miolo_summary[key]['quantity_pending'] += faltante
-                        miolo_summary[key]['demandas'].append(demand_info)
-                    else:
+                    if key not in miolo_summary:
                         miolo_summary[key] = {
                             'name': miolo_name,
                             'id': miolo_id,
-                            'quantity': quantity,
-                            'quantity_pending': faltante,
-                            'demandas': [demand_info]
+                            'quantity': 0,
+                            'quantity_pending': 0,
+                            'demandas_map': {} # Usar mapa para agrupar por demanda
                         }
+                    
+                    miolo_summary[key]['quantity'] += quantity
+                    miolo_summary[key]['quantity_pending'] += faltante
 
-        # Ordenar demandas dentro de cada miolo por data de entrega
+                    # Agrupar itens da mesma demanda para este miolo
+                    if did_str not in miolo_summary[key]['demandas_map']:
+                        miolo_summary[key]['demandas_map'][did_str] = {
+                            'demanda_id': demanda['id'],
+                            'demanda_nome': demanda.get('nome') or demanda.get('descricao'),
+                            'quantidade_total': 0,
+                            'quantidade_faltante': 0,
+                            'data_entrega': demanda['data_entrega']
+                        }
+                    
+                    miolo_summary[key]['demandas_map'][did_str]['quantidade_total'] += quantity
+                    miolo_summary[key]['demandas_map'][did_str]['quantidade_faltante'] += faltante
+
+        # Converter mapas de demandas para listas e ordenar
         summary_list = list(miolo_summary.values())
-        for item in summary_list:
-            item['demandas'].sort(key=lambda x: x['data_entrega'] or '9999-12-31')
+        for miolo in summary_list:
+            miolo['demandas'] = list(miolo['demandas_map'].values())
+            miolo['demandas'].sort(key=lambda x: x['data_entrega'] or '9999-12-31')
+            del miolo['demandas_map']
+            # O frontend espera o campo 'quantity' como o total pendente para o Badge lateral
+            miolo['quantity'] = miolo['quantity_pending']
+
+        # Ordenar lista principal por nome
+        summary_list.sort(key=lambda x: x['name'])
 
         return jsonify({'success': True, 'summary': summary_list})
     except Exception as e:
@@ -1475,34 +1551,47 @@ def get_capa_demand_info():
                 
                 if faltante <= 0: continue
 
-                demand_info = {
-                    'demanda_id': demanda['id'],
-                    'demanda_nome': demanda.get('nome') or demanda.get('descricao'),
-                    'quantidade_total': quantity,
-                    'quantidade_faltante': faltante,
-                    'data_entrega': demanda['data_entrega']
-                }
-                
-                if key in capa_summary:
-                    capa_summary[key]['quantity'] += quantity
-                    capa_summary[key]['quantity_pending'] += faltante
-                    capa_summary[key]['demandas'].append(demand_info)
-                else:
+                if key not in capa_summary:
                     capa_summary[key] = {
                         'name': item.get('item_descricao') or item.get('descricao'),
                         'sku': item.get('sku'),
                         'id': item.get('produto_id'),
                         'variacao': item.get('variacao'),
                         'miolo_name': item.get('miolo_name'),
-                        'quantity': quantity,
-                        'quantity_pending': faltante,
-                        'demandas': [demand_info]
+                        'quantity': 0,
+                        'quantity_pending': 0,
+                        'demandas_map': {} # Sub-agrupamento por demanda
                     }
+                
+                capa_summary[key]['quantity'] += quantity
+                capa_summary[key]['quantity_pending'] += faltante
 
-        # Ordenar demandas dentro de cada capa por data de entrega
-        summary_list = list(capa_summary.values())
-        for item in summary_list:
-            item['demandas'].sort(key=lambda x: x['data_entrega'] or '9999-12-31')
+                # Agrupar itens da mesma demanda para esta capa
+                if did_str not in capa_summary[key]['demandas_map']:
+                    capa_summary[key]['demandas_map'][did_str] = {
+                        'demanda_id': demanda['id'],
+                        'demanda_nome': demanda.get('nome') or demanda.get('descricao'),
+                        'quantidade_total': 0,
+                        'quantidade_faltante': 0,
+                        'data_entrega': demanda['data_entrega']
+                    }
+                
+                capa_summary[key]['demandas_map'][did_str]['quantidade_total'] += quantity
+                capa_summary[key]['demandas_map'][did_str]['quantidade_faltante'] += faltante
+
+        # Converter para o formato de lista esperado pelo frontend
+        summary_list = []
+        for c_key, c_data in capa_summary.items():
+            c_data['demandas'] = list(c_data['demandas_map'].values())
+            # Ordenar demandas por data de entrega
+            c_data['demandas'].sort(key=lambda x: x.get('data_entrega', ''))
+            del c_data['demandas_map']
+            # O frontend espera 'quantity' como o total pendente
+            c_data['quantity'] = c_data['quantity_pending']
+            summary_list.append(c_data)
+
+        # Ordenar lista principal por SKU/Nome
+        summary_list.sort(key=lambda x: x.get('sku') or x['name'])
 
         return jsonify({'success': True, 'summary': summary_list})
     except Exception as e:
