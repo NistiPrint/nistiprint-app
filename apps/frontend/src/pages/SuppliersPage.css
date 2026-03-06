@@ -1,0 +1,143 @@
+/* frontend/src/pages/SuppliersPage.css */
+
+.suppliers-container {
+    padding: 20px;
+    font-family: sans-serif;
+}
+
+.suppliers-container h1, .suppliers-container h2 {
+    margin-bottom: 20px;
+    color: #333;
+}
+
+.supplier-form-section {
+    background-color: #f9f9f9;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 30px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.supplier-form-section form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 15px;
+    align-items: center;
+}
+
+.supplier-form-section form input[type="text"],
+.supplier-form-section form input[type="email"],
+.supplier-form-section form input[type="tel"],
+.supplier-form-section form input[type="number"] {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box; /* Ensures padding doesn't affect width */
+}
+
+.contact-info-fields {
+    grid-column: 1 / -1; /* Span across all columns */
+    border: 1px solid #eee;
+    padding: 15px;
+    border-radius: 4px;
+    margin-top: 10px;
+    background-color: #fff;
+}
+
+.contact-info-fields h3 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    color: #555;
+    font-size: 1.1em;
+}
+
+.contact-info-fields input {
+    margin-bottom: 10px; /* Spacing between contact info inputs */
+}
+
+.supplier-form-section label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #555;
+}
+
+.supplier-form-section label input[type="checkbox"] {
+    width: auto; /* Allow checkbox to size naturally */
+}
+
+.form-actions {
+    grid-column: 1 / -1; /* Span across all columns */
+    display: flex;
+    gap: 10px;
+    margin-top: 15px;
+}
+
+.form-actions button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1em;
+    transition: background-color 0.3s ease;
+}
+
+.form-actions button[type="submit"] {
+    background-color: #007bff;
+    color: white;
+}
+
+.form-actions button[type="submit"]:hover {
+    background-color: #0056b3;
+}
+
+.form-actions button[type="button"] {
+    background-color: #6c757d;
+    color: white;
+}
+
+.form-actions button[type="button"]:hover {
+    background-color: #5a6268;
+}
+
+.supplier-list-section {
+    margin-top: 30px;
+}
+
+.supplier-list-section table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+
+.supplier-list-section th,
+.supplier-list-section td {
+    border: 1px solid #ddd;
+    padding: 12px;
+    text-align: left;
+}
+
+.supplier-list-section th {
+    background-color: #f2f2f2;
+    font-weight: bold;
+}
+
+.supplier-list-section tr:nth-child(even) {
+    background-color: #f9f9f9;
+}
+
+.supplier-list-section td button {
+    padding: 5px 10px;
+    margin-right: 5px;
+    cursor: pointer;
+    border: none;
+    border-radius: 3px;
+    background-color: #ffc107;
+    color: #212529;
+    font-size: 0.9em;
+}
+
+.supplier-list-section td button:hover {
+    background-color: #e0a800;
+}
