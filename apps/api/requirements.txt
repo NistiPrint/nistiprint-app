@@ -1,0 +1,36 @@
+cryptography
+decorator
+et_xmlfile
+Flask
+flask-blueprint
+Flask-Login
+Flask-SQLAlchemy
+flask-cors
+fuzzywuzzy
+google-auth
+google-cloud-secret-manager
+google-genai
+gunicorn
+mysql-connector-python
+nest-asyncio
+numpy
+openpyxl
+pandas
+PyMySQL
+python-dateutil
+python-dotenv
+pytz
+pyzmq
+requests
+SQLAlchemy
+supabase
+postgrest
+storage3
+psycopg2-binary
+
+
+# Celery (Task Queue)
+celery[redis]==5.3.6
+
+# Redis client
+redis==5.0.1
