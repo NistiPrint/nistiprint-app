@@ -77,7 +77,7 @@ function FerramentasPage() {
 
   const handleUpdateProductStatus = async () => {
       if (!confirm('Isso atualizará o status de TODOS os produtos para "ativo". Continuar?')) return;
-      
+
       try {
           const response = await fetch('/api/v2/ferramentas/update_product_status', {
               headers: { 'Accept': 'application/json'}
@@ -179,8 +179,12 @@ function FerramentasPage() {
                     <CardDescription>Ações em massa para correção de dados.</CardDescription>
                 </CardHeader>
                 <CardContent>
-                    <Button onClick={handleUpdateProductStatus} variant="outline">
-                        <RefreshCw className="mr-2 h-4 w-4" /> Atualizar Status de Todos os Produtos para 'Ativo'
+                    <Button 
+                        onClick={handleUpdateProductStatus} 
+                        variant="outline"
+                    >
+                        <RefreshCw className="mr-2 h-4 w-4" /> 
+                        Atualizar Status de Todos os Produtos para 'Ativo'
                     </Button>
                 </CardContent>
             </Card>

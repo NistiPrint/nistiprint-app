@@ -1,3 +1,4 @@
+import QueueMonitor from '@/components/admin/QueueMonitor';
 import LiveOrderConsultation from '@/components/marketplace/LiveOrderConsultation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -137,6 +138,7 @@ export default function IntegrationsStatus({ onAddClick }) {
 
   return (
     <div className="space-y-6">
+      <QueueMonitor />
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold">Integrações Instaladas</h2>
         <div className="flex gap-2">

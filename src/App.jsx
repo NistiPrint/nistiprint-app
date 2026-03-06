@@ -38,6 +38,8 @@ import ConfiguracoesBlingPage from './pages/admin/configuracoes/ConfiguracoesBli
 import ConfiguracoesProducaoPage from './pages/admin/configuracoes/ConfiguracoesProducaoPage';
 import PermissoesDemandaPage from './pages/admin/configuracoes/PermissoesDemandaPage';
 import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPage';
+import HistoricoColetasPage from './pages/admin/relatorios/HistoricoColetasPage';
+import FilaEstoquePage from './pages/admin/relatorios/FilaEstoquePage';
 import RelatoriosIndexPage from './pages/admin/relatorios/RelatoriosIndexPage';
 import GerencialHistorico from './components/GerencialHistorico';
 import AuditoriaPage from './pages/auditoria/AuditoriaPage';
@@ -202,6 +204,8 @@ function App() {
             <Route index element={<Navigate to="/relatorios/index" replace />} />
             <Route path="index" element={<RelatoriosIndexPage />} />
             <Route path="historico-producao" element={<HistoricoProducaoPage />} />
+            <Route path="historico-coletas" element={<HistoricoColetasPage />} />
+            <Route path="fila-estoque" element={<FilaEstoquePage />} />
             <Route path="auditoria" element={<AuditoriaPage />} />
             <Route path="gerencial-historico" element={<GerencialHistorico />} />
           </Route>

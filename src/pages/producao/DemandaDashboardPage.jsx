@@ -123,7 +123,7 @@ function DemandaDashboardPage() {
     };
   }, [id, fetchDemanda, isSaving]);
 
-  // Itens filtrados e com mudanças locais aplicadas
+  // Itens com mudanças locais aplicadas (apenas para exibição dos valores nas células)
   const allProcessedItems = useMemo(() => {
     if (!demanda?.itens) return [];
     return demanda.itens.map(item => {
@@ -134,26 +134,48 @@ function DemandaDashboardPage() {
 
   const filteredItems = useMemo(() => {
     const query = debouncedSearchQuery.toLowerCase();
-    const items = allProcessedItems.filter(item =>
+    
+    // Usar os valores ORIGINAIS (do banco) para filtrar por aba, não os valores pendentes
+    // Isso evita que o item mude de aba antes do salvamento
+    const itemsWithOriginalValues = demanda?.itens?.map(item => ({
+      ...item,
+      // Para filtragem, manter os valores originais do banco
+      _originalValues: {
+        miolos_prontos_retirada_qtd: item.miolos_prontos_retirada_qtd || 0,
+        capas_produzidas_qtd: item.capas_produzidas_qtd || 0,
+        capas_prontas_retirada_qtd: item.capas_prontas_retirada_qtd || 0,
+        expedicao_capas_retiradas_qtd: item.expedicao_capas_retiradas_qtd || 0,
+        expedicao_miolos_retirados_qtd: item.expedicao_miolos_retirados_qtd || 0,
+        status_item: item.status_item
+      }
+    })) || [];
+
+    const filtered = itemsWithOriginalValues.filter(item => {
+      const orig = item._originalValues;
+      
+      if (statusFilter === 'ativos') {
+        // Itens que ainda tem saldo para processar (Miolos ou Capas ainda não 100% prontos)
+        return orig.status_item !== 'Concluído' && 
+               (orig.miolos_prontos_retirada_qtd < item.quantidade_total || 
+                orig.capas_produzidas_qtd < item.quantidade_total);
+      } else if (statusFilter === 'prontos') {
+        // Itens não concluídos onde Miolo e Capa já tem alguma quantidade pronta para "encontrar"
+        return orig.status_item !== 'Concluído' && 
+               orig.miolos_prontos_retirada_qtd > 0 && 
+               orig.capas_prontas_retirada_qtd > 0;
+      } else {
+        // Itens que tiveram a quantidade total finalizada
+        return orig.status_item === 'Concluído';
+      }
+    });
+
+    // Aplicar filtro de busca
+    return filtered.filter(item =>
         item.item_descricao.toLowerCase().includes(query) ||
         item.miolo_name?.toLowerCase().includes(query) ||
         item.variacao?.toLowerCase().includes(query)
     );
-
-    if (statusFilter === 'ativos') {
-        // Itens que ainda tem saldo para finalizar
-        return items.filter(i => {
-            const finalizados = Math.min(i.expedicao_capas_retiradas_qtd || 0, i.expedicao_miolos_retirados_qtd || 0);
-            return i.status_item !== 'Concluído' && finalizados < i.quantidade_total;
-        });
-    } else {
-        // Itens que tiveram a quantidade total finalizada
-        return items.filter(i => {
-            const finalizados = Math.min(i.expedicao_capas_retiradas_qtd || 0, i.expedicao_miolos_retirados_qtd || 0);
-            return finalizados >= i.quantidade_total;
-        });
-    }
-  }, [allProcessedItems, debouncedSearchQuery, statusFilter]);
+  }, [demanda?.itens, pendingChanges, debouncedSearchQuery, statusFilter]);
 
   const handleLocalChange = useCallback((itemId, fieldName, delta) => {
     setPendingChanges(prev => {
@@ -460,7 +482,6 @@ function DemandaDashboardPage() {
                       item.miolo_name || item.miolo || '-'
                     )}
                 </div>
-                {isReadyForExpedition && item.status_item !== 'Concluído' && <Badge variant="outline" className="mt-1 text-[9px] h-4 border-indigo-500 text-indigo-700 bg-indigo-50 uppercase">Pronto Expedição</Badge>}
             </div>
 
             <div className="opacity-0 group-hover:opacity-100 transition-opacity">
@@ -694,7 +715,8 @@ function DemandaDashboardPage() {
             <div className="flex flex-col gap-1 border-l pl-4">
                 <Label className="text-xs text-muted-foreground">Status do Item</Label>
                 <div className="flex gap-1">
-                    <Button variant={statusFilter === 'ativos' ? 'default' : 'outline'} size="sm" onClick={() => setStatusFilter('ativos')}>Em Andamento</Button>
+                    <Button variant={statusFilter === 'ativos' ? 'default' : 'outline'} size="sm" onClick={() => setStatusFilter('ativos')}>Produção</Button>
+                    <Button variant={statusFilter === 'prontos' ? 'default' : 'outline'} size="sm" onClick={() => setStatusFilter('prontos')}>Prontos para Fechar</Button>
                     <Button variant={statusFilter === 'finalizados' ? 'default' : 'outline'} size="sm" onClick={() => setStatusFilter('finalizados')}>Finalizados</Button>
                 </div>
             </div>

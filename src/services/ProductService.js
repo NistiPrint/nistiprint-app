@@ -135,6 +135,15 @@ const ProductService = {
     return response.data;
   },
 
+  // Clone Product
+  cloneProduct: async (productId, newSku, newName = null) => {
+    const response = await api.post(`/produtos/${productId}/clone`, {
+      new_sku: newSku,
+      new_name: newName
+    });
+    return response.data;
+  },
+
   // Get product variations
   getProductVariations: async (productId) => {
     const response = await api.get(`/produtos/${productId}`);

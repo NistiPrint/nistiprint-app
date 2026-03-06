@@ -7,8 +7,12 @@ const ProductionService = {
   },
 
   registerProduction: async (data) => {
-    // data: { product_id, quantity, date }
-    const response = await api.post('/producao/registrar-item', data);
+    // data: { product_id, quantity, date, field, origem_tipo }
+    // default origem_tipo: 3 (CONTROLE_PRODUCAO_LOTE)
+    const response = await api.post('/producao/registrar-item', {
+      ...data,
+      origem_tipo: data.origem_tipo || 3
+    });
     return response.data;
   },
 
@@ -40,9 +44,11 @@ const ProductionService = {
     return response.data;
   },
 
-  updateItemProgress: async (demandaId, itemId, updates) => {
+  updateItemProgress: async (demandaId, itemId, updates, origem_tipo = 1) => {
+    // default origem_tipo: 1 (DASHBOARD_PRODUCAO_INCREMENTAL)
     const response = await api.post(`/demanda_producao/${demandaId}/item/${itemId}/registrar-producao`, {
-      producao_incremental: updates
+      producao_incremental: updates,
+      origem_tipo
     });
     return response.data;
   },

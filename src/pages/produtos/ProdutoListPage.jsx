@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   Table,
@@ -24,13 +25,14 @@ import {
 } from '@/components/ui/table';
 import { Copy, Edit, PlusCircle, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import CategoryService from '../../services/CategoryService';
 import ProductService from '../../services/ProductService';
 import SectorService from '../../services/SectorService';
 
 function ProdutoListPage() {
+  const navigate = useNavigate();
   const [produtos, setProdutos] = useState([]);
   const [categorias, setCategorias] = useState([]);
   const [setores, setSetores] = useState([]);
@@ -45,6 +47,13 @@ function ProdutoListPage() {
   const [bulkUpdateCategoryDialogOpen, setBulkUpdateCategoryDialogOpen] = useState(false);
   const [selectedBulkCategoryId, setSelectedBulkCategoryId] = useState('none');
   const [bulkUpdateLoading, setBulkUpdateLoading] = useState(false);
+
+  // Clone Dialog State
+  const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
+  const [productToClone, setProductToClone] = useState(null);
+  const [newCloneSku, setNewCloneSku] = useState('');
+  const [newCloneName, setNewCloneName] = useState('');
+  const [cloneLoading, setCloneLoading] = useState(false);
 
   // Bulk Update Setor State
   const [bulkUpdateSetorDialogOpen, setBulkUpdateSetorDialogOpen] = useState(false);
@@ -287,6 +296,35 @@ function ProdutoListPage() {
     }
   };
 
+  const confirmClone = (produto) => {
+    setProductToClone(produto);
+    setNewCloneSku(`${produto.sku_mestre || ''}-CLONE`);
+    setNewCloneName(`${produto.name || ''} (Cópia)`);
+    setCloneDialogOpen(true);
+  };
+
+  const handleClone = async () => {
+    if (!productToClone || !newCloneSku) return;
+
+    setCloneLoading(true);
+    try {
+      const result = await ProductService.cloneProduct(productToClone.id, newCloneSku, newCloneName);
+      toast.success("Produto clonado com sucesso!");
+      setCloneDialogOpen(false);
+      
+      // Redireciona para a página de edição do novo produto
+      if (result.product && result.product.id) {
+        navigate(`/produtos/${result.product.id}/editar`);
+      } else {
+        fetchProdutos();
+      }
+    } catch (error) {
+      toast.error(`Erro ao clonar: ${error.response?.data?.error || error.message}`);
+    } finally {
+      setCloneLoading(false);
+    }
+  };
+
 
   return (
     <Card>
@@ -515,11 +553,14 @@ function ProdutoListPage() {
                             </Button>
                           </Link>
                         )}
-                        <Link to={`/produtos/novo?clone_id=${produto.id}`}>
-                          <Button variant="ghost" size="icon" title="Clonar Produto">
-                            <Copy className="h-4 w-4 text-green-600" />
-                          </Button>
-                        </Link>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Clonar Produto"
+                          onClick={() => confirmClone(produto)}
+                        >
+                          <Copy className="h-4 w-4 text-green-600" />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="icon"
@@ -694,6 +735,52 @@ function ProdutoListPage() {
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction onClick={handleBulkDelete} className="bg-red-600 hover:bg-red-700">
               Sim, excluir
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Clone Product Dialog */}
+      <AlertDialog open={cloneDialogOpen} onOpenChange={setCloneDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clonar Produto</AlertDialogTitle>
+            <AlertDialogDescription>
+              Isso criará uma cópia completa do produto <strong>{productToClone?.name}</strong>,
+              incluindo sua composição (BOM), artes e links.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="new-sku">Novo SKU</Label>
+              <Input
+                id="new-sku"
+                value={newCloneSku}
+                onChange={(e) => setNewCloneSku(e.target.value)}
+                placeholder="Digite o novo SKU"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="new-name">Novo Nome (opcional)</Label>
+              <Input
+                id="new-name"
+                value={newCloneName}
+                onChange={(e) => setNewCloneName(e.target.value)}
+                placeholder="Digite o novo nome"
+              />
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={cloneLoading}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={(e) => {
+                e.preventDefault();
+                handleClone();
+              }} 
+              disabled={cloneLoading || !newCloneSku}
+            >
+              {cloneLoading && <RefreshCw className="mr-2 h-4 w-4 animate-spin" />}
+              Clonar Agora
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
