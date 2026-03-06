@@ -1,0 +1,34 @@
+from datetime import datetime
+from nistiprint_shared.database.database import db
+
+class Setor(db.Model):
+    __tablename__ = 'setores'
+
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(100), nullable=False, unique=True)
+    descricao = db.Column(db.Text, nullable=True)
+    ativo = db.Column(db.Boolean, default=True, nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        def format_datetime(dt):
+            if dt is None:
+                return None
+            elif isinstance(dt, str):
+                return dt  # Already a string from Supabase
+            else:
+                return dt.isoformat()  # Convert datetime object to string
+
+        return {
+            'id': self.id,
+            'nome': self.nome,
+            'name': self.nome,
+            'descricao': self.descricao,
+            'ativo': self.ativo,
+            'created_at': format_datetime(self.created_at),
+            'updated_at': format_datetime(self.updated_at)
+        }
+
+# --- Relationships definitions at the bottom ---
+Setor.usuarios = db.relationship('Usuario', backref='setor', lazy=True)
