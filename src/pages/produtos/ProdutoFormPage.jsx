@@ -42,7 +42,6 @@ function ProdutoFormPage() {
   const [searchParams] = useSearchParams();
 
   const variationIdParam = searchParams.get('variation_id');
-  const cloneIdParam = searchParams.get('clone_id');
 
   const [loadingProduct, setLoadingProduct] = useState(true);
   const [loadingSubmit, setLoadingSubmit] = useState(false);
@@ -240,29 +239,23 @@ function ProdutoFormPage() {
   // Load Product Data
   useEffect(() => {
     const loadProduct = async () => {
-      const targetId = produto_id || cloneIdParam;
-      
-      if (!targetId) {
+      if (!produto_id) {
         setLoadingProduct(false);
         return;
       }
 
       try {
-        const data = await ProductService.getById(targetId);
+        const data = await ProductService.getById(produto_id);
         const product = data.produto;
         
-        // If editing, set productData. If cloning, we don't set it 
-        // because it's effectively a new product.
-        if (produto_id) {
-          setProductData(product);
-        }
+        setProductData(product);
 
         // Certificar-se de que o formato do produto é mantido corretamente
         const formatoProduto = product.formato || 'simples';
 
         form.reset({
-          sku: cloneIdParam ? `${product.sku || product.sku_mestre || ''}-CLONE` : (product.sku || product.sku_mestre || ''),
-          name: cloneIdParam ? `${product.name || ''} (Cópia)` : (product.name || ''),
+          sku: product.sku || product.sku_mestre || '',
+          name: product.name || '',
           description: product.description || '',
           category_id: product.categoria_id ? String(product.categoria_id) : '',
           unit_of_measure_id: product.unidade_medida_id ? String(product.unidade_medida_id) : '',
@@ -276,8 +269,8 @@ function ProdutoFormPage() {
           formato: formatoProduto,
           herdar_dados_pai: product.herdar_dados_pai !== undefined ? product.herdar_dados_pai : true,
           herdar_bom_pai: product.herdar_bom_pai !== undefined ? product.herdar_bom_pai : true,
-          external_product_links: cloneIdParam ? { skus: [], names: [], ids: [] } : (product.external_product_links || { skus: [], names: [], ids: [] }),
-          artworks: cloneIdParam ? [] : (product.artworks || []),
+          external_product_links: product.external_product_links || { skus: [], names: [], ids: [] },
+          artworks: product.artworks || [],
         });
 
         // Handle Tags
@@ -287,7 +280,7 @@ function ProdutoFormPage() {
         }
 
         // Handle Bling Links (Store in state to pass to manager)
-        if (product.bling_product_links && !cloneIdParam) {
+        if (product.bling_product_links) {
             setBlingLinks(product.bling_product_links);
         }
 
@@ -301,7 +294,7 @@ function ProdutoFormPage() {
     };
 
     loadProduct();
-  }, [produto_id, cloneIdParam, navigate, form]);
+  }, [produto_id, navigate, form]);
 
   const handleAddTag = (tagId) => {
     if (!tagId) return;

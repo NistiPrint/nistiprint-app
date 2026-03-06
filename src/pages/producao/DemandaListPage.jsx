@@ -183,8 +183,19 @@ function DemandaListPage() {
     })
   }, [demandas, debouncedSearchTerm, statusFilter, channelFilter, modalidadeFilter, classificacaoFilter])
 
-  const demandasColetadas = demandas.filter(d => ['Coletado', 'CONCLUIDO'].includes(d.status))
-  const demandasAguardandoColeta = demandas.filter(d => ['Finalizado', 'CONCLUIDO', 'Coleta Parcial', 'COLETA_PARCIAL'].includes(d.status))
+  const demandasColetadas = useMemo(() => {
+    const todayStr = new Date().toISOString().split('T')[0]
+    return demandas.filter(d => {
+      const isColetado = ['Coletado', 'COLETADO'].includes(d.status)
+      const foiConcluidoHoje = d.data_conclusao?.startsWith(todayStr)
+      return isColetado && foiConcluidoHoje
+    })
+  }, [demandas])
+
+  const demandasAguardandoColeta = useMemo(() => {
+    // Apenas demandas totalmente finalizadas aparecem como aguardando coleta
+    return demandas.filter(d => ['Finalizado', 'CONCLUIDO'].includes(d.status))
+  }, [demandas])
   const demandasAtivas = filteredDemandas
 
   const clearFilters = () => {
