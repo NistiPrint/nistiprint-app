@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 relatorios_api_bp = Blueprint('relatorios_api', __name__, url_prefix='/api/v2/relatorios')
 
-@relatorios_api_bp.route('/', methods=['GET'])
+@relatorios_api_bp.route('/', methods=['GET'], strict_slashes=False)
 def relatorios_index():
     """
     Retorna informações gerais sobre relatórios, incluindo o sulfite_report real.

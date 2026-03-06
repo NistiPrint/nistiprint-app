@@ -156,15 +156,14 @@ def registrar_item_producao():
         return jsonify({'success': False, 'error': 'Dados incompletos.'}), 400
 
     try:
-        quantity = int(quantity_str)
+        quantity = float(quantity_str)
         selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-        
         user = get_current_user()
         user_id = user.get('email') if user else 'System'
 
         if field:
             # Caso vindo de uma tela que sensibiliza o dashboard (ex: novas abas de capas)
-            # Usar o serviço que suporta recursividade JIT e cascata de dashboard
+            # Usar o serviço que suporta o novo modelo híbrido (Sync 1º nível / Async BOM)
             result = demanda_producao_service.processar_alocacao_avulsa_otimizado(
                 product_id=product_id,
                 campo=field,
@@ -173,13 +172,12 @@ def registrar_item_producao():
             )
         else:
             # Caso padrão de entrada de estoque simples (miolos ou capas sem vínculo de estágio)
-            product = product_service.get_by_id(product_id)
-            result = daily_production_log_service.registrar_producao(
-                log_date=selected_date,
-                product_id=product_id,
-                product_name=product.get('name', 'Produto'),
-                quantity=quantity,
-                user_email=user_id
+            # Agora usa OrdemProducaoService.registrar_producao_imediata que é HÍBRIDO
+            result = ordem_producao_service.registrar_producao_imediata(
+                produto_id=str(product_id),
+                quantidade=quantity,
+                data_producao=date_str,
+                user_id=user_id
             )
         
         # Re-fetch stock details for the response
