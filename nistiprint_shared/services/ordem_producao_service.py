@@ -366,10 +366,9 @@ class OrdemProducaoService:
 
     def registrar_producao_imediata(self, produto_id: str, quantidade: float, data_producao: str, user_id: str = 'System') -> Dict[str, Any]:
         """
-        Cria uma OP já finalizada, consome componentes e dá entrada no produto final de forma imediata.
-        Usado para o registro rápido de produção (+).
+        Cria uma OP já finalizada e dá entrada no produto final usando o modelo híbrido (Sync/Async).
+        A baixa dos componentes será processada em background pela fila de estoque.
         """
-        # Validações Iniciais
         if float(quantidade) <= 0:
             raise ValueError("Quantidade deve ser positiva.")
         
@@ -377,188 +376,67 @@ class OrdemProducaoService:
         if not product:
             raise ValueError(f"Produto {produto_id} não encontrado.")
         
-        # Enriquecer para garantir mapeamento de campos (nome -> name, etc)
         product = product_service.enrich_product_data(product)
-
         deposito_id = app_config_service.get_config('default_production_deposit_id')
-        if not deposito_id:
-             raise ValueError("Depósito de produção padrão não configurado.")
 
-        # 1. Verifica se o produto tem Ficha Técnica (BOM)
-        bom_components = product_service.get_bom_components(produto_id)
-        if not bom_components:
-            raise ValueError(f"Produção não permitida: O produto '{product.get('name', produto_id)}' não possui Ficha Técnica (BOM) cadastrada.")
-
-        # 2. Cria a OP já como COMPLETED (para histórico/rastreio)
-        op_data = {
-            'ordem_id': str(uuid.uuid4()),
-            'produto_id': produto_id,
-            'sku': product.get('sku', ''),
-            'descricao': f"Produção imediata registrada em {data_producao}",
-            'quantidade': float(quantidade),  # Usar float para compatibilidade com numeric(15,4)
-            'status': 'COMPLETED',
-            'data_inicio': datetime.utcnow().date().isoformat(),
-            'data_fim': datetime.utcnow().date().isoformat(),
-            'created_at': datetime.utcnow().isoformat(),
-            'responsavel_id': int(user_id) if str(user_id).isdigit() else None
-        }
-
-        # Insert OP
-        res_op = self.table.insert(op_data).execute()
-        if not res_op.data:
-            raise Exception("Falha ao criar Ordem de Produção.")
-
-        op_created = res_op.data[0]
-        po_id = str(op_created['id'])
-
-        # Realizar a produção com insumos em uma transação atômica
-        # Como o Supabase não suporta transações verdadeiras, faremos uma implementação manual
-        # com lógica de compensação para garantir atomicidade
-
-        # --- VERIFICAÇÃO DE ESTOQUE (Aviso, não trava) ---
-        warning_msg = None
-        insufficient_stock = []
-        for comp in bom_components:
-            qty_required = float(comp['quantity']) * float(quantidade)
-            saldo = estoque_service.get_saldo_atual(comp['component_id'], deposito_id)
-            available = float(saldo.get('quantidade_disponivel', 0))
-            
-            if qty_required > available:
-                shortage = qty_required - available
-                comp_name = comp.get('name') or comp.get('descricao') or comp['component_id']
-                insufficient_stock.append(f"{comp_name} (Faltam {shortage:.2f})")
-        
-        if insufficient_stock:
-            warning_msg = f"Aviso: Os seguintes componentes ficaram com estoque negativo: {', '.join(insufficient_stock)}."
-        # -------------------------------------------------------
-
-        componentes_registrados = []  # Para rastrear componentes já registrados
-        entrada_acabado_realizada = False
-        
+        # 1. Registrar a Entrada do Produto Principal (Híbrido)
+        # Origem 3: CONTROLE_PRODUCAO_LOTE -> Dispara a fila de insumos no banco via RPC
         try:
-            # 3. Processa BOM e Movimenta Estoque
-
-            # 3.1 Consumir Componentes
-            for comp in bom_components:
-                qty_required = float(comp['quantity']) * float(quantidade)
-
-                # Registra movimento de saída (consumo)
-                estoque_service.registrar_saida(
-                    produto_id=comp['component_id'],
-                    deposito_id=deposito_id,
-                    quantidade=qty_required,
-                    motivo=f"Consumo OP {po_id} (Imediata)",
-                    usuario_id=int(user_id) if str(user_id).isdigit() else None
-                )
-
-                # Registra na tabela de componentes da OP para rastreabilidade
-                comp_data = {
-                    'ordem_producao_id': po_id,
-                    'componente_id': comp['component_id'],
-                    'sku': comp.get('sku', ''),
-                    'descricao': comp.get('name', ''),
-                    'quantidade_necessaria': int(round(float(qty_required))),
-                    'quantidade_utilizada': int(round(float(qty_required))),
-                    'status': 'CONCLUIDO'
-                }
-
-                # Armazena para rastreamento (lógica de reversão)
-                componentes_registrados.append(comp_data)
-
-                # Insere no banco de dados
-                self.components_table.insert(comp_data).execute()
-
-            # 3.2 Entrada do Produto Acabado
-            estoque_service.registrar_entrada(
+            correlation_id = estoque_service.registrar_entrada(
                 produto_id=produto_id,
                 deposito_id=deposito_id,
                 quantidade=float(quantidade),
-                observacao=f"Conclusão OP {po_id} (Imediata)",
-                usuario_id=int(user_id) if str(user_id).isdigit() else None
+                observacao=f"Produção Imediata - {user_id}",
+                usuario_id=None,
+                user_context={'user_id': user_id},
+                origem_tipo=3
             )
-            entrada_acabado_realizada = True
-
-            # --- INTEGRAÇÃO COM DASHBOARD DE DEMANDA ---
-            try:
-                from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
-                
-                # Identifica o papel do produto
-                role = product_service.identify_product_role(str(produto_id))
-                
-                # Regra: Miolos NÃO sensibilizam demanda na entrada (+), apenas na saída (-)
-                if role != 'MIOLO':
-                    demanda_producao_service.alocar_producao_automatica(
-                        produto_id=produto_id,
-                        quantidade=float(quantidade),
-                        user_id=user_id
-                    )
-            except Exception as demanda_error:
-                print(f"Erro ao alocar produção imediata de {produto_id} para demandas: {demanda_error}")
-            
-            # 3. Log de Produção Diária
-            from nistiprint_shared.services.daily_production_log_service import daily_production_log_service
-            
-            try:
-                log_date = datetime.strptime(data_producao, '%Y-%m-%d').date()
-            except ValueError:
-                log_date = datetime.fromisoformat(data_producao).date()
-
-            daily_production_log_service.create_log(
-                log_date=log_date,
-                product_id=produto_id,
-                product_name=product['name'],
-                quantity=float(quantidade),
-                production_order_id=po_id,
-                component_stock_snapshot=[],
-                user_email=str(user_id)
-            )
-
-            return {
-                'success': True,
-                'op': op_created,
-                'message': 'Produção registrada com sucesso.',
-                'warning': warning_msg
-            }
-
         except Exception as e:
-            # Lógica de Compensação (Rollback Manual)
-            print(f"Erro durante produção imediata: {str(e)}. Tentando reverter...")
+            raise Exception(f"Falha ao registrar entrada de estoque: {str(e)}")
 
-            # 1. Reverter os componentes registrados (devolver ao estoque)
-            for comp_data in componentes_registrados:
-                try:
-                    estoque_service.registrar_entrada(
-                        produto_id=comp_data['componente_id'],
-                        deposito_id=deposito_id,
-                        quantidade=comp_data['quantidade_necessaria'],
-                        observacao=f"Reversão da OP {po_id} - Erro na produção",
-                        usuario_id=int(user_id) if str(user_id).isdigit() else None
-                    )
-                except Exception as revert_comp_error:
-                    print(f"CRITICAL: Erro ao reverter componente {comp_data['componente_id']}: {str(revert_comp_error)}")
+        # 2. Criar a OP para fins de histórico e rastreabilidade
+        try:
+            op_data = {
+                'ordem_id': str(uuid.uuid4()),
+                'produto_id': produto_id,
+                'sku': product.get('sku', ''),
+                'descricao': f"Produção imediata registrada em {data_producao} (Corr: {correlation_id})",
+                'quantidade': float(quantidade),
+                'status': 'COMPLETED',
+                'data_inicio': datetime.utcnow().date().isoformat(),
+                'data_fim': datetime.utcnow().date().isoformat(),
+                'created_at': datetime.utcnow().isoformat(),
+                'responsavel_id': None # Opcional: associar ID numérico se disponível
+            }
+            res_op = self.table.insert(op_data).execute()
+            po_id = str(res_op.data[0]['id']) if res_op.data else None
+        except Exception as e:
+            print(f"Aviso: Falha ao criar registro de OP, mas estoque foi processado: {e}")
+            po_id = None
 
-            # 2. Reverter a entrada do produto acabado (se ocorreu)
-            if entrada_acabado_realizada:
-                try:
-                    estoque_service.registrar_saida(
-                        produto_id=produto_id,
-                        deposito_id=deposito_id,
-                        quantidade=float(quantidade),
-                        motivo=f"Reversão da OP {po_id} - Erro na produção",
-                        usuario_id=int(user_id) if str(user_id).isdigit() else None
-                    )
-                except Exception as revert_prod_error:
-                    print(f"CRITICAL: Erro ao reverter entrada do produto acabado: {str(revert_prod_error)}")
+        # 3. Log de Produção Diária (Necessário para a UI do controle de produção)
+        from nistiprint_shared.services.daily_production_log_service import daily_production_log_service
+        try:
+            log_date = datetime.strptime(data_producao, '%Y-%m-%d').date()
+        except:
+            log_date = datetime.fromisoformat(data_producao).date()
 
-            # 3. Limpeza do Banco de Dados (OP e Componentes)
-            try:
-                self.components_table.delete().eq('ordem_producao_id', po_id).execute()
-                self.table.delete().eq('id', po_id).execute()
-            except Exception as db_cleanup_error:
-                print(f"Erro ao limpar registros da OP {po_id} no banco: {db_cleanup_error}")
-            
-            # Re-lança a exceção original para o chamador
-            raise e
+        daily_production_log_service.create_log(
+            log_date=log_date,
+            product_id=produto_id,
+            product_name=product['name'],
+            quantity=float(quantidade),
+            production_order_id=po_id,
+            component_stock_snapshot=[],
+            user_email=str(user_id),
+            metadata={'correlation_id': correlation_id}
+        )
+
+        return {
+            'success': True,
+            'message': 'Produção registrada com sucesso (Insumos processando em background).',
+            'correlation_id': correlation_id
+        }
 
 
 

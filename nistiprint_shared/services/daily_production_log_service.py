@@ -3,7 +3,7 @@ from datetime import datetime, time, date
 from nistiprint_shared.services.ordem_producao_service import ordem_producao_service
 from nistiprint_shared.services.estoque_service import estoque_service
 from nistiprint_shared.services.app_config_service import app_config_service
-from utils.date_utils import get_now, get_now_iso
+from nistiprint_shared.utils.date_utils import get_now, get_now_iso
 
 class DailyProductionLogService:
     """Service for managing daily production logs in Supabase."""
@@ -119,12 +119,13 @@ class DailyProductionLogService:
             raise ValueError("O depósito de produção padrão não está configurado.")
 
         try:
-            estoque_service.registrar_saida(
+            correlation_id = estoque_service.registrar_saida(
                 produto_id=product_id,
                 deposito_id=deposito_id,
                 quantidade=float(quantity),
                 motivo=f"Saída manual pela tela de Controle de Produção em {log_date.strftime('%d/%m/%Y')}.",
-                user_context=None
+                user_context={'user_id': user_email},
+                origem_tipo=2 # 2: DASHBOARD_PRODUCAO_ESTORNO / SAIDA MANUAL
             )
 
             self.create_log(
@@ -134,7 +135,8 @@ class DailyProductionLogService:
                 quantity=-abs(float(quantity)),
                 production_order_id=None,
                 component_stock_snapshot=[],
-                user_email=user_email
+                user_email=user_email,
+                metadata={'correlation_id': correlation_id}
             )
         except Exception as e:
             raise Exception(f"Falha ao registrar saída para o produto {product_name}. Erro: {str(e)}")

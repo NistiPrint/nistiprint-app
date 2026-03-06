@@ -31,8 +31,8 @@ class BomService:
             except (ValueError, KeyError) as e:
                 raise ValueError(f"Invalid component data format: {item}. Error: {e}")
 
-        # After updating the BOM, recalculate the product's cost
-        product_service.update_composite_product_cost(str(product_id))
+        # After updating the BOM, recalculate the product's cost with cascade propagation
+        product_service.update_composite_product_cost_cascade(str(product_id))
 
     def get_bom_for_produto(self, product_id: int) -> List[BOMItem]:
         """
@@ -77,7 +77,8 @@ class BomService:
             if componente_id:
                 components.append(BOMItem(
                     componente_id=componente_id,
-                    quantidade=row.get('quantidade_necessaria')
+                    quantidade=row.get('quantidade_necessaria'),
+                    unit=row.get('unidade_medida', 'un')
                 ))
         return components
 
@@ -220,17 +221,17 @@ class BomService:
             }
             self.bom_table.insert(bom_entry).execute()
 
-        # Update the composite cost
-        product_service.update_composite_product_cost(str(parent_product_id))
+        # Update the composite cost with cascade propagation
+        product_service.update_composite_product_cost_cascade(str(parent_product_id))
 
     def remove_bom_component(self, parent_product_id: int, component_product_id: int):
         """
         Removes a component from a product's BOM.
         """
         self.bom_table.delete().eq('produto_pai_id', parent_product_id).eq('componente_id', component_product_id).execute()
-        
-        # Update the composite cost
-        product_service.update_composite_product_cost(str(parent_product_id))
+
+        # Update the composite cost with cascade propagation
+        product_service.update_composite_product_cost_cascade(str(parent_product_id))
 
 # Global instance for use throughout the application
 bom_service = BomService()

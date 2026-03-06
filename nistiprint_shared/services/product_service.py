@@ -216,6 +216,9 @@ class ProductService:
             'tipo_material': product_data.get('material_type'),
             'unidade_medida_id': product_data.get('unit_of_measure_id') or product_data.get('unidade_medida_id'),
             'status': product_data.get('status', 'ativo'),
+            'parent_id': product_data.get('parent_id'),
+            'sku_pai': product_data.get('sku_pai'),
+            'setor_responsavel_id': product_data.get('setor_responsavel_id'),
 
             # New fields for product formats and inheritance
             'formato': product_data.get('formato', 'simples'),
@@ -621,19 +624,55 @@ class ProductService:
 
     # --- BOM Methods ---
 
-    def get_bom_components(self, product_id: str) -> List[Dict[str, Any]]:
-        """Retrieves BOM components for a product."""
-        from nistiprint_shared.services.bom_service import bom_service # Local import to avoid cycle
+    def _product_is_composite(self, product_id: str) -> bool:
+        """
+        Verifica se um produto é composto (possui BOM).
+        """
+        if not str(product_id).isdigit():
+            return False
         
+        from nistiprint_shared.services.bom_service import bom_service
+        try:
+            response = bom_service.bom_table.select("id", count="exact").eq('produto_pai_id', int(product_id)).execute()
+            return (response.count or 0) > 0
+        except Exception:
+            return False
+
+    def get_parent_products_using_component(self, component_id: str) -> List[str]:
+        """
+        Retorna lista de IDs de produtos pais que usam este componente em suas BOMs.
+        """
+        if not str(component_id).isdigit():
+            return []
+        
+        from nistiprint_shared.services.bom_service import bom_service
+        try:
+            response = bom_service.bom_table.select("produto_pai_id").eq('componente_id', int(component_id)).execute()
+            # Filtrar apenas IDs válidos (não nulos e numéricos)
+            parent_ids = []
+            for row in response.data:
+                pid = row.get('produto_pai_id')
+                if pid is not None and str(pid).isdigit():
+                    parent_ids.append(str(pid))
+            return list(set(parent_ids))
+        except Exception as e:
+            logging.error(f"Error getting parent products for component {component_id}: {e}")
+            return []
+
+    def get_bom_components(self, product_id: str, **kwargs) -> List[Dict[str, Any]]:
+        """Retrieves BOM components for a product, optionally enriched with stock data."""
+        from nistiprint_shared.services.bom_service import bom_service # Local import to avoid cycle
+
         product = self.get_by_id(product_id)
         if not product:
             return []
-            
+
         # Ensure we only try to fetch BOM if ID is numeric, as per current bom_service expectations
         if not str(product['id']).isdigit():
             return []
 
         components = bom_service.get_bom_for_produto(int(product['id']))
+        deposito_id = kwargs.get('deposito_id')
         
         # Enrich components with details
         result = []
@@ -643,15 +682,28 @@ class ProductService:
             
             if comp_product:
                 comp_product = self.enrich_product_data(comp_product)
-                result.append({
+                item = {
                     'component_id': comp_product['id'], 
+                    'id': comp_product['id'], # For backward compatibility
                     'sku': comp_product.get('sku'),
                     'name': comp_product.get('nome'),
                     'quantity': comp.quantidade,
+                    'bom_quantity': comp.quantidade, # For backward compatibility
+                    'unit': comp.unit,
                     'cost': comp_product.get('cost_price', 0),
                     'material_type': comp_product.get('material_type'),
                     'categoria_id': comp_product.get('categoria_id')
-                })
+                }
+
+                # Add stock info if deposit is provided
+                if deposito_id:
+                    from nistiprint_shared.services.estoque_service import estoque_service
+                    saldo = estoque_service.get_saldo_atual(str(comp_product['id']), deposito_id)
+                    item['physical_stock'] = float(saldo.get('quantidade_fisica', 0))
+                    item['reserved_stock'] = float(saldo.get('quantidade_reservada', 0))
+                    item['available_stock'] = float(saldo.get('quantidade_disponivel', 0))
+                
+                result.append(item)
         return result
 
     def add_bom_component(self, product_id: str, component_id: str, quantity: float):
@@ -679,17 +731,19 @@ class ProductService:
         self._validate_physical_product(str(product_id))
         from nistiprint_shared.services.bom_service import bom_service
         bom_service.add_bom_component(int(product_id), int(component_id), quantity)
-        
+
     def update_composite_product_cost(self, product_id: str):
-        """Updates the cost of a composite product based on its BOM."""
-        cost = self.calcular_custo_bom(product_id)
-        
+        """
+        Updates the cost of a composite product based on its BOM (recursive calculation).
+        """
+        cost = self.calcular_custo_bom_recursivo(product_id)
+
         # Update product cost
         current = self.get_by_id(product_id)
         if current:
             pricing = current.get('precificacao') or {}
             pricing['cost_price'] = cost
-            
+
             update_data = {
                 'updated_at': datetime.utcnow().isoformat(),
                 'precificacao': pricing,
@@ -697,6 +751,37 @@ class ProductService:
             }
             self.table.update(update_data).eq('id', int(product_id)).execute()
             self.clear_cache()
+
+    def update_composite_product_cost_cascade(self, product_id: str, visited: set = None):
+        """
+        Atualiza o custo de um produto composto e propaga em cascata para todos
+        os produtos pais que o utilizam como componente.
+        
+        Args:
+            product_id: ID do produto para atualizar custo
+            visited: Set de IDs já visitados para evitar ciclos infinitos
+        """
+        if visited is None:
+            visited = set()
+        
+        # Evita ciclo infinito
+        if product_id in visited:
+            logging.warning(f"Ciclo detectado ao propagar custo do produto {product_id}")
+            return
+        
+        visited.add(product_id)
+        
+        # Atualiza custo deste produto
+        self.update_composite_product_cost(product_id)
+        logging.info(f"Custo atualizado para produto {product_id}")
+        
+        # Encontra todos os produtos pais que usam este produto como componente
+        parent_ids = self.get_parent_products_using_component(product_id)
+        
+        # Propaga para cada pai
+        for parent_id in parent_ids:
+            logging.info(f"Propagando custo de {product_id} para produto pai {parent_id}")
+            self.update_composite_product_cost_cascade(parent_id, visited.copy())
 
     def calcular_custo_bom(self, product_id: str) -> float:
         """Calculates the total cost of BOM components."""
@@ -707,6 +792,184 @@ class ProductService:
             unit_cost = float(comp.get('cost', 0))
             total_cost += qty * unit_cost
         return total_cost
+
+    def calcular_custo_bom_recursivo(self, product_id: str, visited: set = None) -> float:
+        """
+        Calcula o custo total da BOM de forma recursiva, considerando que componentes
+        podem ser produtos compostos (ter sua própria BOM).
+        
+        Args:
+            product_id: ID do produto para calcular custo
+            visited: Set de IDs já visitados para evitar ciclos infinitos
+        
+        Returns:
+            Custo total calculado
+        """
+        if visited is None:
+            visited = set()
+        
+        # Evita ciclo infinito
+        if product_id in visited:
+            logging.warning(f"Ciclo detectado ao calcular custo do produto {product_id}")
+            return 0.0
+        
+        visited.add(product_id)
+        
+        # Verifica se produto tem BOM
+        if not self._product_is_composite(product_id):
+            # Produto simples: retorna custo direto
+            product = self.get_by_id(product_id)
+            if product:
+                return float(product.get('preco_custo') or product.get('cost_price') or 0.0)
+            return 0.0
+        
+        # Produto composto: calcular custo baseado nos componentes
+        components = self.get_bom_components(product_id)
+        
+        if not components:
+            # Produto marcado como composto mas sem componentes
+            return 0.0
+        
+        total_cost = 0.0
+        for comp in components:
+            comp_id = str(comp['component_id'])
+            qty = float(comp.get('quantity', 0))
+            
+            # Verifica se componente é composto
+            if self._product_is_composite(comp_id):
+                # Componente é composto: calcular custo recursivamente
+                unit_cost = self.calcular_custo_bom_recursivo(comp_id, visited.copy())
+            else:
+                # Componente simples: usar custo direto
+                unit_cost = float(comp.get('cost', 0))
+            
+            total_cost += qty * unit_cost
+        
+        return total_cost
+
+    # --- Clone Methods ---
+
+    def clone_product(self, product_id: str, new_sku: str, new_name: str = None) -> Dict[str, Any]:
+        """
+        Clona um produto copiando todos os dados, incluindo BOM, artworks e links externos.
+        
+        Args:
+            product_id: ID do produto original a ser clonado
+            new_sku: SKU do novo produto clonado
+            new_name: Nome do novo produto (opcional, usa o original se não fornecido)
+        
+        Returns:
+            Dados do produto clonado
+        
+        Raises:
+            ValueError: Se o SKU já existir ou produto original não for encontrado
+        """
+        # Verifica se produto original existe
+        original_product = self.get_by_id(product_id)
+        if not original_product:
+            raise ValueError(f"Produto {product_id} não encontrado")
+        
+        # Verifica se novo SKU já existe
+        existing = self.get_by_sku(new_sku)
+        if existing:
+            raise ValueError(f"SKU '{new_sku}' já está em uso")
+        
+        # Prepara dados do novo produto
+        new_product_data = {
+            'sku': new_sku,
+            'nome': new_name or f"{original_product.get('nome')} (CÓPIA)",
+            'descricao': original_product.get('descricao'),
+            'categoria_id': original_product.get('categoria_id'),
+            'tags': original_product.get('tags', []),
+            'preco_custo': original_product.get('preco_custo') or 0,
+            'preco_venda': original_product.get('preco_venda') or 0,
+            'estoque_minimo': original_product.get('estoque_minimo') or 0,
+            'estoque_maximo': original_product.get('estoque_maximo') or 0,
+            'tipo_material': original_product.get('tipo_material'),
+            'unidade_medida_id': original_product.get('unidade_medida_id'),
+            'status': 'rascunho',  # Novo produto começa como rascunho
+            'parent_id': original_product.get('parent_id'),
+            'sku_pai': original_product.get('sku_pai'),
+            'setor_responsavel_id': original_product.get('setor_responsavel_id'),
+            'formato': original_product.get('formato') or 'simples',
+            'herdar_dados_pai': original_product.get('herdar_dados_pai', True),
+            'herdar_bom_pai': original_product.get('herdar_bom_pai', True),
+            'atributos': original_product.get('atributos') or {},
+            'precificacao': original_product.get('precificacao') or {},
+        }
+        
+        # Cria o novo produto
+        created_product = self.create(new_product_data)
+        if not created_product:
+            raise ValueError("Erro ao criar produto clonado")
+        
+        new_product_id = str(created_product['id'])
+        
+        # Copia a BOM (lista de componentes)
+        try:
+            from nistiprint_shared.services.bom_service import bom_service
+            original_components = self.get_bom_components(product_id)
+            
+            if original_components:
+                components_data = []
+                for comp in original_components:
+                    components_data.append({
+                        'component_id': int(comp['component_id']),
+                        'quantity': float(comp['quantity']),
+                        'unit': comp.get('unit', 'un')
+                    })
+                
+                if components_data:
+                    bom_service.sync_bom_for_product(int(new_product_id), components_data)
+                    logging.info(f"BOM copiada para produto clonado {new_product_id}")
+        except Exception as e:
+            logging.error(f"Erro ao copiar BOM para produto clonado {new_product_id}: {e}")
+        
+        # Copia artworks
+        try:
+            from nistiprint_shared.services.artwork_service import artwork_service
+            original_artworks = artwork_service.get_artworks_for_product(product_id)
+            
+            if original_artworks:
+                for artwork in original_artworks:
+                    # Copia artwork apontando para o novo produto
+                    artwork_data = {
+                        'product_id': int(new_product_id),
+                        'filename': artwork.filename,
+                        'original_filename': artwork.original_filename,
+                        'file_path': artwork.file_path,
+                        'file_size': artwork.file_size,
+                        'mime_type': artwork.mime_type,
+                    }
+                    artwork_service.create_artwork(artwork_data)
+                logging.info(f"Artworks copiados para produto clonado {new_product_id}")
+        except Exception as e:
+            logging.error(f"Erro ao copiar artworks para produto clonado {new_product_id}: {e}")
+        
+        # Copia links externos (Bling, etc.)
+        try:
+            original_links = self.get_external_product_links(product_id)
+            for link in original_links:
+                try:
+                    self.add_external_product_link(
+                        int(new_product_id),
+                        link['codigo_externo'],
+                        link['plataforma'],
+                        link.get('metadados')
+                    )
+                except ValueError:
+                    # Link já existe, ignora
+                    pass
+            logging.info(f"Links externos copiados para produto clonado {new_product_id}")
+        except Exception as e:
+            logging.error(f"Erro ao copiar links externos para produto clonado {new_product_id}: {e}")
+        
+        # Limpa cache
+        self.clear_cache()
+        
+        logging.info(f"Produto {product_id} clonado com sucesso para {new_product_id} (SKU: {new_sku})")
+        
+        return self.get_by_id(new_product_id)
 
     # --- External Product Links Methods ---
 

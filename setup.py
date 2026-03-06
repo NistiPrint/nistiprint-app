@@ -15,6 +15,8 @@ setup(
         "python-dateutil>=2.8.2",
         "pytz>=2023.3",
         "psycopg2-binary>=2.9.0",
+        "fuzzywuzzy>=0.18.0",
+        "python-Levenshtein>=0.12.0",
         "google-cloud-secret-manager>=2.16.0",
         "google-generativeai>=0.3.0",
         "google-auth>=2.0.0",

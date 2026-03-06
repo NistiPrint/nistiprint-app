@@ -4,7 +4,7 @@ from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.uom_conversion_service import uom_conversion_service
 from nistiprint_shared.services.deposito_service import deposito_service
 from nistiprint_shared.services.system_log_service import system_log_service
-from utils.date_utils import get_now_iso
+from nistiprint_shared.utils.date_utils import get_now_iso
 
 class EstoqueService:
     """Serviço para gerenciamento de estoque e movimentações (Supabase Version)"""
@@ -109,10 +109,11 @@ class EstoqueService:
     def registrar_entrada(self, produto_id: Any, deposito_id: Any, quantidade: float,
                          observacao: str = "", ordem_compra_id: Optional[str] = None,
                          usuario_id: Optional[int] = None, unit_name: Optional[str] = None,
-                         user_context: dict = None) -> str:
+                         user_context: dict = None, correlation_id: Optional[str] = None,
+                         origem_tipo: Optional[int] = None) -> str:
         """Registra entrada de mercadoria no estoque."""
         self._validate_stock_eligibility(produto_id)
-        self._validate_sector_permission(produto_id, user_context)  # Nova validação
+        self._validate_sector_permission(produto_id, user_context)
         deposito_id = self._resolve_deposito(deposito_id)
         final_quantity = quantidade
         if unit_name:
@@ -129,7 +130,7 @@ class EstoqueService:
             else:
                 raise ValueError(f"A proporção '{unit_name}' não foi encontrada para o produto ID {produto_id}.")
 
-        return self._registrar_movimento(
+        return self.registrar_movimento_hibrido(
             produto_id=produto_id,
             deposito_id=deposito_id,
             tipo_movimentacao='ENTRADA',
@@ -137,26 +138,85 @@ class EstoqueService:
             motivo=observacao,
             documento_referencia=ordem_compra_id,
             usuario_id=usuario_id,
-            user_context=user_context
+            correlation_id=correlation_id,
+            origem_tipo=origem_tipo
         )
 
     def registrar_saida(self, produto_id: Any, deposito_id: Any, quantidade: float,
                        motivo: str = "", usuario_id: Optional[int] = None,
-                       user_context: dict = None, documento_referencia: Optional[str] = None) -> str:
+                       user_context: dict = None, documento_referencia: Optional[str] = None,
+                       correlation_id: Optional[str] = None, origem_tipo: Optional[int] = None) -> str:
         """Registra saída de mercadoria do estoque."""
         self._validate_stock_eligibility(produto_id)
-        self._validate_sector_permission(produto_id, user_context)  # Nova validação
+        self._validate_sector_permission(produto_id, user_context)
         deposito_id = self._resolve_deposito(deposito_id)
-        return self._registrar_movimento(
+        return self.registrar_movimento_hibrido(
             produto_id=produto_id,
             deposito_id=deposito_id,
             tipo_movimentacao='SAIDA',
             quantidade=-abs(quantidade),
             motivo=motivo,
             usuario_id=usuario_id,
-            user_context=user_context,
-            documento_referencia=documento_referencia
+            documento_referencia=documento_referencia,
+            correlation_id=correlation_id,
+            origem_tipo=origem_tipo
         )
+
+    def registrar_movimento_hibrido(self, produto_id: Any, deposito_id: Any, tipo_movimentacao: str,
+                                  quantidade: float, motivo: str = "", 
+                                  documento_referencia: Optional[str] = None,
+                                  usuario_id: Optional[int] = None,
+                                  correlation_id: Optional[str] = None,
+                                  origem_tipo: Optional[int] = None) -> str:
+        """
+        Registra o primeiro nível da movimentação atomicamente via RPC.
+        Retorna o correlation_id gerado ou fornecido.
+        """
+        try:
+            # Chama a RPC no Postgres
+            params = {
+                'p_produto_id': int(produto_id),
+                'p_deposito_id': int(deposito_id),
+                'p_tipo_movimentacao': tipo_movimentacao,
+                'p_quantidade': float(quantidade),
+                'p_motivo': motivo,
+                'p_origem_tipo': origem_tipo,
+                'p_usuario_id': usuario_id,
+                'p_documento_referencia': str(documento_referencia) if documento_referencia else None
+            }
+            
+            if correlation_id:
+                params['p_correlation_id'] = correlation_id
+
+            response = supabase_db.rpc('registrar_movimentacao_primaria', params).execute()
+            
+            if response.data:
+                print(f"DEBUG: RPC registrar_movimentacao_primaria executada com sucesso. CorrelationID: {response.data}")
+                return str(response.data)
+            else:
+                # Fallback para o método antigo se a RPC não estiver disponível (transição)
+                print("DEBUG: RPC registrar_movimentacao_primaria retornou vazio. Usando fallback síncrono.")
+                return self._registrar_movimento(
+                    produto_id=produto_id,
+                    deposito_id=deposito_id,
+                    tipo_movimentacao=tipo_movimentacao,
+                    quantidade=quantidade,
+                    motivo=motivo,
+                    documento_referencia=documento_referencia,
+                    usuario_id=usuario_id
+                )
+        except Exception as e:
+            print(f"DEBUG: Falha ao chamar RPC registrar_movimentacao_primaria: {e}. Usando fallback síncrono.")
+            # Fallback em caso de erro na RPC
+            return self._registrar_movimento(
+                produto_id=produto_id,
+                deposito_id=deposito_id,
+                tipo_movimentacao=tipo_movimentacao,
+                quantidade=quantidade,
+                motivo=motivo,
+                documento_referencia=documento_referencia,
+                usuario_id=usuario_id
+            )
 
     def registrar_balanco(self, produto_id: Any, deposito_id: Any, quantidade_ajuste: float,
                          motivo: str = "", observacao: str = "", usuario_id: Optional[int] = None, 

@@ -106,6 +106,14 @@ class SupabaseDBService:
             raise ValueError("Supabase client not initialized and environment variables are missing.")
         return self.client.table(table_name)
 
+    def rpc(self, function_name: str, params: Optional[Dict[str, Any]] = None):
+        """
+        Call a Postgres function via RPC
+        """
+        if not self._ensure_client():
+            raise ValueError("Supabase client not initialized and environment variables are missing.")
+        return self.client.rpc(function_name, params or {})
+
     def get(self, table_name: str, id: int):
         """
         Get a record by ID
