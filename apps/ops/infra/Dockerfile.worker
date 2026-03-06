@@ -1,0 +1,60 @@
+# ===========================================
+# DOCKERFILE - CELERY WORKER
+# ===========================================
+# Imagem otimizada para worker Celery
+# ===========================================
+
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir --timeout=120 -r requirements.txt
+
+# -------------------------------------------
+# Stage 2: Production Worker
+# -------------------------------------------
+FROM python:3.12-slim AS production
+
+WORKDIR /app
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create non-root user for security
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+
+# Copy installed packages from builder (all site-packages)
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy application code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /app/temp
+RUN mkdir -p /app/uploads/artworks
+RUN chown -R appuser:appgroup /app
+
+# Switch to non-root user
+USER appuser
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV FLASK_ENV=production
+ENV PATH="/usr/local/bin:$PATH"
+
+# Default command (can be overridden in docker-compose)
+CMD ["celery", "-A", "services.celery_app", "worker", "--loglevel=info", "--concurrency=2"]

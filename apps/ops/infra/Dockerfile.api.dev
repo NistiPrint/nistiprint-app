@@ -1,0 +1,42 @@
+# ===========================================
+# DOCKERFILE - API FLASK (DESENVOLVIMENTO)
+# ===========================================
+# Otimizado para desenvolvimento com hot-reload
+# ===========================================
+
+FROM python:3.12-slim
+
+# Define working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Upgrade pip and install dependencies
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir --timeout=120 -r requirements.txt
+
+# Copy application code (will be overridden by volume mount in dev)
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /app/temp
+RUN mkdir -p /app/static/js/ferramentas
+RUN mkdir -p /app/uploads/artworks
+
+# Expose port
+EXPOSE 8080
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV FLASK_ENV=development
+
+# Default command (can be overridden in docker-compose)
+# Note: Using app instance from passenger_wsgi.py
+CMD ["gunicorn", "--workers=1", "--threads=3", "-b", "0.0.0.0:8080", "passenger_wsgi:app", "--timeout=600", "--reload"]
