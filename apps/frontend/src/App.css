@@ -1,0 +1,6 @@
+/* Reset default Vite styles that might conflict with Tailwind/Custom layout */
+#root {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
