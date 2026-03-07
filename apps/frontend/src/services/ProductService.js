@@ -55,6 +55,11 @@ const ProductService = {
     return response.data;
   },
 
+  copyBOMFromParent: async (productId) => {
+    const response = await api.post(`/produtos/${productId}/bom/copy-from-parent`);
+    return response.data;
+  },
+
   removeBOMComponent: async (productId, componentId) => {
     const response = await api.delete(`/produtos/${productId}/bom`, {
       params: { componente_id: componentId }

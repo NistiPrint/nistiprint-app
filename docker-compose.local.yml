@@ -1,0 +1,82 @@
+# =======================================================
+# NISTIPRINT - DOCKER COMPOSE LOCAL (MONOREPO)
+# =======================================================
+# Uso: docker-compose -f docker-compose.local.yml up -d
+# Sincronizado com a versão estável da raiz.
+# =======================================================
+
+services:
+  # --- INFRA ESTRUTURA LOCAL ---
+  redis:
+    image: redis:7-alpine
+    container_name: nistiprint-app-redis-local
+    restart: unless-stopped
+    networks:
+      - app-internal
+    command: redis-server --appendonly yes --maxmemory 256mb
+    volumes:
+      - redis_local_data:/data
+
+  # --- BACKEND API ---
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: nistiprint-app-api-local
+    restart: unless-stopped
+    networks:
+      - app-internal
+    ports:
+      - "8080:8080"
+    environment:
+      - FLASK_ENV=development
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATABASE_MODE=supabase
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    command: python main.py
+
+  # --- WORKER ---
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    container_name: nistiprint-app-worker-local
+    restart: unless-stopped
+    networks:
+      - app-internal
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DATABASE_MODE=supabase
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    command: celery -A worker_entrypoint worker --loglevel=info --concurrency=2
+
+  # --- FRONTEND ---
+  frontend:
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+    container_name: nistiprint-app-frontend-local
+    restart: unless-stopped
+    networks:
+      - app-internal
+    ports:
+      - "5173:80"
+    environment:
+      - VITE_API_URL=/api
+    depends_on:
+      - api
+
+networks:
+  app-internal:
+    driver: bridge
+
+volumes:
+  redis_local_data:

@@ -44,11 +44,13 @@ class BomService:
 
         # Get the product to check if it's a variation with inheritance enabled
         product = product_service.get_by_id(str(product_id))
+        is_inherited = False
 
         if product and product.get('parent_id') and product.get('herdar_bom_pai', False):
             # This is a variation that inherits BOM from its parent
             parent_id = product.get('parent_id')
             response = self.bom_table.select("*").eq('produto_pai_id', parent_id).execute()
+            is_inherited = True
         else:
             # Regular product or variation without inheritance
             response = self.bom_table.select("*").eq('produto_pai_id', product_id).execute()
@@ -78,7 +80,8 @@ class BomService:
                 components.append(BOMItem(
                     componente_id=componente_id,
                     quantidade=row.get('quantidade_necessaria'),
-                    unit=row.get('unidade_medida', 'un')
+                    unit=row.get('unidade_medida', 'un'),
+                    is_inherited=is_inherited
                 ))
         return components
 
@@ -232,6 +235,48 @@ class BomService:
 
         # Update the composite cost with cascade propagation
         product_service.update_composite_product_cost_cascade(str(parent_product_id))
+
+    def copy_bom_from_parent(self, product_id: int) -> bool:
+        """
+        Copies the BOM from the parent product to the current product (variation)
+        and disables inheritance.
+        """
+        product = product_service.get_by_id(str(product_id))
+        if not product or not product.get('parent_id'):
+            return False
+
+        parent_id = product.get('parent_id')
+        
+        # 1. Get parent's BOM
+        parent_bom_resp = self.bom_table.select("*").eq('produto_pai_id', parent_id).execute()
+        
+        if not parent_bom_resp.data:
+            # Parent has no BOM, just disable inheritance
+            product_service.update(str(product_id), {'herdar_bom_pai': False})
+            return True
+
+        # 2. Delete existing entries for this child (if any)
+        self.bom_table.delete().eq('produto_pai_id', product_id).execute()
+
+        # 3. Copy entries
+        new_entries = []
+        for item in parent_bom_resp.data:
+            new_entries.append({
+                'produto_pai_id': product_id,
+                'componente_id': item['componente_id'],
+                'quantidade_necessaria': item['quantidade_necessaria'],
+                'unidade_medida': item.get('unidade_medida', 'un'),
+                'sku_produto_pai': product.get('sku'),
+                'sku_componente': item.get('sku_componente')
+            })
+        
+        if new_entries:
+            self.bom_table.insert(new_entries).execute()
+
+        # 4. Disable inheritance
+        product_service.update(str(product_id), {'herdar_bom_pai': False})
+        
+        return True
 
 # Global instance for use throughout the application
 bom_service = BomService()

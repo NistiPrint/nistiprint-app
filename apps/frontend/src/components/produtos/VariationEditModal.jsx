@@ -13,7 +13,10 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Loader2, Save } from 'lucide-react';
 import { toast } from 'sonner';
 import ProductService from '@/services/ProductService';
+import CategoryService from '@/services/CategoryService';
+import TagService from '@/services/TagService';
 import ArtworkManager from './ArtworkManager';
+import { AlertTriangle, Info, Copy } from 'lucide-react';
 
 // Schema atualizado para edição de variação com campos de formato e herança
 const variationSchema = z.object({
@@ -28,7 +31,9 @@ const variationSchema = z.object({
   formato: z.enum(["simples", "com_variacao", "variacao", "composicao", "kit"], { message: "Formato do produto inválido." }),
   herdar_dados_pai: z.boolean().default(true),
   herdar_bom_pai: z.boolean().default(true),
-  // Campos adicionais podem ser mapeados para atributos JSONB no backend
+  category_id: z.any().optional(),
+  tags: z.array(z.any()).optional(),
+  material_type: z.string().optional()
 });
 
 const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSaveSuccess }) => {
@@ -36,6 +41,7 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
   const [isSaving, setIsSaving] = useState(false);
   const [activeTab, setActiveTab] = useState("general");
   const [currentVariation, setCurrentVariation] = useState(null);
+  const [categories, setCategories] = useState([]);
 
   const form = useForm({
     resolver: zodResolver(variationSchema),
@@ -50,9 +56,24 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
       weight: 0,
       formato: 'variacao',
       herdar_dados_pai: true,
-      herdar_bom_pai: true
+      herdar_bom_pai: true,
+      category_id: null,
+      tags: [],
+      material_type: 'produto_acabado'
     }
   });
+
+  useEffect(() => {
+    const loadAuxData = async () => {
+      try {
+        const cats = await CategoryService.getAll();
+        setCategories(cats);
+      } catch (e) {
+        console.error("Error loading categories", e);
+      }
+    };
+    if (isOpen) loadAuxData();
+  }, [isOpen]);
 
   useEffect(() => {
     if (isOpen && variationId) {
@@ -78,7 +99,10 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
         weight: parseFloat(product.atributos?.weight || 0),
         formato: product.formato || 'variacao',
         herdar_dados_pai: product.herdar_dados_pai !== undefined ? product.herdar_dados_pai : true,
-        herdar_bom_pai: product.herdar_bom_pai !== undefined ? product.herdar_bom_pai : true
+        herdar_bom_pai: product.herdar_bom_pai !== undefined ? product.herdar_bom_pai : true,
+        category_id: product.category_id || product.categoria_id,
+        tags: product.tags || [],
+        material_type: product.material_type || product.tipo_material || 'produto_acabado'
       });
     } catch (error) {
       console.error("Erro ao carregar variação:", error);
@@ -104,6 +128,9 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
       form.setValue('stock_max', parent.stock_max || 0);
       form.setValue('status', parent.status || 'ativo');
       form.setValue('weight', parseFloat(parent.atributos?.weight || 0));
+      form.setValue('category_id', parent.category_id || parent.categoria_id);
+      form.setValue('tags', parent.tags || []);
+      form.setValue('material_type', parent.material_type || parent.tipo_material || 'produto_acabado');
     } catch (error) {
       console.error("Error getting parent data for snapshot:", error);
       toast.error("Erro ao obter dados do produto pai para cópia.");
@@ -126,8 +153,10 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
         formato: data.formato,
         herdar_dados_pai: data.herdar_dados_pai,
         herdar_bom_pai: data.herdar_bom_pai,
+        category_id: data.category_id,
+        tags: data.tags,
         // Campos extras vão para atributos via lógica do backend ou explícita aqui se o backend suportar
-        material_type: 'produto_acabado', // Variações geralmente herdam ou são produtos acabados
+        material_type: data.material_type || 'produto_acabado',
         // Se o backend suportar atualização parcial de atributos JSONB:
         weight: data.weight
       };
@@ -295,14 +324,28 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
                   </div>
 
                   {/* Inheritance Controls for Variations */}
-                  <div className="border rounded-lg p-4 mt-4">
-                    <h3 className="text-lg font-medium mb-4 text-primary">Controles de Herança</h3>
+                  <div className="border rounded-lg p-4 mt-4 bg-slate-50/50">
+                    <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-lg font-medium text-primary">Controles de Herança</h3>
+                        {!form.watch('herdar_dados_pai') && (
+                            <Button 
+                                type="button" 
+                                variant="outline" 
+                                size="sm" 
+                                onClick={handleSnapshotFromParent}
+                                className="flex items-center gap-2"
+                            >
+                                <Copy className="h-4 w-4" />
+                                Copiar do Pai
+                            </Button>
+                        )}
+                    </div>
 
                     <FormField
                       control={form.control}
                       name="herdar_dados_pai"
                       render={({ field }) => (
-                        <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4 mb-4">
+                        <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4 mb-4 bg-white">
                           <FormControl>
                             <Checkbox
                               checked={field.value}
@@ -331,7 +374,7 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
                       control={form.control}
                       name="herdar_bom_pai"
                       render={({ field }) => (
-                        <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
+                        <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4 bg-white">
                           <FormControl>
                             <Checkbox
                               checked={field.value}
@@ -344,8 +387,62 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
                             </FormLabel>
                             <FormDescription>
                               Marque para herdar a estrutura de composição do produto pai.
+                              {form.watch('herdar_bom_pai') && (
+                                <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-700 flex items-start gap-2">
+                                  <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                                  <span>Para customizar os componentes desta variação, desative esta opção e use a aba de Composição.</span>
+                                </div>
+                              )}
                             </FormDescription>
                           </div>
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <FormField
+                      control={form.control}
+                      name="category_id"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Categoria</FormLabel>
+                          <Select
+                            onValueChange={field.onChange}
+                            value={field.value ? String(field.value) : ''}
+                            disabled={form.watch('herdar_dados_pai')}
+                          >
+                            <FormControl>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Selecione..." />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              {categories.map(cat => (
+                                <SelectItem key={cat.id} value={String(cat.id)}>{cat.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="weight"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Peso (kg)</FormLabel>
+                          <FormControl>
+                            <Input
+                              type="number"
+                              step="0.001"
+                              {...field}
+                              onChange={e => field.onChange(parseFloat(e.target.value))}
+                              disabled={form.watch('herdar_dados_pai')}
+                            />
+                          </FormControl>
+                          <FormMessage />
                         </FormItem>
                       )}
                     />
@@ -389,26 +486,6 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
                       )}
                     />
                   </div>
-
-                  <FormField
-                    control={form.control}
-                    name="weight"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Peso (kg)</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="number"
-                            step="0.001"
-                            {...field}
-                            onChange={e => field.onChange(parseFloat(e.target.value))}
-                            disabled={form.watch('herdar_dados_pai')}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
                 </form>
               </TabsContent>
 

@@ -860,7 +860,7 @@ function ProdutoFormPage() {
           </Button>
         </div>
 
-        {activeTab === "bom" && form.watch('formato') !== 'com_variacao' && (
+        {activeTab === "bom" && (
           <Card>
             <CardHeader>
               <CardTitle>
