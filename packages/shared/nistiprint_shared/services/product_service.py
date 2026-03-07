@@ -692,9 +692,9 @@ class ProductService:
                     'unit': comp.unit,
                     'cost': comp_product.get('cost_price', 0),
                     'material_type': comp_product.get('material_type'),
-                    'categoria_id': comp_product.get('categoria_id')
-                }
-
+                    'categoria_id': comp_product.get('categoria_id'),
+                    'is_inherited': comp.is_inherited
+                    }
                 # Add stock info if deposit is provided
                 if deposito_id:
                     from nistiprint_shared.services.estoque_service import estoque_service

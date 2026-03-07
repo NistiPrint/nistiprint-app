@@ -142,7 +142,10 @@ def api_criar():
             'requires_personalization': data.get('requires_personalization'),
             'status': data.get('status'),
             'formato': data.get('formato', 'simples'),
-            'setor_responsavel_id': data.get('setor_responsavel_id')
+            'setor_responsavel_id': data.get('setor_responsavel_id'),
+            'parent_id': data.get('parent_id'),
+            'herdar_dados_pai': data.get('herdar_dados_pai', True),
+            'herdar_bom_pai': data.get('herdar_bom_pai', True)
         }
         tags_ids = data.get('tags', [])
         dados_produto['tags'] = [{'tag_id': tag_id} for tag_id in tags_ids if tag_id]
@@ -205,7 +208,10 @@ def api_editar(produto_id):
             'requires_personalization': data.get('requires_personalization'),
             'status': data.get('status'),
             'formato': data.get('formato'),
-            'setor_responsavel_id': data.get('setor_responsavel_id')
+            'setor_responsavel_id': data.get('setor_responsavel_id'),
+            'parent_id': data.get('parent_id'),
+            'herdar_dados_pai': data.get('herdar_dados_pai'),
+            'herdar_bom_pai': data.get('herdar_bom_pai')
         }
         tags_ids = data.get('tags', [])
         dados_atualizacao['tags'] = [{'tag_id': tag_id} for tag_id in tags_ids if tag_id]
@@ -307,6 +313,19 @@ def api_gerenciar_bom(produto_id):
             componentes = product_service.get_bom_components(produto_id)
             return jsonify({'components': componentes})
 
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@produtos_api_bp.route('/<produto_id>/bom/copy-from-parent', methods=['POST'])
+def api_copy_bom_from_parent(produto_id):
+    """Copia a BOM do produto pai para a variação e desativa herança (API)."""
+    try:
+        from nistiprint_shared.services.bom_service import bom_service
+        success = bom_service.copy_bom_from_parent(produto_id)
+        if success:
+            return jsonify({'success': True, 'message': 'BOM copiada do pai com sucesso!'})
+        else:
+            return jsonify({'error': 'Não foi possível copiar a BOM do pai ou produto não possui pai.'}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
