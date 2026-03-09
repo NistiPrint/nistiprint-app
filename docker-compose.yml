@@ -1,8 +1,8 @@
 # ===========================================
-# NISTIPRINT - DOCKER COMPOSE (MONOREPO)
+# NISTIPRINT - APPLICATION STACK (FRONTEND & API)
 # ===========================================
-# Arquitetura: API + Worker + Frontend + Redis
-# Sincronizado com a versão estável da raiz.
+# Arquitetura: Flask API + React Frontend
+# Depende da stack 'nistiprint-core' (Redis)
 # ===========================================
 
 version: '3.8'
@@ -12,16 +12,12 @@ services:
   # FRONTEND (React/Vite)
   # ===========================================
   frontend:
-    build:
-      context: ./apps/frontend
-      dockerfile: Dockerfile
+    image: leandrogbreve/nistiprint-frontend:latest
     container_name: nistiprint-app-frontend
     restart: unless-stopped
     networks:
-      - app-internal
-      # - gateway_net # Reativar se usar proxy reverso externo
-    depends_on:
-      - api
+      - gateway_net
+      - nistiprint-shared
     environment:
       - VITE_API_URL=/api
 
@@ -29,14 +25,12 @@ services:
   # API (Flask)
   # ===========================================
   api:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
+    image: leandrogbreve/nistiprint-api:latest
     container_name: nistiprint-app-api
     restart: unless-stopped
     networks:
-      # - gateway_net
-      - app-internal
+      - gateway_net
+      - nistiprint-shared
     ports:
       - "8080:8080"
     environment:
@@ -47,65 +41,11 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-    depends_on:
-      - redis
     command: python main.py
 
-  # ===========================================
-  # WORKER (Celery)
-  # ===========================================
-  worker:
-    build:
-      context: .
-      dockerfile: apps/worker/Dockerfile
-    container_name: nistiprint-app-worker
-    restart: unless-stopped
-    networks:
-      - app-internal
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
-    depends_on:
-      - redis
-    command: celery -A worker_entrypoint worker --loglevel=info --concurrency=2
-
-  # ===========================================
-  # BEAT (Celery Scheduler)
-  # ===========================================
-  beat:
-    build:
-      context: .
-      dockerfile: apps/worker/Dockerfile
-    container_name: nistiprint-app-beat
-    restart: unless-stopped
-    networks:
-      - app-internal
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
-    depends_on:
-      - redis
-    command: celery -A worker_entrypoint beat --loglevel=info
-
 networks:
-  # gateway_net:
-  #   name: gateway_net
-  #   external: true
-  app-internal:
-    name: app-internal
-    external: true # Agora é externa
-
-# ===========================================
-# VOLUMES
-# ===========================================
-volumes:
-  redis_data:
-    name: nistiprint-redis-data # Mantém a referência ao volume externo
+  gateway_net:
+    external: true
+  nistiprint-shared:
+    external: true
+    name: nistiprint-shared

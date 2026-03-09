@@ -3,7 +3,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Link2, ShoppingBag, Activity } from 'lucide-react';
 import IntegrationsStatus from './IntegrationsStatus';
 import Marketplace from '@/components/marketplace/Marketplace';
-import WebhookMonitor from '@/components/marketplace/WebhookMonitor';
+import QueueMonitor from '@/components/admin/QueueMonitor';
 
 export default function IntegracoesPage() {
   const [activeTab, setActiveTab] = useState("status");
@@ -40,7 +40,7 @@ export default function IntegracoesPage() {
         </TabsContent>
 
         <TabsContent value="webhooks" className="space-y-4 border-none p-0 outline-none">
-          <WebhookMonitor />
+          <QueueMonitor />
         </TabsContent>
       </Tabs>
     </div>

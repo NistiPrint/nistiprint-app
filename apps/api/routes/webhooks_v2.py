@@ -1,7 +1,9 @@
 from flask import Blueprint, request, jsonify
 from datetime import datetime
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services import redis_queue_tasks
 import logging
+import json
 
 logger = logging.getLogger("WebhookGateway")
 
@@ -39,10 +41,49 @@ def receive_webhook(platform, instance_id):
 
     except Exception as e:
         logger.error(f"Erro ao registrar webhook: {str(e)}")
-        # Mesmo com erro de log, retornamos 200/202 para a plataforma não desativar o webhook
         return jsonify({"status": "error", "message": "Failed to log but accepted"}), 202
 
+# --- Endpoints de Gerenciamento de Fila (Redis) ---
 
+@webhooks_v2_bp.route('/queue/stats', methods=['GET'])
+def get_queue_stats():
+    """Retorna estatísticas das filas do Redis"""
+    try:
+        stats = redis_queue_tasks.get_queue_stats()
+        return jsonify(stats), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
+@webhooks_v2_bp.route('/queue/items', methods=['GET'])
+def get_queue_items():
+    """Retorna os itens de uma fila específica"""
+    try:
+        queue_name = request.args.get('queue', 'pendentes')
+        limit = int(request.args.get('limit', 50))
+        items = redis_queue_tasks.get_queue_items(queue_name, limit)
+        return jsonify({'queue': queue_name, 'items': items}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
+@webhooks_v2_bp.route('/queue/reprocess', methods=['POST'])
+def reprocess_queue():
+    """Move itens de falhas/dead-letter de volta para a fila principal"""
+    try:
+        source = request.json.get('source', 'dead_letter')
+        count = redis_queue_tasks.move_items(source=source)
+        return jsonify({'success': True, 'reprocessed': count}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
+@webhooks_v2_bp.route('/queue/clear', methods=['DELETE'])
+def clear_queue():
+    """Limpa uma fila específica"""
+    try:
+        queue_name = request.args.get('queue')
+        if not queue_name:
+            return jsonify({'error': 'Nome da fila é obrigatório'}), 400
+            
+        redis_queue_tasks.clear_queue(queue_name)
+        return jsonify({'success': True, 'message': f'Fila {queue_name} limpa'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500

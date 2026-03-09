@@ -18,7 +18,6 @@ celery_app = Celery(
     broker=CELERY_BROKER_URL,
     backend=CELERY_RESULT_BACKEND,
     include=[
-        'nistiprint_shared.services.webhook_tasks',
         'nistiprint_shared.services.redis_queue_tasks',
         'tasks.stock_tasks',
     ]
@@ -29,11 +28,6 @@ celery_app.conf.update(
     # ... (manter configurações existentes)
     # Agendamento de tarefas periódicas
     beat_schedule={
-        # Processamento de webhooks pendentes a cada 5 minutos
-        'process-pending-webhooks': {
-            'task': 'nistiprint_shared.services.webhook_tasks.process_pending_webhooks',
-            'schedule': crontab(minute='*/5'),
-        },
         # Consumir fila do Bling no Redis (contínuo)
         'consumir-fila-bling': {
             'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
@@ -49,7 +43,6 @@ celery_app.conf.update(
 
 # Auto-discovery de tasks em módulos de serviço
 celery_app.autodiscover_tasks(lambda: [
-    'nistiprint_shared.services.webhook_tasks',
     'nistiprint_shared.services.redis_queue_tasks',
     'tasks.stock_tasks',
 ])
