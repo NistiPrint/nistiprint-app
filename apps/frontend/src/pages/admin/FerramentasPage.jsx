@@ -4,8 +4,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Loader2, Upload, Wand2, RefreshCw } from 'lucide-react';
+import { Loader2, Upload, Wand2, RefreshCw, Activity } from 'lucide-react';
 import { toast } from 'sonner';
+import QueueMonitor from '@/components/admin/QueueMonitor';
 
 function FerramentasPage() {
   const [loadingImport, setLoadingImport] = useState(false);
@@ -98,9 +99,12 @@ function FerramentasPage() {
       <h1 className="text-3xl font-bold mb-6">Ferramentas Administrativas</h1>
 
       <Tabs defaultValue="import" className="w-full">
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="import">Importação Manual</TabsTrigger>
           <TabsTrigger value="ai">Processamento IA</TabsTrigger>
+          <TabsTrigger value="queue">
+            <Activity className="w-4 h-4 mr-2" /> Monitor de Fila
+          </TabsTrigger>
           <TabsTrigger value="maintenance">Manutenção</TabsTrigger>
         </TabsList>
         
@@ -170,6 +174,10 @@ function FerramentasPage() {
               </form>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="queue">
+          <QueueMonitor />
         </TabsContent>
 
         <TabsContent value="maintenance">

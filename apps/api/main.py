@@ -59,7 +59,7 @@ from routes.orders import orders_api_bp
 from routes.marketplace_api import marketplace_api_bp
 from routes.marketplace import marketplace_bp
 from routes.printing import printing_bp, printing_api_bp
-from routes.webhooks import webhooks_bp
+from routes.webhooks_v2 import webhooks_v2_bp
 from routes.jobs import jobs_bp
 from routes.unified_orders import unified_orders_bp
 
@@ -185,7 +185,7 @@ def create_app():
     app.register_blueprint(orders_api_bp, url_prefix='/api/v2/orders')
     app.register_blueprint(marketplace_api_bp, url_prefix='/api/v2/marketplace')
     app.register_blueprint(marketplace_bp)
-    app.register_blueprint(webhooks_bp)
+    app.register_blueprint(webhooks_v2_bp)
     app.register_blueprint(printing_bp)
     app.register_blueprint(printing_api_bp, url_prefix='/api/v2/printing')
     app.register_blueprint(jobs_bp)

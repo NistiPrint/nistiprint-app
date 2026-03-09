@@ -1,0 +1,99 @@
+# ===========================================
+# NISTIPRINT - CORE INFRASTRUCTURE & WORKER
+# ===========================================
+# Redis + n8n + Celery Workers (Beat & Worker)
+# ===========================================
+
+version: '3.8'
+
+services:
+  # ===========================================
+  # REDIS (Message Broker & Cache)
+  # ===========================================
+  redis:
+    image: redis:7-alpine
+    container_name: nistiprint-redis
+    restart: always
+    command: redis-server --appendonly yes
+    networks:
+      - nistiprint-shared
+    volumes:
+      - redis_data:/data
+
+  # ===========================================
+  # N8N (Workflow Automation)
+  # ===========================================
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: nistiprint-n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    networks:
+      - gateway_net
+      - nistiprint-shared
+    environment:
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - N8N_HOST=automacao.nistiprint.neolabs.com.br
+      - WEBHOOK_URL=https://automacao.nistiprint.neolabs.com.br/
+      - GENERIC_TIMEZONE=America/Sao_Paulo
+      - NODE_FUNCTION_ALLOW_BUILTIN=crypto
+      - BLING_WEBHOOK_SECRET=${BLING_WEBHOOK_SECRET}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      - redis
+
+  # ===========================================
+  # WORKER (Celery)
+  # ===========================================
+  worker:
+    image: leandrogbreve/nistiprint-worker:latest
+    container_name: nistiprint-app-worker
+    restart: unless-stopped
+    networks:
+      - nistiprint-shared
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+    depends_on:
+      - redis
+    command: celery -A worker_entrypoint worker --loglevel=info --concurrency=2
+
+  # ===========================================
+  # BEAT (Celery Scheduler)
+  # ===========================================
+  beat:
+    image: leandrogbreve/nistiprint-worker:latest
+    container_name: nistiprint-app-beat
+    restart: unless-stopped
+    networks:
+      - nistiprint-shared
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+    depends_on:
+      - redis
+    command: celery -A worker_entrypoint beat --loglevel=info
+
+networks:
+  gateway_net:
+    external: true
+  nistiprint-shared:
+    name: nistiprint-shared
+    external: true
+
+volumes:
+  redis_data:
+    name: nistiprint-redis-data
+  n8n_data:
+    name: nistiprint-n8n-data
