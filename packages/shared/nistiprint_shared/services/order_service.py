@@ -126,13 +126,17 @@ class OrderService:
 
     def list_orders(self, page: int = 1, per_page: int = 50, filters: Dict = None) -> Dict[str, Any]:
         """Lista pedidos com paginação e filtros avançados."""
-        query = self.pedidos_table.select("*, situacoes_pedido(nome, cor_status)", count='exact')
+        # Note: 'situacoes_pedido' é um relacionamento no Supabase para 'status_unificado'
+        query = self.pedidos_table.select("*, canal_venda:canais_venda(nome), situacao_pedido:situacoes_pedido(nome, cor_status)", count='exact')
         
         if filters:
             if filters.get('origem'):
                 query = query.eq('origem', filters['origem'].upper())
             if filters.get('status'):
+                # Usar status_unificado para filtrar diretamente
                 query = query.eq('status_unificado', filters['status'].upper())
+            if filters.get('canal_venda_id'):
+                query = query.eq('canal_venda_id', filters['canal_venda_id'])
             if filters.get('searchTerm'):
                 q = filters['searchTerm']
                 query = query.or_(f"cliente_nome.ilike.%{q}%,codigo_pedido_externo.ilike.%{q}%,numero_pedido.ilike.%{q}%")
@@ -150,6 +154,15 @@ class OrderService:
             "page": page,
             "per_page": per_page
         }
+
+    def get_order_status_options(self) -> List[Dict[str, Any]]:
+        """Retorna as opções de status unificados disponíveis."""
+        try:
+            res = supabase_db.table('situacoes_pedido').select('id, nome, cor_status').order('id').execute()
+            return res.data
+        except Exception as e:
+            logging.error(f"Erro ao obter opções de status de pedido: {e}")
+            return []
 
 order_service = OrderService()
 
