@@ -1,84 +1,44 @@
 import api from './api';
 
-// Base endpoint for unified order operations
-const BASE_URL = '/order';
-
-/**
- * Get unified orders with optional filters
- */
-export const getUnifiedOrders = async (filters = {}) => {
+export const getUnifiedOrders = async (filters) => {
   try {
-    const response = await api.post(`${BASE_URL}/list`, filters);
-    // Garantir que a estrutura de dados seja consistente
-    return {
-      success: true,
-      data: response.data.orders || response.data,
-      ...response.data
-    };
+    const response = await api.get('/v2/vendas/unified-orders', { params: filters });
+    return response.data;
   } catch (error) {
-    return { success: false, error: error.response?.data?.message || error.message };
+    console.error('Error fetching unified orders:', error);
+    return { success: false, error: error.message };
   }
 };
 
-/**
- * Get available order status options
- */
 export const getOrderStatusOptions = async () => {
   try {
-    const response = await api.get(`${BASE_URL}/status-options`);
-    // Garantir que a estrutura de dados seja consistente
-    return {
-      success: true,
-      data: response.data.status_options || response.data,
-      ...response.data
-    };
+    const response = await api.get('/v2/vendas/order-status-options');
+    return response.data;
   } catch (error) {
-    return { success: false, error: error.response?.data?.message || error.message };
+    console.error('Error fetching order status options:', error);
+    return { success: false, error: error.message };
   }
 };
 
-/**
- * Update order status
- */
+export const getCanalVendaOptions = async () => {
+  try {
+    const response = await api.get('/v2/vendas/canal-venda-options');
+    return response.data;
+  } catch (error) {
+    console.error('Error fetching canal venda options:', error);
+    return { success: false, error: error.message };
+  }
+};
+
 export const updateOrderStatus = async (orderId, newStatus) => {
   try {
-    const response = await api.post(`${BASE_URL}/update-status`, {
-      order_id: orderId,
-      new_status: newStatus
-    });
-    // Garantir que a estrutura de dados seja consistente
-    return {
-      success: true,
-      data: response.data.order || response.data,
-      ...response.data
-    };
+    // Implementar esta rota no backend futuramente se necessário
+    console.warn(`Attempted to update status for order ${orderId} to ${newStatus}. Backend route not implemented yet.`);
+    return { success: true, message: "Status update simulated (backend route not implemented)." };
+    // const response = await api.put(`/v2/vendas/unified-orders/${orderId}/status`, { status: newStatus });
+    // return response.data;
   } catch (error) {
-    return { success: false, error: error.response?.data?.message || error.message };
+    console.error('Error updating order status:', error);
+    return { success: false, error: error.message };
   }
 };
-
-/**
- * Get order details
- */
-export const getOrderDetails = async (orderId) => {
-  try {
-    const response = await api.get(`${BASE_URL}/details/${orderId}`);
-    // Garantir que a estrutura de dados seja consistente
-    return {
-      success: true,
-      data: response.data.order || response.data,
-      ...response.data
-    };
-  } catch (error) {
-    return { success: false, error: error.response?.data?.message || error.message };
-  }
-};
-
-const OrderService = {
-  getUnifiedOrders,
-  getOrderStatusOptions,
-  updateOrderStatus,
-  getOrderDetails
-};
-
-export default OrderService;

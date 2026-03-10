@@ -25,12 +25,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Search, Eye, Package, Calendar, Filter, Download, MoreHorizontal } from 'lucide-react';
 import { toast } from 'sonner';
 
 // Importar serviço de API para pedidos unificados
-import { getUnifiedOrders, getOrderStatusOptions, updateOrderStatus } from '@/services/orderService';
+import { getUnifiedOrders, getOrderStatusOptions, updateOrderStatus, getCanalVendaOptions } from '@/services/orderService';
 
 function UnifiedOrdersPage() {
   const [orders, setOrders] = useState([]);
@@ -38,12 +37,14 @@ function UnifiedOrdersPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
   const [selectedOrigin, setSelectedOrigin] = useState('');
+  const [selectedChannel, setSelectedChannel] = useState(''); // Novo estado para filtro de canal
   const [dateRange, setDateRange] = useState({
     start: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // Last 30 days
     end: new Date().toISOString().split('T')[0]
   });
   
   const [statusOptions, setStatusOptions] = useState([]);
+  const [canalVendaOptions, setCanalVendaOptions] = useState([]); // Novo estado para opções de canal
   const [totalOrders, setTotalOrders] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [perPage, setPerPage] = useState(50);
@@ -52,7 +53,8 @@ function UnifiedOrdersPage() {
   useEffect(() => {
     loadOrders();
     loadStatusOptions();
-  }, [currentPage]);
+    loadCanalVendaOptions(); // Carregar opções de canal
+  }, [currentPage, selectedStatus, selectedOrigin, selectedChannel, dateRange.start, dateRange.end, searchTerm, perPage]); // Adicionar dependências para recarregar quando filtros mudam
 
   const loadOrders = async () => {
     setLoading(true);
@@ -62,6 +64,7 @@ function UnifiedOrdersPage() {
         searchTerm,
         status: selectedStatus,
         origin: selectedOrigin,
+        canal_venda_id: selectedChannel, // Incluir filtro de canal
         startDate: dateRange.start,
         endDate: dateRange.end,
         page: currentPage,
@@ -83,7 +86,7 @@ function UnifiedOrdersPage() {
   };
 
   const handleFilterApply = () => {
-    setCurrentPage(1);
+    setCurrentPage(1); // Resetar página ao aplicar novos filtros
     loadOrders();
   };
 
@@ -100,36 +103,54 @@ function UnifiedOrdersPage() {
     }
   };
 
+  const loadCanalVendaOptions = async () => {
+    try {
+      const response = await getCanalVendaOptions();
+      if (response.success) {
+        setCanalVendaOptions(response.data?.canal_venda_options || response.data || []);
+      } else {
+        toast.error('Erro ao carregar opções de canal de venda');
+      }
+    } catch (error) {
+      toast.error('Erro ao carregar opções de canal de venda');
+    }
+  };
+
   const handleStatusChange = async (orderId, newStatus) => {
     try {
-      const response = await updateOrderStatus(orderId, newStatus);
-      if (response.success) {
-        // Atualizar o pedido na lista local
-        setOrders(prevOrders => 
-          prevOrders.map(order => 
-            order.id === orderId ? { ...order, situacao_pedido: response.data.situacao_pedido } : order
-          )
-        );
-        toast.success('Status do pedido atualizado com sucesso');
-      } else {
-        toast.error('Erro ao atualizar status: ' + (response.error || 'Verifique os parâmetros'));
-      }
+      // O backend ainda não tem a rota de atualização de status, então simulamos
+      toast.warning('Funcionalidade de alteração de status ainda não implementada no backend.');
+      // return; 
+      // const response = await updateOrderStatus(orderId, newStatus);
+      // if (response.success) {
+      //   // Atualizar o pedido na lista local
+      //   setOrders(prevOrders => 
+      //     prevOrders.map(order => 
+      //       order.id === orderId ? { ...order, situacao_pedido: response.data.situacao_pedido } : order
+      //     )
+      //   );
+      //   toast.success('Status do pedido atualizado com sucesso');
+      // } else {
+      //   toast.error('Erro ao atualizar status: ' + (response.error || 'Verifique os parâmetros'));
+      // }
     } catch (error) {
       toast.error('Erro ao atualizar status do pedido');
     }
   };
 
-  const filteredOrders = orders.filter(order => {
-    const matchesSearch = !searchTerm || 
-      order.numero_pedido?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      order.codigo_pedido_externo?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      order.cliente_nome?.toLowerCase().includes(searchTerm.toLowerCase());
+  // Nao precisamos filtrar localmente, a API já faz isso
+  // const filteredOrders = orders.filter(order => {
+  //   const matchesSearch = !searchTerm || 
+  //     order.numero_pedido?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+  //     order.codigo_pedido_externo?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+  //     order.cliente_nome?.toLowerCase().includes(searchTerm.toLowerCase());
     
-    const matchesStatus = !selectedStatus || order.status_unificado === selectedStatus;
-    const matchesOrigin = !selectedOrigin || order.origem?.toLowerCase().includes(selectedOrigin.toLowerCase());
+  //   const matchesStatus = !selectedStatus || order.situacao_pedido?.nome === selectedStatus; // Usar situacao_pedido.nome
+  //   const matchesOrigin = !selectedOrigin || order.origem?.toLowerCase().includes(selectedOrigin.toLowerCase());
+  //   // Filtro por canal já está na API, não precisa filtrar localmente novamente
     
-    return matchesSearch && matchesStatus && matchesOrigin;
-  });
+  //   return matchesSearch && matchesStatus && matchesOrigin;
+  // });
 
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
@@ -180,8 +201,8 @@ function UnifiedOrdersPage() {
       {/* Filtros */}
       <Card className="mb-6">
         <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-            <div className="space-y-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4"> {/* Ajustado para 6 colunas */}
+            <div className="space-y-2 col-span-2"> {/* Expandido para 2 colunas */}
               <Label htmlFor="search">Buscar</Label>
               <div className="relative">
                 <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -224,6 +245,23 @@ function UnifiedOrdersPage() {
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Novo filtro de Canal de Venda */}
+            <div className="space-y-2">
+              <Label>Canal de Venda</Label>
+              <Select value={selectedChannel} onValueChange={setSelectedChannel}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Todos" />
+                </SelectTrigger>
+                <SelectContent>
+                  {canalVendaOptions.map((canal) => (
+                    <SelectItem key={canal.id} value={String(canal.id)}>
+                      {canal.nome}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             
             <div className="space-y-2">
               <Label>Data Início</Label>
@@ -260,7 +298,7 @@ function UnifiedOrdersPage() {
             <CardTitle className="text-sm font-medium">Total de Pedidos</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{orders.length}</div>
+            <div className="text-2xl font-bold">{totalOrders}</div> {/* Usar totalOrders do backend */}
           </CardContent>
         </Card>
         
@@ -269,7 +307,7 @@ function UnifiedOrdersPage() {
             <CardTitle className="text-sm font-medium">Pedidos Pendentes</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{orders.filter(o => o.situacao_pedido?.nome === 'Pendente').length}</div>
+            <div className="text-2xl font-bold">{orders.filter(o => o.situacao_pedido?.nome === 'PENDENTE').length}</div>
           </CardContent>
         </Card>
         
@@ -278,7 +316,7 @@ function UnifiedOrdersPage() {
             <CardTitle className="text-sm font-medium">Pedidos Pagos</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{orders.filter(o => o.situacao_pedido?.nome === 'Pago').length}</div>
+            <div className="text-2xl font-bold">{orders.filter(o => o.situacao_pedido?.nome === 'PAGO').length}</div>
           </CardContent>
         </Card>
         
@@ -288,7 +326,7 @@ function UnifiedOrdersPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {formatCurrency(orders.reduce((sum, order) => sum + (order.valor_total || 0), 0))}
+              {formatCurrency(orders.reduce((sum, order) => sum + (order.total_pedido || 0), 0))}
             </div>
           </CardContent>
         </Card>
@@ -300,7 +338,7 @@ function UnifiedOrdersPage() {
           <CardTitle className="flex items-center justify-between">
             <span>Pedidos</span>
             <span className="text-sm text-muted-foreground">
-              Mostrando {filteredOrders.length} de {orders.length} pedidos
+              Mostrando <strong>{orders.length}</strong> de <strong>{totalOrders}</strong> pedidos
             </span>
           </CardTitle>
         </CardHeader>
@@ -312,15 +350,15 @@ function UnifiedOrdersPage() {
                   <TableHead>Número</TableHead>
                   <TableHead>Cliente</TableHead>
                   <TableHead>Data</TableHead>
-                  <TableHead>Origem</TableHead>
+                  <TableHead>Origem / Canal</TableHead> {/* Atualizado para incluir Canal */}
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Total</TableHead>
                   <TableHead className="w-16">Ações</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredOrders.length > 0 ? (
-                  filteredOrders.map((order) => (
+                {orders.length > 0 ? (
+                  orders.map((order) => (
                     <TableRow key={order.id}>
                       <TableCell className="font-medium">
                         <div className="flex items-center gap-2">
@@ -339,13 +377,18 @@ function UnifiedOrdersPage() {
                       </TableCell>
                       <TableCell>{formatDate(order.data_venda)}</TableCell>
                       <TableCell>
-                        <Badge variant="outline" className="uppercase">
+                        <Badge variant="outline" className="uppercase mr-2">
                           {order.origem}
                         </Badge>
+                        {order.canal_venda && (
+                            <Badge variant="secondary" className="normal-case">
+                                {order.canal_venda.nome}
+                            </Badge>
+                        )}
                       </TableCell>
                       <TableCell>
-                        <Badge variant={getStatusColor(order.status_unificado)}>
-                          {order.status_unificado || 'PENDENTE'}
+                        <Badge variant={getStatusColor(order.situacao_pedido?.nome)}> {/* Usar situacao_pedido.nome */}
+                          {order.situacao_pedido?.nome || 'PENDENTE'}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right font-medium">
