@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
+import GerencialHistorico from './components/GerencialHistorico';
 import ProtectedRoute from './components/ProtectedRoute';
 import MainLayout from './components/layout/MainLayout';
 import { Toaster } from './components/ui/sonner';
@@ -7,8 +8,6 @@ import LoginPage from './pages/LoginPage';
 import CadastrosPage from './pages/admin/CadastrosPage';
 import ConfiguracoesPage from './pages/admin/ConfiguracoesPage';
 import FerramentasPage from './pages/admin/FerramentasPage';
-import IntegracoesFormPage from './pages/admin/IntegracoesFormPage'; // Import IntegracoesFormPage
-import IntegracoesListPage from './pages/admin/IntegracoesListPage'; // Import IntegracoesListPage
 import RelatoriosPage from './pages/admin/RelatoriosPage';
 import SetorPermissoesPage from './pages/admin/SetorPermissoesPage'; // Import SetorPermissoesPage
 import SistemaPage from './pages/admin/SistemaPage';
@@ -36,13 +35,12 @@ import UsuarioFormPage from './pages/admin/cadastros/UsuarioFormPage';
 import UsuarioListPage from './pages/admin/cadastros/UsuarioListPage';
 import ConfiguracoesBlingPage from './pages/admin/configuracoes/ConfiguracoesBlingPage';
 import ConfiguracoesProducaoPage from './pages/admin/configuracoes/ConfiguracoesProducaoPage';
-import PermissoesDemandaPage from './pages/admin/configuracoes/PermissoesDemandaPage';
 import IntegrationRoutingPage from './pages/admin/configuracoes/IntegrationRoutingPage';
-import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPage';
-import HistoricoColetasPage from './pages/admin/relatorios/HistoricoColetasPage';
+import PermissoesDemandaPage from './pages/admin/configuracoes/PermissoesDemandaPage';
 import FilaEstoquePage from './pages/admin/relatorios/FilaEstoquePage';
+import HistoricoColetasPage from './pages/admin/relatorios/HistoricoColetasPage';
+import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPage';
 import RelatoriosIndexPage from './pages/admin/relatorios/RelatoriosIndexPage';
-import GerencialHistorico from './components/GerencialHistorico';
 import AuditoriaPage from './pages/auditoria/AuditoriaPage';
 import ConsolidarPage from './pages/consolidar/ConsolidarPage';
 import EstoqueAjustePage from './pages/estoque/EstoqueAjustePage';
@@ -59,11 +57,12 @@ import DemandaCalendarPage from './pages/producao/DemandaCalendarPage';
 import DemandaDashboardPage from './pages/producao/DemandaDashboardPage';
 import DemandaListPage from './pages/producao/DemandaListPage';
 import DemandaPrioridadePage from './pages/producao/DemandaPrioridadePage';
+import ExpedicaoDashboardPage from './pages/producao/ExpedicaoDashboardPage';
+import FocoProducaoPage from './pages/producao/FocoProducaoPage';
 import NovaDemandaPage from './pages/producao/NovaDemandaPage';
 import PainelProducaoPage from './pages/producao/PainelProducaoPage';
-import FocoProducaoPage from './pages/producao/FocoProducaoPage';
+import ProducaoPage from './pages/producao/ProducaoPage';
 import ResumoProducaoPage from './pages/producao/ResumoProducaoPage';
-import ExpedicaoDashboardPage from './pages/producao/ExpedicaoDashboardPage';
 import ProdutoFormPage from './pages/produtos/ProdutoFormPage';
 import ProdutoListPage from './pages/produtos/ProdutoListPage';
 import UnifiedOrdersPage from './pages/vendas/UnifiedOrdersPage';
@@ -208,7 +207,6 @@ function App() {
               <FerramentasPage />
             </ProtectedRoute>
           } />
-        </Route>
       </Routes>
       <Toaster />
     </>

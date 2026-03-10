@@ -196,11 +196,22 @@ class BlingClient:
 
         if account_id:
             print(f"✅ Roteamento encontrado: Account ID '{account_id}'")
+            
+            # Tentar carregar de installed_integrations primeiro (Nova arquitetura)
+            try:
+                # Se account_id for numérico ou puder ser, tenta na installed_integrations
+                res = supabase_db.table('installed_integrations').select("*").eq('id', account_id).execute()
+                if res.data:
+                    return BlingClient.create_client_from_integration(res.data[0])
+            except:
+                pass
+
+            # Fallback para contas_bling (Legado)
             account = conta_bling_service.get_by_id(account_id)
             if account:
                 return BlingClient(account)
             else:
-                print(f"⚠️ Conta roteada '{account_id}' não encontrada. Tentando fallback.")
+                print(f"⚠️ Conta roteada '{account_id}' não encontrada em nenhuma tabela. Tentando fallback.")
 
         # 2. Tentar buscar configuração dinâmica por binding específico (Legado/AppConfig)
         bindings = app_config_service.get_config('platform_account_bindings') or {}
@@ -250,7 +261,11 @@ class BlingClient:
         raise ValueError(f"Nenhuma conta Bling configurada ou encontrada para a plataforma: {platform_name}")
 
     def _get_valid_token(self):
-        """Retorna o token de acesso atual."""
+        """
+        Retorna o token de acesso atual. 
+        O refresh automático está desabilitado nesta aplicação pois o gerenciamento 
+        é feito por uma função externa (Firestore Sync).
+        """
         return self.access_token
 
     def _update_token_cache(self, now):
@@ -404,25 +419,24 @@ class BlingClient:
     # ==================== MÉTODOS ADMINISTRATIVOS ====================
 
     def check_token_simple(self):
-        """Verifica se o token é válido através de chamada simples à API (/empresas/me/dados-basicos)."""
+        """Verifica se o token é válido através de chamada simples à API (/empresas/me/dados-basicos).
+        Esta função NÃO tenta refrescar o token, ela apenas verifica o estado atual do token.
+        """
+        if not self.access_token:
+            return False
+
+        # Tenta verificar se o token está ativo sem usar _get_valid_token para evitar refresh
+        url = f"https://api.bling.com.br/Api/v3/empresas/me/dados-basicos"
+        headers = {
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {self.access_token}'
+        }
+
         try:
-            # Chamada direta sem usar _get_valid_token() para evitar refresh automático desnecessário
-            url = f"https://api.bling.com.br/Api/v3/empresas/me/dados-basicos"
-            headers = {
-                'Accept': 'application/json',
-                'Authorization': f'Bearer {self.access_token}'
-            }
-
-            response = requests.get(url, headers=headers, timeout=30)
-
-            if response.status_code == 200:
-                data = response.json()
-                return 'data' in data
-
+            response = requests.get(url, headers=headers, timeout=10)
+            return response.status_code == 200 and 'data' in response.json()
         except Exception:
-            pass
-
-        return False
+            return False
 
     def get_basic_account_info(self):
         """Obtém informações básicas da conta através da API."""

@@ -34,7 +34,6 @@ celery_app = Celery(
     backend=CELERY_RESULT_BACKEND,
     include=[
         'nistiprint_shared.services.redis_queue_tasks',
-        'nistiprint_shared.services.webhook_tasks',
         'tasks.stock_tasks', # Adicionando módulo de tarefas de estoque
     ]
 )
@@ -62,10 +61,10 @@ celery_app.conf.update(
     
     # Agendamento de tarefas periódicas (Beat)
     beat_schedule={
-        # Processamento de webhooks pendentes a cada 5 minutos
-        'process-pending-webhooks': {
-            'task': 'nistiprint_shared.services.webhook_tasks.process_pending_webhooks',
-            'schedule': crontab(minute='*/5'),
+        # Sincronização de tokens Bling do Firestore para Supabase (a cada 4h)
+        'sync-firestore-tokens': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.sync_firestore_tokens',
+            'schedule': 14400,  # 4 horas (em segundos)
         },
         # Consumir fila do Bling no Redis (contínuo)
         'consumir-fila-bling': {

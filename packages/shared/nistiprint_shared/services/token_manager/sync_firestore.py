@@ -64,8 +64,7 @@ def sync_bling_to_supabase():
                 "updated_at": datetime.utcnow().isoformat()
             }
 
-            # Realiza o UPSERT no Supabase
-            # A restrição UNIQUE (module_id, instance_name) garante o merge correto
+            # 1. Realiza o UPSERT na tabela moderna (installed_integrations)
             try:
                 supabase_db.execute_with_retry(
                     supabase_db.table("installed_integrations").upsert(
@@ -73,10 +72,41 @@ def sync_bling_to_supabase():
                         on_conflict="module_id, instance_name"
                     )
                 )
-                logger.info(f"✅ Sincronizado: {instance_name} ({cnpj})")
+                logger.info(f"✅ Sincronizado (installed_integrations): {instance_name} ({cnpj})")
+            except Exception as e:
+                logger.error(f"❌ Erro ao inserir {cnpj} em installed_integrations: {e}")
+
+            # 2. Realiza o UPSERT na tabela legado (contas_bling) para compatibilidade
+            try:
+                # O ID no Firestore deve ser o mesmo ID na tabela contas_bling para manter referências
+                # Se não tivermos o ID do documento, usamos o CNPJ como chave de busca para o ID
+                legacy_id = data.get("id") or doc.id
+                
+                legacy_data = {
+                    "id": legacy_id,
+                    "nome": instance_name,
+                    "cnpj": cnpj,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "expires_in": expires_in,
+                    "platform_name": data.get("platform", "Shopee"), # Fallback
+                    "instance_name": instance_name,
+                    "ativa": True,
+                    "updated_at": datetime.utcnow().isoformat()
+                }
+
+                supabase_db.execute_with_retry(
+                    supabase_db.table("contas_bling").upsert(
+                        legacy_data,
+                        on_conflict="id"
+                    )
+                )
+                logger.info(f"✅ Sincronizado (contas_bling): {instance_name} ({cnpj})")
                 count += 1
             except Exception as e:
-                logger.error(f"❌ Erro ao inserir {cnpj} no Supabase: {e}")
+                logger.error(f"❌ Erro ao inserir {cnpj} em contas_bling: {e}")
 
         logger.info(f"Sincronização concluída. {count} contas processadas.")
         return True

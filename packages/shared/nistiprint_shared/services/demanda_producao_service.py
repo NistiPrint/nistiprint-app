@@ -2403,12 +2403,10 @@ class DemandaProducaoService:
         try:
             # 1. Busca e trava as tarefas via RPC (Operação atômica no Postgres)
             print(f"DEBUG: Worker '{worker_id}' tentando buscar até {limit} tarefas na fila...")
-            res = supabase_db.table('fila_processamento_estoque')\
-                .rpc('fetch_and_lock_stock_tasks', {
-                    'p_worker_id': worker_id,
-                    'p_limit': limit
-                })\
-                .execute()
+            res = supabase_db.rpc('fetch_and_lock_stock_tasks', {
+                'p_worker_id': worker_id,
+                'p_limit': limit
+            }).execute()
             
             if not res.data:
                 # print(f"DEBUG: Nenhuma tarefa pendente encontrada para worker '{worker_id}'.")
