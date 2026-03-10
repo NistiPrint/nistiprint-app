@@ -164,12 +164,14 @@ class BlingClient:
         return BlingClient(account_data)
 
     @staticmethod
-    def create_client_for_platform(platform_name, instance_name: str = None):
-        """Cria uma instância de BlingClient para uma plataforma específica, usando configurações.
+    def create_client_for_platform(platform_name, instance_name: str = None, channel_id: int = None, function_name: str = 'ORDER_IMPORT'):
+        """Cria uma instância de BlingClient para uma plataforma específica, usando configurações e roteamento.
 
         Args:
             platform_name (str): Nome da plataforma (ex: 'Shopee', 'Amazon').
             instance_name (str, optional): Nome específico da instância (para múltiplas contas da mesma plataforma).
+            channel_id (int, optional): ID do canal de venda para roteamento granular.
+            function_name (str): Função da integração (ORDER_IMPORT, NFE_EMISSION, etc).
 
         Returns:
             BlingClient: Instância configurada.
@@ -179,11 +181,28 @@ class BlingClient:
         """
         from nistiprint_shared.services.app_config_service import app_config_service
         from nistiprint_shared.services.conta_bling_service import conta_bling_service
+        from nistiprint_shared.services.integration_routing_service import integration_routing_service
         from ...constants import PLATFORM_X_CNPJ
 
-        print(f"🔍 Buscando cliente Bling para plataforma: {platform_name}, instância: {instance_name}")
+        print(f"🔍 Buscando cliente Bling para plataforma: {platform_name}, canal: {channel_id}, função: {function_name}")
 
-        # 1. Tentar buscar configuração dinâmica por binding específico
+        # 1. Tentar roteamento inteligente (Nova Arquitetura)
+        account_id = integration_routing_service.get_account_id(
+            function_name=function_name, 
+            module='bling', 
+            channel_id=channel_id, 
+            platform_name=platform_name
+        )
+
+        if account_id:
+            print(f"✅ Roteamento encontrado: Account ID '{account_id}'")
+            account = conta_bling_service.get_by_id(account_id)
+            if account:
+                return BlingClient(account)
+            else:
+                print(f"⚠️ Conta roteada '{account_id}' não encontrada. Tentando fallback.")
+
+        # 2. Tentar buscar configuração dinâmica por binding específico (Legado/AppConfig)
         bindings = app_config_service.get_config('platform_account_bindings') or {}
 
         # Criar chave composta se tiver nome de instância
