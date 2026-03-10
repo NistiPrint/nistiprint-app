@@ -66,17 +66,7 @@ import ResumoProducaoPage from './pages/producao/ResumoProducaoPage';
 import ExpedicaoDashboardPage from './pages/producao/ExpedicaoDashboardPage';
 import ProdutoFormPage from './pages/produtos/ProdutoFormPage';
 import ProdutoListPage from './pages/produtos/ProdutoListPage';
-import VendasPersonalizadasPage from './pages/vendas/VendasPersonalizadasPage';
-import AIDashboardPage from './pages/ai/AIDashboardPage';
-import IntegrationsStatus from './pages/admin/IntegrationsStatus';
-import IntegracoesPage from './pages/admin/IntegracoesPage';
-// Import marketplace components
-import InstallWizard from './components/marketplace/InstallWizard';
-import ProducaoPage from './pages/producao/ProducaoPage';
-import VendasPage from './pages/vendas/VendasPage';
-import MarketplaceOrders from './pages/vendas/MarketplaceOrders';
 import UnifiedOrdersPage from './pages/vendas/UnifiedOrdersPage';
-
 function App() {
   return (
     <>
@@ -114,11 +104,13 @@ function App() {
             <Route path="impressao" element={<FilaImpressao />} />
           </Route>
 
-          {/* Vendas Routes */}
           <Route path="vendas" element={<VendasPage />}>
             <Route path="personalizadas" element={<VendasPersonalizadasPage />} />
             <Route path="identificacao-ia" element={<AIDashboardPage />} />
             <Route path="marketplaces" element={<MarketplaceOrders />} />
+            <Route path="unified-orders" element={<UnifiedOrdersPage />} />
+          </Route>
+
             <Route path="unified-orders" element={<UnifiedOrdersPage />} />
           </Route>
           <Route element={<VendasPage />}>
