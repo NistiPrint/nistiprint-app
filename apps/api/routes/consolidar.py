@@ -55,19 +55,34 @@ def consolidar():
 
             # A plataforma é derivada do canal encontrado para o roteamento dos processadores
             plataforma = channel.get('plataforma')
+            channel_id = channel.get('id')
             if not plataforma:
                 raise ValueError(f"O canal '{channel['nome']}' não possui uma plataforma configurada.")
             
             # Normalização para comparação de roteamento
             plataforma_normalized = plataforma.replace(' ', '').lower()
 
-            # O Bling Client é selecionado através da plataforma, como no original
-            bling_client = BlingClient.create_client_for_platform(plataforma)
+            # 1. Resolver qual conta Bling usar para esta operação de consolidação/importação
+            from nistiprint_shared.services.integration_routing_service import integration_routing_service
+            account_id = integration_routing_service.get_account_id(
+                function_name='ORDER_IMPORT',
+                module='bling',
+                channel_id=channel_id,
+                platform_name=plataforma
+            )
+
+            # 2. Criar o cliente Bling apontando para a conta correta
+            bling_client = BlingClient.create_client_for_platform(
+                plataforma, 
+                channel_id=channel_id, 
+                function_name='ORDER_IMPORT'
+            )
 
             options = {
                 'plataforma': plataforma,
                 'print_orders': request.form.get('print-orders') == 'true',
                 'channel_slug': channel.get('slug'),
+                'channel_id': channel_id,
                 'mode': request.form.get('mode')
             }
 
@@ -131,6 +146,48 @@ def consolidar():
             
             conflicts = order_tracker_service.check_conflicts(all_orders_to_check, plataforma)
             # -------------------------------------------------------------------------
+
+            # --- NOVO: PERSISTÊNCIA DOS PEDIDOS NO BANCO UNIFICADO ---
+            from nistiprint_shared.services.order_service import order_service
+            import logging
+
+            if bling_orders_data:
+                print(f"💾 Iniciando persistência de {len(bling_orders_data)} pedidos no banco unificado...")
+                for order in bling_orders_data:
+                    try:
+                        # Normalização básica para o OrderService
+                        order_to_upsert = {
+                            'codigo_pedido_externo': str(order.get('numeroLoja')),
+                            'numero_pedido': str(order.get('numero')),
+                            'cliente_nome': order.get('contato', {}).get('nome'),
+                            'cliente_documento': order.get('contato', {}).get('numeroDocumento'),
+                            'status_original': str(order.get('situacao', {}).get('id', 'IMPORTADO')),
+                            'total_pedido': float(order.get('totalProdutos', 0)),
+                            'origem': plataforma
+                        }
+                        
+                        # Mapeia itens para o formato do serviço
+                        order_items = []
+                        for item in order.get('itens', []):
+                            order_items.append({
+                                'sku_externo': item.get('codigo'),
+                                'descricao': item.get('descricao'),
+                                'quantidade': item.get('quantidade'),
+                                'preco_unitario': item.get('valor')
+                            })
+
+                        order_service.upsert_order(
+                            order_data=order_to_upsert,
+                            platform=plataforma,
+                            platform_order_id=str(order.get('numeroLoja')),
+                            raw_payload=order,
+                            items=order_items,
+                            channel_id=channel_id,
+                            integration_id=account_id
+                        )
+                    except Exception as upsert_error:
+                        logging.error(f"Erro ao persistir pedido {order.get('numeroLoja')} na consolidação: {upsert_error}")
+            # ---------------------------------------------------------
 
             if plataforma:
                 results[plataforma] = {

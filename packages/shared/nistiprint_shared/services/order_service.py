@@ -22,7 +22,8 @@ class OrderService:
         except: return {}
 
     def upsert_order(self, order_data: Dict[str, Any], platform: str, platform_order_id: str, 
-                     raw_payload: Dict[str, Any], items: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+                     raw_payload: Dict[str, Any], items: List[Dict[str, Any]] = None,
+                     channel_id: Optional[int] = None, integration_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Realiza o Upsert inteligente de um pedido.
         Garante a unicidade pelo codigo_pedido_externo.
@@ -42,6 +43,7 @@ class OrderService:
                 update_core = {
                     'status_unificado': order_data.get('status_unificado'),
                     'total_pedido': order_data.get('total_pedido'),
+                    'canal_venda_id': channel_id,
                     'updated_at': datetime.now(timezone.utc).isoformat()
                 }
                 # Remove chaves None para não sobrescrever dados existentes com null
@@ -59,6 +61,7 @@ class OrderService:
                     'status_unificado': order_data.get('status_unificado', 'PENDENTE'),
                     'total_pedido': order_data.get('total_pedido', 0),
                     'informacoes_cliente': order_data.get('informacoes_cliente', {}),
+                    'canal_venda_id': channel_id,
                     'created_at': datetime.now(timezone.utc).isoformat(),
                     'updated_at': datetime.now(timezone.utc).isoformat()
                 }
@@ -73,6 +76,7 @@ class OrderService:
                 'plataforma': platform,
                 'id_na_plataforma': platform_order_id,
                 'status_na_plataforma': order_data.get('status_original'),
+                'integration_id': integration_id,
                 'dados_brutos': raw_payload,
                 'last_synced_at': datetime.now(timezone.utc).isoformat()
             }

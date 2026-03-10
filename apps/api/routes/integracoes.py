@@ -95,6 +95,74 @@ def sync_legacy():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# --- NOVOS ENDPOINTS DE ROTEAMENTO (Multi-Conta) ---
+
+@integracoes_api_bp.route('/routing', methods=['GET'])
+def get_routing():
+    """Retorna as regras de roteamento e dados auxiliares para a UI."""
+    try:
+        # 1. Buscar regras atuais
+        routing = supabase_db.client.table('integration_account_routing').select('*').execute().data
+        
+        # 2. Buscar contas Bling (instaladas)
+        accounts = supabase_db.client.table('installed_integrations') \
+            .select('id, instance_name, config->cnpj') \
+            .eq('module_id', 'bling') \
+            .execute().data
+            
+        # 3. Buscar Canais de Venda
+        channels = supabase_db.client.table('canais_venda').select('id, nome, plataforma_id').execute().data
+        
+        # 4. Buscar Plataformas
+        platforms = supabase_db.client.table('plataformas').select('id, nome').execute().data
+        
+        return jsonify({
+            "routing": routing,
+            "accounts": accounts,
+            "channels": channels,
+            "platforms": platforms,
+            "functions": [
+                {"id": "ORDER_IMPORT", "name": "Importação de Pedidos"},
+                {"id": "NFE_EMISSION", "name": "Emissão de Nota Fiscal (NFe)"},
+                {"id": "STOCK_SYNC", "name": "Sincronização de Estoque"},
+                {"id": "CATALOG_SYNC", "name": "Sincronização de Catálogo"}
+            ]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@integracoes_api_bp.route('/routing', methods=['POST'])
+def save_routing():
+    """Salva ou atualiza uma regra de roteamento."""
+    try:
+        data = request.get_json()
+        from nistiprint_shared.services.integration_routing_service import integration_routing_service
+        
+        success = integration_routing_service.set_routing(
+            function_name=data.get('function_name'),
+            scope_type=data.get('scope_type'),
+            scope_id=data.get('scope_id'),
+            account_id=data.get('account_id'),
+            module=data.get('module', 'bling')
+        )
+        
+        if success:
+            return jsonify({"status": "success", "message": "Regra de roteamento salva!"})
+        else:
+            return jsonify({"status": "error", "message": "Falha ao salvar regra"}), 400
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@integracoes_api_bp.route('/routing/<id>', methods=['DELETE'])
+def delete_routing(id):
+    """Remove uma regra de roteamento."""
+    try:
+        supabase_db.client.table('integration_account_routing').delete().eq('id', id).execute()
+        return jsonify({"status": "success", "message": "Regra removida!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 
 

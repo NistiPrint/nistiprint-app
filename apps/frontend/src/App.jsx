@@ -37,6 +37,7 @@ import UsuarioListPage from './pages/admin/cadastros/UsuarioListPage';
 import ConfiguracoesBlingPage from './pages/admin/configuracoes/ConfiguracoesBlingPage';
 import ConfiguracoesProducaoPage from './pages/admin/configuracoes/ConfiguracoesProducaoPage';
 import PermissoesDemandaPage from './pages/admin/configuracoes/PermissoesDemandaPage';
+import IntegrationRoutingPage from './pages/admin/configuracoes/IntegrationRoutingPage';
 import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPage';
 import HistoricoColetasPage from './pages/admin/relatorios/HistoricoColetasPage';
 import FilaEstoquePage from './pages/admin/relatorios/FilaEstoquePage';
@@ -194,6 +195,7 @@ function App() {
             <Route path="demanda-permissions" element={<PermissoesDemandaPage />} />
             <Route path="integracoes" element={<IntegracoesPage />} />
             <Route path="integracoes/install/:moduleId" element={<InstallWizard />} />
+            <Route path="roteamento" element={<IntegrationRoutingPage />} />
             <Route path="bling" element={<ConfiguracoesBlingPage />} />
           </Route>
           <Route path="relatorios" element={
