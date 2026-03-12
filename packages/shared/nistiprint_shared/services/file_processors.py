@@ -574,7 +574,12 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
     data = pd.read_excel(file)
     data['Data prevista de envio'] = pd.to_datetime(data['Data prevista de envio'], errors='coerce')
 
-    is_flex = "Flex" in options.get('plataforma', '') or "flex" in str(options.get('channel_slug', '')).lower()
+    # Prioriza flag explícita de options, senão tenta inferir pelo nome/slug (legado/auto)
+    is_flex = options.get('is_flex')
+    if is_flex is None:
+        is_flex = "Flex" in options.get('plataforma', '') or "flex" in str(options.get('channel_slug', '')).lower()
+
+    logging.info(f"[SHOPEE] Processando arquivo. Modalidade Flex: {is_flex}")
 
     base_condition = data['Opção de envio'].str.contains("Entrega Rápida") if is_flex else (
         data['Número de rastreamento'].isnull() & \
@@ -731,7 +736,6 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
         variation_name = row['Nome da variação'] if row['Nome da variação'] != '-' else None
 
         # Log the mapping attempt
-        import logging
         logging.info(f"Mapeamento tentativa - SKU externo: '{external_sku}', Nome externo: '{external_name}', Variação: '{variation_name}'")
 
         match = product_service.resolve_variation(

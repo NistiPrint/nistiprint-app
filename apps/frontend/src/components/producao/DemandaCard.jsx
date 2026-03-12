@@ -23,7 +23,9 @@ import {
   PlayCircle,
   Printer,
   Trash2,
-  Truck
+  Truck,
+  ShoppingCart,
+  Hash
 } from 'lucide-react';
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -77,15 +79,15 @@ const DemandaCard = React.memo(({
   const isNext = priorityScore >= 50 && priorityScore < 100;
 
   const totalItens = demanda.total_itens || demanda.total_quantidade || 1;
-  // itens_concluidos = itens com capa + miolo prontos (prontos para retirada)
+  // itens_prontos_para_retirar = unidades completas (capa + miolo) no buffer de prontos
   const itensProntosParaRetirar = demanda.itens_concluidos || 0;
-  // completed_quantidade = itens que a expedição já fechou/retirou (coleta consolidada)
-  const itensFechados = demanda.completed_quantidade || 0;
-  // itens_em_fechamento = soma do menor valor entre exp. capas e exp. miolos de cada item
+  // itens_finalizados = itens que foram FINALIZADOS manualmente no dashboard (progresso real)
+  const itensFinalizados = demanda.completed_quantidade || 0;
+  // itens_em_fechamento = soma do menor valor entre exp. capas e exp. miolos (retirados pela expedição)
   const itensEmFechamento = demanda.itens_em_fechamento || 0;
 
-  // Progresso total considera apenas itens finalizados (fechados pela expedição)
-  const percentualConcluido = (itensFechados / totalItens) * 100;
+  // Progresso total considera estritamente itens finalizados manualmente
+  const percentualConcluido = (itensFinalizados / totalItens) * 100;
 
   const isStuck = demanda.is_stuck === true;
 
@@ -130,8 +132,9 @@ const DemandaCard = React.memo(({
     { label: 'Capas produzidas', val: capasProduzidas, scope: totalItens, color: '#10b981', bgColor: 'bg-emerald-500' },
     { label: 'Capas prontas', val: capasProntas, scope: totalItens, color: '#eab308', bgColor: 'bg-yellow-500' },
     { label: 'Miolos prontos', val: miolosProntos, scope: totalItens, color: '#ec4899', bgColor: 'bg-pink-500' },
-    { label: 'Itens prontos p/ retirar', val: itensProntosParaRetirar, scope: totalItens, color: '#6b7280', bgColor: 'bg-gray-500' },
-    { label: 'Itens em fechamento', val: itensEmFechamento, scope: totalItens, color: '#8b5cf6', bgColor: 'bg-violet-500' }
+    { label: 'Prontos para retirar', val: itensProntosParaRetirar, scope: totalItens, color: '#6b7280', bgColor: 'bg-gray-500' },
+    { label: 'Sendo fechados (Exp)', val: itensEmFechamento, scope: totalItens, color: '#8b5cf6', bgColor: 'bg-violet-500' },
+    { label: 'Finalizados (Manual)', val: itensFinalizados, scope: totalItens, color: '#22c55e', bgColor: 'bg-green-500' }
   ];
 
   const todoData = [
@@ -139,8 +142,8 @@ const DemandaCard = React.memo(({
     { label: 'Capas a finalizar', val: Math.max(0, capasImpressas - capasProduzidas), scope: totalItens, color: '#f97316', bgColor: 'bg-orange-500' },
     { label: 'Capas a casar', val: Math.max(0, capasProduzidas - capasProntas), scope: totalItens, color: '#fbbf24', bgColor: 'bg-yellow-400' },
     { label: 'Miolos a entregar', val: Math.max(0, totalItens - miolosProntos), scope: totalItens, color: '#ec4899', bgColor: 'bg-pink-500' },
-    { label: 'Itens a retirar', val: Math.max(0, itensProntosParaRetirar - itensFechados), scope: itensProntosParaRetirar, color: '#6b7280', bgColor: 'bg-gray-500' },
-    { label: 'Itens a fechar', val: Math.max(0, itensProntosParaRetirar - itensEmFechamento), scope: itensProntosParaRetirar, color: '#8b5cf6', bgColor: 'bg-violet-500' }
+    { label: 'Faltam retirar', val: Math.max(0, itensProntosParaRetirar - itensEmFechamento), scope: itensProntosParaRetirar, color: '#6b7280', bgColor: 'bg-gray-500' },
+    { label: 'Faltam finalizar', val: Math.max(0, totalItens - itensFinalizados), scope: totalItens, color: '#22c55e', bgColor: 'bg-green-500' }
   ];
 
   const progressData = viewMode === 'done' ? doneData : todoData;
@@ -256,6 +259,17 @@ const DemandaCard = React.memo(({
                       className="text-blue-600 hover:underline font-semibold truncate max-w-[150px]"
                     >
                       {demanda.produto_nome || 'Ver Cadastro'}
+                    </button>
+                  </div>
+                )}
+                {demanda.pedido_id && (
+                  <div className="flex items-center gap-1.5 text-[11px]">
+                    <ShoppingCart className="h-3 w-3 text-blue-500" />
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); navigate(`/vendas/pedidos-unificados?searchTerm=${demanda.pedido_numero}`); }}
+                      className="text-blue-600 hover:underline font-semibold"
+                    >
+                      Pedido: {demanda.pedido_numero}
                     </button>
                   </div>
                 )}
@@ -403,7 +417,7 @@ const DemandaCard = React.memo(({
                   PRONTIDÃO: {demanda.readiness_score}%
                 </span>
               )}
-              <span className="text-[10px] font-bold text-gray-900">{Math.round(percentualConcluido)}% ({itensFechados}/{totalItens})</span>
+              <span className="text-[10px] font-bold text-gray-900">{Math.round(percentualConcluido)}% ({itensFinalizados}/{totalItens})</span>
             </div>
           </div>
           <Progress value={percentualConcluido} className="h-1.5" indicatorClassName={percentualConcluido === 100 ? 'bg-green-500' : ''} />

@@ -81,6 +81,7 @@ def consolidar():
             options = {
                 'plataforma': plataforma,
                 'print_orders': request.form.get('print-orders') == 'true',
+                'is_flex': request.form.get('is_flex') == 'true',
                 'channel_slug': channel.get('slug'),
                 'channel_id': channel_id,
                 'mode': request.form.get('mode')

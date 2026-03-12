@@ -1324,6 +1324,24 @@ def registrar_saida_distribuida():
                     product_id,
                     user_id
                 )
+                
+                # --- NOVO: AGENDAR PROCESSAMENTO DE FILA DE ESTOQUE PARA CADA DISTRIBUIÇÃO ---
+                for dist in distributions:
+                    item_id = dist.get('item_id')
+                    qty = dist.get('quantidade')
+                    if item_id and qty:
+                         # No contexto de Miolos (Saída Distribuída), o campo é miolos_prontos_retirada_qtd
+                         # Mas o registrar_saida_item_distribuida identifica o role automaticamente.
+                         # Para simplificar e garantir a BOM, agendamos o processamento do item.
+                         uow.execute_in_transaction(
+                             demanda_producao_service.agendar_processamento_estoque,
+                             demanda_id,
+                             item_id,
+                             'miolos_prontos_retirada_qtd', # Assume miolo por ser a tela de miolos
+                             float(qty),
+                             user_id
+                         )
+                # ---------------------------------------------------------------------------
 
             # 3. Registrar no log de produção diário
             uow.execute_in_transaction(

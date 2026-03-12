@@ -545,7 +545,7 @@ function DemandaDashboardPage() {
         <TableCell key={columnName} className="text-right">
           <div className="flex flex-col items-end gap-1">
             {finalizados > 0 && (
-                <span className="text-[10px] text-green-600 font-bold">Já finalizado: {finalizados}</span>
+                <span className="text-[10px] text-blue-600 font-bold">Sendo fechado (Exp): {finalizados}</span>
             )}
             <div className="flex justify-end gap-1 items-center">
               <Input
