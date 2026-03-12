@@ -350,99 +350,127 @@ function UnifiedOrdersPage() {
                   <TableHead>Número</TableHead>
                   <TableHead>Cliente</TableHead>
                   <TableHead>Data</TableHead>
-                  <TableHead>Origem / Canal</TableHead> {/* Atualizado para incluir Canal */}
-                  <TableHead>Status</TableHead>
+                  <TableHead>Origem / Canal</TableHead>
+                  <TableHead>Status Pedido</TableHead>
+                  <TableHead>Produção</TableHead>
                   <TableHead className="text-right">Total</TableHead>
                   <TableHead className="w-16">Ações</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {orders.length > 0 ? (
-                  orders.map((order) => (
-                    <TableRow key={order.id}>
-                      <TableCell className="font-medium">
-                        <div className="flex items-center gap-2">
-                          <Package className="h-4 w-4 text-muted-foreground" />
-                          {order.numero_pedido}
-                          {order.codigo_pedido_externo && (
-                            <span className="text-xs text-muted-foreground" title="Código Externo">
-                              ({order.codigo_pedido_externo})
-                            </span>
+                  orders.map((order) => {
+                    // Lógica para determinar status de produção consolidado
+                    const hasDemands = order.demandas && order.demandas.length > 0;
+                    const productionStatus = hasDemands ? order.demandas[0].status : 'NÃO INICIADA';
+                    
+                    const getProductionBadgeColor = (status) => {
+                      if (!hasDemands) return 'secondary';
+                      const s = status?.toUpperCase();
+                      if (s === 'CONCLUIDO') return 'success';
+                      if (s === 'EM_PRODUCAO' || s === 'PRODUZINDO') return 'default';
+                      if (s === 'CANCELADO') return 'destructive';
+                      return 'outline';
+                    };
+
+                    return (
+                      <TableRow key={order.id}>
+                        <TableCell className="font-medium">
+                          <div className="flex items-center gap-2">
+                            <Package className="h-4 w-4 text-muted-foreground" />
+                            {order.numero_pedido}
+                            {order.codigo_pedido_externo && (
+                              <span className="text-xs text-muted-foreground" title="Código Externo">
+                                ({order.codigo_pedido_externo})
+                              </span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="font-medium">{order.cliente_nome || 'N/A'}</div>
+                          <div className="text-xs text-muted-foreground">{order.cliente_documento || 'Sem doc.'}</div>
+                        </TableCell>
+                        <TableCell>{formatDate(order.data_venda)}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className="uppercase mr-2">
+                            {order.origem}
+                          </Badge>
+                          {order.canal_venda && (
+                              <Badge variant="secondary" className="normal-case">
+                                  {order.canal_venda.nome}
+                              </Badge>
                           )}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="font-medium">{order.cliente_nome || 'N/A'}</div>
-                        <div className="text-xs text-muted-foreground">{order.cliente_documento || 'Sem doc.'}</div>
-                      </TableCell>
-                      <TableCell>{formatDate(order.data_venda)}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="uppercase mr-2">
-                          {order.origem}
-                        </Badge>
-                        {order.canal_venda && (
-                            <Badge variant="secondary" className="normal-case">
-                                {order.canal_venda.nome}
-                            </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={getStatusColor(order.situacao_pedido?.nome)}> {/* Usar situacao_pedido.nome */}
-                          {order.situacao_pedido?.nome || 'PENDENTE'}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right font-medium">
-                        {formatCurrency(order.total_pedido)}
-                      </TableCell>
-                      <TableCell>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="sm">
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem>
-                              <Eye className="h-4 w-4 mr-2" />
-                              Visualizar Detalhes
-                            </DropdownMenuItem>
-                            <DropdownMenuItem>
-                              <Calendar className="h-4 w-4 mr-2" />
-                              Alterar Data
-                            </DropdownMenuItem>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
-                                  Alterar Status
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={getStatusColor(order.situacao_pedido?.nome)}>
+                            {order.situacao_pedido?.nome || 'PENDENTE'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={getProductionBadgeColor(productionStatus)}>
+                            {productionStatus.replace('_', ' ')}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right font-medium">
+                          {formatCurrency(order.total_pedido)}
+                        </TableCell>
+                        <TableCell>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="sm">
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem>
+                                <Eye className="h-4 w-4 mr-2" />
+                                Visualizar Detalhes
+                              </DropdownMenuItem>
+                              {hasDemands && (
+                                <DropdownMenuItem onClick={() => window.location.href=`/producao/demanda/${order.demandas[0].id}/dashboard`}>
+                                  <Package className="h-4 w-4 mr-2" />
+                                  Ver Dashboard Produção
                                 </DropdownMenuItem>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent>
-                                {statusOptions
-                                  .filter(status => status.nome !== order.situacao_pedido?.nome)
-                                  .map(status => (
-                                    <DropdownMenuItem 
-                                      key={status.id} 
-                                      onClick={() => handleStatusChange(order.id, status.nome)}
-                                    >
-                                      {status.nome}
-                                    </DropdownMenuItem>
-                                  ))
-                                }
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </TableCell>
-                    </TableRow>
-                  ))
+                              )}
+                              <DropdownMenuItem>
+                                <Calendar className="h-4 w-4 mr-2" />
+                                Alterar Data
+                              </DropdownMenuItem>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                                    Alterar Status
+                                  </DropdownMenuItem>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent>
+                                  {statusOptions
+                                    .filter(status => status.nome !== order.situacao_pedido?.nome)
+                                    .map(status => (
+                                      <DropdownMenuItem 
+                                        key={status.id} 
+                                        onClick={() => handleStatusChange(order.id, status.nome)}
+                                      >
+                                        {status.nome}
+                                      </DropdownMenuItem>
+                                    ))
+                                  }
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={7} className="h-24 text-center">
+                    <TableCell colSpan={8} className="h-24 text-center">
                       {loading ? 'Carregando pedidos...' : 'Nenhum pedido encontrado'}
                     </TableCell>
                   </TableRow>
                 )}
               </TableBody>
+
             </Table>
           </div>
 

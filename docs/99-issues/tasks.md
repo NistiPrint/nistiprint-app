@@ -1,0 +1,2 @@
+- bloco de monitor de webhooks na tela de integrações não é mais necessário.
+- existe uma aba webhooks em configuracoes/integracoes e existe a atual que integrada ao redis em configuracoes/ferramentas. Normalizar e manter só uma tela onde for mais apropridade, com a consulta sendo feita ao redis.

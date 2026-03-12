@@ -2,7 +2,7 @@ import api from './api';
 
 export const getUnifiedOrders = async (filters) => {
   try {
-    const response = await api.get('/v2/vendas/unified-orders', { params: filters });
+    const response = await api.get('/vendas/unified-orders', { params: filters });
     return response.data;
   } catch (error) {
     console.error('Error fetching unified orders:', error);
@@ -12,7 +12,7 @@ export const getUnifiedOrders = async (filters) => {
 
 export const getOrderStatusOptions = async () => {
   try {
-    const response = await api.get('/v2/vendas/order-status-options');
+    const response = await api.get('/vendas/order-status-options');
     return response.data;
   } catch (error) {
     console.error('Error fetching order status options:', error);
@@ -22,7 +22,7 @@ export const getOrderStatusOptions = async () => {
 
 export const getCanalVendaOptions = async () => {
   try {
-    const response = await api.get('/v2/vendas/canal-venda-options');
+    const response = await api.get('/vendas/canal-venda-options');
     return response.data;
   } catch (error) {
     console.error('Error fetching canal venda options:', error);

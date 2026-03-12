@@ -69,6 +69,27 @@ class OrderService:
                 if not res.data:
                     raise Exception(f"Falha ao criar pedido core {external_id}")
                 core_id = res.data[0]['id']
+                
+                # --- NOVO: VINCULAÇÃO AUTOMÁTICA COM DEMANDAS ÓRFÃS ---
+                # Se o pedido for novo, procurar por demandas que tenham o mesmo 'pedido_numero' 
+                # e que ainda não estejam vinculadas ao 'pedido_id'.
+                try:
+                    demandas_orfãs = supabase_db.table('demandas_producao')\
+                        .select('id')\
+                        .eq('pedido_numero', str(new_core['numero_pedido']))\
+                        .is_('pedido_id', 'null')\
+                        .execute()
+                    
+                    if demandas_orfãs.data:
+                        for demanda in demandas_orfãs.data:
+                            supabase_db.table('demandas_producao')\
+                                .update({'pedido_id': core_id})\
+                                .eq('id', demanda['id'])\
+                                .execute()
+                        logging.info(f"✅ Vinculadas {len(demandas_orfãs.data)} demandas ao novo pedido {core_id}")
+                except Exception as link_error:
+                    logging.error(f"⚠️ Erro ao vincular demandas órfãs ao pedido {core_id}: {link_error}")
+                # -----------------------------------------------------
 
             # 2. Upsert do Vínculo de Integração
             vinculo = {
@@ -127,7 +148,8 @@ class OrderService:
     def list_orders(self, page: int = 1, per_page: int = 50, filters: Dict = None) -> Dict[str, Any]:
         """Lista pedidos com paginação e filtros avançados."""
         # Note: 'situacoes_pedido' é um relacionamento no Supabase para 'status_unificado'
-        query = self.pedidos_table.select("*, canal_venda:canais_venda(nome), situacao_pedido:situacoes_pedido(nome, cor_status)", count='exact')
+        # Incluído join explícito com demandas_producao para ver status de produção e IDs das demandas
+        query = self.pedidos_table.select("*, canal_venda:canais_venda(nome), situacao_pedido:situacoes_pedido(nome, cor_status), demandas:demandas_producao!pedido_id(id, status, descricao, demanda_id)", count='exact')
         
         if filters:
             if filters.get('origem'):

@@ -21,6 +21,7 @@ function ConsolidarPage() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [printOrders, setPrintOrders] = useState(false);
+  const [isFlex, setIsFlex] = useState(false);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
   const [periodFilter, setPeriodFilter] = useState(null);
@@ -129,6 +130,7 @@ function ConsolidarPage() {
     if (startDate) formData.append('start_date', startDate);
     if (endDate) formData.append('end_datetime', endDate);
     formData.append('print-orders', printOrders);
+    formData.append('is_flex', isFlex);
     formData.append('mode', opMode);
 
     try {
@@ -638,13 +640,24 @@ function ConsolidarPage() {
                 </div>
               </div>
 
-              <div className="flex items-center space-x-2">
-                <Checkbox
-                  id="print_orders"
-                  checked={printOrders}
-                  onCheckedChange={setPrintOrders}
-                />
-                <Label htmlFor="print_orders">Imprimir pedidos e gerar notas</Label>
+              <div className="flex flex-wrap gap-4 items-center">
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="print_orders"
+                    checked={printOrders}
+                    onCheckedChange={setPrintOrders}
+                  />
+                  <Label htmlFor="print_orders">Imprimir pedidos e gerar notas</Label>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="is_flex"
+                    checked={isFlex}
+                    onCheckedChange={setIsFlex}
+                  />
+                  <Label htmlFor="is_flex" className="text-blue-600 font-bold">Pedidos FLEX</Label>
+                </div>
               </div>
 
               <Button type="submit" disabled={loading} className="w-full md:w-auto">

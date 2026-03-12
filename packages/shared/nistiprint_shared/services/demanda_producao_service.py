@@ -52,9 +52,13 @@ class DemandaProducaoService:
             d['total_itens'] = sum(i.get('quantidade', 0) for i in itens)
             d['total_quantidade'] = d['total_itens']
             
-            # Itens concluídos (totalmente) para lógica de status textual
-            d['itens_totalmente_concluidos'] = sum(i.get('quantidade', 0) for i in itens if i.get('status_item') == 'Concluído')
-            
+            # Itens concluídos (totalmente) para lógica de status textual e progresso real
+            # Este campo representa a finalização manual e explícita no dashboard.
+            d['itens_finalizados_total'] = sum(i.get('quantidade', 0) for i in itens if i.get('status_item') == 'Concluído')
+
+            # Aliase para o frontend (DemandaCard usa itens_fechados ou completed_quantidade para progresso)
+            d['itens_finalizados'] = d['itens_finalizados_total']
+
             # Itens prontos (unidades completas: capa + miolo) - suporte para finalização parcial
             # REGRA: Um item está pronto para retirar quando a CAPA ESTÁ PRONTA (casada com pedido) E o MIOLO ESTÁ PRONTO.
             d['itens_prontos_total'] = sum(min(i.get('capas_prontas_retirada_qtd') or 0, i.get('miolos_prontos_retirada_qtd') or 0) for i in itens)
@@ -66,12 +70,15 @@ class DemandaProducaoService:
             d['capas_prontas_retirada_qtd'] = sum(i.get('capas_prontas_retirada_qtd', 0) for i in itens)
             d['miolos_produzidos_qtd'] = sum(i.get('miolos_prontos_retirada_qtd', 0) for i in itens)
             d['miolos_prontos_retirada_qtd'] = d['miolos_produzidos_qtd']
-            
-            # completed_quantidade agora vem do somatório consolidado da demanda
-            d['completed_quantidade'] = d.get('quantidade_coletada_total', 0)
+
+            # completed_quantidade agora representa o progresso de FINALIZAÇÃO MANUAL para o frontend
+            d['completed_quantidade'] = d['itens_finalizados_total']
+
+            # quantidade_coletada_total mantém o valor da tabela entrega_producao (coleta física/faturamento)
+            d['quantidade_coletada_total'] = d.get('quantidade_coletada_total', 0)
 
             # Itens em fechamento: soma do menor valor entre exp. capas e exp. miolos de cada item
-            # Representa itens que a expedição está processando em paralelo
+            # Representa itens que a expedição está processando em paralelo (READY TO CLOSE)
             d['itens_em_fechamento'] = sum(
                 min(i.get('expedicao_capas_retiradas_qtd') or 0, i.get('expedicao_miolos_retirados_qtd') or 0)
                 for i in itens
@@ -79,9 +86,9 @@ class DemandaProducaoService:
 
             progresso = 0
             if d['total_itens'] > 0:
-                progresso = round((d['itens_concluidos'] / d['total_itens']) * 100)
+                # O progresso percentual da demanda agora é baseado na finalização manual dos itens
+                progresso = round((d['itens_finalizados_total'] / d['total_itens']) * 100)
             d['progresso_percentual'] = progresso
-
             # Cálculo de Prontidão (Readiness Score)
             # Média ponderada de capas impressas e miolos entregues (etapas iniciais)
             if d['total_itens'] > 0:
@@ -518,30 +525,34 @@ class DemandaProducaoService:
         if 'observacoes' in order_data:
              observacoes += f"\nObs Pedido: {order_data['observacoes']}"
 
+        # --- NOVO: BUSCAR PEDIDO_ID UNIFICADO ---
+        pedido_id_vincular = None
+        try:
+            # Tenta achar o pedido centralizado pelo codigo_pedido_externo
+            # external_id aqui é o numeroLoja/order_sn/etc
+            pedido_res = supabase_db.table('pedidos')\
+                .select('id')\
+                .eq('codigo_pedido_externo', str(external_id))\
+                .execute()
+            
+            if pedido_res.data:
+                pedido_id_vincular = pedido_res.data[0]['id']
+        except Exception as find_err:
+            print(f"Erro ao buscar pedido unificado para vínculo: {find_err}")
+        # ----------------------------------------
+
         # 3. Create Demand
         new_demanda = self.criar_demanda_direta(
             nome_demanda=nome_demanda,
             canal_venda_id=None,
             data_entrega_str=data_entrega,
             lista_de_itens=itens_demanda,
-            demanda_id=external_id, # Can allow duplicates in ID if we suffix? No, demanda_id constraint.
-            # If partial, maybe suffix? "ID-Part2"?
-            # Current logic: 'demanda_id' unique.
-            # If we are processing partial, it means previous demand likely exists or items were processed in OTHER demand.
-            # If items processed in *other* demand (Consolidation), we are creating a NEW demand for the *remainder*.
-            # So we might need a unique ID for this new partial demand.
-            # Let's append timestamp or uuid if conflict likely?
-            # Or trust UUID generation inside `criar_demanda_direta` if we pass None?
-            # But we passed external_id as `demanda_id`.
-            # Let's try to pass external_id. If conflict, `criar_demanda_direta` might fail or we should handle.
-            # Actually `create_from_order` logic at start checks existing.
-            # If we are here, we decided to create new. So we should probably allow a unique ID if original is taken.
-            # Let's pass `demanda_id=None` to auto-generate UUID for the *Internal* ID,
-            # but store external_id in `pedido_numero` field for reference.
+            demanda_id=external_id, 
             pedido_numero=str(order_data.get('numero') or external_id),
+            pedido_id=pedido_id_vincular, # Passando o ID unificado
             observacoes=observacoes,
             user_id=user_id,
-            tipo_demanda='PLATAFORMA'  # Consolidated orders are always 'PLATAFORMA' type
+            tipo_demanda='PLATAFORMA'
         )
 
         # 4. Register Processed Items
@@ -571,10 +582,10 @@ class DemandaProducaoService:
     def criar_demanda_direta(self, nome_demanda, canal_venda_id, data_entrega_str, lista_de_itens,
                              horario_coleta_especifico=None, data_finalizacao_prevista=None,
                              observacoes=None, user_id='System', tipo_demanda='PLATAFORMA',
-                             status='EM_PRODUCAO', **kwargs) -> Dict[str, Any]:
+                             status='EM_PRODUCAO', pedido_id=None, **kwargs) -> Dict[str, Any]:
         # ... (uuid logic remains)
         provided_id = kwargs.pop('demanda_id', None)
-        
+
         if provided_id:
             # Check existence
             exists = supabase_db.execute_with_retry(self.demandas_table.select("id").eq('demanda_id', provided_id))
@@ -583,7 +594,7 @@ class DemandaProducaoService:
                 provided_id = f"{provided_id}_{int(get_now().timestamp())}"
         else:
             provided_id = str(uuid.uuid4())
-            
+
         # Normalizar status
         status = self._normalize_status(status)
 
@@ -627,6 +638,7 @@ class DemandaProducaoService:
             'horario_coleta': horario_coleta_especifico,
             'tipo_demanda': tipo_demanda,
             'observacoes': observacoes,
+            'pedido_id': pedido_id,
             'prioridade_manual': kwargs.pop('manual_priority_score', 0),
             'pedido_numero': kwargs.pop('pedido_numero', None),
             'is_flex': is_flex or modalidade_logistica == 'EXPRESS',
@@ -637,7 +649,6 @@ class DemandaProducaoService:
             'created_at': get_now_iso(),
             'updated_at': get_now_iso()
         }
-
         response = supabase_db.execute_with_retry(self.demandas_table.insert(demanda_payload))
         if not response.data: raise Exception("Falha ao inserir cabeçalho da demanda")
         
@@ -1545,6 +1556,13 @@ class DemandaProducaoService:
 
             # 4. Atualização visual imediata
             self._atualizar_progresso_simples(item_id, campo, incremento)
+
+            # --- NOVO: AGENDAR PROCESSAMENTO ASSÍNCRONO DE FILA DE ESTOQUE (BOM/Insumos) ---
+            # Se for incremento positivo, agendamos o processamento pesado na fila.
+            # Isso garante que mesmo que a rota não chame explicitamente, a fila seja povoada.
+            if incremento > 0:
+                self.agendar_processamento_estoque(item_demanda.get('demanda_id'), item_id, campo, incremento, user_id)
+            # -----------------------------------------------------------------------------
 
         except Exception as e:
             # FAIL-SAFE: Loga o erro mas garante a atualização visual (Resiliência)

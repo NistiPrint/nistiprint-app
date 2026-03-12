@@ -11,10 +11,10 @@ def sync_bling_to_supabase():
     Sincroniza as contas do Bling do Firestore para o Supabase (installed_integrations).
     Otimizado para ler credenciais diretamente do documento e usar a estrutura JSONB.
     """
-    logger.info("Iniciando sincronização inteligente Firestore -> Supabase...")
+    logger.info("🚀 [SYNC] Iniciando sincronização inteligente Firestore -> Supabase...")
     
     if not initialize_firebase():
-        logger.error("Falha ao inicializar Firebase para sincronização.")
+        logger.error("❌ [SYNC] Falha ao inicializar Firebase para sincronização.")
         return False
 
     db = firestore.client()
