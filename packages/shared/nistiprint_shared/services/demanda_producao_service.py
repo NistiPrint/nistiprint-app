@@ -2464,7 +2464,7 @@ class DemandaProducaoService:
         return self._get_aggregated_demandas(response.data)
 
     def _baixar_estoque_demanda(self, demanda_id: str, user_id: str = 'System'):
-        """Efetiva a saída do estoque para todos os itens de uma demanda (Otimizado)."""
+        """Efetiva a saída do estoque para todos os itens de uma demanda via motor Waterfall."""
         try:
             # Check for existing movements to prevent double deduction
             ref_motive = f"Saída Automática - Demanda {demanda_id}"
@@ -2477,144 +2477,162 @@ class DemandaProducaoService:
             demanda = self.get_demanda_with_itens(demanda_id)
             if not demanda: return
             
-            # Baixa sequencial ainda é necessária devido à lógica de transação de saldo,
-            # mas usamos retentativa para garantir estabilidade.
-            default_deposito_id = app_config_service.get_config('default_production_deposit_id')
-            if not default_deposito_id:
-                raise ValueError("Depósito de produção padrão não configurado em app_config_service.")
+            correlation_id = f"DEM-{demanda_id}-{uuid.uuid4().hex[:6]}"
 
             for item in demanda.get('itens', []):
                 if not item.get('produto_id'):
                     continue
 
-                produto_id_demanda = str(item['produto_id'])
+                produto_id_demanda = int(item['produto_id'])
                 
                 # PROTEÇÃO CONTRA BAIXA DUPLA:
-                # Subtraímos o que já foi baixado via coleta parcial (registrado em expedicao_capas_retiradas_qtd)
+                # Subtraímos o que já foi baixado via coleta parcial
                 quantidade_ja_baixada = item.get('expedicao_capas_retiradas_qtd', 0)
                 quantidade_a_baixar = item['quantidade'] - quantidade_ja_baixada
                 
                 if quantidade_a_baixar <= 0:
                     continue
                 
-                # Obter detalhes completos do produto para verificar o formato
-                prod_details = product_service.get_by_id(produto_id_demanda)
-                
-                if not prod_details:
-                    print(f"Produto {produto_id_demanda} não encontrado para item da demanda {item['id']}. Pulando baixa de estoque.")
-                    continue
+                # Chama o processamento recursivo que agora implementa a lógica Waterfall completa
+                self.processar_insumos_por_bom_recursivo(
+                    produto_id=produto_id_demanda,
+                    quantidade=quantidade_a_baixar,
+                    correlation_id=correlation_id,
+                    user_id=user_id,
+                    tipo_operacao='CONSUMO_BOM'
+                )
 
-                prod_formato = prod_details.get('formato')
-
-                if prod_formato in ['composicao', 'kit']:
-                    # --- Lógica para produtos 'Make-to-Order' (Composição/Kit) ---
-                    # 1. Consumir componentes via BOM
-                    bom_components = bom_service.get_bom_for_produto(int(produto_id_demanda)) # BOM espera int
-                    if not bom_components:
-                        print(f"AVISO: Produto {produto_id_demanda} (formato {prod_formato}) não possui BOM configurada. Componentes não serão baixados.")
-                    
-                    for comp in bom_components:
-                        componente_id = str(comp.componente_id)
-                        quantidade_componente_necessaria = comp.quantidade * quantidade_a_baixar
-                        
-                        try:
-                            estoque_service.registrar_saida(
-                                produto_id=componente_id,
-                                deposito_id=default_deposito_id,
-                                quantidade=quantidade_componente_necessaria,
-                                motivo=f"[FINALIZACAO_TOTAL] Consumo para Demanda {demanda_id} (Pedido {demanda.get('pedido_numero')}) - Item {item['id']} ({prod_details.get('nome')})",
-                                usuario_id=None # Operação do sistema
-                            )
-                        except Exception as e:
-                            print(f"ERRO: Falha ao baixar componente {componente_id} para demanda {demanda_id}. Erro: {e}")
-                    
-                    # 2. Liberar apenas a reserva do produto final (não registrar saída física, pois ele foi "produzido" agora)
-                    try:
-                        estoque_service.liberar_reserva(
-                            produto_id=produto_id_demanda,
-                            quantidade=quantidade_a_baixar,
-                            deposito_id=default_deposito_id # Reserva também está atrelada a um depósito
-                        )
-                    except Exception as e:
-                        print(f"ERRO: Falha ao liberar reserva do produto final {produto_id_demanda} para demanda {demanda_id}. Erro: {e}")
-
-                else:
-                    # --- Lógica para produtos 'simples' ou 'variacao' (produtos acabados em estoque) ---
-                    # Confirmar a saída do produto reservado
-                    estoque_service.confirmar_saida_reservada(
+                # Liberar a reserva do produto final (que foi feita na criação da demanda)
+                try:
+                    estoque_service.liberar_reserva(
                         produto_id=produto_id_demanda,
-                        quantidade=quantidade_a_baixar,
-                        motivo=f"[FINALIZACAO_TOTAL] {ref_motive} ({demanda.get('pedido_numero')})",
-                        usuario_id=None # Operação do sistema
+                        quantidade=quantidade_a_baixar
                     )
+                except: pass
             
             auditoria_service.log_event('ESTOQUE_BAIXADO_DEMANDA', {
                 'demanda_id': demanda_id,
-                'status': 'Sucesso'
+                'status': 'Sucesso',
+                'correlation_id': correlation_id
             }, user_id)
         except Exception as e:
             print(f"Erro ao baixar estoque da demanda {demanda_id}: {e}")
-            auditoria_service.log_event('ESTOQUE_BAIXADO_ERRO', {
-                'demanda_id': demanda_id,
-                'erro': str(e)
-            }, user_id)
 
     def processar_insumos_por_bom_recursivo(self, produto_id: int, quantidade: float, correlation_id: str, user_id: str, tipo_operacao: str = 'CONSUMO_BOM', retroactive_date: Optional[str] = None):
         """
-        Explode a BOM do produto e registra as movimentações de insumos recursivamente.
-        Utiliza o correlation_id para manter o vínculo com a ação original de 1º nível.
+        Motor de Produção Waterfall:
+        1. Verifica estoque disponível.
+        2. Se houver estoque, consome (SAÍDA).
+        3. Se faltar e houver BOM, produz o restante recursivamente (ENTRADA + SAÍDA).
+        4. Se faltar e não houver BOM, consome o restante (SAÍDA direta).
         """
+        print(f"DEBUG [WATERFALL] Processando Produto {produto_id}, Qtd: {quantidade}, Correlation: {correlation_id}")
         from nistiprint_shared.services.bom_service import bom_service
         from nistiprint_shared.services.app_config_service import app_config_service
+        from nistiprint_shared.services.product_service import product_service
         
-        # Obter depósito padrão para produção
         default_deposito_id = app_config_service.get_config('default_production_deposit_id')
         
-        # Buscar componentes na BOM
-        componentes = bom_service.get_bom_for_produto(produto_id)
-        if not componentes:
+        # 1. Verificar estoque disponível atual do produto
+        saldo_info = estoque_service.get_saldo_atual(produto_id, default_deposito_id)
+        disponivel = float(saldo_info.get('quantidade_disponivel', 0) or 0)
+        
+        # O que vamos tirar do estoque pronto?
+        qtd_estoque = min(max(0.0, disponivel), quantidade)
+        # O que precisamos "produzir" via BOM?
+        qtd_a_produzir = quantidade - qtd_estoque
+        
+        print(f"DEBUG [WATERFALL] Produto {produto_id}: Disponivel={disponivel}, UsarEstoque={qtd_estoque}, Produzir={qtd_a_produzir}")
+
+        # 2. Consumir o que já existe em estoque (SAÍDA SIMPLES)
+        if qtd_estoque > 0:
+            print(f"DEBUG [WATERFALL] Registrando SAIDA de estoque pronto para {produto_id}: {qtd_estoque}")
+            estoque_service.registrar_saida(
+                produto_id=produto_id,
+                deposito_id=default_deposito_id,
+                quantidade=qtd_estoque,
+                motivo=f"[WATERFALL_ESTOQUE] Saída de saldo existente para Correlation: {correlation_id}",
+                usuario_id=None,
+                correlation_id=correlation_id,
+                origem_tipo=0, # Movimentação simples
+                data_movimento=retroactive_date
+            )
+
+        # 3. Processar o restante que precisa ser "produzido" ou consumido sem estoque
+        if qtd_a_produzir <= 0:
             return
 
-        for comp in componentes:
-            qtd_necessaria = comp.quantidade * quantidade
-            
-            # Registrar movimentação do componente (Nível N+1)
-            # Se for CONSUMO_BOM -> SAIDA
-            # Se for ESTORNO_BOM -> ENTRADA
-            if tipo_operacao == 'CONSUMO_BOM':
-                estoque_service.registrar_saida(
-                    produto_id=comp.componente_id,
-                    deposito_id=default_deposito_id,
-                    quantidade=qtd_necessaria,
-                    motivo=f"[BOM_AUTO] Consumo de componente para Correlation: {correlation_id}",
-                    usuario_id=None,
-                    correlation_id=correlation_id,
-                    origem_tipo=6, # 6: CONSUMO_AUTOMATICO_COMPONENTE (Novo Código)
-                    data_movimento=retroactive_date
-                )
-            else:
-                estoque_service.registrar_entrada(
-                    produto_id=comp.componente_id,
-                    deposito_id=default_deposito_id,
-                    quantidade=qtd_necessaria,
-                    observacao=f"[BOM_AUTO] Estorno de componente para Correlation: {correlation_id}",
-                    usuario_id=None,
-                    correlation_id=correlation_id,
-                    origem_tipo=7, # 7: ESTORNO_AUTOMATICO_COMPONENTE (Novo Código)
-                    data_movimento=retroactive_date
-                )
-            
-            # RECURSIVIDADE: Se o componente também for uma composição/kit, explode ele também
-            from nistiprint_shared.services.product_service import product_service
-            prod_comp = product_service.get_by_id(str(comp.componente_id))
-            if prod_comp and prod_comp.get('formato') in ['composicao', 'kit']:
+        # Verificar se tem BOM para produzir
+        componentes = bom_service.get_bom_for_produto(produto_id)
+        
+        if componentes and tipo_operacao == 'CONSUMO_BOM':
+            print(f"DEBUG [WATERFALL] Produto {produto_id} tem BOM. Produzindo {qtd_a_produzir}...")
+            # --- PRODUZIR ---
+            # 3.1. Explodir BOM recursivamente para os filhos
+            for comp in componentes:
+                qtd_comp_necessaria = float(comp.quantidade) * qtd_a_produzir
+                print(f"DEBUG [WATERFALL] -> Componente {comp.componente_id} nec: {qtd_comp_necessaria}")
                 self.processar_insumos_por_bom_recursivo(
-                    produto_id=comp.componente_id,
-                    quantidade=qtd_necessaria,
+                    produto_id=int(comp.componente_id),
+                    quantidade=qtd_comp_necessaria,
                     correlation_id=correlation_id,
                     user_id=user_id,
                     tipo_operacao=tipo_operacao,
                     retroactive_date=retroactive_date
+                )
+            
+            # 3.2. Registrar ENTRADA do produto atual (foi produzido agora consumindo os filhos)
+            print(f"DEBUG [WATERFALL] Registrando ENTRADA de producao para {produto_id}: {qtd_a_produzir}")
+            estoque_service.registrar_entrada(
+                produto_id=produto_id,
+                deposito_id=default_deposito_id,
+                quantidade=qtd_a_produzir,
+                observacao=f"[WATERFALL_PROD] Entrada de item produzido para Correlation: {correlation_id}",
+                usuario_id=None,
+                correlation_id=correlation_id,
+                origem_tipo=8, # 8: ENTRADA_POR_PRODUCAO_BOM
+                data_movimento=retroactive_date
+            )
+            
+            # 3.3. Registrar SAÍDA do produto atual (consumo imediato pelo pai ou alocação final)
+            print(f"DEBUG [WATERFALL] Registrando SAIDA de consumo do produzido para {produto_id}: {qtd_a_produzir}")
+            estoque_service.registrar_saida(
+                produto_id=produto_id,
+                deposito_id=default_deposito_id,
+                quantidade=qtd_a_produzir,
+                motivo=f"[WATERFALL_CONSUMO] Saída de item produzido para Correlation: {correlation_id}",
+                usuario_id=None,
+                correlation_id=correlation_id,
+                origem_tipo=0,
+                data_movimento=retroactive_date
+            )
+        else:
+            # --- NÃO TEM BOM OU É ESTORNO ---
+            # Consome direto (fica negativo se não houver estoque)
+            if tipo_operacao == 'CONSUMO_BOM':
+                print(f"DEBUG [WATERFALL] Produto {produto_id} SEM BOM. Registrando SAIDA DIRETA: {qtd_a_produzir}")
+                estoque_service.registrar_saida(
+                    produto_id=produto_id,
+                    deposito_id=default_deposito_id,
+                    quantidade=qtd_a_produzir,
+                    motivo=f"[WATERFALL_DIRETO] Saída direta (sem BOM) para Correlation: {correlation_id}",
+                    usuario_id=None,
+                    correlation_id=correlation_id,
+                    origem_tipo=0,
+                    data_movimento=retroactive_date
+                )
+            else:
+                # Lógica de Estorno (apenas devolve ao estoque)
+                print(f"DEBUG [WATERFALL] Estornando {produto_id}: {quantidade}")
+                estoque_service.registrar_entrada(
+                    produto_id=produto_id,
+                    deposito_id=default_deposito_id,
+                    quantidade=quantidade,
+                    observacao=f"[WATERFALL_ESTORNO] Estorno para Correlation: {correlation_id}",
+                    usuario_id=None,
+                    correlation_id=correlation_id,
+                    origem_tipo=0,
+                    data_movimento=retroactive_date
                 )
 
     def processar_fila_estoque(self, limit=10):
@@ -2660,11 +2678,12 @@ class DemandaProducaoService:
                     elif t_tipo == 'DEMANDA_TOTAL':
                         self._baixar_estoque_demanda(tarefa['demanda_id'], tarefa.get('user_id', 'System'))
                     elif t_tipo == 'ITEM_TOTAL_BOM_PROCESS':
-                        # --- NOVO: EXPLOSÃO COMPLETA DE BOM NA FINALIZAÇÃO ---
+                        # --- EXPLOSÃO COMPLETA DE BOM NA FINALIZAÇÃO ---
                         item_demanda = self.get_item_by_id(tarefa['item_id'])
                         produto_final_id = item_demanda['produto_id']
                         
                         if produto_final_id:
+                            # O motor Waterfall agora cuida de: Consumir Insumos -> Entrar Produto -> Sair Produto
                             self.processar_insumos_por_bom_recursivo(
                                 produto_id=int(produto_final_id),
                                 quantidade=abs(float(tarefa['quantidade'])),
@@ -2673,6 +2692,7 @@ class DemandaProducaoService:
                                 tipo_operacao='CONSUMO_BOM' if float(tarefa['quantidade']) > 0 else 'ESTORNO_BOM',
                                 retroactive_date=t_retroactive_date
                             )
+
                     elif t_tipo == 'ITEM_TOTAL_PROCESSO':
                         etapas_estoque = ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd', 'miolos_prontos_retirada_qtd']
                         for campo_etapa in etapas_estoque:
@@ -2702,13 +2722,13 @@ class DemandaProducaoService:
                                 produto_intermediario = bom_service.get_component_by_role(produto_final_id, estagio['role_produto_gerado'])
                             
                             if produto_intermediario:
-                                op_bom = 'CONSUMO_BOM' if float(tarefa['quantidade']) > 0 else 'ESTORNO_BOM'
+                                # O motor Waterfall agora cuida de: Consumir Insumos -> Entrar Produto -> Sair Produto
                                 self.processar_insumos_por_bom_recursivo(
                                     produto_id=int(produto_intermediario['id']),
                                     quantidade=abs(float(tarefa['quantidade'])),
                                     correlation_id=t_correlation_id,
                                     user_id=tarefa.get('user_id', 'System'),
-                                    tipo_operacao=op_bom,
+                                    tipo_operacao='CONSUMO_BOM' if float(tarefa['quantidade']) > 0 else 'ESTORNO_BOM',
                                     retroactive_date=t_retroactive_date
                                 )
                     else:
