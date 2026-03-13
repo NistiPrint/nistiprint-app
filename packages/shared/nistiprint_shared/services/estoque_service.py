@@ -110,7 +110,7 @@ class EstoqueService:
                          observacao: str = "", ordem_compra_id: Optional[str] = None,
                          usuario_id: Optional[int] = None, unit_name: Optional[str] = None,
                          user_context: dict = None, correlation_id: Optional[str] = None,
-                         origem_tipo: Optional[int] = None) -> str:
+                         origem_tipo: Optional[int] = None, data_movimento: Optional[str] = None) -> str:
         """Registra entrada de mercadoria no estoque."""
         self._validate_stock_eligibility(produto_id)
         self._validate_sector_permission(produto_id, user_context)
@@ -139,13 +139,15 @@ class EstoqueService:
             documento_referencia=ordem_compra_id,
             usuario_id=usuario_id,
             correlation_id=correlation_id,
-            origem_tipo=origem_tipo
+            origem_tipo=origem_tipo,
+            data_movimento=data_movimento
         )
 
     def registrar_saida(self, produto_id: Any, deposito_id: Any, quantidade: float,
                        motivo: str = "", usuario_id: Optional[int] = None,
                        user_context: dict = None, documento_referencia: Optional[str] = None,
-                       correlation_id: Optional[str] = None, origem_tipo: Optional[int] = None) -> str:
+                       correlation_id: Optional[str] = None, origem_tipo: Optional[int] = None,
+                       data_movimento: Optional[str] = None) -> str:
         """Registra saída de mercadoria do estoque."""
         self._validate_stock_eligibility(produto_id)
         self._validate_sector_permission(produto_id, user_context)
@@ -159,7 +161,8 @@ class EstoqueService:
             usuario_id=usuario_id,
             documento_referencia=documento_referencia,
             correlation_id=correlation_id,
-            origem_tipo=origem_tipo
+            origem_tipo=origem_tipo,
+            data_movimento=data_movimento
         )
 
     def registrar_movimento_hibrido(self, produto_id: Any, deposito_id: Any, tipo_movimentacao: str,
@@ -167,7 +170,8 @@ class EstoqueService:
                                   documento_referencia: Optional[str] = None,
                                   usuario_id: Optional[int] = None,
                                   correlation_id: Optional[str] = None,
-                                  origem_tipo: Optional[int] = None) -> str:
+                                  origem_tipo: Optional[int] = None,
+                                  data_movimento: Optional[str] = None) -> str:
         """
         Registra o primeiro nível da movimentação atomicamente via RPC.
         Retorna o correlation_id gerado ou fornecido.
@@ -182,7 +186,8 @@ class EstoqueService:
                 'p_motivo': motivo,
                 'p_origem_tipo': origem_tipo,
                 'p_usuario_id': usuario_id,
-                'p_documento_referencia': str(documento_referencia) if documento_referencia else None
+                'p_documento_referencia': str(documento_referencia) if documento_referencia else None,
+                'p_data_movimento': data_movimento
             }
             
             if correlation_id:
@@ -738,7 +743,8 @@ class EstoqueService:
             #     raise ValueError(f"Estoque insuficiente para {pid}. Disponível: {disponivel}")
             
             if qtd > disponivel:
-                print(f"AVISO: Reserva de {qtd} para o produto {pid} excede o disponível ({disponivel}).")
+                import logging
+                logging.warning(f"AVISO: Reserva de {qtd} para o produto {pid} excede o disponível ({disponivel}).")
             
             novo_reservado = float(record.get('reservado', 0)) + qtd
             self.saldos_table.update({'reservado': novo_reservado, 'updated_at': get_now_iso()}).eq('id', record['id']).execute()
