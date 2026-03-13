@@ -122,6 +122,46 @@ def create_demanda():
 
 # --- API Routes ---
 
+from nistiprint_shared.services.previsao_consumo_service import previsao_consumo_service
+
+@demanda_producao_api_bp.route('/<string:demanda_id>/auditoria-consumo', methods=['GET'])
+@login_required
+def api_auditoria_consumo_demanda(demanda_id):
+    try:
+        # Resolver o ID interno se necessário
+        demanda_res = demanda_producao_service.get_demanda_with_itens(demanda_id)
+        if not demanda_res:
+            return jsonify({'success': False, 'message': 'Demanda não encontrada'}), 404
+        
+        internal_id = demanda_res['id']
+        result = previsao_consumo_service.audit_consumption_for_demand(internal_id)
+        return jsonify(result)
+    except Exception as e:
+        print(f"ERROR in api_auditoria_consumo_demanda: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@demanda_producao_api_bp.route('/retry-fila-estoque/<string:task_id>', methods=['POST'])
+@login_required
+def api_retry_fila_estoque(task_id):
+    try:
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        from nistiprint_shared.utils.date_utils import get_now_iso
+        
+        res = supabase_db.table('fila_processamento_estoque').update({
+            'status': 'PENDENTE',
+            'tentativas': 0,
+            'proxima_execucao_at': get_now_iso(),
+            'mensagem_erro': None
+        }).eq('id', task_id).execute()
+        
+        if not res.data:
+            return jsonify({'success': False, 'message': 'Tarefa não encontrada'}), 404
+            
+        return jsonify({'success': True})
+    except Exception as e:
+        print(f"ERROR in api_retry_fila_estoque: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 @demanda_producao_api_bp.route('/', methods=['GET'])
 def api_list_demandas():
     try:
@@ -713,7 +753,15 @@ def registrar_producao_incremental(demanda_id, item_id):
                     }), 403
 
     try:
-        updated_item = demanda_producao_service.registrar_producao_incremental(demanda_id, item_id, producao_incremental, user_id, origem_tipo=origem_tipo)
+        retroactive_date = data.get('retroactive_date')
+        correlation_id = data.get('correlation_id')
+        
+        updated_item = demanda_producao_service.registrar_producao_incremental(
+            demanda_id, item_id, producao_incremental, user_id, 
+            origem_tipo=origem_tipo,
+            retroactive_date=retroactive_date,
+            correlation_id=correlation_id
+        )
         return jsonify({'success': True, 'message': 'Produção registrada com sucesso!', 'item_id': updated_item['id']}), 200
 
     except ValueError as ve:
@@ -785,7 +833,12 @@ def registrar_producao_lote(demanda_id):
                 }), 403
 
     try:
-        batch_results = demanda_producao_service.registrar_producao_lote(demanda_id, updates, user_id, origem_tipo=origem_tipo)
+        batch_results = demanda_producao_service.registrar_producao_lote(
+            demanda_id, updates, user_id, 
+            origem_tipo=origem_tipo,
+            retroactive_date=data.get('retroactive_date'),
+            correlation_id=data.get('correlation_id')
+        )
         return jsonify({
             'success': True, 
             'message': f'{len(batch_results.get("results", []))} itens processados com sucesso!', 

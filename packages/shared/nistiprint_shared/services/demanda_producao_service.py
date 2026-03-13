@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.auditoria_service import auditoria_service
 from nistiprint_shared.services.estoque_service import estoque_service
@@ -9,6 +9,7 @@ from nistiprint_shared.services.order_tracker_service import order_tracker_servi
 from nistiprint_shared.services.daily_production_log_service import daily_production_log_service
 from nistiprint_shared.services.app_config_service import app_config_service
 from nistiprint_shared.services.system_events_log_service import system_events_log_service
+from nistiprint_shared.services.previsao_consumo_service import previsao_consumo_service
 from nistiprint_shared.services.unit_of_work import UnitOfWork
 from typing import List, Dict, Any, Optional
 import uuid
@@ -368,12 +369,15 @@ class DemandaProducaoService:
         # Enriquecer cabeçalho da demanda com totais de coleta
         raw_demanda = self._enrich_demanda_with_collection_totals(raw_demanda)
         
+        canal_venda = raw_demanda.get('canal_venda') or {}
+        plataforma = canal_venda.get('plataformas') or {}
+
         demanda = self._process_demanda_dict(
             {
                 **raw_demanda, 
-                'canal_venda_nome': raw_demanda.get('canal_venda', {}).get('nome'),
-                'canal_venda_color': raw_demanda.get('canal_venda', {}).get('color'),
-                'canal_venda_plataforma': raw_demanda.get('canal_venda', {}).get('plataformas', {}).get('nome')
+                'canal_venda_nome': canal_venda.get('nome'),
+                'canal_venda_color': canal_venda.get('color'),
+                'canal_venda_plataforma': plataforma.get('nome')
             }, 
             processed_itens
         )
@@ -719,23 +723,139 @@ class DemandaProducaoService:
                         logging.error(f"Erro ao registrar origens dos pedidos para demanda {new_demanda_id}: {e}")
                 # --------------------------------------------
 
-            # --- INTEGRAÇÃO COM ESTOQUE (RESERVAS EM LOTE) ---
-            itens_reserva = [
-                {'produto_id': item['produto_id'], 'quantidade': item['quantidade']}
-                for item in itens_payload if item.get('produto_id')
-            ]
-            if itens_reserva:
+            # --- INTEGRAÇÃO COM ESTOQUE (RESERVAS EM CASCATA & PREVISÃO) ---
+            try:
+                # 1. Gerar a Previsão de Consumo na nova tabela dedicada
+                previsao_consumo_service.gerar_previsao_para_demanda(new_demanda_id, itens_payload)
+
+                # 2. Gera o snapshot de consumo legado e efetiva as reservas (Waterfall)
+                snapshot_consumo = self._processar_reserva_inteligente_demanda(new_demanda_id, itens_payload, user_id)
+                
+                # Atualiza a demanda com o snapshot para consulta futura
+                self.update_demanda_details(new_demanda_id, {
+                    'dados_adicionais': {'snapshot_consumo_previsto': snapshot_consumo}
+                }, user_id)
+                
+            except Exception as e:
+                print(f"Erro ao processar reserva inteligente para demanda {new_demanda_id}: {e}")
+                # Fallback: Se falhar a cascata, tenta reserva simples para não deixar sem nada
                 try:
-                    estoque_service.reservar_estoque_em_lote(
-                        itens_reserva=itens_reserva,
-                        allow_backorder=True 
-                    )
-                except Exception as e:
-                    print(f"Erro ao reservar estoque em lote para demanda {new_demanda_id}: {e}")
+                    itens_reserva = [{'produto_id': i['produto_id'], 'quantidade': i['quantidade']} for i in itens_payload if i.get('produto_id')]
+                    estoque_service.reservar_estoque_em_lote(itens_reserva, allow_backorder=True)
+                except: pass
             # --------------------------------------------------
 
         auditoria_service.log_event('DEMANDA_CRIADA', {'demanda_id': new_demanda_id}, user_id)
         return self.get_demanda_with_itens(new_demanda_id)
+
+    def _processar_reserva_inteligente_demanda(self, demanda_id, itens_payload, user_id):
+        """
+        Calcula e executa a reserva de estoque seguindo lógica Waterfall:
+        1. Tenta reservar produto acabado.
+        2. Se faltar, explode BOM e reserva componentes.
+        3. Retorna um snapshot detalhado do que foi planejado.
+        """
+        from nistiprint_shared.services.app_config_service import app_config_service
+        deposito_id = app_config_service.get_config('default_production_deposit_id')
+        
+        snapshot = {
+            'calculado_em': get_now_iso(),
+            'demanda_id': demanda_id,
+            'itens': []
+        }
+
+        # Cache local para evitar múltiplas chamadas de saldo/BOM no loop
+        # (Otimização para demandas grandes)
+        # Nota: Idealmente seria passado como argumento para a recursão
+        
+        for item in itens_payload:
+            produto_id = item.get('produto_id')
+            if not produto_id: continue
+            
+            qtd_necessaria = float(item.get('quantidade', 0))
+            
+            # Estrutura do item no snapshot
+            item_report = {
+                'item_id': item.get('id'), # Pode ser None se ainda não commitou, mas itens_payload veio do insert
+                'produto_id': produto_id,
+                'sku': item.get('sku'),
+                'qtd_necessaria': qtd_necessaria,
+                'reservas_realizadas': [] # Lista de {produto_id, qtd, tipo: 'PAI'|'COMPONENTE'}
+            }
+            
+            # Inicia recursão
+            self._reservar_recursivo(
+                produto_id=int(produto_id),
+                quantidade=qtd_necessaria,
+                deposito_id=deposito_id,
+                report_list=item_report['reservas_realizadas'],
+                nivel=0
+            )
+            
+            snapshot['itens'].append(item_report)
+            
+        return snapshot
+
+    def _reservar_recursivo(self, produto_id, quantidade, deposito_id, report_list, nivel=0):
+        """
+        Motor recursivo de reserva.
+        """
+        # 1. Verificar Saldo Disponível do Produto Atual
+        # TODO: Otimizar get_saldo_atual para cache se necessário
+        saldo_info = estoque_service.get_saldo_atual(produto_id, deposito_id)
+        disponivel = float(saldo_info.get('quantidade_disponivel', 0))
+        
+        # 2. Tentar reservar do próprio produto (Estoque Acabado ou Componente Puro)
+        # Se for nível 0 (Produto Final), queremos consumir o que tiver pronto.
+        # Se for nível > 0 (Componente), queremos consumir o que tiver.
+        qtd_reservar = min(max(0, disponivel), quantidade)
+        
+        if qtd_reservar > 0:
+            estoque_service.reservar_estoque(produto_id, qtd_reservar, deposito_id)
+            report_list.append({
+                'produto_id': produto_id,
+                'quantidade': qtd_reservar,
+                'tipo': 'ESTOQUE_EXISTENTE',
+                'nivel': nivel
+            })
+            
+        # 3. Calcular Falta
+        falta = quantidade - qtd_reservar
+        
+        if falta > 0:
+            # Precisa produzir ou comprar. Verifica BOM.
+            bom = bom_service.get_bom_for_produto(produto_id)
+            
+            if not bom:
+                # Não tem BOM (é matéria prima ou produto sem ficha).
+                # Reserva a falta gerando Backorder (Risco de Ruptura)
+                estoque_service.reservar_estoque(produto_id, falta, deposito_id, allow_backorder=True)
+                report_list.append({
+                    'produto_id': produto_id,
+                    'quantidade': falta,
+                    'tipo': 'BACKORDER' if nivel > 0 else 'A_PRODUZIR_SEM_BOM', # Se for pai, é "A Produzir", se for filho, é falta de insumo
+                    'nivel': nivel
+                })
+            else:
+                # Tem BOM (é produzível). Explode e desce o nível.
+                # Não reservamos o pai "em backorder" aqui, pois a reserva será feita nos filhos.
+                # Apenas registramos no report que será produzido.
+                report_list.append({
+                    'produto_id': produto_id,
+                    'quantidade': falta,
+                    'tipo': 'A_PRODUZIR', # Indica que esta qtd será gerada por produção
+                    'nivel': nivel
+                })
+                
+                for comp in bom:
+                    qtd_comp_necessaria = falta * float(comp.quantidade)
+                    self._reservar_recursivo(
+                        produto_id=comp.componente_id,
+                        quantidade=qtd_comp_necessaria,
+                        deposito_id=deposito_id,
+                        report_list=report_list,
+                        nivel=nivel + 1
+                    )
 
     def criar_demanda_empresas(self, nome_demanda, canal_venda_id, data_entrega_str, lista_de_itens,
                              horario_coleta_especifico=None, data_finalizacao_prevista=None,
@@ -821,16 +941,21 @@ class DemandaProducaoService:
             # Se o update retornou vazio, algo deu errado (permissão ou ID mismatch silencioso)
             raise RuntimeError(f"Falha ao persistir atualização no item {item_id}. Nenhuma linha afetada.")
 
-    def processar_alocacao_de_demanda(self, item_id: str, campo: str, incremento: float, user_id: str, skip_visual_update: bool = False, origem_tipo: Optional[int] = None):
+    def processar_alocacao_de_demanda(self, item_id: str, campo: str, incremento: float, user_id: str, skip_visual_update: bool = False, origem_tipo: Optional[int] = None, retroactive_date: Optional[str] = None, correlation_id: Optional[str] = None):
         """
         Processa a alocação de estoque com base no estágio de produção.
         Implementa o cenário misto: uso de estoque existente + produção JIT.
-        Retorna um dicionário com detalhes sobre o processamento realizado.
+        Suporta data retroativa e Correlation ID para rastreabilidade.
         """
-        from config.production_stages import ESTAGIOS_PRODUCAO
+        from nistiprint_shared.config.production_stages import ESTAGIOS_PRODUCAO
         from nistiprint_shared.services.unit_of_work import UnitOfWork
         from nistiprint_shared.services.bom_service import bom_service
         from nistiprint_shared.services.app_config_service import app_config_service
+
+        # --- GESTÃO DE CORRELAÇÃO E DATA ---
+        cid = correlation_id or f"DASH-{uuid.uuid4().hex[:8]}"
+        mov_date = retroactive_date or get_now_iso()
+        # -----------------------------------
 
         # Validação básica de entrada para evitar erros de SQL
         if not item_id or item_id == 'None':
@@ -848,14 +973,14 @@ class DemandaProducaoService:
             try:
                 item_demanda = self.get_item_by_id(item_id)
                 daily_production_log_service.create_log(
-                    log_date=datetime.now().date(),
+                    log_date=datetime.fromisoformat(mov_date[:10]).date() if mov_date else datetime.now().date(),
                     product_id=str(item_demanda.get('produto_id')),
                     product_name="Progresso Visual",
                     quantity=incremento,
                     production_order_id=None,
                     component_stock_snapshot=[],
                     user_email=user_id,
-                    metadata={'demanda_id': item_demanda.get('demanda_id'), 'item_id': item_id, 'campo': campo}
+                    metadata={'demanda_id': item_demanda.get('demanda_id'), 'item_id': item_id, 'campo': campo, 'correlation_id': cid}
                 )
             except: pass
 
@@ -864,7 +989,8 @@ class DemandaProducaoService:
                 'incremento': incremento,
                 'status': 'VISUAL_ONLY',
                 'message': f"Atualização visual apenas para campo {campo}, não requer movimentação de estoque",
-                'progresso_atualizacao': progresso_result
+                'progresso_atualizacao': progresso_result,
+                'correlation_id': cid
             }
 
         estagio = ESTAGIOS_PRODUCAO[campo]
@@ -881,7 +1007,8 @@ class DemandaProducaoService:
                 'incremento': incremento,
                 'status': 'WARNING',
                 'message': f"Alocação para item {item_id} não processada: Produto com role '{estagio['role_produto_gerado']}' não encontrado na BOM do produto final {produto_final_id}.",
-                'progresso_atualizacao': progresso_result
+                'progresso_atualizacao': progresso_result,
+                'correlation_id': cid
             }
 
         produto_intermediario_id = int(produto_intermediario['id'])
@@ -923,7 +1050,9 @@ class DemandaProducaoService:
                     deposito_id=deposito_id,
                     quantidade=qtd_do_estoque,
                     motivo=f"Alocação de estoque para item {item_id} {demanda_ref}",
-                    documento_referencia=demanda_id
+                    documento_referencia=demanda_id,
+                    correlation_id=cid,
+                    data_movimento=mov_date
                 )
                 mensagem_acoes.append(f"Alocadas {qtd_do_estoque} unidades do estoque")
 
@@ -945,7 +1074,9 @@ class DemandaProducaoService:
                                 deposito_id=deposito_id,
                                 quantidade=(float(comp.quantidade) * float(qtd_a_produzir)),
                                 motivo=f"Consumo JIT para item {item_id} {demanda_ref}",
-                                documento_referencia=demanda_id
+                                documento_referencia=demanda_id,
+                                correlation_id=cid,
+                                data_movimento=mov_date
                             )
 
                         # ENTRADA DO PRODUTO GERADO
@@ -953,7 +1084,9 @@ class DemandaProducaoService:
                             produto_id=produto_intermediario_id,
                             deposito_id=deposito_id,
                             quantidade=qtd_a_produzir,
-                            observacao=f"Produção JIT para item {item_id} {demanda_ref}"
+                            observacao=f"Produção JIT para item {item_id} {demanda_ref}",
+                            correlation_id=cid,
+                            data_movimento=mov_date
                         )
 
                         # SAÍDA IMEDIATA PARA ALOCAÇÃO
@@ -962,21 +1095,23 @@ class DemandaProducaoService:
                             deposito_id=deposito_id,
                             quantidade=qtd_a_produzir,
                             motivo=f"Alocação JIT para item {item_id} {demanda_ref}",
-                            documento_referencia=demanda_id
+                            documento_referencia=demanda_id,
+                            correlation_id=cid,
+                            data_movimento=mov_date
                         )
                         mensagem_acoes.append(f"Produzidas e alocadas {qtd_a_produzir} unidades")
 
             # 3.3. Registro no Log de Produção Diária
             try:
                 daily_production_log_service.create_log(
-                    log_date=datetime.now().date(),
+                    log_date=datetime.fromisoformat(mov_date[:10]).date() if mov_date else datetime.now().date(),
                     product_id=str(produto_intermediario_id),
                     product_name=produto_intermediario.get('nome') or produto_intermediario.get('name', 'Produto'),
                     quantity=incremento,
                     production_order_id=None,
                     component_stock_snapshot=[],
                     user_email=user_id,
-                    metadata={'demanda_id': demanda_id, 'item_id': item_id, 'campo': campo}
+                    metadata={'demanda_id': demanda_id, 'item_id': item_id, 'campo': campo, 'correlation_id': cid}
                 )
             except Exception as log_error:
                 print(f"Erro ao registrar log diário de produção: {log_error}")
@@ -985,6 +1120,9 @@ class DemandaProducaoService:
             progresso_result = None
             if not skip_visual_update:
                 progresso_result = self._atualizar_progresso_simples(item_id, campo, incremento)
+                # Agendar processamento de insumos assíncronos se houve incremento
+                if incremento != 0:
+                    self.agendar_processamento_estoque(demanda_id, item_id, campo, incremento, user_id, correlation_id=cid, created_at=mov_date)
 
         return {
             'campo': campo,
@@ -996,8 +1134,49 @@ class DemandaProducaoService:
                 'qtd_a_produzir': qtd_a_produzir,
                 'saldo_disponivel': saldo_disponivel
             },
-            'progresso_atualizacao': progresso_result
+            'progresso_atualizacao': progresso_result,
+            'correlation_id': cid
         }
+
+    def associar_saida_a_demanda(self, demanda_id: str, product_id: str, quantity: float, user_id: str = 'System'):
+        """
+        Associa uma saída de estoque manual a uma demanda específica, 
+        identificando o item correspondente e atualizando seu progresso.
+        """
+        try:
+            # 1. Identificar o item da demanda que usa este produto (como capa ou miolo)
+            demanda = self.get_demanda_with_itens(demanda_id)
+            if not demanda: return False
+
+            target_item = None
+            campo_atualizar = 'expedicao_capas_retiradas_qtd' # Default
+            
+            for item in demanda.get('itens', []):
+                # Se o produto for o produto principal do item (Capa/Acabado)
+                if str(item.get('produto_id')) == str(product_id):
+                    target_item = item
+                    campo_atualizar = 'expedicao_capas_retiradas_qtd'
+                    break
+                # Se o produto for o miolo do item
+                if str(item.get('id_produto_miolo')) == str(product_id):
+                    target_item = item
+                    campo_atualizar = 'expedicao_miolos_retirados_qtd'
+                    break
+            
+            if target_item:
+                # 2. Atualizar o progresso do item
+                self.processar_alocacao_de_demanda(
+                    item_id=target_item['id'],
+                    campo=campo_atualizar,
+                    incremento=float(quantity),
+                    user_id=user_id,
+                    skip_visual_update=False
+                )
+                return True
+            return False
+        except Exception as e:
+            print(f"Erro ao associar saída à demanda {demanda_id}: {e}")
+            return False
 
     def get_item_by_id(self, item_id):
         """Função auxiliar para buscar um item de demanda pelo ID."""
@@ -1015,52 +1194,79 @@ class DemandaProducaoService:
             raise ValueError(f"Item {clean_id} não encontrado")
         return response.data[0]
 
-    def registrar_producao_incremental(self, demanda_id, item_id, producao_incremental, user_id='System', origem_tipo=None):
-        # Esta função agora delega a lógica para processar_alocacao_de_demanda
+    def registrar_producao_incremental(self, demanda_id, item_id, producao_absoluta, user_id='System', origem_tipo=None, retroactive_date=None, correlation_id=None):
+        """
+        Registra a produção aceitando valores ABSOLUTOS do dashboard.
+        Calcula o delta automaticamente e evita duplicações por cascata no mesmo lote.
+        """
+        # 1. Pré-carregar o item para cálculo de deltas
+        item_original = self.get_item_by_id(item_id)
+        itens_dict = {str(item_id): dict(item_original)}
+        
+        # 2. Ordem de produção (Esquerda para a Direita)
+        ORDEM_ETAPAS = [
+            'capas_impressas_qtd',
+            'capas_produzidas_qtd',
+            'capas_prontas_retirada_qtd',
+            'miolos_prontos_retirada_qtd',
+            'expedicao_capas_retiradas_qtd',
+            'expedicao_miolos_retirados_qtd'
+        ]
+        
+        campos_ordenados = sorted(
+            producao_absoluta.keys(), 
+            key=lambda k: ORDEM_ETAPAS.index(k) if k in ORDEM_ETAPAS else 99
+        )
+
+        # 3. Preparar dados para processamento otimizado (Simulando um lote de 1 item)
+        # Buscar saldos e BOMs necessários
+        deposito_id = app_config_service.get_config('default_production_deposit_id')
+        produto_ids = set()
+        if item_original.get('produto_id'): produto_ids.add(str(item_original['produto_id']))
+        if item_original.get('id_produto_miolo'): produto_ids.add(str(item_original['id_produto_miolo']))
+        
+        saldos_produtos = estoque_service.get_saldos_em_lote(list(produto_ids), deposito_id) if produto_ids else {}
+        boms_produtos = {} # Será carregado sob demanda no otimizado se necessário
+
         resultados_alocacao = []
-        for campo, valor in producao_incremental.items():
-            resultado = self.processar_alocacao_de_demanda(item_id, campo, float(valor), user_id, origem_tipo=origem_tipo)
+        for campo in campos_ordenados:
+            valor_novo_absoluto = float(producao_absoluta[campo])
+            valor_atual_no_item = float(itens_dict[str(item_id)].get(campo, 0) or 0)
+            
+            # CALCULO DO DELTA (Evita o problema de somar 10 + 5)
+            delta = valor_novo_absoluto - valor_atual_no_item
+            
+            if delta == 0: continue
+
+            resultado = self.processar_alocacao_de_demanda_otimizado(
+                item_id=item_id,
+                campo=campo,
+                incremento=delta,
+                user_id=user_id,
+                itens_dict=itens_dict,
+                saldos_produtos=saldos_produtos,
+                boms_produtos=boms_produtos,
+                origem_tipo=origem_tipo,
+                retroactive_date=retroactive_date,
+                correlation_id=correlation_id
+            )
             resultados_alocacao.append(resultado)
 
-        # Após processar todas as alocações, atualiza o status e faz auditoria
-        response = supabase_db.execute_with_retry(self.itens_table.select("*").eq('id', item_id))
-        if not response.data:
-            raise ValueError(f"Item {item_id} não encontrado")
+        # 4. Atualizar status e auditoria
+        updated_item_res = supabase_db.execute_with_retry(self.itens_table.select("*").eq('id', item_id))
+        item_final = updated_item_res.data[0]
 
-        item = response.data[0]
-
-        # Atualiza status se necessário
-        total_qty = item['quantidade']
-        exp_capas = item.get('expedicao_capas_retiradas_qtd', 0)
-        exp_miolos = item.get('expedicao_miolos_retirados_qtd', 0)
-
-        if exp_capas > 0 or exp_miolos > 0:
-            updates = {'status_item': 'Em Andamento', 'updated_at': get_now_iso()}
-            supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
-
-        # --- AUTOMATIZAÇÃO DE STATUS DA DEMANDA ---
-        if item.get('status_item') == 'Concluído':
+        if item_final.get('status_item') == 'Concluído':
             self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
-        # ------------------------------------------
 
-        # Auditoria detalhada para rastreamento de produção parcial
-        auditoria_service.log_event('PRODUCAO_INCREMENTAL', {
-            'entidade_tipo': 'demanda',
-            'registro_id': demanda_id,
+        auditoria_service.log_event('PRODUCAO_DASHBOARD_UPDATE', {
             'demanda_id': demanda_id,
             'item_id': item_id,
-            'incremento': producao_incremental,
-            'valores_pos': producao_incremental,
-            'sku': item.get('sku'),
-            'descricao': f"Produção incremental no item {item.get('sku')} da demanda {demanda_id}"
+            'valores_absolutos_enviados': producao_absoluta,
+            'correlation_id': correlation_id
         }, user_id)
 
-        updated_item_res = supabase_db.execute_with_retry(self.itens_table.select("*").eq('id', item_id))
-
-        return {
-            'item_data': self._process_item_dict(updated_item_res.data[0]),
-            'alocacao_resultados': resultados_alocacao
-        }
+        return self._process_item_dict(item_final)
 
     def _verificar_e_finalizar_demanda_automatica(self, demanda_id, user_id='System'):
         """Verifica se todos os itens de uma demanda estão concluídos e a finaliza se sim."""
@@ -1170,7 +1376,7 @@ class DemandaProducaoService:
 
         return self._process_item_dict({**item, **updates})
 
-    def registrar_producao_lote(self, demanda_id, updates_list, user_id='System', origem_tipo=None):
+    def registrar_producao_lote(self, demanda_id, updates_list, user_id='System', origem_tipo=None, retroactive_date=None, correlation_id=None):
         """
         Processa múltiplos incrementos de produção para itens de uma demanda em lote.
         updates_list: Lista de objetos {item_id, producao_incremental: {campo: incremento}}
@@ -1187,7 +1393,7 @@ class DemandaProducaoService:
 
         # Extrair IDs dos produtos intermediários envolvidos
         produto_ids_intermediarios = set()
-        from config.production_stages import ESTAGIOS_PRODUCAO
+        from nistiprint_shared.config.production_stages import ESTAGIOS_PRODUCAO
         from nistiprint_shared.services.bom_service import bom_service
         for update in updates_list:
             item_id = update.get('item_id')
@@ -1220,22 +1426,40 @@ class DemandaProducaoService:
         for produto_id in produto_ids_intermediarios:
             boms_produtos[produto_id] = bom_service.get_bom_for_produto(produto_id)
 
+        # ORDEM DE PROCESSAMENTO (Esquerda para a Direita)
+        ORDEM_ETAPAS = [
+            'capas_impressas_qtd',
+            'capas_produzidas_qtd',
+            'capas_prontas_retirada_qtd',
+            'miolos_prontos_retirada_qtd',
+            'expedicao_capas_retiradas_qtd',
+            'expedicao_miolos_retirados_qtd'
+        ]
+
         # Processar cada atualização com os dados pré-carregados
         results = []
         for update in updates_list:
             item_id = update.get('item_id')
             producao_incremental = update.get('producao_incremental', {})
             if item_id and producao_incremental:
+                # Ordena os campos deste item específico antes de processar
+                campos_ordenados = sorted(
+                    producao_incremental.keys(),
+                    key=lambda k: ORDEM_ETAPAS.index(k) if k in ORDEM_ETAPAS else 99
+                )
+
                 # --- Início da Estrutura de Resiliência ---
                 try:
                     # ETAPA 1 (SECUNDÁRIA): Tentar executar a lógica de estoque.
-                    # Esta função agora pode levar exceções que serão capturadas.
                     alocacao_resultados = []
-                    for campo, valor in producao_incremental.items():
+                    for campo in campos_ordenados:
+                        valor = producao_incremental[campo]
                         resultado_alocacao = self.processar_alocacao_de_demanda_otimizado(
                             item_id, campo, float(valor), user_id,
                             itens_dict, saldos_produtos, boms_produtos,
-                            origem_tipo=origem_tipo # Repassa a origem
+                            origem_tipo=origem_tipo,
+                            retroactive_date=retroactive_date,
+                            correlation_id=correlation_id
                         )
                         alocacao_resultados.append(resultado_alocacao)
                 except Exception as e:
@@ -1292,7 +1516,7 @@ class DemandaProducaoService:
         Processa uma produção avulsa (fora de demanda específica) com lógica recursiva e fail-safe.
         Usado principalmente pela tela de Controle de Produção (estoque geral).
         """
-        from config.production_stages import ESTAGIOS_PRODUCAO
+        from nistiprint_shared.config.production_stages import ESTAGIOS_PRODUCAO
         
         if campo not in ESTAGIOS_PRODUCAO:
             # Caso simples: apenas log diário
@@ -1341,41 +1565,49 @@ class DemandaProducaoService:
             raise e
 
     def processar_alocacao_de_demanda_otimizado(self, item_id: str, campo: str, incremento: float, user_id: str,
-                                               itens_dict: dict, saldos_produtos: dict, boms_produtos: dict, origem_tipo: Optional[int] = None):
+                                               itens_dict: dict, saldos_produtos: dict, boms_produtos: dict, 
+                                               origem_tipo: Optional[int] = None, retroactive_date: Optional[str] = None, correlation_id: Optional[str] = None):
         """
         Versão otimizada e evoluída de processar_alocacao_de_demanda que usa dados pré-carregados.
         Implementa recursividade para itens produzíveis na BOM e cascata de estágios.
         """
         print(f"DEBUG: processar_alocacao_otimizado item={item_id} campo={campo} inc={incremento}")
-        from config.production_stages import ESTAGIOS_PRODUCAO
+        from nistiprint_shared.config.production_stages import ESTAGIOS_PRODUCAO
         from nistiprint_shared.services.bom_service import bom_service
 
+        # --- GESTÃO DE CORRELAÇÃO E DATA ---
+        cid = correlation_id or f"DASH-{uuid.uuid4().hex[:8]}"
+        mov_date = retroactive_date or get_now_iso()
+        # -----------------------------------
+
         # ETAPA 1: VALIDAÇÃO E IDENTIFICAÇÃO
+        item_demanda = itens_dict.get(str(item_id))
+        if not item_demanda:
+            raise ValueError(f"Item {item_id} não encontrado nos dados pré-carregados")
+
         if campo not in ESTAGIOS_PRODUCAO:
             self._atualizar_progresso_simples(item_id, campo, incremento)
             try:
                 daily_production_log_service.create_log(
-                    log_date=datetime.now().date(),
+                    log_date=datetime.fromisoformat(mov_date[:10]).date() if mov_date else datetime.now().date(),
                     product_id=str(item_demanda.get('produto_id')),
                     product_name="Progresso Visual",
                     quantity=incremento,
                     production_order_id=None,
                     component_stock_snapshot=[],
                     user_email=user_id,
-                    metadata={'demanda_id': item_demanda.get('demanda_id'), 'item_id': item_id, 'campo': campo}
+                    metadata={'demanda_id': item_demanda.get('demanda_id'), 'item_id': item_id, 'campo': campo, 'correlation_id': cid}
                 )
             except: pass
             return {
                 'campo': campo,
                 'incremento': incremento,
                 'status': 'VISUAL_ONLY',
-                'message': f"Atualização visual apenas para campo {campo}"
+                'message': f"Atualização visual apenas para campo {campo}",
+                'correlation_id': cid
             }
 
         estagio = ESTAGIOS_PRODUCAO[campo]
-        item_demanda = itens_dict.get(str(item_id))
-        if not item_demanda:
-            raise ValueError(f"Item {item_id} não encontrado nos dados pré-carregados")
 
         # 1.1. LÓGICA DE CASCATA (Preenchimento Automático de Estágios Anteriores)
         dependencia = estagio.get('depende_de')
@@ -1389,7 +1621,8 @@ class DemandaProducaoService:
                 # Chama recursivamente para o estágio dependente
                 print(f"DEBUG: Cascata detectada. Campo {campo} depende de {dependencia}. Incrementando {dependencia} em {diff}")
                 self.processar_alocacao_de_demanda_otimizado(
-                    item_id, dependencia, diff, user_id, itens_dict, saldos_produtos, boms_produtos
+                    item_id, dependencia, diff, user_id, itens_dict, saldos_produtos, boms_produtos, 
+                    retroactive_date=mov_date, correlation_id=cid
                 )
                 # Atualiza o dicionário local para refletir a mudança da cascata antes de prosseguir
                 item_demanda[dependencia] = novo_foco
@@ -1399,21 +1632,22 @@ class DemandaProducaoService:
             self._atualizar_progresso_simples(item_id, campo, incremento)
             try:
                 daily_production_log_service.create_log(
-                    log_date=datetime.now().date(),
+                    log_date=datetime.fromisoformat(mov_date[:10]).date() if mov_date else datetime.now().date(),
                     product_id=str(item_demanda.get('produto_id')),
                     product_name="Etapa Administrativa",
                     quantity=incremento,
                     production_order_id=None,
                     component_stock_snapshot=[],
                     user_email=user_id,
-                    metadata={'demanda_id': item_demanda.get('demanda_id'), 'item_id': item_id, 'campo': campo}
+                    metadata={'demanda_id': item_demanda.get('demanda_id'), 'item_id': item_id, 'campo': campo, 'correlation_id': cid}
                 )
             except: pass
             return {
                 'campo': campo,
                 'incremento': incremento,
                 'status': 'SUCCESS',
-                'message': f"Atualização visual de etapa administrativa {campo}"
+                'message': f"Atualização visual de etapa administrativa {campo}",
+                'correlation_id': cid
             }
 
         # ETAPA 2: IDENTIFICAÇÃO DO PRODUTO INTERMEDIÁRIO
@@ -1432,7 +1666,8 @@ class DemandaProducaoService:
                 'campo': campo,
                 'incremento': incremento,
                 'status': 'WARNING',
-                'message': f"Produto com role '{estagio['role_produto_gerado']}' não encontrado na BOM."
+                'message': f"Produto com role '{estagio['role_produto_gerado']}' não encontrado na BOM.",
+                'correlation_id': cid
             }
 
         # ETAPA 3: EXECUÇÃO HÍBRIDA (SYNC 1º NÍVEL / ASYNC BOM)
@@ -1448,96 +1683,60 @@ class DemandaProducaoService:
             saldo_info = saldos_produtos.get(str(produto_intermediario['id']), {})
             saldo_disponivel = float(saldo_info.get('quantidade_disponivel', 0))
 
-            correlation_id = None
-
             # 3. Registrar Movimentação do Produto Principal (1º Nível)
             if incremento > 0:
                 # CENÁRIO: AVANÇO DE ETAPA (ALOCAÇÃO/PRODUÇÃO)
-                if not permite_jit:
-                    # Apenas alocação de estoque existente (saída)
-                    correlation_id = estoque_service.registrar_saida(
-                        produto_id=produto_intermediario['id'],
-                        deposito_id=None,
-                        quantidade=incremento,
-                        motivo=f"Alocação de estoque via Dashboard - Demanda {item_demanda.get('demanda_id')}",
-                        usuario_id=None,
-                        user_context={'user_id': user_id},
-                        documento_referencia=item_demanda.get('demanda_id'),
-                        origem_tipo=origem_tipo
-                    )
-                    # Sincronizar saldo local para o próximo item do lote
-                    if str(produto_intermediario['id']) in saldos_produtos:
-                        saldos_produtos[str(produto_intermediario['id'])]['quantidade_disponivel'] -= incremento
-                else:
-                    # Cenário Misto: Consome estoque + Produz JIT a diferença
-                    qtd_estoque = min(saldo_disponivel, incremento)
-                    qtd_produzir = incremento - qtd_estoque
-
-                    # 3.1. Alocar do estoque existente (se houver)
-                    if qtd_estoque > 0:
-                        cid_estoque = estoque_service.registrar_saida(
-                            produto_id=produto_intermediario['id'],
-                            deposito_id=None,
-                            quantidade=qtd_estoque,
-                            motivo=f"Alocação de estoque existente - Demanda {item_demanda.get('demanda_id')}",
-                            usuario_id=None,
-                            user_context={'user_id': user_id},
-                            documento_referencia=item_demanda.get('demanda_id'),
-                            origem_tipo=origem_tipo
-                        )
-                        correlation_id = cid_estoque # Mantém este como ID principal se for só estoque
-                        
-                        # Sincronizar saldo local
-                        if str(produto_intermediario['id']) in saldos_produtos:
-                            saldos_produtos[str(produto_intermediario['id'])]['quantidade_disponivel'] -= qtd_estoque
-
-                    # 3.2. Produzir e Alocar JIT (se necessário)
-                    if qtd_produzir > 0:
-                        # ENTRADA DA PRODUÇÃO (Dispara fila de insumos via RPC)
-                        cid_jit = estoque_service.registrar_entrada(
-                            produto_id=produto_intermediario['id'],
-                            deposito_id=None,
-                            quantidade=qtd_produzir,
-                            observacao=f"Produção JIT automática - Demanda {item_demanda.get('demanda_id')}",
-                            usuario_id=None,
-                            user_context={'user_id': user_id},
-                            origem_tipo=origem_tipo
-                        )
-                        correlation_id = cid_jit # JIT ganha precedência no CorrelationID
-
-                        # SAÍDA DA ALOCAÇÃO (Consome o que acabou de entrar JIT)
-                        estoque_service.registrar_saida(
-                            produto_id=produto_intermediario['id'],
-                            deposito_id=None,
-                            quantidade=qtd_produzir,
-                            motivo=f"Alocação JIT automática - Demanda {item_demanda.get('demanda_id')}",
-                            usuario_id=None,
-                            user_context={'user_id': user_id},
-                            documento_referencia=item_demanda.get('demanda_id'),
-                            origem_tipo=0 # 0: MOVIMENTACAO_SIMPLES (Não dispara fila novamente)
-                        )
-                        # Nota: Aqui o saldo líquido é zero para o produto principal, então não afeta saldo_disponivel físico acumulado.
-            else:
-                # CENÁRIO: ESTORNO (INCREMENTO NEGATIVO)
-                # Devolve o produto final ao estoque físico e dispara estorno de insumos na fila
-                correlation_id = estoque_service.registrar_entrada(
+                # No modelo assíncrono consolidado, o dashboard registra apenas a ENTRADA e SAÍDA do produto da etapa.
+                # A explosão de BOM (insumos) será feita apenas no fechamento do item/demanda.
+                
+                # 3.1. Registrar Entrada do Produto da Etapa (Simboliza que ele foi gerado)
+                estoque_service.registrar_entrada(
                     produto_id=produto_intermediario['id'],
                     deposito_id=None,
-                    quantidade=abs(incremento), # Devolve ao estoque (Entrada Positiva)
-                    observacao=f"Estorno via Dashboard (Devolução ao Estoque) - Demanda {item_demanda.get('demanda_id')}",
+                    quantidade=incremento,
+                    observacao=f"Produção registrada via Dashboard - Demanda {item_demanda.get('demanda_id')}",
                     usuario_id=None,
                     user_context={'user_id': user_id},
-                    origem_tipo=2 # 2: ESTORNO (Dispara fila de estorno de insumos)
+                    origem_tipo=0, # 0: MOVIMENTACAO_SIMPLES (Não dispara fila de BOM agora)
+                    correlation_id=cid,
+                    data_movimento=mov_date
                 )
-                # Sincronizar saldo local (Devolvido ao estoque)
-                if str(produto_intermediario['id']) in saldos_produtos:
-                    saldos_produtos[str(produto_intermediario['id'])]['quantidade_disponivel'] += abs(incremento)
 
+                # 3.2. Registrar Saída para Alocação (Simboliza que ele foi reservado para esta demanda)
+                estoque_service.registrar_saida(
+                    produto_id=produto_intermediario['id'],
+                    deposito_id=None,
+                    quantidade=incremento,
+                    motivo=f"Alocação para Demanda {item_demanda.get('demanda_id')}",
+                    usuario_id=None,
+                    user_context={'user_id': user_id},
+                    documento_referencia=item_demanda.get('demanda_id'),
+                    origem_tipo=0, # 0: MOVIMENTACAO_SIMPLES
+                    correlation_id=cid,
+                    data_movimento=mov_date
+                )
+                
+                # Sincronizar saldo local (virtualmente não altera saldo físico disponível real)
+                # pois entrou e saiu na mesma quantidade.
+            else:
+                # CENÁRIO: ESTORNO (INCREMENTO NEGATIVO)
+                # Devolve o produto final ao estoque físico
+                estoque_service.registrar_entrada(
+                    produto_id=produto_intermediario['id'],
+                    deposito_id=None,
+                    quantidade=abs(incremento),
+                    observacao=f"Estorno via Dashboard - Demanda {item_demanda.get('demanda_id')}",
+                    usuario_id=None,
+                    user_context={'user_id': user_id},
+                    origem_tipo=0,
+                    correlation_id=cid,
+                    data_movimento=mov_date
+                )
 
             # 4. Registro no Log de Produção Diária (Otimizado)
             try:
                 daily_production_log_service.create_log(
-                    log_date=datetime.now().date(),
+                    log_date=datetime.fromisoformat(mov_date[:10]).date() if mov_date else datetime.now().date(),
                     product_id=str(produto_intermediario['id']),
                     product_name=produto_intermediario.get('nome') or produto_intermediario.get('name', 'Produto'),
                     quantity=abs(incremento),
@@ -1548,21 +1747,22 @@ class DemandaProducaoService:
                         'demanda_id': item_demanda.get('demanda_id'),
                         'item_id': item_id,
                         'campo': campo,
-                        'correlation_id': correlation_id
+                        'correlation_id': cid
                     }
                 )
             except Exception as log_error:
                 print(f"Erro ao registrar log diário de produção: {log_error}")
 
-            # 4. Atualização visual imediata
+            # 5. Atualização visual e de memória imediata
             self._atualizar_progresso_simples(item_id, campo, incremento)
+            
+            # CRITICAL: Atualiza o dicionário local para que a próxima etapa do loop
+            # veja que esta etapa já foi incrementada e não dispare cascata.
+            item_demanda[campo] = float(item_demanda.get(campo, 0) or 0) + incremento
 
-            # --- NOVO: AGENDAR PROCESSAMENTO ASSÍNCRONO DE FILA DE ESTOQUE (BOM/Insumos) ---
-            # Se for incremento positivo, agendamos o processamento pesado na fila.
-            # Isso garante que mesmo que a rota não chame explicitamente, a fila seja povoada.
-            if incremento > 0:
-                self.agendar_processamento_estoque(item_demanda.get('demanda_id'), item_id, campo, incremento, user_id)
-            # -----------------------------------------------------------------------------
+            # Nota: A chamada para agendar_processamento_estoque foi removida daqui
+            # para centralizar o processamento de BOM apenas na finalização do item.
+
 
         except Exception as e:
             # FAIL-SAFE: Loga o erro mas garante a atualização visual (Resiliência)
@@ -1581,7 +1781,8 @@ class DemandaProducaoService:
             'campo': campo,
             'incremento': incremento,
             'status': 'SUCCESS',
-            'message': "Processamento concluído (Estoque processado em modo best-effort)"
+            'message': "Processamento concluído (Estoque processado em modo best-effort)",
+            'correlation_id': cid
         }
 
     def _executar_movimentacao_estoque_recursiva(self, item_id, produto_id, quantidade, demanda_id, 
@@ -1862,34 +2063,44 @@ class DemandaProducaoService:
                 except Exception as e:
                     print(f"Erro ao processar etapa {campo} na finalização forçada: {e}")
 
-    def agendar_processamento_estoque(self, demanda_id, item_id, campo, incremento, user_id='System'):
+    def agendar_processamento_estoque(self, demanda_id, item_id, campo, incremento, user_id='System', correlation_id=None, created_at=None):
         """Agenda o processamento de estoque na fila e dispara o worker via Celery."""
-        if incremento <= 0: return
+        if incremento == 0: return # Alterado para suportar estornos (incremento < 0)
         try:
+            now = get_now_iso()
+
+            # Mapeamento: No schema real não temos 'campo'. Usamos 'tipo_operacao' para identificar a tarefa.
+            # Se for um campo de etapa (ex: capas_impressas_qtd), prefixamos para o worker saber.
+            tipo_op = campo
+            if campo not in ['ITEM_TOTAL_BOM_PROCESS', 'DEMANDA_TOTAL', 'CONSUMO_BOM', 'ESTORNO_BOM']:
+                tipo_op = f"ETAPA:{campo}"
+
             payload = {
                 'demanda_id': demanda_id,
                 'item_id': item_id,
-                'campo': campo,
                 'quantidade': incremento,
-                'user_id': user_id,
+                'user_id': str(user_id),
                 'status': 'PENDENTE',
-                'created_at': get_now_iso()
+                'tipo_operacao': tipo_op,
+                'correlation_id': correlation_id or str(uuid.uuid4()),
+                'created_at': created_at or now
             }
+
+            # Remover campos nulos para evitar erros de restrição se houver
+            payload = {k: v for k, v in payload.items() if v is not None}
+
             supabase_db.table('fila_processamento_estoque').insert(payload).execute()
-            
+
             # --- DISPARO IMEDIATO VIA CELERY ---
-            # Enviamos o sinal para o worker processar a fila agora mesmo.
-            # Usamos send_task para evitar dependência circular de imports.
             try:
                 from nistiprint_shared.services.celery_app import celery_app
                 celery_app.send_task('tasks.stock_tasks.process_stock_queue', args=[], kwargs={'limit': 50})
             except Exception as celery_err:
-                print(f"AVISO: Falha ao disparar tarefa Celery (Stock será processado pelo Beat): {celery_err}")
+                print(f"AVISO: Falha ao disparar tarefa Celery: {celery_err}")
             # -----------------------------------
-            
+
         except Exception as e:
             print(f"Erro ao agendar processamento de estoque para {campo} no item {item_id}: {e}")
-
     def finalizar_item(self, demanda_id, item_id, user_id='System'):
         response = supabase_db.execute_with_retry(self.itens_table.select("*").eq('id', item_id))
         if not response.data:
@@ -1898,15 +2109,10 @@ class DemandaProducaoService:
         item_original = response.data[0]
         total_qty = item_original['quantidade']
 
-        # 1. AGENDAMENTO CONSOLIDADO: Apenas uma entrada na fila para processar o item todo
-        # Calculamos o delta da maior etapa pendente para garantir que não baixe menos do que deve
-        atual_max = max(
-            float(item_original.get('capas_impressas_qtd', 0) or 0),
-            float(item_original.get('miolos_prontos_retirada_qtd', 0) or 0)
-        )
-        delta = total_qty - atual_max
-        if delta > 0:
-            self.agendar_processamento_estoque(demanda_id, item_id, 'ITEM_TOTAL_PROCESSO', delta, user_id)
+        # 1. GATILHO DE EXPLOSÃO DE BOM CONSOLIDADA (ASYNC)
+        # Este é o único momento onde o sistema calculará o consumo de todos os insumos (papel, wire-o, etc)
+        # para a quantidade total finalizada do item.
+        self.agendar_processamento_estoque(demanda_id, item_id, 'ITEM_TOTAL_BOM_PROCESS', total_qty, user_id)
 
         # 2. VISIBILIDADE IMEDIATA: Atualizar todas as colunas no dashboard
         updates = {
@@ -1933,8 +2139,8 @@ class DemandaProducaoService:
         item_original = response.data[0]
         total_qty = item_original['quantidade']
 
-        # 1. AGENDAMENTO CONSOLIDADO PARCIAL
-        self.agendar_processamento_estoque(demanda_id, item_id, 'ITEM_TOTAL_PROCESSO', float(quantidade_parcial), user_id)
+        # 1. GATILHO DE EXPLOSÃO DE BOM PARCIAL (ASYNC)
+        self.agendar_processamento_estoque(demanda_id, item_id, 'ITEM_TOTAL_BOM_PROCESS', float(quantidade_parcial), user_id)
 
         # 2. VISIBILIDADE IMEDIATA (Atualização das colunas visuais)
         def get_new_val(field):
@@ -2353,7 +2559,7 @@ class DemandaProducaoService:
                 'erro': str(e)
             }, user_id)
 
-    def processar_insumos_por_bom_recursivo(self, produto_id: int, quantidade: float, correlation_id: str, user_id: str, tipo_operacao: str = 'CONSUMO_BOM'):
+    def processar_insumos_por_bom_recursivo(self, produto_id: int, quantidade: float, correlation_id: str, user_id: str, tipo_operacao: str = 'CONSUMO_BOM', retroactive_date: Optional[str] = None):
         """
         Explode a BOM do produto e registra as movimentações de insumos recursivamente.
         Utiliza o correlation_id para manter o vínculo com a ação original de 1º nível.
@@ -2383,7 +2589,8 @@ class DemandaProducaoService:
                     motivo=f"[BOM_AUTO] Consumo de componente para Correlation: {correlation_id}",
                     usuario_id=None,
                     correlation_id=correlation_id,
-                    origem_tipo=6 # 6: CONSUMO_AUTOMATICO_COMPONENTE (Novo Código)
+                    origem_tipo=6, # 6: CONSUMO_AUTOMATICO_COMPONENTE (Novo Código)
+                    data_movimento=retroactive_date
                 )
             else:
                 estoque_service.registrar_entrada(
@@ -2393,11 +2600,11 @@ class DemandaProducaoService:
                     observacao=f"[BOM_AUTO] Estorno de componente para Correlation: {correlation_id}",
                     usuario_id=None,
                     correlation_id=correlation_id,
-                    origem_tipo=7 # 7: ESTORNO_AUTOMATICO_COMPONENTE (Novo Código)
+                    origem_tipo=7, # 7: ESTORNO_AUTOMATICO_COMPONENTE (Novo Código)
+                    data_movimento=retroactive_date
                 )
             
             # RECURSIVIDADE: Se o componente também for uma composição/kit, explode ele também
-            # Buscamos os detalhes do componente para ver o formato
             from nistiprint_shared.services.product_service import product_service
             prod_comp = product_service.get_by_id(str(comp.componente_id))
             if prod_comp and prod_comp.get('formato') in ['composicao', 'kit']:
@@ -2406,7 +2613,8 @@ class DemandaProducaoService:
                     quantidade=qtd_necessaria,
                     correlation_id=correlation_id,
                     user_id=user_id,
-                    tipo_operacao=tipo_operacao
+                    tipo_operacao=tipo_operacao,
+                    retroactive_date=retroactive_date
                 )
 
     def processar_fila_estoque(self, limit=10):
@@ -2436,17 +2644,36 @@ class DemandaProducaoService:
                 tarefa_id = tarefa['id']
                 try:
                     # 2. Executar o processamento real (BOM Explosion)
-                    if tarefa.get('tipo_operacao') in ['CONSUMO_BOM', 'ESTORNO_BOM']:
+                    t_correlation_id = tarefa.get('correlation_id')
+                    t_retroactive_date = tarefa.get('created_at')
+                    t_tipo = tarefa.get('tipo_operacao', '')
+
+                    if t_tipo in ['CONSUMO_BOM', 'ESTORNO_BOM']:
                         self.processar_insumos_por_bom_recursivo(
                             produto_id=tarefa['produto_id'],
                             quantidade=float(tarefa['quantidade']),
-                            correlation_id=tarefa['correlation_id'],
+                            correlation_id=t_correlation_id,
                             user_id=tarefa.get('user_id', 'System'),
-                            tipo_operacao=tarefa['tipo_operacao']
+                            tipo_operacao=t_tipo,
+                            retroactive_date=t_retroactive_date
                         )
-                    elif tarefa['campo'] == 'DEMANDA_TOTAL':
+                    elif t_tipo == 'DEMANDA_TOTAL':
                         self._baixar_estoque_demanda(tarefa['demanda_id'], tarefa.get('user_id', 'System'))
-                    elif tarefa['campo'] == 'ITEM_TOTAL_PROCESSO':
+                    elif t_tipo == 'ITEM_TOTAL_BOM_PROCESS':
+                        # --- NOVO: EXPLOSÃO COMPLETA DE BOM NA FINALIZAÇÃO ---
+                        item_demanda = self.get_item_by_id(tarefa['item_id'])
+                        produto_final_id = item_demanda['produto_id']
+                        
+                        if produto_final_id:
+                            self.processar_insumos_por_bom_recursivo(
+                                produto_id=int(produto_final_id),
+                                quantidade=abs(float(tarefa['quantidade'])),
+                                correlation_id=t_correlation_id,
+                                user_id=tarefa.get('user_id', 'System'),
+                                tipo_operacao='CONSUMO_BOM' if float(tarefa['quantidade']) > 0 else 'ESTORNO_BOM',
+                                retroactive_date=t_retroactive_date
+                            )
+                    elif t_tipo == 'ITEM_TOTAL_PROCESSO':
                         etapas_estoque = ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd', 'miolos_prontos_retirada_qtd']
                         for campo_etapa in etapas_estoque:
                             self.processar_alocacao_de_demanda(
@@ -2454,16 +2681,39 @@ class DemandaProducaoService:
                                 campo=campo_etapa,
                                 incremento=float(tarefa['quantidade']),
                                 user_id=tarefa.get('user_id', 'System'),
-                                skip_visual_update=True
+                                skip_visual_update=True,
+                                retroactive_date=t_retroactive_date,
+                                correlation_id=t_correlation_id
                             )
+                    elif t_tipo.startswith('ETAPA:'):
+                        # --- EXPLOSÃO DE BOM PARA PRODUÇÃO JIT (ETAPA ESPECÍFICA) ---
+                        campo_etapa = t_tipo.replace('ETAPA:', '')
+                        from nistiprint_shared.config.production_stages import ESTAGIOS_PRODUCAO
+                        estagio = ESTAGIOS_PRODUCAO.get(campo_etapa)
+                        
+                        if estagio and estagio.get('role_produto_gerado'):
+                            item_demanda = self.get_item_by_id(tarefa['item_id'])
+                            produto_final_id = item_demanda['produto_id']
+                            
+                            produto_intermediario = None
+                            if estagio['role_produto_gerado'] == 'MIOLO' and item_demanda.get('id_produto_miolo'):
+                                produto_intermediario = {'id': item_demanda['id_produto_miolo']}
+                            else:
+                                produto_intermediario = bom_service.get_component_by_role(produto_final_id, estagio['role_produto_gerado'])
+                            
+                            if produto_intermediario:
+                                op_bom = 'CONSUMO_BOM' if float(tarefa['quantidade']) > 0 else 'ESTORNO_BOM'
+                                self.processar_insumos_por_bom_recursivo(
+                                    produto_id=int(produto_intermediario['id']),
+                                    quantidade=abs(float(tarefa['quantidade'])),
+                                    correlation_id=t_correlation_id,
+                                    user_id=tarefa.get('user_id', 'System'),
+                                    tipo_operacao=op_bom,
+                                    retroactive_date=t_retroactive_date
+                                )
                     else:
-                        self.processar_alocacao_de_demanda(
-                            item_id=tarefa['item_id'],
-                            campo=tarefa['campo'],
-                            incremento=float(tarefa['quantidade']),
-                            user_id=tarefa.get('user_id', 'System'),
-                            skip_visual_update=True
-                        )
+                        # Outros tipos (visuais ou não mapeados)
+                        pass
                     
                     # 3. Sucesso: Marcar como concluído
                     supabase_db.table('fila_processamento_estoque')\
@@ -2614,6 +2864,13 @@ class DemandaProducaoService:
         
         if itens_payload:
             supabase_db.execute_with_retry(self.itens_table.insert(itens_payload))
+            
+            # --- ATUALIZAÇÃO DE PREVISÃO DE CONSUMO ---
+            try:
+                previsao_consumo_service.gerar_previsao_para_demanda(internal_pk, itens_payload)
+            except Exception as e:
+                print(f"Erro ao atualizar previsão de consumo: {e}")
+            # ------------------------------------------
 
         auditoria_service.log_event('DEMANDA_ATUALIZADA_COMPLETA', {'demanda_id': internal_pk}, user_id)
         return self.get_demanda_with_itens(internal_pk)

@@ -68,19 +68,17 @@ function FilaEstoquePage() {
 
   const handleRetry = async (taskId) => {
     try {
-      const { error } = await supabase
-        .from('fila_processamento_estoque')
-        .update({ 
-          status: 'PENDENTE', 
-          tentativas: 0, 
-          proxima_execucao_at: new Date().toISOString(),
-          mensagem_erro: null 
-        })
-        .eq('id', taskId);
+      const response = await fetch(`/api/v2/demanda_producao/retry-fila-estoque/${taskId}`, {
+        method: 'POST'
+      });
+      const data = await response.json();
       
-      if (error) throw error;
-      toast.success('Tarefa reiniciada! Será processada em instantes.');
-      fetchQueue();
+      if (data.success) {
+        toast.success('Tarefa reiniciada! Será processada em instantes.');
+        fetchQueue();
+      } else {
+        throw new Error(data.message || 'Erro ao reiniciar tarefa');
+      }
     } catch (e) {
       toast.error('Erro ao reiniciar tarefa: ' + e.message);
     }

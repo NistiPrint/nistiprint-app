@@ -601,40 +601,28 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
             message = row['Observação do comprador'] if pd.notna(row['Observação do comprador']) else ''
             buyer_info_json = json.dumps({"username": username})
 
-            existing_orders = session.query_model(ShopeeOrders).filter_by(codigo_pedido=order_sn).all()
-
-            if existing_orders:
-                existing_order = existing_orders[0]
-                existing_order.informacoes_comprador = buyer_info_json
-                existing_order.mensagem = message
-                existing_order.status_pedido = status
-                existing_order.updated_at = datetime.utcnow()
-                from nistiprint_shared.database.supabase_db_service import supabase_db
-                update_data = {
-                    'informacoes_comprador': buyer_info_json,
-                    'mensagem': message,
-                    'status_pedido': status,
-                    'updated_at': datetime.utcnow().isoformat()
-                }
-                supabase_db.update('pedidos_shopee', existing_order.id, update_data)
+            from nistiprint_shared.database.supabase_db_service import supabase_db
+            
+            # Upsert logic: If codigo_pedido exists, update; otherwise, insert.
+            # Using Supabase .upsert() with 'on_conflict' if supported, or manual check
+            order_dict = {
+                'codigo_pedido': order_sn,
+                'status_pedido': status,
+                'informacoes_comprador': buyer_info_json,
+                'mensagem': message,
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            # Check existence to handle created_at
+            existing_orders = supabase_db.table('pedidos_shopee').select("id, created_at").eq('codigo_pedido', order_sn).execute()
+            
+            if existing_orders.data:
+                # Update
+                supabase_db.table('pedidos_shopee').update(order_dict).eq('codigo_pedido', order_sn).execute()
             else:
-                new_order = ShopeeOrders()
-                new_order.codigo_pedido = order_sn
-                new_order.informacoes_comprador = buyer_info_json
-                new_order.mensagem = message
-                new_order.status_pedido = status
-                new_order.created_at = datetime.utcnow()
-                new_order.updated_at = datetime.utcnow()
-                from nistiprint_shared.database.supabase_db_service import supabase_db
-                order_dict = {
-                    'codigo_pedido': new_order.codigo_pedido,
-                    'status_pedido': status,
-                    'informacoes_comprador': new_order.informacoes_comprador,
-                    'mensagem': new_order.mensagem,
-                    'created_at': new_order.created_at.isoformat() if new_order.created_at else None,
-                    'updated_at': new_order.updated_at.isoformat() if new_order.updated_at else None
-                }
-                supabase_db.insert('pedidos_shopee', order_dict)
+                # Insert
+                order_dict['created_at'] = datetime.utcnow().isoformat()
+                supabase_db.table('pedidos_shopee').insert(order_dict).execute()
 
 
     # --- ORDER TRACKING FILTER ---
