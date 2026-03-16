@@ -39,6 +39,7 @@ from routes.auth import auth_bp
 from routes.nfe import nfe_bp
 from routes.vendas import vendas_bp, vendas_api_bp
 from routes.cadastros import cadastros_bp, cadastros_api_bp
+from routes.consolidar_base import consolidar_base_bp
 
 from routes.ordem_compra import ordem_compra_bp
 from routes.estoque import estoque_bp, estoque_api_bp
@@ -163,6 +164,7 @@ def create_app():
     app.register_blueprint(vendas_api_bp, url_prefix='/api/v2/vendas')
     app.register_blueprint(cadastros_bp)
     app.register_blueprint(cadastros_api_bp, url_prefix='/api/v2/cadastros')
+    app.register_blueprint(consolidar_base_bp, url_prefix='/api/v2/consolidar-base')
 
     app.register_blueprint(ordem_compra_bp)
     app.register_blueprint(estoque_bp)

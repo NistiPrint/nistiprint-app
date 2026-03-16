@@ -1329,6 +1329,7 @@ def registrar_saida_distribuida():
     production_date_str = data.get('date')
     demanda_id = data.get('demanda_id') # Captura o ID da demanda selecionada
     update_demand = data.get('update_demand', True) # Flag para controle de acoplamento
+    sincrono = data.get('sincrono', False) # Flag para processamento em tempo real (Controle de Produção)
 
     if not all([distributions, product_id, total_quantity, production_date_str]):
         return jsonify({'success': False, 'error': 'Dados incompletos.'}), 400
@@ -1358,6 +1359,9 @@ def registrar_saida_distribuida():
         # Use UnitOfWork para garantir atomicidade de todas as operações
         with UnitOfWork(user_id=user_id) as uow:
             # 1. Registrar a saída de estoque (atualiza saldo)
+            # SE síncrono: usa origem_tipo=None para não acionar fila
+            # SE assíncrono: usa origem_tipo para acionar processamento em background
+            origem_tipo_saida = None if sincrono else 1  # 1 = DASHBOARD_PRODUCAO_INCREMENTAL
             uow.execute_in_transaction(
                 estoque_service.registrar_saida,
                 product_id,
@@ -1366,7 +1370,8 @@ def registrar_saida_distribuida():
                 f"Saída distribuída de miolos para demandas - {production_date_str}",
                 user_id,
                 user_context=user_context,
-                documento_referencia=demanda_id # Passa o ID da demanda como referência
+                documento_referencia=demanda_id, # Passa o ID da demanda como referência
+                origem_tipo=origem_tipo_saida
             )
 
             # 2. Registrar a distribuição nos itens das demandas (apenas se solicitado)
@@ -1377,23 +1382,25 @@ def registrar_saida_distribuida():
                     product_id,
                     user_id
                 )
-                
+
                 # --- NOVO: AGENDAR PROCESSAMENTO DE FILA DE ESTOQUE PARA CADA DISTRIBUIÇÃO ---
-                for dist in distributions:
-                    item_id = dist.get('item_id')
-                    qty = dist.get('quantidade')
-                    if item_id and qty:
-                         # No contexto de Miolos (Saída Distribuída), o campo é miolos_prontos_retirada_qtd
-                         # Mas o registrar_saida_item_distribuida identifica o role automaticamente.
-                         # Para simplificar e garantir a BOM, agendamos o processamento do item.
-                         uow.execute_in_transaction(
-                             demanda_producao_service.agendar_processamento_estoque,
-                             demanda_id,
-                             item_id,
-                             'miolos_prontos_retirada_qtd', # Assume miolo por ser a tela de miolos
-                             float(qty),
-                             user_id
-                         )
+                # Apenas se NÃO for síncrono
+                if not sincrono:
+                    for dist in distributions:
+                        item_id = dist.get('item_id')
+                        qty = dist.get('quantidade')
+                        if item_id and qty:
+                             # No contexto de Miolos (Saída Distribuída), o campo é miolos_prontos_retirada_qtd
+                             # Mas o registrar_saida_item_distribuida identifica o role automaticamente.
+                             # Para simplificar e garantir a BOM, agendamos o processamento do item.
+                             uow.execute_in_transaction(
+                                 demanda_producao_service.agendar_processamento_estoque,
+                                 demanda_id,
+                                 item_id,
+                                 'miolos_prontos_retirada_qtd', # Assume miolo por ser a tela de miolos
+                                 float(qty),
+                                 user_id
+                             )
                 # ---------------------------------------------------------------------------
 
             # 3. Registrar no log de produção diário
@@ -1406,7 +1413,7 @@ def registrar_saida_distribuida():
                 None,  # production_order_id
                 [],  # component_stock_snapshot
                 user_id,
-                metadata={'demanda_id': demanda_id} # CORREÇÃO: Salvar ID da demanda no log diário
+                metadata={'demanda_id': demanda_id, 'sincrono': sincrono} # CORREÇÃO: Salvar ID da demanda no log diário
             )
 
             # 4. Registrar evento de auditoria
@@ -1422,7 +1429,7 @@ def registrar_saida_distribuida():
 
         return jsonify({
             'success': True,
-            'message': 'Saída distribuída registrada com sucesso!',
+            'message': 'Saída distribuída registrada com sucesso!' if not sincrono else 'Saída distribuída processada em tempo real!',
             'new_daily_removed': new_daily_removed
         }), 200
 
@@ -1463,7 +1470,7 @@ def list_in_progress_dashboard():
                 for item in demanda_with_itens['itens']:
                     quantidade_total_item = item.get('quantidade_total', 0)
                     total_quantidade += quantidade_total_item
-                    if item.get('status_item') == 'Finalizado':
+                    if item.get('status_item') == 'Concluído':
                         completed_quantidade += quantidade_total_item
                 
                 progresso_percentual = 0

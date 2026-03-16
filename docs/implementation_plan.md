@@ -1,62 +1,63 @@
-# Normalização de Pedidos e Roteamento de Integrações (Multi-Conta Bling)
+# Plano de Implementação: Refatoração do Estoque e Previsibilidade de Consumo
 
-## Contexto e Objetivo Estratégico
-A empresa opera com múltiplas contas Bling (CNPJs diferentes) para emissão de Notas Fiscais, mas precisa de uma visão unificada e processos automatizados que saibam qual conta utilizar para cada operação (NFe, Sincronização de Estoque, Importação de Pedidos).
-O objetivo é normalizar a entrada de pedidos (evitando duplicidade via ID externo) e permitir o mapeamento granular de funções por Canal de Venda ou Plataforma.
-Além disso, a planilha de consolidação (`ConsolidarPage`) deve atuar como uma fonte de entrada oficial, salvando os pedidos no banco de dados unificado.
+## 1. Contexto e Objetivos
+O sistema de estoque está sendo refatorado para separar o rastreamento em tempo real (dashboard de produção) da contabilidade pesada de materiais (explosão de BOM).
+O objetivo é garantir performance no dashboard (O(1)) e integridade nos dados de estoque (transações completas e auditáveis).
+Adicionalmente, precisamos elevar o nível de **previsibilidade**, persistindo o "plano de consumo" de cada demanda em uma estrutura dedicada para análise agregada.
 
-## Arquitetura e Entidades
-- **Nova Entidade: `integration_account_routing`**
-  - Mapeia (Função, Escopo) -> Conta Bling.
-  - Funções: `ORDER_IMPORT`, `NFE_EMISSION`, `CATALOG_SYNC`, `STOCK_SYNC`.
-  - Escopo: `GLOBAL`, `PLATFORM`, `CHANNEL`.
-- **Alteração em Entidade: `pedidos` (Core)**
-  - Adicionar coluna `canal_venda_id` (FK para `canais_venda`). Isso permite saber exatamente de qual loja (Canal) o pedido veio, facilitando o roteamento para a conta Bling correta.
-- **Alteração em Entidade: `vinculos_integracao_pedido`**
-  - Adicionar coluna `integration_id` (FK para `installed_integrations` ou `contas_bling`) ou `account_id` para desambiguar IDs que podem existir em múltiplas contas da mesma plataforma.
+## 2. Arquitetura e Mudanças
 
-## Plano de Ação (Para Execução no CLine)
+### A. Tabela de Previsão de Consumo (`previsao_consumo_demanda`)
+Em vez de um campo JSON genérico, teremos uma tabela dedicada para armazenar o snapshot do consumo previsto.
+- **Estrutura:**
+  - `id` (UUID)
+  - `demanda_id` (FK -> demandas_producao)
+  - `produto_id` (FK -> produtos)
+  - `quantidade_prevista` (Numeric)
+  - `unidade` (Text)
+  - `status` (Enum: 'PLANEJADO', 'REALIZADO', 'CANCELADO')
+  - `created_at`, `updated_at`
+- **Fluxo:**
+  - **Criação/Edição de Demanda:** O sistema calcula a explosão da BOM (Recursiva) e salva/atualiza os registros nesta tabela.
+  - **Visualização:** Uma View `view_consolidado_previsao_materiais` permitirá ver o total de insumos necessários para todas as demandas abertas (ex: "Precisamos de 500kg de Papel Pólen para a próxima semana").
 
-- [ ] **Task 1: Migração de Banco de Dados**
-  - Criar a tabela `integration_account_routing` no Supabase com colunas: `id`, `module` (bling), `function_name`, `scope_type`, `scope_id`, `account_id`, `is_active`.
-  - Alterar tabela `pedidos`: Adicionar coluna `canal_venda_id` (Integer, Nullable).
-  - Alterar tabela `vinculos_integracao_pedido`: Adicionar coluna `integration_id` (String/Integer, Nullable).
-  - *Critério de aceite:* Schema atualizado e refletido nas definições do Supabase.
+### B. Processamento Assíncrono (Fila de Estoque)
+O processamento real do estoque (baixa de insumos, produção de intermediários) ocorre via worker.
+- **Correção Imediata:** Corrigir erro "supabase not defined" na execução manual da fila.
+- **Gatilhos:**
+  - `FINALIZACAO_ITEM`: Dispara a explosão da BOM para baixar o estoque real baseado no que foi produzido.
+  - **Validacao:** O worker deve comparar o consumido com o previsto (da tabela nova) e alertar discrepâncias graves (opcional futuro).
 
-- [ ] **Task 2: Shared Service de Roteamento**
-  - Criar `IntegrationRoutingService` em `nistiprint_shared/services`.
-  - Implementar lógica de busca hierárquica:
-    1. Busca por Canal (`scope_type='CHANNEL'`, `scope_id=channel_id`).
-    2. Se não achar, busca por Plataforma (`scope_type='PLATFORM'`, `scope_id=platform_name`).
-    3. Se não achar, busca Global (`scope_type='GLOBAL'`).
-  - *Critério de aceite:* Método `get_account(function, channel_id, platform_name)` retornando o ID da conta correta.
+## 3. Plano de Ação
 
-- [ ] **Task 3: Refatoração do BlingClient**
-  - Atualizar `BlingClient.create_client_for_platform` para utilizar o novo `IntegrationRoutingService`.
-  - Permitir passar `channel_id` ou `context` para a factory, garantindo que o cliente criado aponte para a conta correta.
-  - *Critério de aceite:* O client deve ser instanciado com a conta configurada para a função específica.
+### Fase 1: Correção e Estabilização (Prioridade Alta)
+- [x] **Task 1.1: Fix Manual Queue Trigger**
+  - Investigar e corrigir o erro `supabase not defined` ao acionar o processamento manual da fila via API (`/api/v2/demanda_producao/processar-fila-estoque`).
+  - Verificar importações em `apps/api/routes/demanda_producao.py` e `demanda_producao_service.py`.
+  - Adicionar logs detalhados no início e fim do processamento para facilitar debug.
 
-- [ ] **Task 4: Unificação da Importação (OrderService)**
-  - Atualizar `OrderService.upsert_order` para aceitar e persistir `canal_venda_id`.
-  - Atualizar a criação de vínculos para salvar `integration_id` se disponível.
-  - *Critério de aceite:* Pedidos salvos contêm a referência do canal de venda.
+### Fase 2: Arquitetura de Previsão (Forecast)
+- [x] **Task 2.1: Schema Migration**
+  - Criar migration SQL para tabela `previsao_consumo_demanda`.
+  - Criar índices para performance (por `produto_id`, `demanda_id`).
+- [x] **Task 2.2: Serviço de Previsão**
+  - Criar `PrevisaoConsumoService` em `nistiprint_shared`.
+  - Implementar método `gerar_previsao_para_demanda(demanda_id)`:
+    - Lê a demanda e seus itens.
+    - Realiza explosão da BOM (usando `BomService`).
+    - Salva os registros na tabela `previsao_consumo_demanda`.
+- [x] **Task 2.3: Integração no Ciclo de Vida**
+  - Atualizar `DemandaProducaoService.criar_demanda` para chamar `PrevisaoConsumoService`.
+  - Atualizar `DemandaProducaoService.atualizar_demanda` para recalcular a previsão (delete/insert).
+- [x] **Task 2.4: Views e Relatórios**
+  - Criar View SQL `view_materiais_pendentes` que agrupa `previsao_consumo_demanda` por material, subtraindo o que já foi baixado (opcional) ou apenas mostrando o total planejado.
 
-- [ ] **Task 5: Atualização do Processo de Consolidação**
-  - Refatorar rota `/api/v2/consolidar` em `apps/api/routes/consolidar.py`.
-  - Extrair o `channel_id` do request (já disponível via slug).
-  - Iterar sobre os pedidos processados (retornados por `file_processors.py`) e chamar `OrderService.upsert_order` para cada um, efetivando a importação no banco de dados unificado.
-  - Utilizar o `IntegrationRoutingService` para obter o cliente Bling correto para as operações de impressão (se solicitado).
-  - *Critério de aceite:* Upload de planilha resulta em pedidos salvos na tabela `pedidos` com `canal_venda_id` correto.
+### Fase 3: Validação e Consistência
+- [x] **Task 3.1: Auditoria de Consumo**
+  - Criar script/rotina para comparar `previsao_consumo_demanda` vs `estoque_movimento` (via `correlation_id` ou `demanda_id`).
+  - Garantir que a `correlation_id` seja propagada corretamente da previsão até a baixa real.
 
-- [ ] **Task 6: UI de Gerenciamento de Roteamento**
-  - Criar interface em `Configurações > Integrações` (Frontend) para permitir que o usuário defina qual conta Bling cuida de qual canal.
-  - *Critério de aceite:* Usuário consegue salvar um mapeamento "Canal Shopee 02 -> Bling Conta 02 para NFe".
-
-- [ ] **Task 7: Validação de Fluxo Completo**
-  - Testar a importação de uma planilha na `ConsolidarPage.jsx` selecionando um canal específico.
-  - Verificar se o pedido foi criado no banco com o `canal_venda_id`.
-  - Verificar se a tentativa de "Gerar NFe" (mockada ou real) utilizaria a conta Bling correta baseada no roteamento.
-
-## Observações de Manutenção
-- **Débito Técnico:** As rotas de webhook (`webhooks_v2.py`) também devem ser futuramente atualizadas para usar `OrderService.upsert_order` passando o `instance_id` correto.
-- **Compatibilidade:** Manter fallback para comportamento antigo se nenhuma rota for configurada.
+## 4. Próximos Passos e Manutenção
+1. **Monitoramento:** Acompanhar a fila de processamento assíncrono para garantir que as baixas de BOM estão ocorrendo sem atrasos.
+2. **Auditoria Periódica:** Executar o script `scripts/audit_consumption.py` semanalmente para identificar desvios entre o planejado (previsão) e o realizado (estoque).
+3. **Expansão:** Integrar a View `view_consolidado_previsao_materiais` no dashboard administrativo para facilitar a compra de insumos.

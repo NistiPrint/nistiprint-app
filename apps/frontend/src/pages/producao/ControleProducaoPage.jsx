@@ -145,11 +145,13 @@ const ControleProducaoPage = ({tipo}) => {
       else if (capaSubTab === 'impressao') field = 'capas_impressas_qtd';
       else if (capaSubTab === 'fechamento') field = 'capas_produzidas_qtd';
 
+      // Tela de Controle de Produção: processamento SÍNCRONO (tempo real)
       const result = await ProductionService.registerProduction({
         product_id: productId,
         quantity: quantity,
         date: selectedDate,
-        field: field // Enviamos o campo específico para o motor JIT recursivo
+        field: field,
+        sincrono: true // Processamento imediato, sem fila
       });
 
 
@@ -223,12 +225,14 @@ const ControleProducaoPage = ({tipo}) => {
 
     setIsDistributing(true);
     try {
+      // Tela de Controle de Produção: processamento SÍNCRONO (tempo real)
       const result = await ProductionService.registerRemoval({
         product_id: selectedProductForDistribution.id,
         quantity: totalDistributed,
         date: selectedDate,
         distributions: distributions,
-        demanda_id: manualDists ? selectedDemandaId : selectedDemandaId // Use stored ID
+        demanda_id: manualDists ? selectedDemandaId : selectedDemandaId,
+        sincrono: true // Processamento imediato, sem fila
       });
 
       if (result.success) {

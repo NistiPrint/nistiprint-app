@@ -151,6 +151,7 @@ def registrar_item_producao():
     quantity_str = data.get('quantity')
     date_str = data.get('date')
     field = data.get('field') # Opcional, vindo da tela de controle
+    sincrono = data.get('sincrono', False) # Flag para processamento em tempo real
 
     if not all([product_id, quantity_str, date_str]):
         return jsonify({'success': False, 'error': 'Dados incompletos.'}), 400
@@ -163,21 +164,23 @@ def registrar_item_producao():
 
         if field:
             # Caso vindo de uma tela que sensibiliza o dashboard (ex: novas abas de capas)
-            # Usar o serviço que suporta o novo modelo híbrido (Sync 1º nível / Async BOM)
+            # Se sincrono=True (ex: ControleProducaoPage), processa recursivo agora
             result = demanda_producao_service.processar_alocacao_avulsa_otimizado(
                 product_id=product_id,
                 campo=field,
                 quantidade=quantity,
-                user_id=user_id
+                user_id=user_id,
+                sincrono=sincrono
             )
         else:
             # Caso padrão de entrada de estoque simples (miolos ou capas sem vínculo de estágio)
-            # Agora usa OrdemProducaoService.registrar_producao_imediata que é HÍBRIDO
+            # Agora suporta flag sincrona para efeito imediato
             result = ordem_producao_service.registrar_producao_imediata(
                 produto_id=str(product_id),
                 quantidade=quantity,
                 data_producao=date_str,
-                user_id=user_id
+                user_id=user_id,
+                sincrono=sincrono
             )
         
         # Re-fetch stock details for the response

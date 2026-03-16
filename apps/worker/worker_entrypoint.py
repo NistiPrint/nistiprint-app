@@ -61,10 +61,10 @@ celery_app.conf.update(
     
     # Agendamento de tarefas periódicas (Beat)
     beat_schedule={
-        # Sincronização de tokens Bling do Firestore para Supabase (a cada 4h)
+        # Sincronização de tokens Bling do Firestore para Supabase (a cada 30 min)
         'sync-firestore-tokens': {
             'task': 'nistiprint_shared.services.redis_queue_tasks.sync_firestore_tokens',
-            'schedule': 14400,  # 4 horas (em segundos)
+            'schedule': 1800,  # 30 minutos (em segundos)
         },
         # Consumir fila do Bling no Redis (contínuo)
         'consumir-fila-bling': {

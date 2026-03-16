@@ -364,10 +364,11 @@ class OrdemProducaoService:
             components.append(comp)
         return components
 
-    def registrar_producao_imediata(self, produto_id: str, quantidade: float, data_producao: str, user_id: str = 'System') -> Dict[str, Any]:
+    def registrar_producao_imediata(self, produto_id: str, quantidade: float, data_producao: str, user_id: str = 'System', sincrono: bool = False) -> Dict[str, Any]:
         """
-        Cria uma OP já finalizada e dá entrada no produto final usando o modelo híbrido (Sync/Async).
-        A baixa dos componentes será processada em background pela fila de estoque.
+        Cria uma OP já finalizada e dá entrada no produto final.
+        sincrono=True: Processa BOM imediatamente.
+        sincrono=False (Padrão): Processa em background via fila (origem_tipo=3).
         """
         if float(quantidade) <= 0:
             raise ValueError("Quantidade deve ser positiva.")
@@ -379,20 +380,40 @@ class OrdemProducaoService:
         product = product_service.enrich_product_data(product)
         deposito_id = app_config_service.get_config('default_production_deposit_id')
 
-        # 1. Registrar a Entrada do Produto Principal (Híbrido)
-        # Origem 3: CONTROLE_PRODUCAO_LOTE -> Dispara a fila de insumos no banco via RPC
-        try:
-            correlation_id = estoque_service.registrar_entrada(
-                produto_id=produto_id,
-                deposito_id=deposito_id,
-                quantidade=float(quantidade),
-                observacao=f"Produção Imediata - {user_id}",
-                usuario_id=None,
-                user_context={'user_id': user_id},
-                origem_tipo=3
-            )
-        except Exception as e:
-            raise Exception(f"Falha ao registrar entrada de estoque: {str(e)}")
+        correlation_id = str(uuid.uuid4())
+
+        # 1. Registrar a Entrada do Produto Principal
+        if sincrono:
+            # Modelo 100% Síncrono: Chama o motor de demanda para processar recursivo agora
+            from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
+            try:
+                print(f"DEBUG: Executando Produção Imediata Síncrona para {produto_id}")
+                success = demanda_producao_service.processar_insumos_por_bom_recursivo(
+                    produto_id=int(produto_id),
+                    quantidade=float(quantidade),
+                    correlation_id=correlation_id,
+                    user_id=user_id,
+                    tipo_operacao='PRODUCAO_AVULSA'  # Item FICA no estoque
+                )
+                if not success:
+                    raise Exception("Falha no processamento recursivo de insumos.")
+            except Exception as e:
+                print(f"Erro no processamento síncrono: {e}")
+                raise e
+        else:
+            # Modelo Híbrido (Padrão): Entrada síncrona, Insumos assíncronos (origem_tipo=3)
+            try:
+                correlation_id = estoque_service.registrar_entrada(
+                    produto_id=produto_id,
+                    deposito_id=deposito_id,
+                    quantidade=float(quantidade),
+                    observacao=f"Produção Imediata (Híbrida) - {user_id}",
+                    usuario_id=None,
+                    user_context={'user_id': user_id},
+                    origem_tipo=3
+                )
+            except Exception as e:
+                raise Exception(f"Falha ao registrar entrada de estoque: {str(e)}")
 
         # 2. Criar a OP para fins de histórico e rastreabilidade
         try:
@@ -406,7 +427,7 @@ class OrdemProducaoService:
                 'data_inicio': datetime.utcnow().date().isoformat(),
                 'data_fim': datetime.utcnow().date().isoformat(),
                 'created_at': datetime.utcnow().isoformat(),
-                'responsavel_id': None # Opcional: associar ID numérico se disponível
+                'responsavel_id': None
             }
             res_op = self.table.insert(op_data).execute()
             po_id = str(res_op.data[0]['id']) if res_op.data else None
@@ -414,7 +435,7 @@ class OrdemProducaoService:
             print(f"Aviso: Falha ao criar registro de OP, mas estoque foi processado: {e}")
             po_id = None
 
-        # 3. Log de Produção Diária (Necessário para a UI do controle de produção)
+        # 3. Log de Produção Diária
         from nistiprint_shared.services.daily_production_log_service import daily_production_log_service
         try:
             log_date = datetime.strptime(data_producao, '%Y-%m-%d').date()
@@ -429,12 +450,12 @@ class OrdemProducaoService:
             production_order_id=po_id,
             component_stock_snapshot=[],
             user_email=str(user_id),
-            metadata={'correlation_id': correlation_id}
+            metadata={'correlation_id': correlation_id, 'sincrono': sincrono}
         )
 
         return {
             'success': True,
-            'message': 'Produção registrada com sucesso (Insumos processando em background).',
+            'message': 'Produção registrada com sucesso (Síncrono)' if sincrono else 'Produção registrada com sucesso (Insumos processando em background).',
             'correlation_id': correlation_id
         }
 

@@ -261,3 +261,5 @@ __marimo__/
 
 # Firebase credentials
 firebase*.json
+
+.gemini/
