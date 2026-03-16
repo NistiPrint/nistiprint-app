@@ -41,9 +41,15 @@ class OrderService:
                 core_id = existing_order.data[0]['id']
                 # Atualiza dados operacionais básicos se necessário
                 update_core = {
-                    'status_unificado': order_data.get('status_unificado'),
+                    'situacao_pedido_id': order_data.get('situacao_pedido_id'),
                     'total_pedido': order_data.get('total_pedido'),
                     'canal_venda_id': channel_id,
+                    'cliente_nome': order_data.get('cliente_nome'),
+                    'cliente_telefone': order_data.get('cliente_telefone'),
+                    'cliente_email': order_data.get('cliente_email'),
+                    'is_flex': order_data.get('is_flex'),
+                    'data_prevista_entrega': order_data.get('data_prevista_entrega'),
+                    'servico_logistico': order_data.get('servico_logistico'),
                     'updated_at': datetime.now(timezone.utc).isoformat()
                 }
                 # Remove chaves None para não sobrescrever dados existentes com null
@@ -57,8 +63,13 @@ class OrderService:
                     'origem': order_data.get('origem') or platform,
                     'cliente_nome': order_data.get('cliente_nome'),
                     'cliente_documento': order_data.get('cliente_documento'),
+                    'cliente_telefone': order_data.get('cliente_telefone'),
+                    'cliente_email': order_data.get('cliente_email'),
+                    'is_flex': order_data.get('is_flex', False),
+                    'data_prevista_entrega': order_data.get('data_prevista_entrega'),
+                    'servico_logistico': order_data.get('servico_logistico'),
                     'data_venda': order_data.get('data_venda') or datetime.now(timezone.utc).isoformat(),
-                    'status_unificado': order_data.get('status_unificado', 'PENDENTE'),
+                    'situacao_pedido_id': order_data.get('situacao_pedido_id'),
                     'total_pedido': order_data.get('total_pedido', 0),
                     'informacoes_cliente': order_data.get('informacoes_cliente', {}),
                     'canal_venda_id': channel_id,
@@ -155,8 +166,8 @@ class OrderService:
             if filters.get('origem'):
                 query = query.eq('origem', filters['origem'].upper())
             if filters.get('status'):
-                # Usar status_unificado para filtrar diretamente
-                query = query.eq('status_unificado', filters['status'].upper())
+                # Usar situacao_pedido_id para filtrar diretamente
+                query = query.eq('situacao_pedido_id', filters['status'])
             if filters.get('canal_venda_id'):
                 query = query.eq('canal_venda_id', filters['canal_venda_id'])
             if filters.get('searchTerm'):

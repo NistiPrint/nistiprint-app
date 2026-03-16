@@ -20,9 +20,7 @@ services:
 
   # --- BACKEND API ---
   api:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
+    image: leandrogbreve/nistiprint-api:latest
     container_name: local-nistiprint-api
     restart: unless-stopped
     networks:
@@ -42,9 +40,7 @@ services:
 
   # --- WORKER ---
   worker:
-    build:
-      context: .
-      dockerfile: apps/worker/Dockerfile
+    image: leandrogbreve/nistiprint-worker:latest
     container_name: local-nistiprint-worker
     restart: unless-stopped
     networks:
@@ -60,11 +56,26 @@ services:
       - redis
     command: celery -A worker_entrypoint worker --loglevel=info --concurrency=2
 
+  celery-beat:
+    image: leandrogbreve/nistiprint-worker:latest
+    container_name: local-nistiprint-beat
+    restart: unless-stopped
+    networks:
+      - nistiprint-local
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    command: celery -A worker_entrypoint beat --loglevel=info
+
   # --- FRONTEND ---
   frontend:
-    build:
-      context: ./apps/frontend
-      dockerfile: Dockerfile
+    image: leandrogbreve/nistiprint-frontend:latest
     container_name: local-nistiprint-frontend
     restart: unless-stopped
     networks:

@@ -7,18 +7,23 @@ const ProductionService = {
   },
 
   registerProduction: async (data) => {
-    // data: { product_id, quantity, date, field, origem_tipo }
+    // data: { product_id, quantity, date, field, origem_tipo, sincrono }
     // default origem_tipo: 3 (CONTROLE_PRODUCAO_LOTE)
+    // default sincrono: false (assíncrono via fila), exceto quando explicitado
     const response = await api.post('/producao/registrar-item', {
       ...data,
-      origem_tipo: data.origem_tipo || 3
+      origem_tipo: data.origem_tipo || 3,
+      sincrono: data.sincrono !== undefined ? data.sincrono : false
     });
     return response.data;
   },
 
   registerRemoval: async (data) => {
-    // data: { product_id, quantity, date, distributions }
-    const response = await api.post('/demanda_producao/registrar-saida', data);
+    // data: { product_id, quantity, date, distributions, demanda_id, sincrono }
+    const response = await api.post('/demanda_producao/registrar-saida', {
+      ...data,
+      sincrono: data.sincrono !== undefined ? data.sincrono : false
+    });
     return response.data;
   },
 

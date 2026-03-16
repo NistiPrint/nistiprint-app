@@ -1,0 +1,97 @@
+# ===========================================
+# NISTIPRINT - INFRAESTRUTURA CRÍTICA
+# ===========================================
+# Redis + n8n (Máxima Disponibilidade)
+# ===========================================
+# Esta stack NUNCA deve ser reiniciada em deploys normais.
+# Atualize apenas se houver mudança no redis ou n8n.
+# ===========================================
+
+version: '3.8'
+
+services:
+  # ===========================================
+  # REDIS (Message Broker & Cache)
+  # ===========================================
+  # Responsável por:
+  # - Broker de mensagens do Celery
+  # - Cache de sessões do n8n
+  # - Persistência de dados críticos
+  # ===========================================
+  redis:
+    image: redis:7-alpine
+    container_name: nistiprint-redis
+    restart: always
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    networks:
+      - nistiprint-shared
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================
+  # N8N (Workflow Automation)
+  # ===========================================
+  # Responsável por:
+  # - Recebimento de webhooks (Bling, Shopee)
+  # - Automações de negócio
+  # - Integrações externas
+  # ===========================================
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: nistiprint-n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    networks:
+      - gateway_net
+      - nistiprint-shared
+    environment:
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - N8N_HOST=automacao.nistiprint.neolabs.com.br
+      - N8N_PROXY_HOPS=1
+      - N8N_LOG_LEVEL=info
+      - N8N_LOG_OUTPUT=console
+      - N8N_TRUST_PROXY=true
+      - N8N_DISABLE_RATE_LIMIT=true
+      - WEBHOOK_URL=https://automacao.nistiprint.neolabs.com.br/
+      - GENERIC_TIMEZONE=America/Sao_Paulo
+      - NODE_FUNCTION_ALLOW_BUILTIN=crypto
+      - BLING_CLENT_SECRET=${BLING_CLENT_SECRET}
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      # Persistência e execução
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=168
+      - EXECUTIONS_DATA_PRUNE_TIMEOUT=60
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  gateway_net:
+    external: true
+  nistiprint-shared:
+    name: nistiprint-shared
+    external: true
+
+volumes:
+  redis_data:
+    name: nistiprint-redis-data
+  n8n_data:
+    name: nistiprint-n8n-data

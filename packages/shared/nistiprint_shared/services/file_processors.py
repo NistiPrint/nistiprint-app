@@ -151,11 +151,11 @@ def enrich_orders_with_personalizations_legacy(bling_orders_data):
             if not personalizations: return bling_orders_data
 
             # 2. Buscar pedidos e itens locais no MySQL para ponte de ID
-            # Fixed table name to 'bling_pedidos' and 'bling_pedido_itens'
+            # Fixed table name to 'bling_pedidos' and 'itens_pedido_bling'
             query_local = text("""
                 SELECT p.numeroLoja, i.id as local_item_id, i.codigo as sku
                 FROM bling_pedidos p
-                JOIN bling_pedido_itens i ON p.id = i.pedido_id
+                JOIN itens_pedido_bling i ON p.id = i.pedido_id
                 WHERE p.numeroLoja IN :sns
             """)
             local_map_result = conn.execute(query_local, {"sns": tuple(order_sns)}).mappings().all()

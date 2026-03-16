@@ -186,10 +186,9 @@ class EstoqueService:
                 'p_motivo': motivo,
                 'p_origem_tipo': origem_tipo,
                 'p_usuario_id': usuario_id,
-                'p_documento_referencia': str(documento_referencia) if documento_referencia else None,
-                'p_data_movimento': data_movimento
+                'p_documento_referencia': str(documento_referencia) if documento_referencia else None
             }
-            
+
             if correlation_id:
                 params['p_correlation_id'] = correlation_id
 

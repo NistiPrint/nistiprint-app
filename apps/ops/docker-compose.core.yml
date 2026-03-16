@@ -1,7 +1,13 @@
 # ===========================================
 # NISTIPRINT - CORE INFRASTRUCTURE & WORKER
 # ===========================================
-# Redis + n8n + Celery Workers (Beat & Worker)
+# ⚠️  DEPRECATED - Esta stack foi substituída!
+#
+# Nova arquitetura:
+#   - docker-compose.infra.yml  (redis + n8n)
+#   - docker-compose.worker.yml (worker + beat)
+#
+# Veja: README-MIGRATION.md para migrar
 # ===========================================
 
 version: '3.8'
@@ -36,10 +42,16 @@ services:
       - N8N_PORT=5678
       - N8N_PROTOCOL=https
       - N8N_HOST=automacao.nistiprint.neolabs.com.br
+      - N8N_PROXY_HOPS=1
+      - N8N_LOG_LEVEL=debug
+      - N8N_LOG_OUTPUT=console
+      - N8N_TRUST_PROXY=true
+      - N8N_DISABLE_RATE_LIMIT=true
       - WEBHOOK_URL=https://automacao.nistiprint.neolabs.com.br/
       - GENERIC_TIMEZONE=America/Sao_Paulo
       - NODE_FUNCTION_ALLOW_BUILTIN=crypto
-      - BLING_WEBHOOK_SECRET=${BLING_WEBHOOK_SECRET}
+      - BLING_CLENT_SECRET=${BLING_CLENT_SECRET}
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
     volumes:
       - n8n_data:/home/node/.n8n
     depends_on:
