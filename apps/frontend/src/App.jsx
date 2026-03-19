@@ -46,6 +46,7 @@ import RelatoriosIndexPage from './pages/admin/relatorios/RelatoriosIndexPage'
 import AIDashboardPage from './pages/ai/AIDashboardPage'
 import AuditoriaPage from './pages/auditoria/AuditoriaPage'
 import ConsolidarPage from './pages/consolidar/ConsolidarPage'
+import ConsolidarReviewPage from './pages/consolidar/ConsolidarReviewPage'
 import EstoqueAjustePage from './pages/estoque/EstoqueAjustePage'
 import EstoqueDashboardPage from './pages/estoque/EstoqueDashboardPage'
 import EstoqueHistoricoPage from './pages/estoque/EstoqueHistoricoPage'
@@ -70,6 +71,7 @@ import ProdutoFormPage from './pages/produtos/ProdutoFormPage'
 import ProdutoListPage from './pages/produtos/ProdutoListPage'
 import MarketplaceOrders from './pages/vendas/MarketplaceOrders'
 import UnifiedOrdersPage from './pages/vendas/UnifiedOrdersPage'
+import PedidoDetalhePage from './pages/pedidos/PedidoDetalhePage'
 import VendasPage from './pages/vendas/VendasPage'
 import VendasPersonalizadasPage from './pages/vendas/VendasPersonalizadasPage'
 function App() {
@@ -134,10 +136,13 @@ function App() {
             <Route path='identificacao-ia' element={<AIDashboardPage />} />
             <Route path='marketplaces' element={<MarketplaceOrders />} />
             <Route path='unified-orders' element={<UnifiedOrdersPage />} />
+            <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
           </Route>
 
           <Route path='unified-orders' element={<UnifiedOrdersPage />} />
+          <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
           <Route path='consolidar' element={<ConsolidarPage />} />
+          <Route path='consolidar/revisao' element={<ConsolidarReviewPage />} />
 
           {/* Estoque Routes */}
           <Route path='estoque'>

@@ -1,156 +1,117 @@
-import { useState, useEffect } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow
+} from "@/components/ui/table";
+import { 
+  Card, CardContent, CardHeader, CardTitle 
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { 
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue 
+} from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
+import {
+  Search, Filter, Download, Eye, MoreHorizontal,
+  Package, Calendar, CheckCircle2, AlertCircle, ShoppingCart, Zap,
+  Phone, Mail, User
+} from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Search, Eye, Package, Calendar, Filter, Download, MoreHorizontal } from 'lucide-react';
-import { toast } from 'sonner';
+} from "@/components/ui/dropdown-menu";
+import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
 
-// Importar serviço de API para pedidos unificados
-import { getUnifiedOrders, getOrderStatusOptions, updateOrderStatus, getCanalVendaOptions } from '@/services/orderService';
-
-function UnifiedOrdersPage() {
+const UnifiedOrdersPage = () => {
+  const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedStatus, setSelectedStatus] = useState('');
-  const [selectedOrigin, setSelectedOrigin] = useState('');
-  const [selectedChannel, setSelectedChannel] = useState(''); // Novo estado para filtro de canal
-  const [dateRange, setDateRange] = useState({
-    start: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // Last 30 days
-    end: new Date().toISOString().split('T')[0]
-  });
-  
+  const [selectedStatus, setSelectedStatus] = useState('all');
+  const [selectedOrigin, setSelectedOrigin] = useState('all');
+  const [selectedChannel, setSelectedChannel] = useState('all');
+  const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [statusOptions, setStatusOptions] = useState([]);
-  const [canalVendaOptions, setCanalVendaOptions] = useState([]); // Novo estado para opções de canal
-  const [totalOrders, setTotalOrders] = useState(0);
+  const [canalVendaOptions, setCanalVendaOptions] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
-  const [perPage, setPerPage] = useState(50);
+  const [totalOrders, setTotalOrders] = useState(0);
+  const perPage = 50;
+  
+  // Novos filtros para consolidação
+  const [hasDemanda, setHasDemanda] = useState('all'); // 'all', 'true', 'false'
+  const [deliveryDateRange, setDeliveryDateRange] = useState({ start: '', end: '' });
 
-  // Carregar pedidos e opções de status
   useEffect(() => {
-    loadOrders();
-    loadStatusOptions();
-    loadCanalVendaOptions(); // Carregar opções de canal
-  }, [currentPage, selectedStatus, selectedOrigin, selectedChannel, dateRange.start, dateRange.end, searchTerm, perPage]); // Adicionar dependências para recarregar quando filtros mudam
+    fetchStatusOptions();
+    fetchCanalVendaOptions();
+    fetchOrders();
+  }, [currentPage, selectedStatus, selectedOrigin, selectedChannel]);
 
-  const loadOrders = async () => {
+  const fetchStatusOptions = async () => {
+    try {
+      const response = await fetch('/api/v2/order/status-options');
+      const data = await response.json();
+      if (data.success) setStatusOptions(data.data.status_options);
+    } catch (error) {
+      console.error("Erro ao buscar status:", error);
+    }
+  };
+
+  const fetchCanalVendaOptions = async () => {
+    try {
+      const response = await fetch('/api/v2/consolidar-base/plataformas');
+      const data = await response.json();
+      if (data.success) setCanalVendaOptions(data.data);
+    } catch (error) {
+      console.error("Erro ao buscar canais:", error);
+    }
+  };
+
+  const fetchOrders = async () => {
     setLoading(true);
     try {
-      // Parâmetros de filtro
-      const filters = {
-        searchTerm,
-        status: selectedStatus,
-        origin: selectedOrigin,
-        canal_venda_id: selectedChannel, // Incluir filtro de canal
-        startDate: dateRange.start,
-        endDate: dateRange.end,
-        page: currentPage,
-        perPage: perPage
-      };
-
-      const response = await getUnifiedOrders(filters);
-      if (response.success) {
-        setOrders(response.data?.orders || []);
-        setTotalOrders(response.data?.total || 0);
+      // Construir query params para o endpoint avançado
+      const params = new URLSearchParams();
+      params.append('page', currentPage);
+      params.append('limit', perPage);
+      
+      if (selectedStatus !== 'all') params.append('status_id', selectedStatus);
+      if (selectedChannel !== 'all') params.append('canal_venda_id', selectedChannel);
+      if (hasDemanda !== 'all') params.append('has_demanda', hasDemanda);
+      if (deliveryDateRange.start) params.append('delivery_start', deliveryDateRange.start);
+      if (deliveryDateRange.end) params.append('delivery_end', deliveryDateRange.end);
+      if (searchTerm) params.append('search', searchTerm);
+      
+      const response = await fetch(`/api/v2/order/list-advanced?${params.toString()}`);
+      const data = await response.json();
+      
+      if (data.success) {
+        setOrders(data.data.orders);
+        setTotalOrders(data.data.total);
       } else {
-        toast.error('Erro ao carregar pedidos: ' + (response.error || 'Verifique os parâmetros'));
+        toast.error(data.message || "Erro ao buscar pedidos");
       }
     } catch (error) {
-      toast.error('Erro ao carregar pedidos');
+      console.error("Erro ao buscar pedidos:", error);
+      toast.error("Erro de conexão");
     } finally {
       setLoading(false);
     }
   };
 
   const handleFilterApply = () => {
-    setCurrentPage(1); // Resetar página ao aplicar novos filtros
-    loadOrders();
+    setCurrentPage(1);
+    fetchOrders();
   };
 
-  const loadStatusOptions = async () => {
-    try {
-      const response = await getOrderStatusOptions();
-      if (response.success) {
-        setStatusOptions(response.data?.status_options || response.data || []);
-      } else {
-        toast.error('Erro ao carregar opções de status');
-      }
-    } catch (error) {
-      toast.error('Erro ao carregar opções de status');
-    }
+  const handleStatusChange = async (orderId, newStatusName) => {
+    // Implementação simplificada de troca de status
+    toast.info(`Alterando status para ${newStatusName}...`);
   };
-
-  const loadCanalVendaOptions = async () => {
-    try {
-      const response = await getCanalVendaOptions();
-      if (response.success) {
-        setCanalVendaOptions(response.data?.canal_venda_options || response.data || []);
-      } else {
-        toast.error('Erro ao carregar opções de canal de venda');
-      }
-    } catch (error) {
-      toast.error('Erro ao carregar opções de canal de venda');
-    }
-  };
-
-  const handleStatusChange = async (orderId, newStatus) => {
-    try {
-      // O backend ainda não tem a rota de atualização de status, então simulamos
-      toast.warning('Funcionalidade de alteração de status ainda não implementada no backend.');
-      // return; 
-      // const response = await updateOrderStatus(orderId, newStatus);
-      // if (response.success) {
-      //   // Atualizar o pedido na lista local
-      //   setOrders(prevOrders => 
-      //     prevOrders.map(order => 
-      //       order.id === orderId ? { ...order, situacao_pedido: response.data.situacao_pedido } : order
-      //     )
-      //   );
-      //   toast.success('Status do pedido atualizado com sucesso');
-      // } else {
-      //   toast.error('Erro ao atualizar status: ' + (response.error || 'Verifique os parâmetros'));
-      // }
-    } catch (error) {
-      toast.error('Erro ao atualizar status do pedido');
-    }
-  };
-
-  // Nao precisamos filtrar localmente, a API já faz isso
-  // const filteredOrders = orders.filter(order => {
-  //   const matchesSearch = !searchTerm || 
-  //     order.numero_pedido?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-  //     order.codigo_pedido_externo?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-  //     order.cliente_nome?.toLowerCase().includes(searchTerm.toLowerCase());
-    
-  //   const matchesStatus = !selectedStatus || order.situacao_pedido?.nome === selectedStatus; // Usar situacao_pedido.nome
-  //   const matchesOrigin = !selectedOrigin || order.origem?.toLowerCase().includes(selectedOrigin.toLowerCase());
-  //   // Filtro por canal já está na API, não precisa filtrar localmente novamente
-    
-  //   return matchesSearch && matchesStatus && matchesOrigin;
-  // });
 
   const formatDate = (dateString) => {
     if (!dateString) return 'N/A';
@@ -163,299 +124,259 @@ function UnifiedOrdersPage() {
 
   const formatCurrency = (value) => {
     if (value === undefined || value === null) return 'N/A';
-    try {
-      return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
-    } catch {
-      return `R$ ${value}`;
-    }
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
   };
 
   const getStatusColor = (statusName) => {
     if (!statusName) return 'secondary';
-    
-    const statusLower = statusName.toLowerCase();
-    if (['pago', 'processando', 'pago_bling'].includes(statusLower)) return 'default';
-    if (['cancelado'].includes(statusLower)) return 'destructive';
-    if (['entregue'].includes(statusLower)) return 'success';
-    if (['pendente'].includes(statusLower)) return 'secondary';
-    if (['enviado'].includes(statusLower)) return 'outline';
-    
+    const s = statusName.toUpperCase();
+    // Novos status de sincronização
+    if (s.includes('PROCESSANDO') || s.includes('EM PRODUCAO') || s.includes('EM_PRODUCAO')) return 'default'; // Azul (Processando/Em Produção)
+    if (s.includes('PRONTO') && s.includes('ENVIO')) return 'success'; // Verde (Pronto para Envio)
+    // Status existentes
+    if (s.includes('PAGO')) return 'default';
+    if (s.includes('CANCELADO')) return 'destructive';
+    if (s.includes('ENTREGUE')) return 'success';
+    if (s.includes('ENVIADO')) return 'outline';
     return 'secondary';
   };
 
   return (
     <div className="container mx-auto py-6 px-4">
-      <div className="mb-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight">Pedidos Unificados</h1>
-            <p className="text-muted-foreground">Gestão centralizada de pedidos de todas as origens</p>
-          </div>
-          <Button>
-            <Download className="h-4 w-4 mr-2" />
-            Exportar
-          </Button>
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Vendas Centralizadas</h1>
+          <p className="text-muted-foreground text-sm">Base única de pedidos integrados</p>
         </div>
+        <Button variant="outline" size="sm">
+          <Download className="h-4 w-4 mr-2" /> Exportar
+        </Button>
       </div>
 
-      {/* Filtros */}
       <Card className="mb-6">
         <CardContent className="pt-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4"> {/* Ajustado para 6 colunas */}
-            <div className="space-y-2 col-span-2"> {/* Expandido para 2 colunas */}
-              <Label htmlFor="search">Buscar</Label>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+            <div className="lg:col-span-2 space-y-2">
+              <Label>Buscar</Label>
               <div className="relative">
                 <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
-                  id="search"
-                  placeholder="Número, cliente, ID externo..."
+                  placeholder="Número, Cliente, Marketplace ID..."
                   value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onChange={e => setSearchTerm(e.target.value)}
                   className="pl-8"
                 />
               </div>
             </div>
-            
             <div className="space-y-2">
               <Label>Status</Label>
               <Select value={selectedStatus} onValueChange={setSelectedStatus}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Todos" />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Todos" /></SelectTrigger>
                 <SelectContent>
-                  {statusOptions.map((status) => (
-                    <SelectItem key={status.id} value={status.nome}>
-                      {status.nome}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="all">Todos</SelectItem>
+                  {statusOptions.map(s => <SelectItem key={s.id} value={s.nome}>{s.nome}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
-            
             <div className="space-y-2">
-              <Label>Origem</Label>
-              <Select value={selectedOrigin} onValueChange={setSelectedOrigin}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Todas" />
-                </SelectTrigger>
+              <Label>Demanda</Label>
+              <Select value={hasDemanda} onValueChange={setHasDemanda}>
+                <SelectTrigger><SelectValue placeholder="Todos" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="all">Todos</SelectItem>
+                  <SelectItem value="true">Com demanda</SelectItem>
+                  <SelectItem value="false">Sem demanda</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Entrega Início</Label>
+              <Input type="date" value={deliveryDateRange.start} onChange={e => setDeliveryDateRange({...deliveryDateRange, start: e.target.value})} />
+            </div>
+            <div className="space-y-2">
+              <Label>Entrega Fim</Label>
+              <Input type="date" value={deliveryDateRange.end} onChange={e => setDeliveryDateRange({...deliveryDateRange, end: e.target.value})} />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mt-4">
+            <div className="space-y-2">
+              <Label>Plataforma</Label>
+              <Select value={selectedOrigin} onValueChange={setSelectedOrigin}>
+                <SelectTrigger><SelectValue placeholder="Todas" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas</SelectItem>
                   <SelectItem value="SHOPEE">Shopee</SelectItem>
                   <SelectItem value="BLING">Bling</SelectItem>
-                  <SelectItem value="MANUAL">Manual</SelectItem>
+                  <SelectItem value="MARKETPLACE">Marketplace</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-
-            {/* Novo filtro de Canal de Venda */}
             <div className="space-y-2">
               <Label>Canal de Venda</Label>
               <Select value={selectedChannel} onValueChange={setSelectedChannel}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Todos" />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Todos" /></SelectTrigger>
                 <SelectContent>
-                  {canalVendaOptions.map((canal) => (
-                    <SelectItem key={canal.id} value={String(canal.id)}>
-                      {canal.nome}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="all">Todos</SelectItem>
+                  {canalVendaOptions.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.nome}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
-            
             <div className="space-y-2">
               <Label>Data Início</Label>
-              <Input 
-                type="date" 
-                value={dateRange.start} 
-                onChange={(e) => setDateRange({...dateRange, start: e.target.value})} 
-              />
+              <Input type="date" value={dateRange.start} onChange={e => setDateRange({...dateRange, start: e.target.value})} />
             </div>
-            
-            <div className="space-y-2">
-              <Label>Data Fim</Label>
-              <Input 
-                type="date" 
-                value={dateRange.end} 
-                onChange={(e) => setDateRange({...dateRange, end: e.target.value})} 
-              />
+            <div className="space-y-2 flex flex-col justify-end pb-0.5">
+               <Button onClick={handleFilterApply} disabled={loading} className="w-full">
+                 <Filter className="h-4 w-4 mr-2" /> Filtrar
+               </Button>
             </div>
-          </div>
-          
-          <div className="mt-4 flex justify-end">
-            <Button onClick={handleFilterApply} disabled={loading}>
-              <Filter className="h-4 w-4 mr-2" />
-              {loading ? 'Carregando...' : 'Aplicar Filtros'}
-            </Button>
           </div>
         </CardContent>
       </Card>
 
-      {/* Resumo de Pedidos */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Total de Pedidos</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{totalOrders}</div> {/* Usar totalOrders do backend */}
-          </CardContent>
-        </Card>
-        
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Pedidos Pendentes</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{orders.filter(o => o.situacao_pedido?.nome === 'PENDENTE').length}</div>
-          </CardContent>
-        </Card>
-        
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Pedidos Pagos</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{orders.filter(o => o.situacao_pedido?.nome === 'PAGO').length}</div>
-          </CardContent>
-        </Card>
-        
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Valor Total</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {formatCurrency(orders.reduce((sum, order) => sum + (order.total_pedido || 0), 0))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Lista de Pedidos */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <span>Pedidos</span>
-            <span className="text-sm text-muted-foreground">
-              Mostrando <strong>{orders.length}</strong> de <strong>{totalOrders}</strong> pedidos
-            </span>
-          </CardTitle>
+        <CardHeader className="py-4">
+          <div className="flex justify-between items-center">
+            <CardTitle className="text-lg">Resultados ({totalOrders})</CardTitle>
+          </div>
         </CardHeader>
-        <CardContent>
-          <div className="rounded-md border">
+        <CardContent className="p-0">
+          <div className="rounded-none border-x-0 border-b">
             <Table>
-              <TableHeader>
+              <TableHeader className="bg-muted/30">
                 <TableRow>
-                  <TableHead>Número</TableHead>
+                  <TableHead className="w-[180px]">Número</TableHead>
                   <TableHead>Cliente</TableHead>
                   <TableHead>Data</TableHead>
                   <TableHead>Origem / Canal</TableHead>
                   <TableHead>Status Pedido</TableHead>
-                  <TableHead>Produção</TableHead>
+                  <TableHead>Demanda</TableHead>
                   <TableHead className="text-right">Total</TableHead>
-                  <TableHead className="w-16">Ações</TableHead>
+                  <TableHead className="w-[80px]"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {orders.length > 0 ? (
+                {loading ? (
+                  <TableRow><TableCell colSpan={8} className="text-center py-10">Carregando...</TableCell></TableRow>
+                ) : orders.length > 0 ? (
                   orders.map((order) => {
-                    // Lógica para determinar status de produção consolidado
                     const hasDemands = order.demandas && order.demandas.length > 0;
                     const productionStatus = hasDemands ? order.demandas[0].status : 'NÃO INICIADA';
                     
-                    const getProductionBadgeColor = (status) => {
-                      if (!hasDemands) return 'secondary';
-                      const s = status?.toUpperCase();
-                      if (s === 'CONCLUIDO') return 'success';
-                      if (s === 'EM_PRODUCAO' || s === 'PRODUZINDO') return 'default';
-                      if (s === 'CANCELADO') return 'destructive';
-                      return 'outline';
-                    };
+                    // Número principal: sempre numero_pedido (do Bling quando existir)
+                    const numeroExibicao = order.numero_pedido || '-';
+                    
+                    // IDs únicos de plataformas para as pills (evitar duplicatas)
+                    const plataformasUnicas = order.integracoes 
+                      ? [...new Set(order.integracoes.map(i => i.plataforma?.toUpperCase()))]
+                      : [];
 
                     return (
-                      <TableRow key={order.id}>
-                        <TableCell className="font-medium">
-                          <div className="flex items-center gap-2">
-                            <Package className="h-4 w-4 text-muted-foreground" />
-                            {order.numero_pedido}
-                            {order.codigo_pedido_externo && (
-                              <span className="text-xs text-muted-foreground" title="Código Externo">
-                                ({order.codigo_pedido_externo})
+                      <TableRow key={order.id} className="hover:bg-muted/20 cursor-pointer" onClick={() => navigate(`/pedidos/${order.id}`)}>
+                        <TableCell className="font-bold py-4" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex flex-col">
+                            <div className="flex items-center gap-1 text-blue-700">
+                                <Package className="h-3 w-3" />
+                                <button 
+                                  className="hover:underline font-semibold"
+                                  onClick={() => navigate(`/pedidos/${order.id}`)}
+                                >
+                                  {numeroExibicao}
+                                </button>
+                            </div>
+                            {/* Exibe codigo_pedido_externo apenas se for diferente do numero_pedido */}
+                            {order.codigo_pedido_externo && 
+                             order.codigo_pedido_externo !== numeroExibicao && 
+                             order.codigo_pedido_externo !== order.numero_pedido && (
+                              <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[150px]">
+                                {order.codigo_pedido_externo}
                               </span>
                             )}
                           </div>
                         </TableCell>
                         <TableCell>
-                          <div className="font-medium">{order.cliente_nome || 'N/A'}</div>
-                          <div className="text-xs text-muted-foreground">{order.cliente_documento || 'Sem doc.'}</div>
+                          <div className="flex flex-col">
+                            <span className="font-medium text-sm">{order.cliente_nome || 'N/A'}</span>
+                            <div className="flex gap-2 items-center text-[10px] text-muted-foreground mt-0.5">
+                               {order.cliente_documento && <span>{order.cliente_documento}</span>}
+                               {order.is_flex && (
+                                   <Badge className="bg-amber-600 h-4 text-[8px] px-1 gap-0.5">
+                                       <Zap className="w-2 h-2 fill-white" /> FLEX
+                                   </Badge>
+                               )}
+                            </div>
+                          </div>
                         </TableCell>
-                        <TableCell>{formatDate(order.data_venda)}</TableCell>
+                        <TableCell className="text-xs">{formatDate(order.data_venda)}</TableCell>
                         <TableCell>
-                          <Badge variant="outline" className="uppercase mr-2">
-                            {order.origem}
-                          </Badge>
-                          {order.canal_venda && (
-                              <Badge variant="secondary" className="normal-case">
-                                  {order.canal_venda.nome}
-                              </Badge>
-                          )}
+                          <div className="flex flex-wrap gap-1">
+                            {/* Pills de Integrações (únicas, sem duplicatas) */}
+                            {plataformasUnicas.map((plataforma, idx) => {
+                              const plataformaLower = plataforma?.toLowerCase();
+                              return (
+                                <Badge 
+                                  key={idx} 
+                                  variant="secondary" 
+                                  className="text-[9px] h-4 bg-slate-100 border-slate-200 capitalize"
+                                >
+                                  {plataformaLower === 'bling' ? 'Bling' : 
+                                   plataformaLower === 'shopee' ? 'Shopee' :
+                                   plataformaLower === 'amazon' ? 'Amazon' :
+                                   plataformaLower === 'mercadolivre' ? 'Mercado Livre' :
+                                   plataformaLower === 'shein' ? 'Shein' :
+                                   plataforma}
+                                </Badge>
+                              );
+                            })}
+                            {order.canal_venda && (
+                                <Badge variant="outline" className="text-[9px] h-4 border-blue-200 text-blue-700">
+                                    {order.canal_venda.nome}
+                                </Badge>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell>
-                          <Badge variant={getStatusColor(order.situacao_pedido?.nome)}>
+                          <Badge variant={getStatusColor(order.situacao_pedido?.nome)} className="text-[10px] h-5">
                             {order.situacao_pedido?.nome || 'PENDENTE'}
                           </Badge>
                         </TableCell>
                         <TableCell>
-                          <Badge variant={getProductionBadgeColor(productionStatus)}>
-                            {productionStatus.replace('_', ' ')}
-                          </Badge>
+                          {order.demandas && order.demandas.length > 0 ? (
+                            <div className="flex items-center gap-2">
+                              <CheckCircle2 className="w-4 h-4 text-green-600" />
+                              <Badge
+                                variant="secondary"
+                                className="text-[10px] h-5 cursor-pointer hover:bg-blue-100"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigate(`/producao/demanda/${order.demandas[0].demanda_id}/dashboard`);
+                                }}
+                              >
+                                {order.demandas[0].status?.replace('_', ' ') || 'Em Produção'}
+                              </Badge>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2 text-muted-foreground">
+                              <AlertCircle className="w-4 h-4" />
+                              <span className="text-xs">Sem demanda</span>
+                            </div>
+                          )}
                         </TableCell>
-                        <TableCell className="text-right font-medium">
+                        <TableCell className="text-right font-bold text-sm">
                           {formatCurrency(order.total_pedido)}
                         </TableCell>
                         <TableCell>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="sm">
-                                <MoreHorizontal className="h-4 w-4" />
-                              </Button>
+                              <Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              <DropdownMenuItem>
-                                <Eye className="h-4 w-4 mr-2" />
-                                Visualizar Detalhes
-                              </DropdownMenuItem>
+                              <DropdownMenuItem className="text-xs"><Eye className="h-3 w-3 mr-2" /> Ver Detalhes</DropdownMenuItem>
                               {hasDemands && (
-                                <DropdownMenuItem onClick={() => window.location.href=`/producao/demanda/${order.demandas[0].id}/dashboard`}>
-                                  <Package className="h-4 w-4 mr-2" />
-                                  Ver Dashboard Produção
+                                <DropdownMenuItem className="text-xs" onClick={() => window.location.href=`/producao/demanda/${order.demandas[0].id}/dashboard`}>
+                                  <Zap className="h-3 w-3 mr-2 text-amber-500" /> Ver Produção
                                 </DropdownMenuItem>
                               )}
-                              <DropdownMenuItem>
-                                <Calendar className="h-4 w-4 mr-2" />
-                                Alterar Data
-                              </DropdownMenuItem>
-                              <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                  <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
-                                    Alterar Status
-                                  </DropdownMenuItem>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent>
-                                  {statusOptions
-                                    .filter(status => status.nome !== order.situacao_pedido?.nome)
-                                    .map(status => (
-                                      <DropdownMenuItem 
-                                        key={status.id} 
-                                        onClick={() => handleStatusChange(order.id, status.nome)}
-                                      >
-                                        {status.nome}
-                                      </DropdownMenuItem>
-                                    ))
-                                  }
-                                </DropdownMenuContent>
-                              </DropdownMenu>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </TableCell>
@@ -463,42 +384,18 @@ function UnifiedOrdersPage() {
                     );
                   })
                 ) : (
-                  <TableRow>
-                    <TableCell colSpan={8} className="h-24 text-center">
-                      {loading ? 'Carregando pedidos...' : 'Nenhum pedido encontrado'}
-                    </TableCell>
-                  </TableRow>
+                  <TableRow><TableCell colSpan={8} className="text-center py-20 text-muted-foreground italic">Nenhum pedido encontrado</TableCell></TableRow>
                 )}
               </TableBody>
-
             </Table>
           </div>
-
-          <div className="mt-4 flex justify-between items-center px-2 py-4">
-            <div className="text-sm text-muted-foreground">
-              Mostrando <strong>{(currentPage - 1) * perPage + 1}</strong> a <strong>{Math.min(currentPage * perPage, totalOrders)}</strong> de <strong>{totalOrders}</strong> pedidos
-            </div>
-            <div className="flex items-center space-x-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                disabled={currentPage === 1 || loading}
-              >
-                Anterior
-              </Button>
-              <div className="text-sm font-medium">
-                Página {currentPage} de {Math.ceil(totalOrders / perPage) || 1}
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setCurrentPage(prev => prev + 1)}
-                disabled={currentPage >= Math.ceil(totalOrders / perPage) || loading}
-              >
-                Próximo
-              </Button>
-            </div>
+          
+          <div className="p-4 flex justify-between items-center text-xs text-muted-foreground">
+             <div>Página {currentPage}</div>
+             <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.max(1, p-1))} disabled={currentPage === 1}>Anterior</Button>
+                <Button variant="outline" size="sm" onClick={() => setCurrentPage(p => p+1)} disabled={orders.length < perPage}>Próximo</Button>
+             </div>
           </div>
         </CardContent>
       </Card>

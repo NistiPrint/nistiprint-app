@@ -1,5 +1,51 @@
 # Troubleshooting - Separação de Stacks
 
+## Problema: Worker fica em "starting" constantemente
+
+### Sintoma
+- Container mostra status **"starting"** ou **"unhealthy"**
+- Logs mostram funcionamento normal (tarefas sendo processadas)
+- Worker não estabiliza
+
+### Causa
+Health check original (`celery inspect ping`) falha mesmo com worker saudável porque:
+- Timeout de 5s é muito curto
+- Worker ocupado processando tarefas não responde a tempo
+- RPC via Redis pode falhar temporariamente
+
+### Solução
+Health check foi alterado para usar `pgrep`:
+
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "pgrep -f 'celery.*worker' || exit 1"]
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+```
+
+**Deploy da correção:**
+```batch
+# No Portainer:
+# 1. Stacks → nistiprint-worker
+# 2. Editar com novo docker-compose.worker.yml
+# 3. Update the stack
+
+# Ou localmente:
+deploy-worker.bat restart
+```
+
+**Verificação:**
+```bash
+docker inspect nistiprint-app-worker --format='{{.State.Health.Status}}'
+# Expected: healthy
+```
+
+Veja: `WORKER-HEALTH-CHECK.md` para detalhes completos.
+
+---
+
 ## Problema: "Service 'redis' not found"
 
 ### Causa

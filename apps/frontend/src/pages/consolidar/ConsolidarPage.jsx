@@ -4,11 +4,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { AlertCircle, CheckCircle2, Copy, Database, ExternalLink, Eye, FileSpreadsheet, Filter, Link2, Link2Off, Loader2, Printer, Upload } from 'lucide-react';
+import { CheckCircle2, Copy, Database, FileSpreadsheet, Filter, Loader2, Upload } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import ConsolidarBaseTab from './ConsolidarBaseTab';
@@ -37,6 +36,10 @@ function ConsolidarPage() {
   const [demandHorarioColeta, setDemandHorarioColeta] = useState('');
   const [demandObservacoes, setDemandObservacoes] = useState('');
   const [creatingDemand, setCreatingDemand] = useState(false);
+  const [modalOpen, setModalOpen] = useState(null);
+
+  // Async Processing State
+  const [asyncProcessing, setAsyncProcessing] = useState(null); // { consolidacaoId, status, pollingInterval }
 
   useEffect(() => {
     const fetchChannels = async () => {
@@ -182,8 +185,8 @@ function ConsolidarPage() {
             nome: demandName,
             canal_venda_id: channelObj?.id,
             data_entrega: demandDate,
-            horario_coleta_especifico: demandHorarioColeta,
-            observacoes: demandObservacoes,
+            horario_coleta_especifico: demandHorarioColeta || null,
+            observacoes: demandObservacoes || null,
             tipo_demanda: 'Standard',
             itens: demandItems
         };
@@ -196,6 +199,7 @@ function ConsolidarPage() {
 
         if (response.ok) {
             toast.success("Demanda gerada!");
+            setModalOpen(null); // Fecha o modal
             setTimeout(() => { window.location.href = '/producao/demanda'; }, 1000);
         } else {
             throw new Error("Erro ao salvar demanda.");
@@ -205,6 +209,102 @@ function ConsolidarPage() {
     } finally {
         setCreatingDemand(false);
     }
+  };
+
+  // Async processing functions
+  const startAsyncProcessing = async (e) => {
+    e.preventDefault();
+    if (!file || !selectedChannel) {
+      toast.error('Selecione o arquivo e o canal.');
+      return;
+    }
+
+    setLoading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('channel', selectedChannel);
+    if (startDate) formData.append('start_date', startDate);
+    if (endDate) formData.append('end_datetime', endDate);
+    formData.append('print-orders', printOrders);
+    formData.append('is_flex', isFlex);
+    formData.append('mode', opMode);
+
+    try {
+      const response = await fetch('/api/v2/consolidar-async', {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Erro ao iniciar processamento');
+      }
+      
+      const data = await response.json();
+      setAsyncProcessing({
+        consolidacaoId: data.consolidacao_id,
+        status: data.status,
+        pollingInterval: null
+      });
+      
+      // Inicia polling
+      startPolling(data.consolidacao_id);
+      toast.success('Processamento iniciado em background!');
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const startPolling = (consolidacaoId) => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/v2/consolidar-async/${consolidacaoId}`);
+        const data = await response.json();
+
+        setAsyncProcessing(prev => ({ ...prev, status: data.status }));
+
+        if (data.status === 'PRONTO') {
+          clearInterval(pollInterval);
+          // Processa os dados para adicionar pedidos_origem a partir de order_refs
+          const processedResult = processarResultData(data.result);
+          setResults(processedResult);
+          setAsyncProcessing(null);
+          setDemandName(`Demanda - ${new Date().toLocaleDateString('pt-BR')}`);
+          toast.success('Processamento concluído!');
+        } else if (data.status === 'ERRO') {
+          clearInterval(pollInterval);
+          setAsyncProcessing(null);
+          toast.error(`Erro no processamento: ${data.error_message}`);
+        }
+      } catch (error) {
+        console.error('Polling error:', error);
+      }
+    }, 3000); // Poll a cada 3 segundos
+
+    setAsyncProcessing(prev => ({ ...prev, pollingInterval: pollInterval }));
+  };
+
+  const processarResultData = (result) => {
+    // Processa cada plataforma para adicionar pedidos_origem a partir de order_refs
+    const processed = {};
+    for (const [platform, platformData] of Object.entries(result)) {
+      const capasMiolosData = platformData.capas_miolos_data?.map(item => ({
+        ...item,
+        // Se não tiver pedidos_origem, tenta usar order_refs
+        pedidos_origem: item.pedidos_origem || (item.order_refs?.map(ref => ({
+          codigo_pedido_externo: ref,
+          numero_pedido: null // Não tem numero do Bling
+        })) || [])
+      })) || [];
+      
+      processed[platform] = {
+        ...platformData,
+        capas_miolos_data: capasMiolosData
+      };
+    }
+    return processed;
   };
 
   const updateProductAssociation = (platformKey, itemIndex, productId) => {
@@ -223,7 +323,7 @@ function ConsolidarPage() {
 
   const handleCopyTable = (platformKey) => {
     const data = results[platformKey];
-    let text = data.capas_miolos_data.map(i => `${i['Nome do Produto'] || i['Título']}\t${i['SKU'] || i['Código']}\t${i.Total}`).join('\n');
+    let text = data.capas_miolos_data.map(i => `${i['Nome do Produto'] || i['Título']}\t${i['SKU'] || i['Código']}\t${i['Miolo'] || '-'}\t${i.Total}`).join('\n');
     navigator.clipboard.writeText(text);
     toast.success('Copiado!');
   };
@@ -245,7 +345,69 @@ function ConsolidarPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><Filter className="h-5 w-5 text-primary" /> Origem dos Dados</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="pt-6">
+            {/* Status de Processamento em Background */}
+            {asyncProcessing && (
+              <div className="mb-8 p-6 bg-blue-50 border-2 border-blue-200 rounded-xl animate-in slide-in-from-top duration-500 shadow-sm">
+                <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+                  <div className="flex items-center gap-4 w-full md:w-auto">
+                    <div className="p-3 bg-blue-100 rounded-full">
+                      <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold text-blue-900">Processamento em Andamento</h3>
+                      <p className="text-sm text-blue-700 font-medium">
+                        Status atual: <span className="bg-blue-200 px-2 py-0.5 rounded uppercase text-xs">{asyncProcessing.status || 'Enfileirado'}</span>
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex flex-col items-center md:items-end gap-3 w-full md:w-64">
+                    <div className="w-full bg-blue-200 rounded-full h-3 overflow-hidden">
+                      <div 
+                        className="bg-blue-600 h-full transition-all duration-1000 ease-in-out" 
+                        style={{ width: asyncProcessing.status === 'PROCESSANDO' ? '65%' : '20%' }}
+                      />
+                    </div>
+                    <p className="text-[10px] text-blue-500 font-medium uppercase tracking-wider text-center md:text-right">
+                      Seu arquivo está sendo processado nos servidores. Você pode aguardar nesta tela.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Status de Processamento em Background */}
+            {asyncProcessing && (
+              <div className="mb-8 p-6 bg-blue-50 border-2 border-blue-200 rounded-xl animate-in slide-in-from-top duration-500 shadow-sm flex items-center justify-between gap-6">
+                <div className="flex items-center gap-4">
+                  <div className="p-3 bg-blue-100 rounded-full">
+                    <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-blue-900">Processamento em Andamento</h3>
+                    <p className="text-sm text-blue-700 font-medium">
+                      Status: <span className="bg-blue-200 px-2 py-0.5 rounded uppercase text-xs">{asyncProcessing.status || 'Enfileirado'}</span>
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="flex flex-col items-end gap-3 w-64">
+                  <div className="w-full bg-blue-200 rounded-full h-3 overflow-hidden">
+                    <div 
+                      className="bg-blue-600 h-full transition-all duration-1000 ease-in-out" 
+                      style={{ width: asyncProcessing.status === 'PROCESSANDO' ? '70%' : asyncProcessing.status === 'PRONTO' ? '100%' : '30%' }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-blue-500 font-medium uppercase tracking-wider text-center md:text-right">
+                    {asyncProcessing.status === 'PRONTO' ? 'Concluído com sucesso!' : 
+                     asyncProcessing.status === 'ERRO' ? 'Ocorreu um erro.' :
+                     'Seu arquivo está sendo processado...'}
+                  </p>
+                </div>
+              </div>
+            )}
+
             <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
               <TabsList className="grid w-full grid-cols-2 h-12 mb-8">
                 <TabsTrigger value="spreadsheet" className="gap-2 text-base"><FileSpreadsheet className="h-4 w-4" /> Planilha ERP/Marketplace</TabsTrigger>
@@ -287,9 +449,14 @@ function ConsolidarPage() {
                         </div>
                     </div>
 
-                    <Button type="submit" disabled={loading} className="w-full h-12 text-lg">
-                        {loading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="mr-2" />} Processar Planilha
-                    </Button>
+                    <div className="flex gap-3">
+                      <Button type="submit" disabled={loading} className="flex-1 h-12 text-lg">
+                          {loading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="mr-2" />} Processar (Síncrono)
+                      </Button>
+                      <Button type="button" onClick={startAsyncProcessing} disabled={loading} variant="outline" className="flex-1 h-12 text-lg border-blue-600 text-blue-600 hover:bg-blue-50">
+                          {loading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="mr-2" />} Processar em Background
+                      </Button>
+                    </div>
                 </form>
               </TabsContent>
 
@@ -317,12 +484,13 @@ function ConsolidarPage() {
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
-                    <TableHeader><TableRow><TableHead>Produto</TableHead><TableHead>SKU</TableHead><TableHead className="text-right">Qtd</TableHead><TableHead>Status</TableHead><TableHead>Ação</TableHead></TableRow></TableHeader>
+                    <TableHeader><TableRow><TableHead>Produto</TableHead><TableHead>SKU</TableHead><TableHead>Miolo</TableHead><TableHead className="text-right">Qtd</TableHead><TableHead>Status</TableHead><TableHead>Ação</TableHead></TableRow></TableHeader>
                     <TableBody>
                         {data.capas_miolos_data.map((item, idx) => (
                             <TableRow key={idx}>
                                 <TableCell className="font-medium text-xs">{item['Nome do Produto'] || item['Título']}</TableCell>
                                 <TableCell className="text-xs font-mono">{item['SKU'] || item['Código']}</TableCell>
+                                <TableCell className="text-xs">{item['Miolo'] || '-'}</TableCell>
                                 <TableCell className="text-right font-bold">{item.Total}</TableCell>
                                 <TableCell>{item.internal_product_id ? <Badge className="bg-green-600">Mapeado</Badge> : <Badge variant="destructive">Pendente</Badge>}</TableCell>
                                 <TableCell>
@@ -342,13 +510,47 @@ function ConsolidarPage() {
             </Card>
           ))}
 
+          {/* Modal de Processamento Assíncrono */}
+          {asyncProcessing && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+              <Card className="max-w-md w-full shadow-2xl animate-in slide-in-from-bottom-4">
+                <CardHeader className="border-b">
+                  <CardTitle className="flex items-center gap-2">
+                    <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+                    Processando em Background
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4 pt-6">
+                  <div className="text-center space-y-2">
+                    <p className="text-muted-foreground">Seu arquivo está sendo processado...</p>
+                    <div className="flex items-center justify-center gap-2">
+                      <span className="text-sm font-medium">Status:</span>
+                      <span className={`text-sm font-bold px-3 py-1 rounded-full ${
+                        asyncProcessing.status === 'PRONTO' ? 'bg-green-100 text-green-800' :
+                        asyncProcessing.status === 'ERRO' ? 'bg-red-100 text-red-800' :
+                        'bg-blue-100 text-blue-800'
+                      }`}>
+                        {asyncProcessing.status || 'PROCESSANDO'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-4">
+                      Esta janela será atualizada automaticamente quando o processamento for concluído.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
           {modalOpen === 'demand' && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
               <Card className="max-w-md w-full shadow-2xl animate-in slide-in-from-bottom-4">
                 <CardHeader className="border-b"><CardTitle>Gerar Nova Demanda</CardTitle></CardHeader>
                 <CardContent className="space-y-4 pt-6">
-                  <div className="space-y-2"><Label>Nome da Demanda</Label><Input value={demandName} onChange={(e) => setDemandName(e.target.value)} /></div>
+                  <div className="space-y-2"><Label>Nome da Demanda</Label><Input value={demandName} onChange={(e) => setDemandName(e.target.value)} placeholder="Ex: Demanda Shopee - Março" /></div>
                   <div className="space-y-2"><Label>Data de Entrega</Label><Input type="date" value={demandDate} onChange={(e) => setDemandDate(e.target.value)} /></div>
+                  <div className="space-y-2"><Label>Horário de Coleta (Opcional)</Label><Input type="time" value={demandHorarioColeta} onChange={(e) => setDemandHorarioColeta(e.target.value)} /></div>
+                  <div className="space-y-2"><Label>Observações (Opcional)</Label><Input value={demandObservacoes} onChange={(e) => setDemandObservacoes(e.target.value)} placeholder="Ex: Urgente, entregar na portaria..." /></div>
                   <Button onClick={() => handleGenerateDemand(Object.keys(results)[0])} disabled={creatingDemand} className="w-full bg-primary h-12 text-lg">
                     {creatingDemand ? <Loader2 className="animate-spin mr-2" /> : null} Gerar Demanda
                   </Button>

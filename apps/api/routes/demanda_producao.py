@@ -238,6 +238,8 @@ def create_demanda_api():
         if not data:
             return jsonify({'success': False, 'message': 'No JSON data provided'}), 400
 
+        print(f"DEBUG: Payload recebido em create_demanda_api: {json.dumps(data, indent=2)}") # DEBUG LOG
+
         # Validate User Permissions
         user_id = session.get('user_id')
         if not permissao_service.has_permission(user_id, 'demanda_producao', 'criar'):
@@ -247,9 +249,9 @@ def create_demanda_api():
         canal_venda_id = data.get('canal_venda_id')
         data_entrega_str = data.get('data_entrega')
         itens = data.get('itens', [])
-        horario_coleta_especifico = data.get('horario_coleta_especifico')
+        horario_coleta_especifico = data.get('horario_coleta_especifico') or None
         data_finalizacao_prevista_str = data.get('data_finalizacao_prevista')
-        observacoes = data.get('observacoes')
+        observacoes = data.get('observacoes') or None
         tipo_demanda = data.get('tipo_demanda', 'PLATAFORMA') # Get type, default to PLATAFORMA
         modalidade_logistica = data.get('modalidade_logistica', 'STANDARD')
         classificacao_cliente = data.get('classificacao_cliente', 'B2C')

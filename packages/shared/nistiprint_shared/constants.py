@@ -38,6 +38,108 @@ MONTH_MAP = {
     'dezembro': 'December',
 }
 
+"""
+Constantes globais para sincronização de ciclo de vida Pedido-Demanda.
+"""
+
+# =============================================================================
+# STATUS DE PEDIDO PARA SINCRONIZAÇÃO
+# =============================================================================
+
+# IDs das situações_pedido no banco de dados
+STATUS_PEDIDO_PENDENTE = 1           # "Pendente"
+STATUS_PEDIDO_PAGO = 2               # "Pago"
+STATUS_PEDIDO_EM_PRODUCAO = 3        # "Processando" - Pedido em produção
+STATUS_PEDIDO_PRONTO_ENVIO = 4       # "Pronto para Envio" - Pedido liberado para expedição
+STATUS_PEDIDO_ENVIADO = 5            # "Enviado"
+STATUS_PEDIDO_ENTREGUE = 6           # "Entregue"
+STATUS_PEDIDO_CANCELADO = 7          # "Cancelado"
+
+# Mapeamento de nomes para IDs
+STATUS_PEDIDO_MAP = {
+    'PENDENTE': STATUS_PEDIDO_PENDENTE,
+    'PAGO': STATUS_PEDIDO_PAGO,
+    'EM_PRODUCAO': STATUS_PEDIDO_EM_PRODUCAO,
+    'PROCESSANDO': STATUS_PEDIDO_EM_PRODUCAO,
+    'PRONTO_ENVIO': STATUS_PEDIDO_PRONTO_ENVIO,
+    'PRONTO_PARA_ENVIO': STATUS_PEDIDO_PRONTO_ENVIO,
+    'ENVIADO': STATUS_PEDIDO_ENVIADO,
+    'ENTREGUE': STATUS_PEDIDO_ENTREGUE,
+    'CANCELADO': STATUS_PEDIDO_CANCELADO,
+}
+
+# Status usados na sincronização automática
+STATUS_SINCRONIZACAO = {
+    'ao_criar_demanda': STATUS_PEDIDO_EM_PRODUCAO,
+    'ao_finalizar_demanda': STATUS_PEDIDO_PRONTO_ENVIO,
+    'ao_cancelar_demanda': STATUS_PEDIDO_PAGO,  # Reverte para Pago
+}
+
+# =============================================================================
+# STATUS DE DEMANDA
+# =============================================================================
+
+STATUS_DEMANDA_AGUARDANDO = 'AGUARDANDO'
+STATUS_DEMANDA_EM_PRODUCAO = 'EM_PRODUCAO'
+STATUS_DEMANDA_COLETA_PARCIAL = 'COLETA_PARCIAL'
+STATUS_DEMANDA_COLETADO = 'COLETADO'
+STATUS_DEMANDA_CONCLUIDO = 'CONCLUIDO'
+STATUS_DEMANDA_CANCELADO = 'CANCELADO'
+
+# Status que indicam demanda ativa (não finalizada)
+STATUS_DEMANDA_ATIVOS = [
+    STATUS_DEMANDA_AGUARDANDO,
+    STATUS_DEMANDA_EM_PRODUCAO,
+    STATUS_DEMANDA_COLETA_PARCIAL,
+    STATUS_DEMANDA_COLETADO,
+]
+
+# Status que indicam demanda finalizada
+STATUS_DEMANDA_FINALIZADOS = [
+    STATUS_DEMANDA_CONCLUIDO,
+    STATUS_DEMANDA_CANCELADO,
+]
+
+# =============================================================================
+# TIPOS DE ALERTA
+# =============================================================================
+
+ALERTA_PEDIDO_CANCELADO = 'PEDIDO_CANCELADO'
+ALERTA_DEMANDA_ATRASADA = 'DEMANDA_ATRASADA'
+ALERTA_ESTOQUE_INSUFICIENTE = 'ESTOQUE_INSUFICIENTE'
+ALERTA_PEDIDO_ORFAO = 'PEDIDO_ORFAO'
+
+# Severidades de alerta
+ALERTA_SEVERIDADE_ALTA = 'alta'
+ALERTA_SEVERIDADE_MEDIA = 'media'
+ALERTA_SEVERIDADE_BAIXA = 'baixa'
+
+# =============================================================================
+# CONSTANTES DE TEMPO
+# =============================================================================
+
+# Horas mínimas para considerar pedido órfão
+HORAS_PEDIDO_ORFAO = 24
+
+# Horas para alerta FLEX urgente
+HORAS_FLEX_URGENTE = 48
+
+# =============================================================================
+# OUTRAS CONSTANTES
+# =============================================================================
+
+# Limite de itens por demanda para consolidação automática
+LIMITE_ITENS_CONSOLIDACAO = 100
+
+# Margem de segurança para prazo de entrega (dias)
+MARGEM_PRAZO_ENTREGA_DIAS = 2
+
+# =============================================================================
+# CONFIGURAÇÕES DE PLATAFORMA E INTEGRAÇÃO
+# =============================================================================
+
+APP_TIMEZONE = 'America/Sao_Paulo'
+
 BLING_ID_LOJA = {
     # antiga
     204047801: 'Shopee', 
@@ -104,19 +206,19 @@ SITUACOES_PEDIDOS_BLING = {
 }
 
 PLATFORM_X_BLING_VERSION = {
-    'shopee': 'antiga',
+    'shopee': 'nova',
     'amazon': 'nova',
     'mercadolivre': 'antiga',
     'shein': 'cnpj03',
-    'shopeeflex': 'antiga'
+    'shopeeflex': 'nova'
 }
 
 PLATFORM_X_CNPJ = {
-    'shopee': '13597',  # CNPJ nova
+    'shopee': '54533',  # CNPJ nova
     'amazon': '54533',  # CNPJ nova
     'mercadolivre': '13597',  # CNPJ antiga
     'shein': '30301',  # CNPJ cnpj03
-    'shopeeflex': '13597'  # CNPJ nova
+    'shopeeflex': '54533'  # CNPJ nova
 }
 
 # Fuso horário padrão da aplicação

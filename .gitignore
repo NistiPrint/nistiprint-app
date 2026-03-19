@@ -263,3 +263,4 @@ __marimo__/
 firebase*.json
 
 .gemini/
+.qwen/

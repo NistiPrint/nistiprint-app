@@ -4,14 +4,14 @@
 
 | Stack | Variáveis | Total |
 |-------|-----------|-------|
-| **nistiprint-infra** | `BLING_CLENT_SECRET` | 1 |
+| **nistiprint-infra** | `BLING_CLIENT_SECRET` | 1 |
 | **nistiprint-worker** | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `FIREBASE_CREDENTIALS` | 3 |
 
 ---
 
 ## 🔑 Onde Obter Cada Variável
 
-### 1. BLING_CLENT_SECRET
+### 1. BLING_CLIENT_SECRET
 ```
 📍 https://dev.bling.com.br/
    → Login → Aplicações → Minhas Aplicações → Client Secret
@@ -53,7 +53,7 @@
 2. Nome: nistiprint-infra
 3. Web editor: cole docker-compose.infra.yml
 4. Environment → Add variable:
-   Name:  BLING_CLENT_SECRET
+   Name:  BLING_CLIENT_SECRET
    Value: seu_valor_aqui
 5. Deploy the stack
 6. ⚠️ AGUARDE: Redis e n8n devem estar "Running" (~30s)
@@ -109,7 +109,7 @@ docker exec nistiprint-app-worker celery -A worker_entrypoint inspect ping
 
 | Erro | Solução |
 |------|---------|
-| n8n não inicia | Verifique `BLING_CLENT_SECRET` |
+| n8n não inicia | Verifique `BLING_CLIENT_SECRET` |
 | Worker não conecta | Verifique rede `nistiprint-shared` |
 | Erro Firebase | JSON inválido (use https://jsonlint.com/) |
 | Erro Supabase | Verifique se está usando `service_role` key |

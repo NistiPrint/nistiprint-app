@@ -2,7 +2,7 @@
 ALTER TABLE public.pedidos ADD COLUMN IF NOT EXISTS cliente_telefone VARCHAR(50);
 ALTER TABLE public.pedidos ADD COLUMN IF NOT EXISTS cliente_email VARCHAR(255);
 ALTER TABLE public.pedidos ADD COLUMN IF NOT EXISTS is_flex BOOLEAN DEFAULT FALSE;
-ALTER TABLE public.pedidos ADD COLUMN IF NOT EXISTS data_prevista_entrega TIMESTAMPTZ;
+ALTER TABLE public.pedidos ADD COLUMN IF NOT EXISTS data_limite_envio TIMESTAMPTZ;
 ALTER TABLE public.pedidos ADD COLUMN IF NOT EXISTS servico_logistico VARCHAR(255);
 ALTER TABLE public.pedidos ADD COLUMN IF NOT EXISTS canal_venda_id INTEGER REFERENCES public.canais_venda(id);
 
@@ -17,7 +17,7 @@ SELECT
     p.cliente_nome,
     p.cliente_telefone,
     p.is_flex,
-    p.data_prevista_entrega,
+    p.data_limite_envio,
     p.total_pedido,
     p.situacao_pedido_id,
     s.nome AS situacao_nome,

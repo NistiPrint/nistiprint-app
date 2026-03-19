@@ -86,7 +86,7 @@ export const AuthProvider = ({ children }) => {
       localStorage.clear();
       sessionStorage.clear();
       // Force page reload to clear any cached state
-      window.location.href = '/frontend/login';
+      window.location.href = '/login';
     }
   };
 

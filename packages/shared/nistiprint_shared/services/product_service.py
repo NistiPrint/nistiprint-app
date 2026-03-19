@@ -1479,7 +1479,7 @@ class ProductService:
 
         Simplified Strategy:
         1. Product.sku (Exact Internal Match) -> Returns Variant or Parent.
-        
+
         The external SKU must be identical to the internal SKU for automatic mapping.
         """
         if not sku_externo:
@@ -1494,6 +1494,88 @@ class ProductService:
             logging.warning(f"Error searching by internal SKU {sku_externo}: {e}")
 
         return None
+
+    def resolve_variations_batch(self, skus_externos: List[str]) -> Dict[str, Optional[Dict[str, Any]]]:
+        """
+        Resolve múltiplos produtos de uma vez usando batch loading.
+        
+        Args:
+            skus_externos: Lista de SKUs externos para buscar
+            
+        Returns:
+            Dicionário {sku_externo: produto_interno ou None}
+        """
+        if not skus_externos:
+            return {}
+        
+        # Remove duplicatas e valores vazios
+        unique_skus = list(set([sku for sku in skus_externos if sku and str(sku).strip()]))
+        
+        if not unique_skus:
+            return {}
+        
+        result = {}
+        
+        # Busca todos os produtos de uma vez
+        try:
+            response = self.table.select("*").in_('sku', unique_skus).execute()
+            
+            if response.data:
+                # Mapeia resultados por SKU
+                for product in response.data:
+                    sku = product.get('sku')
+                    result[sku] = dict(product)
+                
+                # Preenche com None os SKUs não encontrados
+                for sku in unique_skus:
+                    if sku not in result:
+                        result[sku] = None
+            else:
+                # Nenhum produto encontrado
+                result = {sku: None for sku in unique_skus}
+                
+        except Exception as e:
+            logging.error(f"Erro no batch loading de produtos: {e}")
+            result = {sku: None for sku in unique_skus}
+        
+        return result
+
+    def get_products_by_ids_batch(self, product_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Busca múltiplos produtos por ID em uma única query.
+        
+        Args:
+            product_ids: Lista de IDs de produtos
+            
+        Returns:
+            Dicionário {product_id: produto}
+        """
+        if not product_ids:
+            return {}
+        
+        # Remove duplicatas e converte para string
+        unique_ids = list(set([str(pid) for pid in product_ids if pid]))
+        
+        if not unique_ids:
+            return {}
+        
+        try:
+            # Filtra apenas IDs numéricos válidos
+            numeric_ids = [int(pid) for pid in unique_ids if str(pid).isdigit()]
+            
+            if not numeric_ids:
+                return {}
+            
+            response = self.table.select("*").in_('id', numeric_ids).execute()
+            
+            if response.data:
+                return {str(product['id']): dict(product) for product in response.data}
+            else:
+                return {}
+                
+        except Exception as e:
+            logging.error(f"Erro no batch loading de produtos por ID: {e}")
+            return {}
 
     def enrich_product_data_with_variations(self, product: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich product data with its variations."""

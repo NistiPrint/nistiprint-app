@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
-from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
+from nistiprint_shared.services.demanda.core import demanda_core_service
 from nistiprint_shared.database.supabase_db_service import supabase_db
 
 
@@ -10,7 +10,7 @@ class CapacityPlanningService:
     """
 
     def __init__(self):
-        self.demanda_service = demanda_producao_service
+        self.demanda_service = demanda_core_service
         self.resources_table = supabase_db.table('recursos_produtivos')
         self.schedules_table = supabase_db.table('agenda_recursos')
 

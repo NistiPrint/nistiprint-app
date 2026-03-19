@@ -60,9 +60,13 @@ from routes.orders import orders_api_bp
 from routes.marketplace_api import marketplace_api_bp
 from routes.marketplace import marketplace_bp
 from routes.printing import printing_bp, printing_api_bp
-from routes.webhooks_v2 import webhooks_v2_bp
 from routes.jobs import jobs_bp
 from routes.unified_orders import unified_orders_bp
+from routes.integracao_canais import integracao_canais_bp
+from routes.pedidos import pedidos_bp
+from routes.demandas import demandas_bp
+from routes.alertas import alertas_bp
+from routes.webhooks_cancelamento import webhooks_cancelamento_bp
 
 # Import Models to ensure they are registered
 from nistiprint_shared.models import *
@@ -187,11 +191,15 @@ def create_app():
     app.register_blueprint(orders_api_bp, url_prefix='/api/v2/orders')
     app.register_blueprint(marketplace_api_bp, url_prefix='/api/v2/marketplace')
     app.register_blueprint(marketplace_bp)
-    app.register_blueprint(webhooks_v2_bp)
     app.register_blueprint(printing_bp)
     app.register_blueprint(printing_api_bp, url_prefix='/api/v2/printing')
     app.register_blueprint(jobs_bp)
     app.register_blueprint(unified_orders_bp)
+    app.register_blueprint(integracao_canais_bp)
+    app.register_blueprint(pedidos_bp)
+    app.register_blueprint(demandas_bp)
+    app.register_blueprint(alertas_bp)
+    app.register_blueprint(webhooks_cancelamento_bp)
 
     @app.route('/test_route')
     def test_route():

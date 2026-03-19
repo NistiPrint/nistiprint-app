@@ -182,15 +182,29 @@ class BlingClient:
         from nistiprint_shared.services.app_config_service import app_config_service
         from nistiprint_shared.services.conta_bling_service import conta_bling_service
         from nistiprint_shared.services.integration_routing_service import integration_routing_service
+        from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
         from ...constants import PLATFORM_X_CNPJ
 
         print(f"🔍 Buscando cliente Bling para plataforma: {platform_name}, canal: {channel_id}, função: {function_name}")
 
+        # 0. Tentar resolver via novo serviço de vínculos (se channel_id fornecido)
+        if channel_id:
+            config = integracao_canal_service.get_integration_by_canal(channel_id)
+            if config and config.get('integration_id'):
+                # Buscar integração e criar client
+                try:
+                    res = supabase_db.table('installed_integrations').select("*").eq('id', config['integration_id']).execute()
+                    if res.data:
+                        print(f"✅ Vínculo encontrado: Canal {channel_id} → Integration {config['integration_id']}")
+                        return BlingClient.create_client_from_integration(res.data[0])
+                except Exception as e:
+                    print(f"⚠️ Erro ao buscar integração por vínculo: {e}")
+        
         # 1. Tentar roteamento inteligente (Nova Arquitetura)
         account_id = integration_routing_service.get_account_id(
-            function_name=function_name, 
-            module='bling', 
-            channel_id=channel_id, 
+            function_name=function_name,
+            module='bling',
+            channel_id=channel_id,
             platform_name=platform_name
         )
 
