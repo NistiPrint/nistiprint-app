@@ -7,7 +7,6 @@ from nistiprint_shared.database.supabase_db_service import get_db_session, supab
 from nistiprint_shared.database.supabase_db_service import get_current_database_mode
 from nistiprint_shared.models.bling_pedidos import BlingPedidos
 from nistiprint_shared.models.bling_pedido_itens import BlingPedidoItens
-from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
 
 
 class BlingOrderProcessingService:
@@ -69,32 +68,19 @@ class BlingOrderProcessingService:
                 # --- LOG DADOS CRUS BLING ---
                 print(f"DEBUG: [BLING RAW DATA] Pedido {order_id}: {json.dumps(full_order_data, indent=2)}")
 
-                # --- BUSCA DADOS NA SHOPEE SE APLICÁVEL ---
+                # Extrair loja_id para verificação de origem do pedido
                 loja_id = full_order_data.get('loja', {}).get('id')
-                # IDs Shopee conforme apps/api/constants.py
-                if loja_id in [204047801, 205218967]:
-                    shopee_sn = full_order_data.get('numeroLoja')
-                    if shopee_sn:
-                        print(f"🔍 Identificado pedido Shopee. Buscando detalhes para SN: {shopee_sn}")
-                        try:
-                            from nistiprint_shared.services.installed_integration_service import installed_integration_service
-                            from nistiprint_shared.services.platform_drivers import shopee
-                            
-                            # Usando ID 6 que foi confirmado pelo usuário como a conta Shopee ativa
-                            shopee_integration = installed_integration_service.get_installed_by_id('6')
-                            if shopee_integration:
-                                shopee_data = shopee.get_order_detail(shopee_integration.to_dict(), [shopee_sn])
-                                # O driver já faz print do raw, mas vamos reforçar aqui para o log do worker
-                                print(f"DEBUG: [SHOPEE RAW DATA] Pedido {shopee_sn}: {json.dumps(shopee_data.get('raw', {}), indent=2)}")
-                            else:
-                                print(f"⚠️ Integração Shopee (ID 6) não encontrada para buscar detalhes.")
-                        except Exception as e_shopee:
-                            print(f"⚠️ Erro ao buscar detalhes na Shopee para {shopee_sn}: {e_shopee}")
 
                 # Se for EM ANDAMENTO (15), segue com o processamento normal (sincronização e demanda)
                 if situacao_id == 15:
-                    # Sincroniza com o modelo unificado e gera demanda se necessário
-                    sync_result = order_sync_service.sync_bling_order(full_order_data)
+                    # Se for Shopee, sincroniza dados do Bling (número, cliente) E Shopee (ship_by_date, Flex)
+                    if loja_id in [204047801, 205218967] and full_order_data.get('numeroLoja'):
+                        # Primeiro sincroniza Bling para garantir numero_pedido e dados do cliente
+                        sync_result = order_sync_service.sync_bling_order(full_order_data)
+                        # Depois sincroniza Shopee para dados enriquecidos (ship_by_date, Flex real)
+                        order_sync_service.sync_shopee_order(full_order_data.get('numeroLoja'))
+                    else:
+                        sync_result = order_sync_service.sync_bling_order(full_order_data)
                     
                     # Salva no banco legado (BlingPedidos) para manter compatibilidade
                     self._save_order_to_db(full_order_data)
@@ -102,8 +88,6 @@ class BlingOrderProcessingService:
                     return {"status": "success", "message": f"Order {order_id} processed fully.", "core_id": sync_result.get('id')}
                 else:
                     # Para ABERTO (6) ou ATENDIDO (9), apenas atualizamos o status básico como antes
-                    # Sincroniza apenas o status (usando o payload simplificado do webhook)
-                    order_sync_service.sync_bling_order(data)
                     self._update_legacy_status(order_id, situacao_id)
                     return {"status": "success", "message": f"Details logged and status updated to {status_name}."}
 
@@ -111,10 +95,136 @@ class BlingOrderProcessingService:
                 print(f"❌ Erro ao processar detalhes do pedido {order_id}: {e}")
                 return {"status": "error", "message": str(e)}
 
+        # 2. CANCELADO (12) -> Atualiza status e limpa demandas associadas
+        elif situacao_id == 12:
+            print(f"🛑 Pedido {order_id} CANCELADO no Bling. Iniciando limpeza de demandas...")
+            try:
+                # Busca detalhes para saber qual é o numeroLoja (pedido_externo_id)
+                client = self._get_bling_client_for_details()
+                full_order_data = client.get_order(order_id)
+                
+                if not full_order_data:
+                    # Se não conseguir detalhes, tenta usar o que veio no webhook se tiver numeroLoja
+                    pedido_externo_id = data.get('numeroLoja') or str(data.get('numero'))
+                else:
+                    pedido_externo_id = full_order_data.get('numeroLoja') or str(full_order_data.get('numero'))
+
+                # Processa o cancelamento
+                result = self._handle_order_cancellation(order_id, pedido_externo_id, data)
+                return result
+            except Exception as e:
+                print(f"❌ Erro ao processar cancelamento do pedido {order_id}: {e}")
+                return {"status": "error", "message": str(e)}
+
         # 3. OUTROS STATUS
         else:
-            print(f"⏭️ Pedido {order_id} ignorado (Situação {situacao_id} não é 15, 6 ou 9).")
+            print(f"⏭️ Pedido {order_id} ignorado (Situação {situacao_id} não é 15, 6, 9 ou 12).")
             return {"status": "skipped", "message": f"Status {situacao_id} ignored."}
+
+    def _handle_order_cancellation(self, bling_id, pedido_externo_id, raw_data):
+        """
+        Trata o cancelamento de um pedido:
+        1. Atualiza status no banco unificado (pedidos -> 7)
+        2. Atualiza status no banco legado (pedidos_bling -> 12)
+        3. Remove vínculos em demandas_item_origem
+        4. Decrementa quantidade em itens_demanda
+        5. Notifica em tempo real
+        """
+        from nistiprint_shared.services.order_service import order_service
+        from nistiprint_shared.services.notification_service import notification_service
+        
+        try:
+            # 1. Atualizar Pedido Unificado (Status 7 = Cancelado)
+            # Precisamos do ID interno do pedido
+            res_core = supabase_db.table('pedidos').select('id').eq('codigo_pedido_externo', str(pedido_externo_id)).execute()
+            core_id = None
+            if res_core.data:
+                core_id = res_core.data[0]['id']
+                supabase_db.table('pedidos').update({
+                    'situacao_pedido_id': 7,
+                    'updated_at': datetime.utcnow().isoformat()
+                }).eq('id', core_id).execute()
+                
+                # Registrar evento
+                order_service.register_event(
+                    core_id, 
+                    'ORDER_CANCELLED', 
+                    f"Pedido cancelado via Webhook Bling (Status 12)",
+                    raw_data,
+                    status_para="7"
+                )
+
+            # 2. Atualizar Pedido Legado
+            supabase_db.table('pedidos_bling').update({
+                'situacao_pedido': 'Cancelado',
+                'atualizado_em': datetime.utcnow().isoformat()
+            }).eq('bling_id', str(bling_id)).execute()
+
+            # 3. Processar Demandas Associadas
+            # Buscamos todos os itens de demanda que vieram deste pedido
+            # IMPORTANTE: Pode haver mais de uma plataforma se o numeroLoja colidir, 
+            # mas aqui o contexto é Bling.
+            res_origens = supabase_db.table('demandas_item_origem')\
+                .select('id, demanda_item_id, quantidade_atendida')\
+                .eq('pedido_externo_id', str(pedido_externo_id))\
+                .execute()
+            
+            affected_demandas = set()
+            if res_origens.data:
+                for orig in res_origens.data:
+                    orig_id = orig['id']
+                    item_demanda_id = orig['demanda_item_id']
+                    qty_to_reduce = float(orig['quantidade_atendida'])
+                    
+                    # Busca o item da demanda para saber a demanda_id e a quantidade atual
+                    res_item = supabase_db.table('itens_demanda')\
+                        .select('id, demanda_id, quantidade')\
+                        .eq('id', item_demanda_id)\
+                        .execute()
+                    
+                    if res_item.data:
+                        item = res_item.data[0]
+                        dem_id = item['demanda_id']
+                        current_qty = float(item['quantidade'])
+                        new_qty = max(0, current_qty - qty_to_reduce)
+                        
+                        affected_demandas.add(dem_id)
+                        
+                        # Atualiza a quantidade na demanda (Subtrai o que foi cancelado)
+                        supabase_db.table('itens_demanda').update({
+                            'quantidade': new_qty,
+                            'updated_at': datetime.utcnow().isoformat()
+                        }).eq('id', item_demanda_id).execute()
+                        
+                        # Se a nova quantidade for 0, poderíamos opcionalmente deletar o item, 
+                        # mas manter com 0 é mais seguro para auditoria.
+                        
+                    # Remove o vínculo de origem (já que o pedido não "atende" mais essa demanda)
+                    supabase_db.table('demandas_item_origem').delete().eq('id', orig_id).execute()
+
+            # 4. Notificação em Tempo Real
+            msg = f"🚫 Pedido {pedido_externo_id} CANCELADO no Bling."
+            if affected_demandas:
+                msg += f" {len(affected_demandas)} demanda(s) impactada(s): {list(affected_demandas)}."
+            
+            notification_service.broadcast_notification({
+                'event_type': 'ORDER_CANCELLED',
+                'message': msg,
+                'pedido_externo_id': pedido_externo_id,
+                'bling_id': bling_id,
+                'affected_demandas': list(affected_demandas),
+                'timestamp': datetime.utcnow().isoformat()
+            })
+
+            return {
+                "status": "success", 
+                "message": f"Order {pedido_externo_id} cancelled and demands updated.",
+                "affected_demandas": list(affected_demandas)
+            }
+
+        except Exception as e:
+            print(f"❌ Erro ao processar logic de cancelamento: {e}")
+            raise e
 
     def _update_legacy_status(self, bling_id, situacao_id):
         """Atualiza o status no banco legado (BlingPedidos) sem precisar de detalhes completos."""

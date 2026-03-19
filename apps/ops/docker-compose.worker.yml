@@ -42,11 +42,14 @@ services:
       - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
     # Redis está em outra stack - depende apenas da rede
     command: celery -A worker_entrypoint worker --loglevel=info --concurrency=2
+    # Health check simplificado - verifica se o processo celery está rodando
+    # celery inspect ping pode falhar mesmo com worker saudável
     healthcheck:
-      test: ["CMD-SHELL", "celery -A worker_entrypoint inspect ping --timeout=5 || exit 1"]
-      interval: 60s
+      test: ["CMD-SHELL", "pgrep -f 'celery.*worker' || exit 1"]
+      interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 60s
     # Retry infinito até o Redis estar disponível
     deploy:
       restart_policy:
@@ -78,6 +81,13 @@ services:
       - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
     # Redis está em outra stack - depende apenas da rede
     command: celery -A worker_entrypoint beat --loglevel=info
+    # Health check simplificado - verifica se o processo beat está rodando
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'celery.*beat' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
 networks:
   nistiprint-shared:

@@ -13,12 +13,12 @@ class PlatformApiService:
     def __init__(self):
         # Map module IDs to their respective drivers
         self.drivers = {
-            "shopee": "services.platform_drivers.shopee",
-            "bling": "services.platform_drivers.bling",
-            "mercadolivre": "services.platform_drivers.mercadolivre",
-            "amazon": "services.platform_drivers.amazon",
-            "shein": "services.platform_drivers.shein",
-            "tiktok": "services.platform_drivers.tiktok"
+            "shopee": "nistiprint_shared.services.platform_drivers.shopee",
+            "bling": "nistiprint_shared.services.platform_drivers.bling",
+            "mercadolivre": "nistiprint_shared.services.platform_drivers.mercadolivre",
+            "amazon": "nistiprint_shared.services.platform_drivers.amazon",
+            "shein": "nistiprint_shared.services.platform_drivers.shein",
+            "tiktok": "nistiprint_shared.services.platform_drivers.tiktok"
         }
 
     def _get_driver(self, module_id: str):
