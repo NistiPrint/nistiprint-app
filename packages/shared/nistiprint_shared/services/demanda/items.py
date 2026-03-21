@@ -15,11 +15,44 @@ from typing import List, Dict, Any, Optional
 import uuid
 from nistiprint_shared.utils.date_utils import get_now, get_now_iso
 
+# Importar core service para métodos de processamento de dicionários
+from .core import demanda_core_service
+from .status import demanda_status_service
+from ..demanda_alocacao.estoque import demanda_alocacao_estoque_service
+from ..demanda_alocacao.queue import demanda_alocacao_queue_service
+
 
 class DemandaItemsService:
     def __init__(self):
         self.demandas_table = supabase_db.table('demandas_producao')
         self.itens_table = supabase_db.table('itens_demanda')
+        # Referências a serviços especializados para delegação
+        self._core = demanda_core_service
+        self._status = demanda_status_service
+        self._alocacao_estoque = demanda_alocacao_estoque_service
+        self._alocacao_queue = demanda_alocacao_queue_service
+
+    def _process_item_dict(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Adiciona aliases e processa campos para o frontend."""
+        return self._core._process_item_dict(item)
+
+    def _verificar_e_finalizar_demanda_automatica(self, demanda_id, user_id='System'):
+        """Verifica e finaliza demanda automaticamente."""
+        return self._status._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
+
+    def processar_alocacao_de_demanda(self, item_id, campo, incremento, user_id, skip_visual_update=False, origem_tipo=None, retroactive_date=None, correlation_id=None):
+        """Processa alocação de estoque com base no estágio de produção."""
+        return self._alocacao_estoque.processar_alocacao_de_demanda(
+            item_id, campo, incremento, user_id, skip_visual_update,
+            origem_tipo, retroactive_date, correlation_id
+        )
+
+    def agendar_processamento_estoque(self, demanda_id, item_id, campo, incremento, user_id='System', correlation_id=None, created_at=None, produto_id=None, forcar_sincrono=False):
+        """Agenda processamento de estoque na fila."""
+        return self._alocacao_queue.agendar_processamento_estoque(
+            demanda_id, item_id, campo, incremento, user_id,
+            correlation_id, created_at, produto_id, forcar_sincrono
+        )
 
     def _atualizar_progresso_simples(self, item_id: str, campo: str, incremento: float):
         """Atualiza apenas o campo de progresso visual no item da demanda."""

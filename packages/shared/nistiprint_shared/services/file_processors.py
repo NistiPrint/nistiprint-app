@@ -874,6 +874,34 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
 
         bling_orders_data.sort(key=lambda x: (x['hasCustomItem'], x['total_items'], len(x['itens']), len(
             [item for item in x['itens'] if item['custom_tag'] != '']), next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), '')))
+    else:
+        # Build basic bling_orders_data from spreadsheet for later sync
+        sku_column = 'Número de referência SKU' if 'Número de referência SKU' in filtered_data.columns else 'Nº de referência do SKU principal'
+        for oid in ids_pedidos:
+            order_rows = filtered_data[filtered_data['ID do pedido'] == oid]
+            if order_rows.empty: continue
+            first_row = order_rows.iloc[0]
+            
+            basic_order = {
+                "numeroLoja": str(oid),
+                "numero": str(oid), # Fallback until background sync
+                "id": None,
+                "contato": {
+                    "nome": first_row.get('Nome de usuário (comprador)', ''),
+                    "numeroDocumento": None,
+                },
+                "itens": [
+                    {
+                        "codigo": str(row.get(sku_column, '')),
+                        "descricao": str(row.get('Nome do Produto', '')),
+                        "quantidade": int(row.get('Quantidade', 1)),
+                        "valor": float(row.get('Preço acordado', 0)) if 'Preço acordado' in row else 0
+                    } for _, row in order_rows.iterrows()
+                ],
+                "totalProdutos": float(first_row.get('Total pago pelo comprador', 0)) if 'Total pago pelo comprador' in first_row else 0,
+                "situacao": {"id": "IMPORTADO_PLANILHA"}
+            }
+            bling_orders_data.append(basic_order)
 
     total_pedidos_plataforma = len(ids_pedidos)
 
@@ -1086,6 +1114,33 @@ def process_amazon(file, period_filter, options=None, bling_client=None):
 
         bling_orders_data.sort(key=lambda x: (x['hasCustomItem'], x['total_items'], len(x['itens']), len(
             [item for item in x['itens'] if item['custom_tag'] != '']), next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), '')))
+    else:
+        # Build basic bling_orders_data from spreadsheet for later sync
+        for oid in ids_pedidos:
+            order_rows = filtered_data[filtered_data['ID do pedido'] == oid]
+            if order_rows.empty: continue
+            first_row = order_rows.iloc[0]
+            
+            basic_order = {
+                "numeroLoja": str(first_row.get('ID do pedido do cliente', oid)),
+                "numero": str(first_row.get('ID do pedido do cliente', oid)), # Fallback
+                "id": None,
+                "contato": {
+                    "nome": first_row.get('Comprador', ''),
+                    "numeroDocumento": None,
+                },
+                "itens": [
+                    {
+                        "codigo": str(row.get('SKU', '')),
+                        "descricao": str(row.get('Título', '')),
+                        "quantidade": int(row.get('Unidades', 1)),
+                        "valor": 0 # Not directly available in standard report
+                    } for _, row in order_rows.iterrows()
+                ],
+                "totalProdutos": 0,
+                "situacao": {"id": "IMPORTADO_PLANILHA"}
+            }
+            bling_orders_data.append(basic_order)
 
     total_pedidos_plataforma = len(ids_pedidos)
 
@@ -1283,6 +1338,33 @@ def process_shein(file, period_filter, options=None, bling_client=None):
 
         bling_orders_data.sort(key=lambda x: (x['hasCustomItem'], x['total_items'], len(x['itens']), len(
             [item for item in x['itens'] if item['custom_tag'] != '']), next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), '')))
+    else:
+        # Build basic bling_orders_data from spreadsheet for later sync
+        for oid in ids_pedidos:
+            order_rows = filtered_data[filtered_data['Número do pedido'] == oid]
+            if order_rows.empty: continue
+            first_row = order_rows.iloc[0]
+            
+            basic_order = {
+                "numeroLoja": str(oid),
+                "numero": str(oid), # Fallback
+                "id": None,
+                "contato": {
+                    "nome": first_row.get('Comprador', ''),
+                    "numeroDocumento": None,
+                },
+                "itens": [
+                    {
+                        "codigo": str(row.get('SKU do vendedor', '')),
+                        "descricao": str(row.get('Nome do produto', '')),
+                        "quantidade": 1,
+                        "valor": 0
+                    } for _, row in order_rows.iterrows()
+                ],
+                "totalProdutos": 0,
+                "situacao": {"id": "IMPORTADO_PLANILHA"}
+            }
+            bling_orders_data.append(basic_order)
 
     total_pedidos_plataforma = len(ids_pedidos)
 

@@ -230,6 +230,33 @@ def consolidar():
 
             os.remove(filepath)
 
+            # --- NOVO: DISPARAR SINCRONIZAÇÃO DE NÚMEROS BLING (BACKGROUND) ---
+            if ids_pedidos:
+                try:
+                    from nistiprint_shared.services.celery_app import celery_app
+                    # ids_pedidos pode vir como uma lista de IDs [id1, id2...] ou chunks [id1;id2, id101;id102...]
+                    flat_ids = []
+                    if isinstance(ids_pedidos, list):
+                        for item in ids_pedidos:
+                            if isinstance(item, str) and ';' in item:
+                                flat_ids.extend(item.split(';'))
+                            elif isinstance(item, (str, int)):
+                                flat_ids.append(str(item))
+                    
+                    # Remover duplicatas e filtrar strings vazias
+                    flat_ids = list(set([str(fid) for fid in flat_ids if fid]))
+                    
+                    if flat_ids:
+                        print(f"[*] Consolidar API: Disparando sync de {len(flat_ids)} pedidos individuais com Bling...")
+                        celery_app.send_task(
+                            'tasks.consolidation_tasks.sync_orders_with_bling',
+                            args=[flat_ids, channel_id, plataforma],
+                            kwargs={}
+                        )
+                except Exception as sync_trigger_err:
+                    print(f"⚠️ Erro ao disparar sync com Bling na API: {sync_trigger_err}")
+            # ------------------------------------------------------------------
+
             # Sempre retorna JSON para API React frontend
             return jsonify(results)
 

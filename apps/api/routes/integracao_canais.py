@@ -13,11 +13,12 @@ Rotas:
 from flask import request, Blueprint, jsonify
 from routes.auth import login_required
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
+from nistiprint_shared.database.supabase_db_service import supabase_db
 import logging
 
 logger = logging.getLogger("IntegracaoCanaisAPI")
 
-integracao_canais_bp = Blueprint('integracao_canais', __name__, url_prefix='/api/integracao-canais')
+integracao_canais_bp = Blueprint('integracao_canais', __name__, url_prefix='/api/v2/integracao-canais')
 
 
 @integracao_canais_bp.route('/configuracoes', methods=['GET'])
@@ -346,6 +347,55 @@ def listar_plataformas():
         
     except Exception as e:
         logger.error(f"Erro ao listar plataformas: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@integracao_canais_bp.route('/canais', methods=['GET'])
+@login_required
+def listar_canais_venda():
+    """
+    Lista todos os canais de venda disponíveis.
+    Endpoint auxiliar para a tela de vínculos.
+    """
+    try:
+        from nistiprint_shared.services.canal_venda_service import canal_venda_service
+        from nistiprint_shared.services.conta_bling_service import conta_bling_service
+        
+        canais = canal_venda_service.get_all(active_only=False)
+        contas_bling = conta_bling_service.get_all()
+        
+        return jsonify({
+            'success': True,
+            'data': canais,
+            'contas_bling': contas_bling
+        })
+    except Exception as e:
+        logger.error(f"Erro ao listar canais: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@integracao_canais_bp.route('/integracoes', methods=['GET'])
+@login_required
+def listar_integracoes_instaladas():
+    """
+    Lista todas as integrações instaladas.
+    Endpoint auxiliar para a tela de vínculos.
+    """
+    try:
+        result = supabase_db.table('installed_integrations').select('*').eq('is_active', True).execute()
+        
+        return jsonify({
+            'success': True,
+            'data': result.data or []
+        })
+    except Exception as e:
+        logger.error(f"Erro ao listar integrações: {e}")
         return jsonify({
             'success': False,
             'error': str(e)

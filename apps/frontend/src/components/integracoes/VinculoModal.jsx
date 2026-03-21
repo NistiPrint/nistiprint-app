@@ -40,7 +40,7 @@ export default function VinculoModal({
     canal_venda_id: '',
     bling_loja_id: '',
     plataforma_nome: plataformaFilter || '',
-    integration_id: '',
+    integration_id: 'none',  // Usa 'none' como valor padrão
     is_primary: false,
     is_active: true
   });
@@ -55,7 +55,7 @@ export default function VinculoModal({
           canal_venda_id: vinculoEdit.canal_venda_id?.toString() || '',
           bling_loja_id: vinculoEdit.bling_loja_id?.toString() || '',
           plataforma_nome: vinculoEdit.plataforma_nome || '',
-          integration_id: vinculoEdit.integration_id?.toString() || '',
+          integration_id: vinculoEdit.integration_id?.toString() || 'none',
           is_primary: vinculoEdit.is_primary || false,
           is_active: vinculoEdit.is_active !== false
         });
@@ -115,7 +115,7 @@ export default function VinculoModal({
         canal_venda_id: '',
         bling_loja_id: '',
         plataforma_nome: plataformaFilter || '',
-        integration_id: '',
+        integration_id: 'none',
         is_primary: false,
         is_active: true
       });
@@ -215,14 +215,14 @@ export default function VinculoModal({
             <div className="relative">
               <Building2 className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Select
-                value={formData.integration_id}
-                onValueChange={(value) => setFormData(prev => ({ ...prev, integration_id: value }))}
+                value={formData.integration_id || 'none'}
+                onValueChange={(value) => setFormData(prev => ({ ...prev, integration_id: value === 'none' ? '' : value }))}
               >
                 <SelectTrigger className="pl-9">
                   <SelectValue placeholder="Selecione a integração" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Apenas Bling (sem integração direta)</SelectItem>
+                  <SelectItem value="none">Apenas Bling (sem integração direta)</SelectItem>
                   {integracoes.map((integ) => (
                     <SelectItem key={integ.id} value={integ.id.toString()}>
                       {integ.instance_name} ({integ.module_id})

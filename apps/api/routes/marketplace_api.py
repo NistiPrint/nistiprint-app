@@ -232,6 +232,8 @@ def install_module():
         # Optional fields
         config = data.get('config', {})
         credentials = data.get('credentials', {})
+        instance_color = data.get('instance_color', '#64748b')
+        description = data.get('description')
         
         # Install the module
         instance_id = installed_integration_service.install_module(
@@ -239,8 +241,81 @@ def install_module():
             module_id=module_id,
             instance_name=instance_name,
             config=config,
-            credentials=credentials
+            credentials=credentials,
+            instance_color=instance_color,
+            description=description
         )
+        
+        # --- Auto-Provisioning Logic (UX Enhancement) ---
+        try:
+            from nistiprint_shared.database.supabase_db_service import supabase_db
+            from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
+            
+            # 1. Resolve Platform ID
+            # Mapeamento simples de module_id -> nome plataforma (ou busca ilike)
+            # Ex: 'shopee' -> 'Shopee', 'mercadolivre' -> 'Mercado Livre'
+            res = supabase_db.client.table('plataformas').select('id, nome').ilike('nome', f"%{module_id}%").limit(1).execute()
+            plataforma_data = res.data[0] if res.data else None
+            
+            if plataforma_data:
+                plataforma_id = plataforma_data['id']
+                plataforma_nome = plataforma_data['nome']
+                
+                # 2. Check/Create Channel
+                # Verificar se já existe canal com este nome exato
+                res_canal = supabase_db.client.table('canais_venda').select('id').eq('nome', instance_name).execute()
+                
+                canal_id = None
+                if res_canal.data:
+                    canal_id = res_canal.data[0]['id']
+                else:
+                    # Criar novo canal
+                    # Usamos insert direto para evitar validações legadas estritas de conta_bling_id
+                    new_channel_data = {
+                        'nome': instance_name,
+                        'slug': f"{module_id}-{int(datetime.utcnow().timestamp())}", # Slug único
+                        'plataforma_id': plataforma_id,
+                        'ativo': True,
+                        'color': instance_color,
+                        # Campos legados/opcionais
+                        'conta_bling_id': None, 
+                        'created_at': datetime.utcnow().isoformat(),
+                        'updated_at': datetime.utcnow().isoformat()
+                    }
+                    res_new = supabase_db.client.table('canais_venda').insert(new_channel_data).execute()
+                    if res_new.data:
+                        canal_id = res_new.data[0]['id']
+                        print(f"✅ [Auto-Provision] Canal criado: {instance_name} (ID: {canal_id})")
+                
+                # 3. Link Integration (Binding)
+                bling_loja_id = config.get('bling_loja_id')
+                
+                # Se temos canal e instância, podemos vincular
+                if canal_id and instance_id:
+                    # Se tiver bling_loja_id, vínculo completo
+                    if bling_loja_id:
+                        try:
+                            integracao_canal_service.criar_vinculo(
+                                canal_venda_id=canal_id,
+                                bling_loja_id=int(bling_loja_id),
+                                plataforma_nome=plataforma_nome,
+                                integration_id=int(instance_id),
+                                is_primary=False, # Não assumir principal automaticamente
+                                config_json={}
+                            )
+                            print(f"✅ [Auto-Provision] Vínculo criado: Canal {canal_id} <-> Loja {bling_loja_id}")
+                        except Exception as e_link:
+                            print(f"⚠️ [Auto-Provision] Erro ao vincular: {e_link}")
+                    
+                    # TODO: Mesmo sem bling_loja_id, poderíamos criar um vínculo parcial se a tabela permitisse
+                    # Mas integracao_canais_config exige bling_loja_id (ou unique constraint depende dele)
+                    
+        except Exception as e_prov:
+            # Não falhar a instalação se o provisionamento automático der erro
+            print(f"⚠️ [Auto-Provision] Falha no provisionamento automático: {e_prov}")
+            import traceback
+            traceback.print_exc()
+
         
         # Get the newly created installation
         installation = installed_integration_service.get_installed_by_id(instance_id)
@@ -251,7 +326,8 @@ def install_module():
             'success': True,
             'message': 'Module installed successfully',
             'instance_id': instance_id,
-            'installation': installation_data
+            'installation': installation_data,
+            'linked_channel_id': canal_id if 'canal_id' in locals() else None
         }), 201
     
     except ValueError as ve:

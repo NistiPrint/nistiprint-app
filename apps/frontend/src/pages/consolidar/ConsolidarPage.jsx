@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { CheckCircle2, Copy, Database, FileSpreadsheet, Filter, Loader2, Upload } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import ConsolidarBaseTab from './ConsolidarBaseTab';
 
@@ -39,7 +39,10 @@ function ConsolidarPage() {
   const [modalOpen, setModalOpen] = useState(null);
 
   // Async Processing State
-  const [asyncProcessing, setAsyncProcessing] = useState(null); // { consolidacaoId, status, pollingInterval }
+  const [asyncProcessing, setAsyncProcessing] = useState(null); // { consolidacaoId, status }
+  
+  // Ref para armazenar o intervalo do polling
+  const pollingIntervalRef = useRef(null);
 
   useEffect(() => {
     const fetchChannels = async () => {
@@ -258,7 +261,12 @@ function ConsolidarPage() {
   };
 
   const startPolling = (consolidacaoId) => {
-    const pollInterval = setInterval(async () => {
+    // Limpa polling anterior se existir
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+    }
+    
+    pollingIntervalRef.current = setInterval(async () => {
       try {
         const response = await fetch(`/api/v2/consolidar-async/${consolidacaoId}`);
         const data = await response.json();
@@ -266,7 +274,10 @@ function ConsolidarPage() {
         setAsyncProcessing(prev => ({ ...prev, status: data.status }));
 
         if (data.status === 'PRONTO') {
-          clearInterval(pollInterval);
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+          }
           // Processa os dados para adicionar pedidos_origem a partir de order_refs
           const processedResult = processarResultData(data.result);
           setResults(processedResult);
@@ -274,7 +285,10 @@ function ConsolidarPage() {
           setDemandName(`Demanda - ${new Date().toLocaleDateString('pt-BR')}`);
           toast.success('Processamento concluído!');
         } else if (data.status === 'ERRO') {
-          clearInterval(pollInterval);
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+          }
           setAsyncProcessing(null);
           toast.error(`Erro no processamento: ${data.error_message}`);
         }
@@ -282,9 +296,16 @@ function ConsolidarPage() {
         console.error('Polling error:', error);
       }
     }, 3000); // Poll a cada 3 segundos
-
-    setAsyncProcessing(prev => ({ ...prev, pollingInterval: pollInterval }));
   };
+  
+  // Limpa polling ao desmontar componente
+  useEffect(() => {
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+    };
+  }, []);
 
   const processarResultData = (result) => {
     // Processa cada plataforma para adicionar pedidos_origem a partir de order_refs
@@ -361,11 +382,11 @@ function ConsolidarPage() {
                       </p>
                     </div>
                   </div>
-                  
+
                   <div className="flex flex-col items-center md:items-end gap-3 w-full md:w-64">
                     <div className="w-full bg-blue-200 rounded-full h-3 overflow-hidden">
-                      <div 
-                        className="bg-blue-600 h-full transition-all duration-1000 ease-in-out" 
+                      <div
+                        className="bg-blue-600 h-full transition-all duration-1000 ease-in-out"
                         style={{ width: asyncProcessing.status === 'PROCESSANDO' ? '65%' : '20%' }}
                       />
                     </div>
@@ -373,37 +394,6 @@ function ConsolidarPage() {
                       Seu arquivo está sendo processado nos servidores. Você pode aguardar nesta tela.
                     </p>
                   </div>
-                </div>
-              </div>
-            )}
-
-            {/* Status de Processamento em Background */}
-            {asyncProcessing && (
-              <div className="mb-8 p-6 bg-blue-50 border-2 border-blue-200 rounded-xl animate-in slide-in-from-top duration-500 shadow-sm flex items-center justify-between gap-6">
-                <div className="flex items-center gap-4">
-                  <div className="p-3 bg-blue-100 rounded-full">
-                    <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-blue-900">Processamento em Andamento</h3>
-                    <p className="text-sm text-blue-700 font-medium">
-                      Status: <span className="bg-blue-200 px-2 py-0.5 rounded uppercase text-xs">{asyncProcessing.status || 'Enfileirado'}</span>
-                    </p>
-                  </div>
-                </div>
-                
-                <div className="flex flex-col items-end gap-3 w-64">
-                  <div className="w-full bg-blue-200 rounded-full h-3 overflow-hidden">
-                    <div 
-                      className="bg-blue-600 h-full transition-all duration-1000 ease-in-out" 
-                      style={{ width: asyncProcessing.status === 'PROCESSANDO' ? '70%' : asyncProcessing.status === 'PRONTO' ? '100%' : '30%' }}
-                    />
-                  </div>
-                  <p className="text-[10px] text-blue-500 font-medium uppercase tracking-wider text-center md:text-right">
-                    {asyncProcessing.status === 'PRONTO' ? 'Concluído com sucesso!' : 
-                     asyncProcessing.status === 'ERRO' ? 'Ocorreu um erro.' :
-                     'Seu arquivo está sendo processado...'}
-                  </p>
                 </div>
               </div>
             )}

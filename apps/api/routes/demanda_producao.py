@@ -1441,6 +1441,88 @@ def registrar_saida_distribuida():
         print(traceback.format_exc())
         return jsonify({'success': False, 'error': f'Erro interno: {e}'}), 500
 
+@demanda_producao_api_bp.route('/monitoring/overview', methods=['GET'])
+def get_monitoring_overview():
+    """
+    Retorna um sumário de todas as filas e tarefas de background para o dashboard de monitoramento.
+    """
+    try:
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        
+        # 1. Sumário de Fila de Estoque
+        stock_queue_res = supabase_db.table('fila_processamento_estoque').select('status').execute()
+        stock_stats = {
+            'PENDENTE': 0,
+            'PROCESSANDO': 0,
+            'ERRO': 0,
+            'CONCLUIDO': 0
+        }
+        for item in stock_queue_res.data:
+            status = item.get('status')
+            if status in stock_stats:
+                stock_stats[status] += 1
+        
+        # 2. Sumário de Consolidações (Últimas 24h)
+        yesterday = (datetime.now() - timedelta(days=1)).isoformat()
+        consolidations_res = supabase_db.table('consolidacoes_pedido').select('status').gte('created_at', yesterday).execute()
+        consolidation_stats = {
+            'PRONTO': 0,
+            'PROCESSANDO': 0,
+            'ERRO': 0,
+            'PENDENTE': 0
+        }
+        for item in consolidations_res.data:
+            status = item.get('status')
+            if status in consolidation_stats:
+                consolidation_stats[status] += 1
+                
+        # 3. Sumário de Tarefas de Sistema (Últimas 24h)
+        system_tasks_res = supabase_db.table('task_execution_logs').select('status').gte('created_at', yesterday).execute()
+        system_task_stats = {
+            'COMPLETED': 0,
+            'PROCESSING': 0,
+            'FAILED': 0,
+            'PENDING': 0
+        }
+        for item in system_tasks_res.data:
+            status = item.get('status')
+            if status in system_task_stats:
+                system_task_stats[status] += 1
+
+        return jsonify({
+            'success': True,
+            'stats': {
+                'stock': stock_stats,
+                'consolidations': consolidation_stats,
+                'system_tasks': system_task_stats
+            }
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@demanda_producao_api_bp.route('/monitoring/system-tasks', methods=['GET'])
+def get_system_tasks():
+    """
+    Retorna os logs de execução de tarefas de sistema.
+    """
+    try:
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        
+        limit = request.args.get('limit', 50, type=int)
+        
+        res = supabase_db.table('task_execution_logs')\
+            .select('*')\
+            .order('created_at', desc=True)\
+            .limit(limit)\
+            .execute()
+            
+        return jsonify({
+            'success': True,
+            'tasks': res.data
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 # Legacy HTML routes that might still be needed or can be removed if strictly converting to React
 @demanda_producao_bp.route('/<string:demanda_id>/dashboard')
 def view_dashboard(demanda_id):

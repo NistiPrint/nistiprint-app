@@ -119,11 +119,17 @@ def process_consolidacao(self, consolidacao_id: int):
         
         conflicts = order_tracker_service.check_conflicts(all_orders_to_check, plataforma)
         
-        # Persistência dos pedidos no banco unificado
+        # Persistência dos pedidos no banco unificado (Bacth Mode)
         if bling_orders_data:
-            print(f"💾 Iniciando persistência de {len(bling_orders_data)} pedidos no banco unificado...")
+            print(f"💾 Preparando persistência em lote de {len(bling_orders_data)} pedidos...")
             from nistiprint_shared.services.order_service import order_service
             
+            # Nota: O OrderService atual não possui um método batch_upsert robusto que gerencie
+            # vínculos e itens simultaneamente. Para não quebrar a lógica complexa de mappers,
+            # vamos manter o loop mas reduzir o overhead de logs e garantir que o serviço trate.
+            # Em uma melhoria futura, o order_service deve ganhar um método .batch_upsert()
+            
+            success_count = 0
             for order in bling_orders_data:
                 try:
                     order_to_upsert = {
@@ -154,8 +160,11 @@ def process_consolidacao(self, consolidacao_id: int):
                         channel_id=channel_id,
                         integration_id=account_id
                     )
+                    success_count += 1
                 except Exception as upsert_error:
                     logging.error(f"Erro ao persistir pedido {order.get('numeroLoja')}: {upsert_error}")
+            
+            print(f"✅ {success_count} pedidos persistidos com sucesso.")
         
         # Prepara resultado para armazenar
         # Adiciona order_refs como campo separado para exibição no frontend
@@ -207,6 +216,35 @@ def process_consolidacao(self, consolidacao_id: int):
         }).eq('id', consolidacao_id).execute()
         
         print(f"[*] Consolidacao Worker: {consolidacao_id} processada com sucesso!")
+
+        # --- NOVO: DISPARAR SINCRONIZAÇÃO DE NÚMEROS BLING ---
+        if ids_pedidos:
+            try:
+                # ids_pedidos pode vir como uma lista de IDs [id1, id2...] ou chunks [id1;id2, id101;id102...]
+                # dependendo da plataforma. Vamos garantir que extraímos uma lista flat de IDs individuais.
+                flat_ids = []
+                if isinstance(ids_pedidos, list):
+                    for item in ids_pedidos:
+                        if isinstance(item, str) and ';' in item:
+                            # Se for chunk de string (formato generate_ids_chunks)
+                            flat_ids.extend(item.split(';'))
+                        elif isinstance(item, (str, int)):
+                            # Se for ID individual
+                            flat_ids.append(str(item))
+                
+                # Remover duplicatas e filtrar strings vazias
+                flat_ids = list(set([str(fid) for fid in flat_ids if fid]))
+                
+                if flat_ids:
+                    print(f"[*] Consolidacao Worker: Disparando sync de {len(flat_ids)} pedidos individuais com Bling...")
+                    celery_app.send_task(
+                        'tasks.consolidation_tasks.sync_orders_with_bling',
+                        args=[flat_ids, channel_id, plataforma],
+                        kwargs={}
+                    )
+            except Exception as sync_trigger_err:
+                print(f"⚠️ Erro ao disparar sync com Bling: {sync_trigger_err}")
+        # ----------------------------------------------------
         
         return {'status': 'SUCCESS', 'consolidacao_id': consolidacao_id}
         
@@ -231,5 +269,117 @@ def process_consolidacao(self, consolidacao_id: int):
             pass
         
         print(f"[*] Consolidacao Worker Error: {e}")
+        self.retry(exc=e)
+        return {'status': 'FAILED', 'error': str(e)}
+
+
+@celery_app.task(
+    name='tasks.consolidation_tasks.sync_orders_with_bling',
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60
+)
+def sync_orders_with_bling(self, order_numbers: list, channel_id: int, platform: str):
+    """
+    Busca os números reais dos pedidos no Bling e atualiza o banco de dados.
+    """
+    if not order_numbers:
+        return {'status': 'SKIPPED', 'reason': 'No order numbers provided'}
+
+    print(f"[*] Sync Bling Worker: Iniciando sincronização de {len(order_numbers)} pedidos ({platform})")
+    
+    task_log_id = None
+    try:
+        from nistiprint_shared.services.bling.bling_client import BlingClient
+        from nistiprint_shared.services.order_service import order_service
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+
+        # Registrar início da tarefa
+        log_res = supabase_db.table('task_execution_logs').insert({
+            'task_name': 'sync_orders_with_bling',
+            'status': 'PROCESSING',
+            'started_at': get_now_iso(),
+            'metadata': {
+                'channel_id': channel_id,
+                'platform': platform,
+                'order_count': len(order_numbers)
+            }
+        }).execute()
+        
+        if log_res.data:
+            task_log_id = log_res.data[0]['id']
+
+        # 1. Criar cliente Bling
+        bling_client = BlingClient.create_client_for_platform(
+            platform,
+            channel_id=channel_id,
+            function_name='ORDER_IMPORT'
+        )
+
+        # 2. Buscar mapeamento (otimizado)
+        mappings = bling_client.get_order_numbers_by_store_numbers(order_numbers)
+        
+        if not mappings:
+            print(f"[*] Sync Bling Worker: Nenhum pedido encontrado no Bling.")
+            if task_log_id:
+                supabase_db.table('task_execution_logs').update({
+                    'status': 'COMPLETED',
+                    'finished_at': get_now_iso(),
+                    'metadata': {
+                        'channel_id': channel_id,
+                        'platform': platform,
+                        'order_count': len(order_numbers),
+                        'found_count': 0
+                    }
+                }).eq('id', task_log_id).execute()
+            return {'status': 'SUCCESS', 'found': 0}
+
+        # 3. Atualizar cada pedido
+        updated_count = 0
+        for mapping in mappings:
+            try:
+                order_data = {
+                    'codigo_pedido_externo': str(mapping['numeroLoja']),
+                    'numero_pedido': str(mapping['numero']),
+                    'origem': platform
+                }
+                
+                order_service.upsert_order(
+                    order_data=order_data,
+                    platform='BLING',
+                    platform_order_id=str(mapping['numeroLoja']),
+                    raw_payload={'bling_mapping': mapping}
+                )
+                updated_count += 1
+            except Exception as e:
+                print(f"⚠️ Erro ao atualizar pedido {mapping['numeroLoja']}: {e}")
+
+        # Finalizar log
+        if task_log_id:
+            supabase_db.table('task_execution_logs').update({
+                'status': 'COMPLETED',
+                'finished_at': get_now_iso(),
+                'metadata': {
+                    'channel_id': channel_id,
+                    'platform': platform,
+                    'order_count': len(order_numbers),
+                    'found_count': len(mappings),
+                    'updated_count': updated_count
+                }
+            }).eq('id', task_log_id).execute()
+
+        print(f"[*] Sync Bling Worker: Sincronização concluída. {updated_count} pedidos atualizados.")
+        return {'status': 'SUCCESS', 'updated': updated_count}
+
+    except Exception as e:
+        logger.error(f"Error syncing orders with Bling: {e}")
+        if task_log_id:
+            try:
+                supabase_db.table('task_execution_logs').update({
+                    'status': 'FAILED',
+                    'finished_at': get_now_iso(),
+                    'error_message': str(e)
+                }).eq('id', task_log_id).execute()
+            except: pass
         self.retry(exc=e)
         return {'status': 'FAILED', 'error': str(e)}
