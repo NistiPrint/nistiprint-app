@@ -1,0 +1,99 @@
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+error_log /var/log/nginx/error.log;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log /var/log/nginx/access.log main;
+
+    sendfile on;
+    keepalive_timeout 65;
+
+    # Rate limiting zone (10 req/segundo por IP)
+    limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+
+    server {
+        listen 8080;
+        server_name _;
+        root   /usr/share/nginx/html;
+        index  index.html;
+
+        # Compressão gzip
+        gzip on;
+        gzip_vary on;
+        gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
+
+        # Proxy reverso para API (localhost)
+        location /api {
+            # CORS - permitir apenas domínios autorizados
+            # API aceita apenas: localhost, próprio Cloud Run, e domínio customizado
+            set $cors_origin "";
+            
+            # Verifica se a origem é permitida
+            if ($http_origin ~* "^https?://(localhost(:[0-9]+)?|127\.0\.0\.1(:[0-9]+)?|nistiprint-app-.*\.southamerica-east1\.run\.app|app\.nistiprint\.neolabs\.com\.br)$") {
+                set $cors_origin $http_origin;
+            }
+            
+            # Bloqueia se origem não for permitida
+            if ($cors_origin = "") {
+                return 403 "CORS not allowed for this origin";
+            }
+            
+            # Pre-flight requests (OPTIONS)
+            if ($request_method = OPTIONS) {
+                add_header Access-Control-Allow-Origin $cors_origin;
+                add_header Access-Control-Allow-Credentials "true";
+                add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS";
+                add_header Access-Control-Allow-Headers "Content-Type, Authorization";
+                add_header Access-Control-Max-Age 86400;
+                return 204;
+            }
+            
+            # Headers CORS para requisições normais
+            add_header Access-Control-Allow-Origin $cors_origin always;
+            add_header Access-Control-Allow-Credentials "true" always;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+
+            # Rate limiting (10 req/segundo por IP, burst=20 para picos)
+            limit_req zone=api_limit burst=20 nodelay;
+            limit_req_status 429;
+            
+            proxy_pass http://127.0.0.1:5000/api;
+            
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            
+            # Timeouts
+            proxy_connect_timeout 90s;
+            proxy_send_timeout 90s;
+            proxy_read_timeout 90s;
+        }
+
+        # Serve o frontend React SPA (público)
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        # Health check (sem rate limiting)
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+    }
+}
