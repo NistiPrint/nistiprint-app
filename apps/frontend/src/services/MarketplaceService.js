@@ -151,6 +151,33 @@ export const uninstallModule = async (instanceId) => {
   }
 };
 
+/**
+ * Get available Bling stores
+ */
+export const getBlingStores = async () => {
+  try {
+    const response = await api.get('/integracoes/bling/lojas');
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+/**
+ * Create a link between channel and Bling store
+ */
+export const createChannelLink = async (linkData) => {
+  try {
+    // Note: integracao-canais endpoint is on /api, not /api/v2
+    const response = await api.post('/integracao-canais/configuracoes', linkData, {
+      baseURL: '/api' 
+    });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
 const MarketplaceService = {
   getAvailableModules,
   getModuleDetails,
@@ -162,7 +189,9 @@ const MarketplaceService = {
   getMarketplaceOrderDetail,
   renewToken,
   testIntegration,
-  uninstallModule
+  uninstallModule,
+  getBlingStores,
+  createChannelLink
 };
 
 export default MarketplaceService;

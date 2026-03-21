@@ -20,6 +20,7 @@ celery_app = Celery(
     include=[
         'nistiprint_shared.services.redis_queue_tasks',
         'tasks.stock_tasks',
+        'tasks.consolidation_tasks',
     ]
 )
 
@@ -41,10 +42,17 @@ celery_app.conf.update(
     },
 )
 
+# Importa explicitamente as tasks para registro
+try:
+    from tasks import consolidation_tasks  # noqa: F401
+except ImportError:
+    pass
+
 # Auto-discovery de tasks em módulos de serviço
 celery_app.autodiscover_tasks(lambda: [
     'nistiprint_shared.services.redis_queue_tasks',
     'tasks.stock_tasks',
+    'tasks.consolidation_tasks',
 ])
 
 

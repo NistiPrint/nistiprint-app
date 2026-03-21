@@ -188,7 +188,7 @@ class InstalledIntegrationService:
 
         return installations
 
-    def install_module(self, user_id: str, module_id: str, instance_name: str, config: Dict = None, credentials: Dict = None) -> str:
+    def install_module(self, user_id: str, module_id: str, instance_name: str, config: Dict = None, credentials: Dict = None, instance_color: str = "#64748b", description: str = None) -> str:
         """Install a new instance of an integration module"""
         from nistiprint_shared.services.integration_module_service import integration_module_service
 
@@ -213,7 +213,9 @@ class InstalledIntegrationService:
             credentials=credentials or {},
             installation_date=datetime.utcnow(),
             created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            updated_at=datetime.utcnow(),
+            instance_color=instance_color,
+            description=description
         )
 
         installation_data = installation.to_dict()

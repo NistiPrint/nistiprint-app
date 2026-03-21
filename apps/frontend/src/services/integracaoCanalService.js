@@ -5,7 +5,7 @@
 
 import api from './api';
 
-const BASE_URL = '/api/integracao-canais';
+const BASE_URL = 'integracao-canais';
 
 /**
  * Lista todas as configurações de vínculos
@@ -105,7 +105,9 @@ export async function listarPlataformas() {
  * @returns {Promise<Array>} Lista de canais
  */
 export async function listarCanais() {
-  const response = await api.get('/api/v2/canais-venda');
+  // Rota correta: /api/v2/integracao-canais/canais (endpoint dedicado)
+  const response = await api.get('integracao-canais/canais');
+  // O endpoint retorna { success: true, data: [...], contas_bling: [...] }
   return response.data?.data || [];
 }
 
@@ -114,7 +116,9 @@ export async function listarCanais() {
  * @returns {Promise<Array>} Lista de integrações
  */
 export async function listarIntegracoes() {
-  const response = await api.get('/api/v2/integracoes');
+  // Rota correta: /api/v2/integracao-canais/integracoes (endpoint dedicado)
+  const response = await api.get('integracao-canais/integracoes');
+  // O endpoint retorna { success: true, data: [...] }
   return response.data?.data || [];
 }
 

@@ -198,6 +198,70 @@ class DemandaProducaoService:
         """Atualiza progresso de um item e dispara movimentações de estoque."""
         return self._items.atualizar_progresso_item(demanda_id, item_id, quantities_to_update, user_id)
 
+    def registrar_producao_incremental(self, demanda_id: str, item_id: str, producao_incremental: Dict[str, float], 
+                                       user_id: str = 'System', origem_tipo: int = 1,
+                                       retroactive_date: str = None, correlation_id: str = None) -> Dict[str, Any]:
+        """
+        Registra produção incremental para um item de demanda.
+        
+        Args:
+            demanda_id: ID da demanda
+            item_id: ID do item
+            producao_incremental: Dicionário com campos e valores para atualizar (ex: {'capas_impressas_qtd': 1})
+            user_id: ID do usuário
+            origem_tipo: Tipo de origem (1=incremento, 2=estorno)
+            retroactive_date: Data retroativa para a produção
+            correlation_id: ID de correlação para rastreamento
+            
+        Returns:
+            Item atualizado
+        """
+        return self._items.atualizar_progresso_item(
+            demanda_id, item_id, producao_incremental, user_id
+        )
+
+    def registrar_producao_lote(self, demanda_id: str, updates: List[Dict[str, Any]], user_id: str = 'System',
+                                origem_tipo: int = 1, retroactive_date: str = None, 
+                                correlation_id: str = None) -> Dict[str, Any]:
+        """
+        Registra produção incremental para múltiplos itens de uma demanda de uma vez.
+        
+        Args:
+            demanda_id: ID da demanda
+            updates: Lista de dicionários contendo 'item_id' e 'producao_incremental'
+            user_id: ID do usuário
+            origem_tipo: Tipo de origem (1=incremento, 2=estorno)
+            retroactive_date: Data retroativa para a produção
+            correlation_id: ID de correlação para rastreamento
+            
+        Returns:
+            Dicionário com 'results' (lista de itens atualizados) e 'count' (quantidade processada)
+        """
+        results = []
+        for update in updates:
+            item_id = update.get('item_id')
+            producao_incremental = update.get('producao_incremental', {})
+            
+            if not item_id or not producao_incremental:
+                continue
+                
+            try:
+                updated_item = self.registrar_producao_incremental(
+                    demanda_id, item_id, producao_incremental, user_id,
+                    origem_tipo=origem_tipo,
+                    retroactive_date=retroactive_date,
+                    correlation_id=correlation_id
+                )
+                results.append(updated_item)
+            except Exception as e:
+                print(f"ERROR processing item {item_id} in batch: {e}")
+                raise
+        
+        return {
+            'results': results,
+            'count': len(results)
+        }
+
     def _forcar_finalizacao_estoque_item(self, item_id, total_qty, user_id):
         """Força finalização de estoque de um item."""
         return self._items._forcar_finalizacao_estoque_item(item_id, total_qty, user_id)

@@ -164,6 +164,41 @@ def delete_routing(id):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@integracoes_api_bp.route('/bling/lojas', methods=['GET'])
+def get_bling_lojas():
+    """
+    Lista as lojas virtuais cadastradas no Bling.
+    Query params:
+        account_id: ID da conta Bling no installed_integrations (opcional).
+                    Se não informado, tenta pegar a primeira disponível.
+    """
+    try:
+        account_id = request.args.get('account_id')
+        from nistiprint_shared.services.bling.bling_client import BlingClient
+        
+        client = None
+        
+        if account_id:
+             # Buscar integração específica
+             res = supabase_db.client.table('installed_integrations').select('*').eq('id', account_id).single().execute()
+             if res.data:
+                 client = BlingClient.create_client_from_integration(res.data)
+        else:
+             # Buscar qualquer integração Bling ativa
+             res = supabase_db.client.table('installed_integrations').select('*').eq('module_id', 'bling').eq('is_active', True).limit(1).execute()
+             if res.data:
+                 client = BlingClient.create_client_from_integration(res.data[0])
+        
+        if not client:
+             return jsonify({"error": "Nenhuma conta Bling ativa encontrada. Instale o módulo Bling primeiro."}), 404
+             
+        lojas = client.get_stores()
+        return jsonify(lojas)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 
 
 

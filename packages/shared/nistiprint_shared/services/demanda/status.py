@@ -15,11 +15,20 @@ from typing import List, Dict, Any, Optional
 import uuid
 from nistiprint_shared.utils.date_utils import get_now, get_now_iso
 
+# Importar core service para métodos auxiliares
+from .core import demanda_core_service
+
 
 class DemandaStatusService:
     def __init__(self):
         self.demandas_table = supabase_db.table('demandas_producao')
         self.itens_table = supabase_db.table('itens_demanda')
+        # Referência ao core service para métodos auxiliares
+        self._core = demanda_core_service
+
+    def get_demanda_with_itens(self, demanda_id: str) -> Dict[str, Any]:
+        """Busca demanda com seus itens."""
+        return self._core.get_demanda_with_itens(demanda_id)
 
     def _verificar_e_finalizar_demanda_automatica(self, demanda_id, user_id='System'):
         """Verifica se todos os itens de uma demanda estão concluídos e a finaliza se sim."""

@@ -77,7 +77,8 @@ class IntegracaoCanalService:
             
             # Fallback: buscar em canais_venda (coluna de fallback)
             fallback = supabase_db.table('canais_venda').select('id, nome, slug').eq('bling_loja_id_principal', bling_loja_id).execute()
-            if fallback.data:
+            # ✅ VALIDAÇÃO DEFENSIVA: verificar se fallback.data existe e tem elementos
+            if fallback.data and len(fallback.data) > 0:
                 canal = fallback.data[0]
                 response = {
                     'canal_venda_id': canal['id'],
@@ -92,11 +93,11 @@ class IntegracaoCanalService:
                 }
                 self._cache[cache_key] = response
                 return response
-            
+
             return None
-            
+
         except Exception as e:
-            logger.error(f"Erro ao buscar canal por bling_loja_id {bling_loja_id}: {e}")
+            logger.error(f"Erro ao buscar canal por bling_loja_id {bling_loja_id}: {e}", exc_info=True)
             return None
 
     def get_bling_loja_id_by_canal(self, canal_venda_id: int, plataforma_nome: Optional[str] = None) -> Optional[int]:
@@ -145,10 +146,10 @@ class IntegracaoCanalService:
     def get_integration_by_canal(self, canal_venda_id: int) -> Optional[Dict[str, Any]]:
         """
         Busca a instância de integração vinculada a um canal.
-        
+
         Args:
             canal_venda_id: ID do canal de venda
-            
+
         Returns:
             Dicionário com dados da integração ou None
         """
@@ -166,11 +167,12 @@ class IntegracaoCanalService:
                     credentials
                 )
             """).eq('canal_venda_id', canal_venda_id).eq('is_active', True).execute()
-            
+
             if result.data:
                 config = result.data[0]
-                integration = config.get('installed_integrations')
-                
+                # ✅ VALIDAÇÃO DEFENSIVA: installed_integrations pode ser None
+                integration = config.get('installed_integrations') or {}
+
                 return {
                     'integration_id': config['integration_id'],
                     'plataforma_nome': config.get('plataforma_nome'),
@@ -180,13 +182,14 @@ class IntegracaoCanalService:
                     'config': integration.get('config', {}) if integration else {},
                     'credentials': integration.get('credentials', {}) if integration else {}
                 }
-            
+
             # Fallback: buscar em canais_venda
             fallback = supabase_db.table('canais_venda').select('integration_id_principal').eq('id', canal_venda_id).execute()
             if fallback.data and fallback.data[0].get('integration_id_principal'):
                 integration_id = fallback.data[0]['integration_id_principal']
                 integration_result = supabase_db.table('installed_integrations').select('*').eq('id', integration_id).execute()
-                if integration_result.data:
+                # ✅ VALIDAÇÃO DEFENSIVA: verificar se integration_result.data existe
+                if integration_result.data and len(integration_result.data) > 0:
                     integration = integration_result.data[0]
                     return {
                         'integration_id': integration_id,
@@ -198,11 +201,11 @@ class IntegracaoCanalService:
                         'credentials': integration.get('credentials', {}),
                         'fallback': True
                     }
-            
+
             return None
-            
+
         except Exception as e:
-            logger.error(f"Erro ao buscar integração por canal {canal_venda_id}: {e}")
+            logger.error(f"Erro ao buscar integração por canal {canal_venda_id}: {e}", exc_info=True)
             return None
 
     def get_config_by_id(self, config_id: str) -> Optional[Dict[str, Any]]:
@@ -257,9 +260,13 @@ class IntegracaoCanalService:
                 query = query.eq('is_active', True)
             
             result = query.execute()
-            
+
             configs = []
             for row in result.data:
+                # ✅ VALIDAÇÃO DEFENSIVA: joins podem retornar None
+                canal = row.get('canais_venda') or {}
+                integration = row.get('installed_integrations') or {}
+
                 config = {
                     'id': row['id'],
                     'canal_venda_id': row['canal_venda_id'],
@@ -271,19 +278,20 @@ class IntegracaoCanalService:
                     'config_json': row.get('config_json', {}),
                     'created_at': row.get('created_at'),
                     'updated_at': row.get('updated_at'),
-                    'canal_nome': row.get('canais_venda', {}).get('nome'),
-                    'canal_slug': row.get('canais_venda', {}).get('slug'),
-                    'canal_ativo': row.get('canais_venda', {}).get('ativo', True),
-                    'integration_instance_name': row.get('installed_integrations', {}).get('instance_name'),
-                    'integration_module_id': row.get('installed_integrations', {}).get('module_id'),
-                    'integration_active': row.get('installed_integrations', {}).get('is_active', True)
+                    # ✅ Acesso seguro com fallback para None
+                    'canal_nome': canal.get('nome') if canal else None,
+                    'canal_slug': canal.get('slug') if canal else None,
+                    'canal_ativo': canal.get('ativo', True) if canal else True,
+                    'integration_instance_name': integration.get('instance_name') if integration else None,
+                    'integration_module_id': integration.get('module_id') if integration else None,
+                    'integration_active': integration.get('is_active', True) if integration else True
                 }
                 configs.append(config)
-            
+
             return configs
-            
+
         except Exception as e:
-            logger.error(f"Erro ao listar configurações: {e}")
+            logger.error(f"Erro ao listar configurações: {e}", exc_info=True)
             return []
 
     def criar_vinculo(self, canal_venda_id: int, bling_loja_id: int, 

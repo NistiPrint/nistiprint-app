@@ -40,6 +40,7 @@ import ConfiguracoesProducaoPage from './pages/admin/configuracoes/Configuracoes
 import IntegrationRoutingPage from './pages/admin/configuracoes/IntegrationRoutingPage'
 import PermissoesDemandaPage from './pages/admin/configuracoes/PermissoesDemandaPage'
 import FilaEstoquePage from './pages/admin/relatorios/FilaEstoquePage'
+import MonitoramentoPage from './pages/admin/relatorios/MonitoramentoPage'
 import HistoricoColetasPage from './pages/admin/relatorios/HistoricoColetasPage'
 import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPage'
 import RelatoriosIndexPage from './pages/admin/relatorios/RelatoriosIndexPage'
@@ -285,6 +286,7 @@ function App() {
             />
             <Route path='historico-coletas' element={<HistoricoColetasPage />} />
             <Route path='fila-estoque' element={<FilaEstoquePage />} />
+            <Route path='monitoramento' element={<MonitoramentoPage />} />
             <Route path='auditoria' element={<AuditoriaPage />} />
             <Route path='gerencial-historico' element={<GerencialHistorico />} />
           </Route>

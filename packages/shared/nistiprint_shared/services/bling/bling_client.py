@@ -193,10 +193,13 @@ class BlingClient:
             if config and config.get('integration_id'):
                 # Buscar integração e criar client
                 try:
-                    res = supabase_db.table('installed_integrations').select("*").eq('id', config['integration_id']).execute()
+                    # Buscamos a integração, garantindo que seja do módulo 'bling'
+                    res = supabase_db.table('installed_integrations').select("*").eq('id', config['integration_id']).eq('module_id', 'bling').execute()
                     if res.data:
-                        print(f"✅ Vínculo encontrado: Canal {channel_id} → Integration {config['integration_id']}")
+                        print(f"✅ Vínculo encontrado: Canal {channel_id} → Bling Integration {config['integration_id']}")
                         return BlingClient.create_client_from_integration(res.data[0])
+                    else:
+                        print(f"⚠️ Vínculo do Canal {channel_id} aponta para integração ID {config['integration_id']}, mas ela não é do módulo 'bling'.")
                 except Exception as e:
                     print(f"⚠️ Erro ao buscar integração por vínculo: {e}")
         
@@ -214,7 +217,7 @@ class BlingClient:
             # Tentar carregar de installed_integrations primeiro (Nova arquitetura)
             try:
                 # Se account_id for numérico ou puder ser, tenta na installed_integrations
-                res = supabase_db.table('installed_integrations').select("*").eq('id', account_id).execute()
+                res = supabase_db.table('installed_integrations').select("*").eq('id', account_id).eq('module_id', 'bling').execute()
                 if res.data:
                     return BlingClient.create_client_from_integration(res.data[0])
             except:
@@ -415,6 +418,10 @@ class BlingClient:
             'Authorization': f'Bearer {access_token}'
         }
 
+        # Log de depuração do token (apenas últimos 6 caracteres por segurança)
+        token_preview = f"...{access_token[-6:]}" if access_token and len(access_token) > 6 else "INVALID"
+        print(f"📡 [BLING API] {method.upper()} {endpoint} | Auth: Bearer {token_preview}")
+
         headers.update(kwargs.pop('headers', {}))
 
         try:
@@ -589,6 +596,42 @@ class BlingClient:
             order['error'] = True
             order['error_message'] = f"Erro inesperado: {str(e)}"
             return order
+
+    def get_order_numbers_by_store_numbers(self, order_numbers: list):
+        """Busca o mapeamento de IDs da loja para números do Bling (otimizado).
+
+        Diferente do get_orders_by_store_numbers, este método NÃO busca os detalhes
+        completos de cada pedido, usando apenas os dados retornados na listagem inicial.
+
+        Args:
+            order_numbers (list): Lista de números de pedido da loja (numeroLoja)
+
+        Returns:
+            list: Lista de dicionários com {'id', 'numero', 'numeroLoja'}
+        """
+        if not order_numbers:
+            return []
+
+        results = []
+        # Dividir os pedidos em chunks de 100 (limite da API do Bling)
+        chunks = [order_numbers[i:i + 100] for i in range(0, len(order_numbers), 100)]
+
+        for chunk in chunks:
+            # Construir parâmetros da URL usando numerosLojas[]
+            params = [('numerosLojas[]', str(num)) for num in chunk]
+            
+            # Fazer a requisição para a listagem de pedidos
+            response = self._request('GET', 'pedidos/vendas', params=params)
+
+            if response and response.get('data'):
+                for item in response['data']:
+                    results.append({
+                        'id': item.get('id'),
+                        'numero': item.get('numero'),
+                        'numeroLoja': item.get('numeroLoja')
+                    })
+
+        return results
 
     def get_orders_by_store_numbers(self, order_numbers: list):
         """Busca pedidos por números da loja.

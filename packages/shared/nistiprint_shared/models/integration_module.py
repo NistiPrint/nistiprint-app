@@ -117,7 +117,9 @@ class InstalledIntegration:
         last_sync: datetime = None,
         sync_status: str = "pending",  # "pending", "success", "error"
         created_at: datetime = None,
-        updated_at: datetime = None
+        updated_at: datetime = None,
+        instance_color: str = "#64748b",
+        description: str = None
     ):
         self.id = id
         self.module_id = module_id
@@ -134,6 +136,8 @@ class InstalledIntegration:
         self.sync_status = sync_status
         self.created_at = created_at or datetime.utcnow()
         self.updated_at = updated_at or datetime.utcnow()
+        self.instance_color = instance_color
+        self.description = description
 
     def to_dict(self):
         """Convert to dictionary for Firestore storage"""
@@ -151,7 +155,9 @@ class InstalledIntegration:
             'last_sync': self.last_sync.isoformat() if self.last_sync else None,
             'sync_status': self.sync_status,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'instance_color': self.instance_color,
+            'description': self.description
         }
 
     @classmethod
@@ -189,5 +195,7 @@ class InstalledIntegration:
             last_sync=parse_datetime(data.get('last_sync')) if data.get('last_sync') else None,
             sync_status=data.get('sync_status', 'pending'),
             created_at=created_at,
-            updated_at=parse_datetime(data.get('updated_at')) if data.get('updated_at') else datetime.utcnow()
+            updated_at=parse_datetime(data.get('updated_at')) if data.get('updated_at') else datetime.utcnow(),
+            instance_color=data.get('instance_color', '#64748b'),
+            description=data.get('description')
         )
