@@ -1,5 +1,6 @@
 import IncrementalInput from '@/components/producao/IncrementalInput'
 import PartialCollectionModal from '@/components/producao/PartialCollectionModal'
+import StockHistoryViewer from '@/components/producao/StockHistoryViewer'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -39,6 +40,7 @@ import {
   TrendingUp,
   Truck,
   X,
+  History,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -74,6 +76,7 @@ function DemandaDashboardPage() {
   const [partialQuantities, setPartialQuantities] = useState({})
   const [isPartialCollectionModalOpen, setIsPartialCollectionModalOpen] =
     useState(false)
+  const [selectedItemForHistory, setSelectedItemForHistory] = useState(null)
 
   const debouncedSearchQuery = useDebounce(searchQuery, 300)
 
@@ -462,7 +465,9 @@ function DemandaDashboardPage() {
         if (mappedFile) {
           if (
             confirm(
-              `Arquivo local encontrado: ${mappedFile.file_path}\n\nDeseja imprimir ${quantity} cópias localmente?`,
+              `Arquivo local encontrado: ${mappedFile.file_path}
+
+Deseja imprimir ${quantity} cópias localmente?`,
             )
           ) {
             try {
@@ -676,7 +681,15 @@ function DemandaDashboardPage() {
               {statusBadge}
             </div>
 
-            <div className='opacity-0 group-hover:opacity-100 transition-opacity'>
+            <div className='opacity-0 group-hover:opacity-100 transition-opacity flex gap-1'>
+              <Button
+                variant='ghost'
+                size='icon'
+                className='h-6 w-6'
+                onClick={() => setSelectedItemForHistory(item.id)}
+                title='Ver Histórico de Estoque'>
+                <History className='h-4 w-4 text-purple-600' />
+              </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant='ghost' size='icon' className='h-6 w-6'>
@@ -856,6 +869,12 @@ function DemandaDashboardPage() {
 
   return (
     <div className='container mx-auto py-6 px-4 max-w-7xl relative'>
+      {selectedItemForHistory && (
+        <StockHistoryViewer
+          itemId={selectedItemForHistory}
+          onClose={() => setSelectedItemForHistory(null)}
+        />
+      )}
       {/* Botão Flutuante */}
       {hasPendingChanges && (
         <div className='fixed bottom-8 right-8 z-50 bg-white p-4 rounded-lg shadow-2xl border-2 border-primary animate-in fade-in slide-in-from-bottom-4 flex items-center gap-4'>

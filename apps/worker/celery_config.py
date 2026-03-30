@@ -19,8 +19,9 @@ celery_app = Celery(
     backend=CELERY_RESULT_BACKEND,
     include=[
         'nistiprint_shared.services.redis_queue_tasks',
-        'tasks.stock_tasks',
+        'tasks.eventos_tasks',
         'tasks.consolidation_tasks',
+        'tasks.pedidos_fetch_tasks',
     ]
 )
 
@@ -32,27 +33,29 @@ celery_app.conf.update(
         # Consumir fila do Bling no Redis (contínuo)
         'consumir-fila-bling': {
             'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
-            'schedule': 30,  # A cada 30 segundos (esvazia até 50 por vez)
+            'schedule': 30,  # A cada 30 segundos
         },
-        # Processar fila de estoque a cada 10 segundos (High Frequency Outbox)
-        'processar-fila-estoque-periodic': {
-            'task': 'tasks.stock_tasks.process_stock_queue',
+        # NOVO: Processar eventos de produção (Event Sourcing) a cada 10 segundos
+        'processar-eventos-producao-periodic': {
+            'task': 'tasks.eventos_tasks.process_eventos_producao',
             'schedule': 10, # A cada 10 segundos
         },
+
     },
 )
 
 # Importa explicitamente as tasks para registro
 try:
-    from tasks import consolidation_tasks  # noqa: F401
+    from tasks import eventos_tasks, consolidation_tasks  # noqa: F401
 except ImportError:
     pass
 
 # Auto-discovery de tasks em módulos de serviço
 celery_app.autodiscover_tasks(lambda: [
     'nistiprint_shared.services.redis_queue_tasks',
-    'tasks.stock_tasks',
+    'tasks.eventos_tasks',
     'tasks.consolidation_tasks',
+    'tasks.pedidos_fetch_tasks',
 ])
 
 

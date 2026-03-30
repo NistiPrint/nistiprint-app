@@ -33,6 +33,11 @@ class DemandaStatusService:
     def _verificar_e_finalizar_demanda_automatica(self, demanda_id, user_id='System'):
         """Verifica se todos os itens de uma demanda estão concluídos e a finaliza se sim."""
         try:
+            # Check if demand is already concluded to prevent infinite loops
+            demanda_res = supabase_db.execute_with_retry(self.demandas_table.select("status").eq('id', demanda_id))
+            if demanda_res.data and demanda_res.data[0]['status'] in ['CONCLUIDO', 'CANCELADO']:
+                return
+
             itens_res = supabase_db.execute_with_retry(self.itens_table.select("status_item").eq('demanda_id', demanda_id))
             if itens_res.data:
                 todos_concluidos = all(i.get('status_item') == 'Concluído' for i in itens_res.data)
@@ -99,18 +104,22 @@ class DemandaStatusService:
     def finalizar_demanda_completa(self, demanda_id, user_id='System'):
         # 1. Finalizar cada item individualmente (isso dispara estoque, cascatas e logs)
         try:
-            itens_res = supabase_db.execute_with_retry(self.itens_table.select("id").eq('demanda_id', demanda_id))
+            from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
+            itens_res = supabase_db.execute_with_retry(self.itens_table.select("id, status_item").eq('demanda_id', demanda_id))
             if itens_res.data:
                 for item in itens_res.data:
-                    self.finalizar_item(demanda_id, item['id'], user_id)
+                    # Only finalize if NOT already concluded to avoid loops and duplicate events
+                    if item.get('status_item') != 'Concluído':
+                        demanda_producao_service.finalizar_item(demanda_id, item['id'], user_id)
         except Exception as e:
             print(f"Erro ao finalizar itens da demanda {demanda_id} no processo completo: {e}")
 
         # 2. Atualizar status para CONCLUIDO
-        res = self.update_demanda_details(demanda_id, {'status': 'CONCLUIDO', 'data_conclusao': get_now_iso()}, user_id)
+        # Usando o método do core se disponível ou via update direto
+        res = self._core.update_demanda_details(demanda_id, {'status': 'CONCLUIDO', 'data_conclusao': get_now_iso()}, user_id)
 
         # 3. AGENDAR BAIXA FINAL: Enviar para a fila para baixar estoque do produto vendido em background
-        self.agendar_processamento_estoque(demanda_id, None, 'DEMANDA_TOTAL', 1, user_id)
+        self._core.agendar_processamento_estoque(demanda_id, None, 'DEMANDA_TOTAL', 1, user_id)
 
         return res
 

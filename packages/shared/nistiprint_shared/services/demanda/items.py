@@ -10,6 +10,8 @@ from nistiprint_shared.services.daily_production_log_service import daily_produc
 from nistiprint_shared.services.app_config_service import app_config_service
 from nistiprint_shared.services.system_events_log_service import system_events_log_service
 from nistiprint_shared.services.previsao_consumo_service import previsao_consumo_service
+# from nistiprint_shared.services.stock_reconciliation_service import stock_reconciliation_service
+
 from nistiprint_shared.services.unit_of_work import UnitOfWork
 from typing import List, Dict, Any, Optional
 import uuid
@@ -128,59 +130,64 @@ class DemandaItemsService:
             raise ValueError(f"Item {clean_id} não encontrado")
         return response.data[0]
 
-    def atualizar_progresso_item(self, demanda_id, item_id, quantities_to_update, user_id='System'):
+    def atualizar_progresso_item(self, demanda_id: str, item_id: str, quantities_to_update: Dict[str, float], user_id: str = 'System'):
         """
-        Atualiza o progresso de um item e dispara movimentações de estoque (Smart Delta).
+        Atualiza o progresso de um item e dispara a Reconciliação Determinística de Estoque.
         """
         response = supabase_db.execute_with_retry(self.itens_table.select("*").eq('id', item_id))
         if not response.data: raise ValueError(f"Item {item_id} não encontrado")
 
         item = response.data[0]
-        produto_pai_id = item.get('produto_id')
         updates = {'updated_at': get_now_iso()}
 
-        # 1. Processar Deltas e Movimentar Estoque (Híbrido)
+        # 1. Preparar atualizações visuais
         for key, new_value in quantities_to_update.items():
             if key not in item: continue
-
-            old_value = float(item.get(key, 0) or 0)
-            delta = float(new_value) - old_value
-
-            if delta == 0: continue
-
-            # Disparar a lógica de estoque híbrida para este campo
-            # Usamos skip_visual_update=True pois faremos o bulk update no final
-            try:
-                self.processar_alocacao_de_demanda(
-                    item_id=item_id,
-                    campo=key,
-                    incremento=delta,
-                    user_id=user_id,
-                    skip_visual_update=True
-                )
-            except Exception as e:
-                print(f"Erro ao processar estoque para campo {key} no Smart Delta: {e}")
-
-            # Aplica a atualização no DB da demanda
             updates[key] = float(new_value)
 
-        # 2. Atualizar Status e Salvar
-        total_qty = item['quantidade']
-        exp_capas = updates.get('expedicao_capas_retiradas_qtd', item.get('expedicao_capas_retiradas_qtd', 0))
-        exp_miolos = updates.get('expedicao_miolos_retirados_qtd', item.get('expedicao_miolos_retirados_qtd', 0))
-
-        if exp_capas > 0 or exp_miolos > 0:
+        # 2. Persistir a Intenção no Banco
+        if updates.get('expedicao_capas_retiradas_qtd', 0) > 0 or updates.get('expedicao_miolos_retirados_qtd', 0) > 0:
             updates['status_item'] = 'Em Andamento'
-
-        # Fallback para triggers legadas
-        updates['updated_at'] = get_now_iso()
 
         supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
 
-        # --- AUTOMATIZAÇÃO DE STATUS DA DEMANDA ---
+        # 3. Disparar Reconciliação Determinística (Novo Motor)
+        # Ao invés de inserir na fila legada, disparamos o evento de reconciliação
+        try:
+            import uuid
+            correlation_id = str(uuid.uuid4())
+            
+            # Registrar evento de produção para o motor (E7 - Liquidação ou SINAL)
+            # Para este caso de atualização de progresso geral, assumimos LIQUIDACAO (ou SINAL, dependendo do estágio)
+            evento = {
+                'item_demanda_id': item_id,
+                'demanda_id': demanda_id,
+                'estagio': 'progresso_item_atualizado',
+                'quantidade_reportada': float(updates.get('finalizados_qtd', item.get('finalizados_qtd', 0))),
+                'quantidade_efetiva': float(updates.get('finalizados_qtd', item.get('finalizados_qtd', 0))),
+                'tipo_evento': 'LIQUIDACAO',
+                'processado': False,
+                'correlation_id': correlation_id,
+                'created_at': get_now_iso()
+            }
+            supabase_db.table('eventos_producao_v2').insert(evento).execute()
+
+            # NOTA: O processamento do estoque é feito assincronamente pelo ConsolidadorDeEstoque
+            # via Celery (tasks.eventos_tasks.process_eventos_producao)
+        except Exception as e:
+            print(f"ERRO CRÍTICO na reconciliação de estoque do item {item_id}: {e}")
+            system_log_service.log(
+                category='PRODUCAO',
+                message=f"Falha na reconciliação de estoque: {str(e)}",
+                severity='ERROR',
+                action='atualizar_progresso_item',
+                reference_id=item_id,
+                metadata={'item_id': item_id, 'updates': updates}
+            )
+
+        # --- AUTOMATIZAÇÃO DE STATUS ---
         if updates.get('status_item') == 'Concluído':
             self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
-        # ------------------------------------------
 
         auditoria_service.log_event('SMART_DELTA_UPDATE', {
             'item_id': item_id,
@@ -192,37 +199,11 @@ class DemandaItemsService:
 
     def _forcar_finalizacao_estoque_item(self, item_id, total_qty, user_id):
         """
-        Garante que todas as etapas de produção do item sejam preenchidas e processadas
-        pela lógica de alocação de estoque, garantindo integridade.
+        Legacy: Método descontinuado.
+        Agora usa-se eventos_producao_v2 + ConsolidadorDeEstoque.
         """
-        from ..config.production_stages import ESTAGIOS_PRODUCAO
-
-        response = supabase_db.execute_with_retry(self.itens_table.select("*").eq('id', item_id))
-        if not response.data: return
-        item = response.data[0]
-
-        # Ordem lógica de produção (idealmente do início para o fim)
-        # 1. Impressão -> 2. Produção Capa -> 3. Retirada Capa -> 4. Retirada Miolo
-        ordem_etapas = [
-            'capas_impressas_qtd',
-            'capas_produzidas_qtd',
-            'capas_prontas_retirada_qtd',
-            'miolos_prontos_retirada_qtd'
-        ]
-
-        for campo in ordem_etapas:
-            if campo not in item: continue
-
-            atual = float(item.get(campo, 0) or 0)
-            delta = total_qty - atual
-
-            if delta > 0:
-                try:
-                    # Usamos o processar_alocacao_de_demanda que já lida com
-                    # recursividade de componentes e logs de produção diária.
-                    self.processar_alocacao_de_demanda(item_id, campo, delta, user_id)
-                except Exception as e:
-                    print(f"Erro ao processar etapa {campo} na finalização forçada: {e}")
+        # Método descontinuado - usar eventos_producao_v2 diretamente
+        pass
 
     def finalizar_item(self, demanda_id, item_id, user_id='System'):
         response = supabase_db.execute_with_retry(self.itens_table.select("*").eq('id', item_id))
@@ -230,21 +211,15 @@ class DemandaItemsService:
             raise ValueError(f"Item {item_id} não encontrado")
 
         item_original = response.data[0]
+        
+        # Check if already finalized to avoid duplicate work/events
+        if item_original.get('status_item') == 'Concluído':
+             self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
+             return self._process_item_dict(item_original)
+
         total_qty = item_original['quantidade']
 
-        # 1. GATILHO DE EXPLOSÃO DE BOM CONSOLIDADA (ASYNC via Celery)
-        # Este é o único momento onde o sistema calculará o consumo de todos os insumos (papel, wire-o, etc)
-        # para a quantidade total finalizada do item.
-        # O processamento será feito pelo worker Celery ou fallback síncrono se Celery falhar
-        self.agendar_processamento_estoque(
-            demanda_id=demanda_id,
-            item_id=item_id,
-            campo='ITEM_TOTAL_BOM_PROCESS',
-            incremento=total_qty,
-            user_id=user_id
-        )
-
-        # 2. VISIBILIDADE IMEDIATA: Atualizar todas as colunas no dashboard
+        # 1. VISIBILIDADE IMEDIATA: Atualizar todas as colunas no dashboard para o Total
         updates = {
             'capas_impressas_qtd': total_qty,
             'capas_produzidas_qtd': total_qty,
@@ -258,6 +233,26 @@ class DemandaItemsService:
         }
 
         supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
+
+        # 2. DISPARAR EVENTO DE LIQUIDAÇÃO (Event Sourcing)
+        # O ConsolidadorDeEstoque processará assincronamente via Celery
+        try:
+            import uuid
+            correlation_id = str(uuid.uuid4())
+            supabase_db.table('eventos_producao_v2').insert({
+                'item_demanda_id': item_id,
+                'demanda_id': demanda_id,
+                'estagio': 'finalizados_qtd',
+                'quantidade_reportada': float(total_qty),
+                'tipo_evento': 'LIQUIDACAO',
+                'processado': False,
+                'correlation_id': correlation_id,
+                'usuario_id': user_id if isinstance(user_id, int) else None,
+                'created_at': get_now_iso()
+            }).execute()
+        except Exception as e:
+            print(f"ERRO ao registrar evento de finalização do item {item_id}: {e}")
+
         self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
 
         return self._process_item_dict({**item_original, **updates})
@@ -270,17 +265,7 @@ class DemandaItemsService:
         item_original = response.data[0]
         total_qty = item_original['quantidade']
 
-        # 1. GATILHO DE EXPLOSÃO DE BOM PARCIAL (ASYNC via Celery)
-        # O processamento será feito pelo worker Celery ou fallback síncrono se Celery falhar
-        self.agendar_processamento_estoque(
-            demanda_id=demanda_id,
-            item_id=item_id,
-            campo='ITEM_TOTAL_BOM_PROCESS',
-            incremento=float(quantidade_parcial),
-            user_id=user_id
-        )
-
-        # 2. VISIBILIDADE IMEDIATA (Atualização das colunas visuais)
+        # 1. VISIBILIDADE IMEDIATA (Atualização das colunas visuais)
         def get_new_val(field):
             curr = item_original.get(field, 0) or 0
             return min(total_qty, curr + quantidade_parcial)
@@ -302,6 +287,26 @@ class DemandaItemsService:
             updates['status_item'] = 'Em Andamento'
 
         supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
+
+        # 2. DISPARAR EVENTO DE LIQUIDAÇÃO PARCIAL (Event Sourcing)
+        # O ConsolidadorDeEstoque processará assincronamente via Celery
+        try:
+            import uuid
+            correlation_id = str(uuid.uuid4())
+            supabase_db.table('eventos_producao_v2').insert({
+                'item_demanda_id': item_id,
+                'demanda_id': demanda_id,
+                'estagio': 'finalizados_qtd',
+                'quantidade_reportada': float(updates.get('finalizados_qtd', 0)),
+                'tipo_evento': 'LIQUIDACAO',
+                'processado': False,
+                'correlation_id': correlation_id,
+                'usuario_id': user_id if isinstance(user_id, int) else None,
+                'created_at': get_now_iso()
+            }).execute()
+        except Exception as e:
+            print(f"ERRO ao registrar evento de finalização parcial do item {item_id}: {e}")
+
         if updates.get('status_item') == 'Concluído':
             self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
 
@@ -327,6 +332,12 @@ class DemandaItemsService:
 
         supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
 
+        # A reconciliação aqui é tricky. Se mudamos APENAS o status, o effective quantity
+        # dos estágios pode não mudar se os contadores (qtd) não mudaram.
+        # Mas se o usuário "desfinalizou", talvez ele queira que o sistema pare de considerar como finalizado.
+        # Como finalizados_qtd continua igual, a reconciliação não fará nada (o que é correto, o estoque já foi baixado).
+        # Se ele quiser estornar o estoque, ele deve reduzir o contador 'finalizados_qtd'.
+        
         # Se a demanda pai estava CONCLUIDO ou COLETADO, volta para EM_PRODUCAO para ficar visível novamente
         dem_res = supabase_db.execute_with_retry(self.demandas_table.select("status").eq('id', demanda_id))
         if dem_res.data and dem_res.data[0]['status'] in ['CONCLUIDO', 'COLETADO']:
@@ -397,6 +408,25 @@ class DemandaItemsService:
                 if float(exp_miolo) >= float(item['quantidade']):
                     supabase_db.execute_with_retry(self.itens_table.update({'status_item': 'Concluído'}).eq('id', item_id))
                     self._verificar_e_finalizar_demanda_automatica(item['demanda_id'], user_id)
+
+            # DISPARAR EVENTO DE SAÍDA DISTRIBUÍDA (Event Sourcing)
+            # O ConsolidadorDeEstoque processará assincronamente via Celery
+            try:
+                import uuid
+                correlation_id = str(uuid.uuid4())
+                supabase_db.table('eventos_producao_v2').insert({
+                    'item_demanda_id': item_id,
+                    'demanda_id': item.get('demanda_id'),
+                    'estagio': campo_a_atualizar,
+                    'quantidade_reportada': float(qty),
+                    'tipo_evento': 'SINAL',
+                    'processado': False,
+                    'correlation_id': correlation_id,
+                    'usuario_id': user_id if isinstance(user_id, int) else None,
+                    'created_at': get_now_iso()
+                }).execute()
+            except Exception as e:
+                print(f"ERRO ao registrar evento de saída distribuída do item {item_id}: {e}")
 
             auditoria_service.log_event('SAIDA_DISTRIBUIDA_ITEM', {
                 'item_id': item_id,

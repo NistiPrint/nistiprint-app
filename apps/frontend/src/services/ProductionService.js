@@ -2,7 +2,7 @@ import api from './api';
 
 const ProductionService = {
   getControleData: async (tipo) => {
-    const response = await api.get(`/producao/api/controle?tipo=${tipo}`);
+    const response = await api.get(`/producao/controle?tipo=${tipo}`);
     return response.data;
   },
 

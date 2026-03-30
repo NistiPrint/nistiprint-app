@@ -16,7 +16,6 @@ import ProductionService from '@/services/ProductionService';
 import { AlertTriangle, BarChart3, Clock, Package, Truck } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
 
 const PainelProducaoPage = () => {
@@ -48,27 +47,6 @@ const PainelProducaoPage = () => {
 
   useEffect(() => {
     fetchPainelData();
-
-    // Supabase Realtime Subscription
-    const channel = supabase
-      .channel('painel-producao-changes')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'itens_demanda' },
-        (payload) => {
-          console.log('Realtime update received:', payload);
-          fetchPainelData();
-        }
-      )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('Connected to Supabase Realtime');
-        }
-      });
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
   }, []);
 
   const handleUpdateProgress = async (item) => {

@@ -149,46 +149,33 @@ def consolidar():
             conflicts = order_tracker_service.check_conflicts(all_orders_to_check, plataforma)
             # -------------------------------------------------------------------------
 
-            # --- NOVO: PERSISTÊNCIA DOS PEDIDOS NO BANCO UNIFICADO ---
-            from nistiprint_shared.services.order_service import order_service
-            import logging
-
+            # --- NOVO: PERSISTÊNCIA DOS PEDIDOS NO BANCO UNIFICADO (ASSÍNCRONO) ---
+            # Para evitar timeout, salvamos os dados em um JSON temporário e enviamos para o worker
             if bling_orders_data:
-                print(f"💾 Iniciando persistência de {len(bling_orders_data)} pedidos no banco unificado...")
-                for order in bling_orders_data:
-                    try:
-                        # Normalização básica para o OrderService
-                        order_to_upsert = {
-                            'codigo_pedido_externo': str(order.get('numeroLoja')),
-                            'numero_pedido': str(order.get('numero')),
-                            'cliente_nome': order.get('contato', {}).get('nome'),
-                            'cliente_documento': order.get('contato', {}).get('numeroDocumento'),
-                            'status_original': str(order.get('situacao', {}).get('id', 'IMPORTADO')),
-                            'total_pedido': float(order.get('totalProdutos', 0)),
-                            'origem': plataforma
-                        }
+                try:
+                    import json
+                    import uuid
+                    
+                    # Gera nome de arquivo único
+                    temp_filename = f"orders_batch_{uuid.uuid4().hex}.json"
+                    temp_filepath = os.path.join(basedir, temp_filename)
+                    
+                    # Salva payload para o worker
+                    with open(temp_filepath, 'w', encoding='utf-8') as f:
+                        json.dump({'orders': bling_orders_data}, f)
                         
-                        # Mapeia itens para o formato do serviço
-                        order_items = []
-                        for item in order.get('itens', []):
-                            order_items.append({
-                                'sku_externo': item.get('codigo'),
-                                'descricao': item.get('descricao'),
-                                'quantidade': item.get('quantidade'),
-                                'preco_unitario': item.get('valor')
-                            })
-
-                        order_service.upsert_order(
-                            order_data=order_to_upsert,
-                            platform=plataforma,
-                            platform_order_id=str(order.get('numeroLoja')),
-                            raw_payload=order,
-                            items=order_items,
-                            channel_id=channel_id,
-                            integration_id=account_id
-                        )
-                    except Exception as upsert_error:
-                        logging.error(f"Erro ao persistir pedido {order.get('numeroLoja')} na consolidação: {upsert_error}")
+                    print(f"💾 Disparando persistência assíncrona de {len(bling_orders_data)} pedidos via arquivo {temp_filename}...")
+                    
+                    from nistiprint_shared.services.celery_app import celery_app
+                    celery_app.send_task(
+                        'tasks.consolidation_tasks.persist_orders_batch',
+                        args=[temp_filepath, plataforma, channel_id, account_id],
+                        kwargs={}
+                    )
+                except Exception as async_persist_err:
+                    print(f"⚠️ Erro ao disparar persistência assíncrona: {async_persist_err}")
+                    # Em caso de erro no disparo, não fazemos nada síncrono para não travar.
+                    # O usuário poderá tentar novamente ou usar a rota async completa.
             # ---------------------------------------------------------
 
             if plataforma:

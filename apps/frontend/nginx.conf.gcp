@@ -36,20 +36,20 @@ http {
 
         # Proxy reverso para API (localhost)
         location /api {
-            # CORS - permitir apenas domínios autorizados
-            # API aceita apenas: localhost, próprio Cloud Run, e domínio customizado
+            # CORS - configuração simplificada para same-origin
+            # Como o frontend e API estão no mesmo domínio, permitimos a origem
             set $cors_origin "";
-            
-            # Verifica se a origem é permitida
-            if ($http_origin ~* "^https?://(localhost(:[0-9]+)?|127\.0\.0\.1(:[0-9]+)?|nistiprint-app-.*\.southamerica-east1\.run\.app|app\.nistiprint\.neolabs\.com\.br)$") {
+
+            # Permite qualquer origem HTTPS (seguro pois é same-origin no Cloud Run)
+            if ($http_origin ~* "^https://.*") {
                 set $cors_origin $http_origin;
             }
-            
-            # Bloqueia se origem não for permitida
+
+            # Fallback para same-origin (quando Origin header não é enviado)
             if ($cors_origin = "") {
-                return 403 "CORS not allowed for this origin";
+                set $cors_origin "https://$host";
             }
-            
+
             # Pre-flight requests (OPTIONS)
             if ($request_method = OPTIONS) {
                 add_header Access-Control-Allow-Origin $cors_origin;
@@ -59,7 +59,7 @@ http {
                 add_header Access-Control-Max-Age 86400;
                 return 204;
             }
-            
+
             # Headers CORS para requisições normais
             add_header Access-Control-Allow-Origin $cors_origin always;
             add_header Access-Control-Allow-Credentials "true" always;
@@ -69,15 +69,15 @@ http {
             # Rate limiting (10 req/segundo por IP, burst=20 para picos)
             limit_req zone=api_limit burst=20 nodelay;
             limit_req_status 429;
-            
+
             proxy_pass http://127.0.0.1:5000/api;
-            
+
             proxy_http_version 1.1;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
-            
+
             # Timeouts
             proxy_connect_timeout 90s;
             proxy_send_timeout 90s;

@@ -53,15 +53,16 @@ class BlingOrderProcessingService:
         print(f"📄 Processando Evento Bling - Pedido: {order_id}, Situação: {situacao_id}")
 
         # REGRAS DE NEGÓCIO POR SITUAÇÃO:
-        
+
         # 1. EM ANDAMENTO (15), EM ABERTO (6) ou ATENDIDO (9) -> Foco na obtenção de dados brutos para validação
+        # IMPORTANTE: Situação 6 (Em Aberto) agora é processada e salva na base, não apenas logada
         if situacao_id in [15, 6, 9]:
             status_name = {15: "ANDAMENTO", 6: "ABERTO", 9: "ATENDIDO"}.get(situacao_id)
             print(f"🚀 Pedido {order_id} em {status_name}. Buscando detalhes para validação...")
             try:
                 client = self._get_bling_client_for_details()
                 full_order_data = client.get_order(order_id)
-                
+
                 if not full_order_data:
                     return {"status": "failed", "message": f"Could not fetch details for order {order_id}."}
 
@@ -71,23 +72,30 @@ class BlingOrderProcessingService:
                 # Extrair loja_id para verificação de origem do pedido
                 loja_id = full_order_data.get('loja', {}).get('id')
 
-                # Se for EM ANDAMENTO (15), segue com o processamento normal (sincronização e demanda)
-                if situacao_id == 15:
+                # Se for EM ANDAMENTO (15) ou EM ABERTO (6), sincroniza na base unificada
+                # A situação será atualizada posteriormente via webhook quando mudar
+                if situacao_id in [15, 6]:
+                    print(f"💾 Sincronizando pedido {order_id} na base unificada (situação {situacao_id})...")
+                    
                     # Se for Shopee, sincroniza dados do Bling (número, cliente) E Shopee (ship_by_date, Flex)
                     if loja_id in [204047801, 205218967] and full_order_data.get('numeroLoja'):
                         # Primeiro sincroniza Bling para garantir numero_pedido e dados do cliente
                         sync_result = order_sync_service.sync_bling_order(full_order_data)
                         # Depois sincroniza Shopee para dados enriquecidos (ship_by_date, Flex real)
-                        order_sync_service.sync_shopee_order(full_order_data.get('numeroLoja'))
+                        # Apenas se for EM ANDAMENTO (15) - se for EM ABERTO (6), não faz enriquecimento Shopee
+                        if situacao_id == 15:
+                            order_sync_service.sync_shopee_order(full_order_data.get('numeroLoja'))
                     else:
                         sync_result = order_sync_service.sync_bling_order(full_order_data)
-                    
+
                     # Salva no banco legado (BlingPedidos) para manter compatibilidade
                     self._save_order_to_db(full_order_data)
-                    
-                    return {"status": "success", "message": f"Order {order_id} processed fully.", "core_id": sync_result.get('id')}
-                else:
-                    # Para ABERTO (6) ou ATENDIDO (9), apenas atualizamos o status básico como antes
+
+                    return {"status": "success", "message": f"Order {order_id} processed fully (situação {situacao_id}).", "core_id": sync_result.get('id')}
+                
+                # Se for ATENDIDO (9), apenas atualiza status básico
+                elif situacao_id == 9:
+                    print(f"✓ Pedido {order_id} ATENDIDO - apenas atualizando status...")
                     self._update_legacy_status(order_id, situacao_id)
                     return {"status": "success", "message": f"Details logged and status updated to {status_name}."}
 

@@ -1,16 +1,14 @@
-import React from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
-import { 
-  Package, 
-  ArrowRight, 
-  Calendar, 
+import {
+  AlertCircle,
+  ArrowRight,
+  Calendar,
   Clock,
   ExternalLink,
-  CheckCircle2,
-  AlertCircle
+  Package
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -40,7 +38,9 @@ export default function PedidoDemandaCard({ pedidoId, demandas = [], onRefresh }
   };
 
   const handleVerDemanda = (demandaId) => {
-    navigate(`/producao/demanda/${demandaId}`);
+    // demandaId pode ser o ID numérico ou UUID
+    // A rota /producao/demanda/:id aceita ambos
+    navigate(`/producao/demanda/${demandaId}/dashboard`);
   };
 
   const handleCriarDemanda = () => {
@@ -93,7 +93,7 @@ export default function PedidoDemandaCard({ pedidoId, demandas = [], onRefresh }
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
                   <h4 className="font-semibold text-sm truncate">
-                    {demanda.descricao || `Demanda #${demanda.demanda_id?.substring(0, 8)}`}
+                    {demanda.descricao || `Demanda #${demanda.id}`}
                   </h4>
                   <div className="flex items-center gap-2 mt-1">
                     {getStatusBadge(demanda.status)}
@@ -107,7 +107,7 @@ export default function PedidoDemandaCard({ pedidoId, demandas = [], onRefresh }
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => handleVerDemanda(demanda.demanda_id)}
+                  onClick={() => handleVerDemanda(demanda.id)}
                   className="shrink-0"
                 >
                   Ver

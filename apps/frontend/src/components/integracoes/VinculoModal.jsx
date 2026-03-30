@@ -20,18 +20,20 @@ import {
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Store, Building2, Link, AlertCircle } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Store, Building2, Link, AlertCircle, Package, HelpCircle } from 'lucide-react';
 import * as integracaoCanalService from '@/services/integracaoCanalService';
 
 /**
  * Modal para criar/editar vínculo de integração
+ * Agora com seleção separada para Bling (ERP) e Marketplace
  */
-export default function VinculoModal({ 
-  open, 
-  onOpenChange, 
-  vinculoEdit, 
+export default function VinculoModal({
+  open,
+  onOpenChange,
+  vinculoEdit,
   plataformaFilter,
-  onSuccess 
+  onSuccess
 }) {
   const [loading, setLoading] = useState(false);
   const [canais, setCanais] = useState([]);
@@ -40,7 +42,8 @@ export default function VinculoModal({
     canal_venda_id: '',
     bling_loja_id: '',
     plataforma_nome: plataformaFilter || '',
-    integration_id: 'none',  // Usa 'none' como valor padrão
+    bling_integration_id: 'none',
+    marketplace_integration_id: 'none',
     is_primary: false,
     is_active: true
   });
@@ -55,7 +58,8 @@ export default function VinculoModal({
           canal_venda_id: vinculoEdit.canal_venda_id?.toString() || '',
           bling_loja_id: vinculoEdit.bling_loja_id?.toString() || '',
           plataforma_nome: vinculoEdit.plataforma_nome || '',
-          integration_id: vinculoEdit.integration_id?.toString() || 'none',
+          bling_integration_id: vinculoEdit.bling_integration_id?.toString() || 'none',
+          marketplace_integration_id: vinculoEdit.marketplace_integration_id?.toString() || 'none',
           is_primary: vinculoEdit.is_primary || false,
           is_active: vinculoEdit.is_active !== false
         });
@@ -94,11 +98,20 @@ export default function VinculoModal({
         throw new Error('Informe a plataforma');
       }
 
+      // Pelo menos uma integração deve ser selecionada
+      const hasBling = formData.bling_integration_id && formData.bling_integration_id !== 'none';
+      const hasMarketplace = formData.marketplace_integration_id && formData.marketplace_integration_id !== 'none';
+      
+      if (!hasBling && !hasMarketplace) {
+        throw new Error('Selecione pelo menos uma integração (Bling ou Marketplace)');
+      }
+
       const payload = {
         canal_venda_id: parseInt(formData.canal_venda_id),
         bling_loja_id: parseInt(formData.bling_loja_id),
         plataforma_nome: formData.plataforma_nome.toLowerCase(),
-        integration_id: formData.integration_id ? parseInt(formData.integration_id) : null,
+        bling_integration_id: hasBling ? parseInt(formData.bling_integration_id) : null,
+        marketplace_integration_id: hasMarketplace ? parseInt(formData.marketplace_integration_id) : null,
         is_primary: formData.is_primary,
         is_active: formData.is_active
       };
@@ -115,7 +128,8 @@ export default function VinculoModal({
         canal_venda_id: '',
         bling_loja_id: '',
         plataforma_nome: plataformaFilter || '',
-        integration_id: 'none',
+        bling_integration_id: 'none',
+        marketplace_integration_id: 'none',
         is_primary: false,
         is_active: true
       });
@@ -128,16 +142,20 @@ export default function VinculoModal({
 
   const isEditing = !!vinculoEdit;
 
+  // Filtrar integrações por tipo
+  const blingIntegrations = integracoes.filter(i => i.module_id === 'bling');
+  const marketplaceIntegrations = integracoes.filter(i => i.module_id !== 'bling');
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
             {isEditing ? 'Editar Vínculo' : 'Novo Vínculo de Integração'}
           </DialogTitle>
           <DialogDescription>
-            {isEditing 
-              ? 'Atualize as configurações do vínculo entre canal e loja Bling' 
+            {isEditing
+              ? 'Atualize as configurações do vínculo entre canal e loja Bling'
               : 'Configure um novo vínculo entre um canal de venda e uma loja no Bling'}
           </DialogDescription>
         </DialogHeader>
@@ -152,7 +170,17 @@ export default function VinculoModal({
 
           {/* Canal de Venda */}
           <div className="space-y-2">
-            <Label htmlFor="canal_venda">Canal de Venda</Label>
+            <div className="flex items-center gap-1">
+              <Label htmlFor="canal_venda">Canal de Venda</Label>
+              <Tooltip>
+                <TooltipTrigger>
+                  <HelpCircle className="h-3 w-3 text-muted-foreground" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <p className="text-xs">O canal de venda interno que será vinculado a esta loja Bling</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
             <Select
               value={formData.canal_venda_id}
               onValueChange={(value) => setFormData(prev => ({ ...prev, canal_venda_id: value }))}
@@ -172,7 +200,17 @@ export default function VinculoModal({
 
           {/* Plataforma */}
           <div className="space-y-2">
-            <Label htmlFor="plataforma">Plataforma</Label>
+            <div className="flex items-center gap-1">
+              <Label htmlFor="plataforma">Plataforma</Label>
+              <Tooltip>
+                <TooltipTrigger>
+                  <HelpCircle className="h-3 w-3 text-muted-foreground" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <p className="text-xs">Plataforma de marketplace (Shopee, Amazon, etc.)</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
             <Select
               value={formData.plataforma_nome}
               onValueChange={(value) => setFormData(prev => ({ ...prev, plataforma_nome: value }))}
@@ -192,7 +230,20 @@ export default function VinculoModal({
 
           {/* ID da Loja Bling */}
           <div className="space-y-2">
-            <Label htmlFor="bling_loja_id">ID da Loja no Bling</Label>
+            <div className="flex items-center gap-1">
+              <Label htmlFor="bling_loja_id">ID da Loja no Bling</Label>
+              <Tooltip>
+                <TooltipTrigger>
+                  <HelpCircle className="h-3 w-3 text-muted-foreground" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <p className="text-xs">
+                    Número da loja conforme aparece no Bling. Você encontra este ID na URL ou nas configurações da loja no Bling.
+                  </p>
+                  <p className="text-xs mt-1 font-mono bg-muted px-1 py-0.5 rounded">Ex: 204047801</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
             <div className="relative">
               <Store className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
@@ -204,26 +255,94 @@ export default function VinculoModal({
                 onChange={(e) => setFormData(prev => ({ ...prev, bling_loja_id: e.target.value }))}
               />
             </div>
-            <p className="text-xs text-muted-foreground">
-              ID da loja conforme aparece no Bling (ex: 204047801, 205218967)
-            </p>
           </div>
 
-          {/* Integração */}
+          {/* Divider */}
+          <div className="relative py-2">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-muted"></div>
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-background px-2 text-muted-foreground">
+                <Building2 className="w-3 h-3 inline mr-1" />
+                Integrações
+              </span>
+            </div>
+          </div>
+
+          {/* Integração Bling (ERP) */}
           <div className="space-y-2">
-            <Label htmlFor="integration_id">Instância de Integração (opcional)</Label>
+            <div className="flex items-center gap-1">
+              <Label htmlFor="bling_integration_id">
+                Integração Bling (ERP)
+              </Label>
+              <Tooltip>
+                <TooltipTrigger>
+                  <HelpCircle className="h-3 w-3 text-muted-foreground" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <p className="text-xs">
+                    <strong>Opcional.</strong> Selecione a conta Bling que será usada para consultar e atualizar pedidos deste vínculo.
+                  </p>
+                  <p className="text-xs mt-1 text-muted-foreground">
+                    Deixe "Nenhuma" se quiser usar apenas o marketplace.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
             <div className="relative">
               <Building2 className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Select
-                value={formData.integration_id || 'none'}
-                onValueChange={(value) => setFormData(prev => ({ ...prev, integration_id: value === 'none' ? '' : value }))}
+                value={formData.bling_integration_id || 'none'}
+                onValueChange={(value) => setFormData(prev => ({ ...prev, bling_integration_id: value === 'none' ? null : value }))}
               >
                 <SelectTrigger className="pl-9">
-                  <SelectValue placeholder="Selecione a integração" />
+                  <SelectValue placeholder="Selecione a integração Bling" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">Apenas Bling (sem integração direta)</SelectItem>
-                  {integracoes.map((integ) => (
+                  <SelectItem value="none">Nenhuma (apenas marketplace)</SelectItem>
+                  {blingIntegrations.map((integ) => (
+                    <SelectItem key={integ.id} value={integ.id.toString()}>
+                      {integ.instance_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Integração Marketplace */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-1">
+              <Label htmlFor="marketplace_integration_id">
+                Integração Marketplace
+              </Label>
+              <Tooltip>
+                <TooltipTrigger>
+                  <HelpCircle className="h-3 w-3 text-muted-foreground" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <p className="text-xs">
+                    <strong>Opcional.</strong> Selecione a integração com a plataforma de venda (Shopee, Amazon, etc.) para este vínculo.
+                  </p>
+                  <p className="text-xs mt-1 text-muted-foreground">
+                    Deixe "Nenhuma" se quiser usar apenas o Bling.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <div className="relative">
+              <Package className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Select
+                value={formData.marketplace_integration_id || 'none'}
+                onValueChange={(value) => setFormData(prev => ({ ...prev, marketplace_integration_id: value === 'none' ? null : value }))}
+              >
+                <SelectTrigger className="pl-9">
+                  <SelectValue placeholder="Selecione a integração marketplace" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Nenhuma (apenas Bling)</SelectItem>
+                  {marketplaceIntegrations.map((integ) => (
                     <SelectItem key={integ.id} value={integ.id.toString()}>
                       {integ.instance_name} ({integ.module_id})
                     </SelectItem>
@@ -232,6 +351,17 @@ export default function VinculoModal({
               </Select>
             </div>
           </div>
+
+          {/* Alerta se nenhuma integração selecionada */}
+          {(!formData.bling_integration_id || formData.bling_integration_id === 'none') && 
+           (!formData.marketplace_integration_id || formData.marketplace_integration_id === 'none') && (
+            <Alert className="bg-amber-50 border-amber-200">
+              <AlertCircle className="h-4 w-4 text-amber-600" />
+              <AlertDescription className="text-amber-800 text-xs">
+                Selecione pelo menos uma integração (Bling ou Marketplace) para este vínculo.
+              </AlertDescription>
+            </Alert>
+          )}
 
           {/* Is Primary */}
           <div className="flex items-center justify-between space-x-2 rounded-lg border p-3">

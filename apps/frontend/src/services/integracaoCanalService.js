@@ -32,7 +32,8 @@ export async function listarConfiguracoes(params = {}) {
  * @param {number} data.canal_venda_id - ID do canal de venda
  * @param {number} data.bling_loja_id - ID da loja no Bling
  * @param {string} data.plataforma_nome - Nome da plataforma (shopee, amazon, etc.)
- * @param {number} [data.integration_id] - ID da instância de integração (opcional)
+ * @param {number} [data.bling_integration_id] - ID da instância de integração Bling (opcional)
+ * @param {number} [data.marketplace_integration_id] - ID da instância de integração Marketplace (opcional)
  * @param {boolean} [data.is_primary] - Se é o vínculo primário
  * @param {Object} [data.config_json] - Configurações adicionais
  * @returns {Promise<Object>} Configuração criada
@@ -122,6 +123,16 @@ export async function listarIntegracoes() {
   return response.data?.data || [];
 }
 
+/**
+ * Renova o token de uma integração instalada
+ * @param {string} instanceId - ID da instância de integração
+ * @returns {Promise<Object>} Resultado da renovação
+ */
+export async function renewToken(instanceId) {
+  const response = await api.post(`/marketplace/installed/${instanceId}/renew`);
+  return response.data;
+}
+
 export default {
   listarConfiguracoes,
   criarVinculo,
@@ -132,4 +143,5 @@ export default {
   listarPlataformas,
   listarCanais,
   listarIntegracoes,
+  renewToken,
 };

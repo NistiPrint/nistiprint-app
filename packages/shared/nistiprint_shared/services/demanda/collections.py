@@ -14,12 +14,21 @@ from nistiprint_shared.services.unit_of_work import UnitOfWork
 from typing import List, Dict, Any, Optional
 import uuid
 from nistiprint_shared.utils.date_utils import get_now, get_now_iso
+from .core import demanda_core_service
 
 
 class DemandaCollectionsService:
     def __init__(self):
         self.demandas_table = supabase_db.table('demandas_producao')
         self.itens_table = supabase_db.table('itens_demanda')
+
+    def get_demanda_with_itens(self, demanda_id: str) -> Optional[Dict[str, Any]]:
+        """Busca demanda com seus itens (delega para core service)."""
+        return demanda_core_service.get_demanda_with_itens(demanda_id)
+
+    def _enrich_demanda_with_collection_totals(self, demanda: Dict[str, Any]) -> Dict[str, Any]:
+        """Enriquece demanda com totais de coleta (delega para core service)."""
+        return demanda_core_service._enrich_demanda_with_collection_totals(demanda)
 
     def get_coletas_da_demanda(self, demanda_id: str) -> List[Dict[str, Any]]:
         """Busca o histórico de coletas para uma demanda específica."""

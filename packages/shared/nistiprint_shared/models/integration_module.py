@@ -119,7 +119,10 @@ class InstalledIntegration:
         created_at: datetime = None,
         updated_at: datetime = None,
         instance_color: str = "#64748b",
-        description: str = None
+        description: str = None,
+        parent_integration_id: int = None,
+        is_default: bool = False,
+        functional_scopes: List[str] = None
     ):
         self.id = id
         self.module_id = module_id
@@ -138,9 +141,12 @@ class InstalledIntegration:
         self.updated_at = updated_at or datetime.utcnow()
         self.instance_color = instance_color
         self.description = description
+        self.parent_integration_id = parent_integration_id
+        self.is_default = is_default
+        self.functional_scopes = functional_scopes or []
 
     def to_dict(self):
-        """Convert to dictionary for Firestore storage"""
+        """Convert to dictionary for Firestore/Supabase storage"""
         return {
             'module_id': self.module_id,
             'instance_name': self.instance_name,
@@ -151,13 +157,15 @@ class InstalledIntegration:
             'refresh_token': self.refresh_token,
             'expires_at': self.expires_at.isoformat() if self.expires_at else None,
             'is_active': self.is_active,
-            # 'installation_date': self.installation_date, # Removed to use created_at
             'last_sync': self.last_sync.isoformat() if self.last_sync else None,
             'sync_status': self.sync_status,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'instance_color': self.instance_color,
-            'description': self.description
+            'description': self.description,
+            'parent_integration_id': self.parent_integration_id,
+            'is_default': self.is_default,
+            'functional_scopes': self.functional_scopes
         }
 
     @classmethod
@@ -197,5 +205,8 @@ class InstalledIntegration:
             created_at=created_at,
             updated_at=parse_datetime(data.get('updated_at')) if data.get('updated_at') else datetime.utcnow(),
             instance_color=data.get('instance_color', '#64748b'),
-            description=data.get('description')
+            description=data.get('description'),
+            parent_integration_id=data.get('parent_integration_id'),
+            is_default=data.get('is_default', False),
+            functional_scopes=data.get('functional_scopes', [])
         )

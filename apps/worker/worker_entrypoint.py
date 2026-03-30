@@ -34,7 +34,9 @@ celery_app = Celery(
     backend=CELERY_RESULT_BACKEND,
     include=[
         'nistiprint_shared.services.redis_queue_tasks',
-        'tasks.stock_tasks', # Adicionando módulo de tarefas de estoque
+        'tasks.eventos_tasks',  # Processamento de estoque (Event Sourcing)
+        'tasks.pedidos_fetch_tasks',  # Fetch Em Andamento (rede de segurança)
+        'tasks.consolidation_tasks',  # Tarefas de consolidação
     ]
 )
 
@@ -71,11 +73,13 @@ celery_app.conf.update(
             'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
             'schedule': 30,  # A cada 30 segundos
         },
-        # Processar fila de estoque a cada 10 segundos
-        'processar-fila-estoque-periodic': {
-            'task': 'tasks.stock_tasks.process_stock_queue',
+        # Processar eventos de produção (Event Sourcing) - ÚNICO processador de estoque
+        'processar-eventos-producao-periodic': {
+            'task': 'tasks.eventos_tasks.process_eventos_producao',
             'schedule': 10, # A cada 10 segundos
         },
+        # Nota: Sincronização Shopee NÃO é periódica - ocorre no webhook do Bling (FASE 2)
+        # Quando um pedido Shopee entra em "Em Andamento" (15), o webhook já busca dados da API Shopee
     },
 )
 
@@ -85,3 +89,11 @@ def debug_task(self):
     """Task de debug para testar conexão Celery"""
     print(f'Request: {self.request!r}')
     return 'Celery worker is running!'
+
+
+# Auto-discovery de tasks
+celery_app.autodiscover_tasks([
+    'tasks.eventos_tasks',
+    'tasks.consolidation_tasks',
+    'tasks.pedidos_fetch_tasks',
+])

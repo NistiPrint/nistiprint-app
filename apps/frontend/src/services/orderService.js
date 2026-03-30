@@ -1,15 +1,5 @@
 import api from './api';
 
-export const getUnifiedOrders = async (filters) => {
-  try {
-    const response = await api.get('/vendas/unified-orders', { params: filters });
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching unified orders:', error);
-    return { success: false, error: error.message };
-  }
-};
-
 export const getOrderStatusOptions = async () => {
   try {
     const response = await api.get('/vendas/order-status-options');

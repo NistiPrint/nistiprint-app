@@ -54,6 +54,107 @@ class DemandaCoreService:
         # Caso contrário, tenta converter para UPPER_SNAKE_CASE ou mantém o original.
         return mapping.get(status, status.upper().replace(' ', '_'))
 
+    def create_demanda(
+        self,
+        origem: str,
+        order_data: Optional[Dict[str, Any]] = None,
+        itens: Optional[List[Dict[str, Any]]] = None,
+        canal_venda_id: Optional[int] = None,
+        nome_demanda: Optional[str] = None,
+        data_entrega_str: Optional[str] = None,
+        horario_coleta: Optional[str] = None,
+        observacoes: Optional[str] = None,
+        user_id: str = 'System',
+        tipo_demanda: Optional[str] = None,
+        modalidade_logistica: Optional[str] = None,
+        classificacao_cliente: Optional[str] = None,
+        status: str = 'EM_PRODUCAO',
+        pedido_id: Optional[int] = None,
+        **kwargs
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Método unificado para criação de demandas.
+        
+        Suporta múltiplas origens:
+        - 'PLATAFORMA': Pedido de marketplace (Shopee, ML, Amazon, Bling)
+        - 'B2B': Venda corporativa
+        - 'FULFILLMENT': Reposição para fulfillment
+        - 'ESTOQUE': Produção para estoque interno
+        
+        Args:
+            origem: Tipo de origem da demanda
+            order_data: Dados do pedido (para origem PLATAFORMA)
+            itens: Lista de itens da demanda (para origens manuais)
+            canal_venda_id: ID do canal de venda
+            nome_demanda: Nome/descrição da demanda
+            data_entrega_str: Data de entrega (YYYY-MM-DD)
+            horario_coleta: Horário de coleta (HH:MM)
+            observacoes: Observações adicionais
+            user_id: ID do usuário criador
+            tipo_demanda: Tipo da demanda (PLATAFORMA, B2B, FULFILLMENT, ESTOQUE_INTERNO)
+            modalidade_logistica: STANDARD, EXPRESS, FULFILLMENT, RETIRADA
+            classificacao_cliente: B2C, B2B, INTERNO
+            status: Status inicial da demanda
+            pedido_id: ID do pedido unificado (para vínculo)
+            **kwargs: Argumentos adicionais
+            
+        Returns:
+            Demanda criada ou None se não houve necessidade de criar
+        """
+        # 1. Se for origem PLATAFORMA, usar create_from_order
+        if origem == 'PLATAFORMA' and order_data:
+            return self.create_from_order(order_data, user_id)
+        
+        # 2. Para outras origens, usar criar_demanda_direta
+        if not nome_demanda:
+            nome_demanda = f"Demanda {origem} - {get_now().strftime('%Y-%m-%d')}"
+        
+        if not data_entrega_str:
+            data_entrega_str = get_now().strftime('%Y-%m-%d')
+        
+        if not itens:
+            itens = []
+        
+        # Definir tipo_demanda default baseado na origem
+        if not tipo_demanda:
+            tipo_demanda_map = {
+                'B2B': 'B2B',
+                'FULFILLMENT': 'FULFILLMENT',
+                'ESTOQUE': 'ESTOQUE_INTERNO',
+                'PLATAFORMA': 'PLATAFORMA'
+            }
+            tipo_demanda = tipo_demanda_map.get(origem, 'PLATAFORMA')
+        
+        # Definir classificacao_cliente default
+        if not classificacao_cliente:
+            classificacao_cliente_map = {
+                'B2B': 'B2B',
+                'FULFILLMENT': 'B2C',
+                'ESTOQUE': 'INTERNO',
+                'PLATAFORMA': 'B2C'
+            }
+            classificacao_cliente = classificacao_cliente_map.get(origem, 'B2C')
+        
+        # Definir modalidade_logistica default
+        if not modalidade_logistica:
+            modalidade_logistica = 'STANDARD'
+        
+        return self.criar_demanda_direta(
+            nome_demanda=nome_demanda,
+            canal_venda_id=canal_venda_id,
+            data_entrega_str=data_entrega_str,
+            lista_de_itens=itens,
+            horario_coleta_especifico=horario_coleta,
+            observacoes=observacoes,
+            user_id=user_id,
+            tipo_demanda=tipo_demanda,
+            status=status,
+            pedido_id=pedido_id,
+            modalidade_logistica=modalidade_logistica,
+            classificacao_cliente=classificacao_cliente,
+            **kwargs
+        )
+
     def _process_demanda_dict(self, demanda: Dict[str, Any], itens: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Adiciona aliases e processa campos para o frontend, incluindo agregações de itens."""
         if not demanda: return None
@@ -167,13 +268,12 @@ class DemandaCoreService:
 
         return demanda_dict
 
-    def _enrich_items_with_stock(self, itens: List[Dict[str, Any]], deposito_id: Any = None) -> List[Dict[str, Any]]:
+    def enrich_items_with_stock(self, itens: List[Dict[str, Any]], deposito_id: Any = None) -> List[Dict[str, Any]]:
         """
         Adiciona informações de saldo de estoque (miolo e capas) aos itens em lote.
+        Otimizado para REDUZIR query N+1 via batch fetching completo.
         """
         if not itens: return []
-
-        # (A coleta real por item foi removida para suportar o modelo consolidado)
 
         # Se não for fornecido um depósito, obter o padrão para produção
         if deposito_id is None:
@@ -181,85 +281,119 @@ class DemandaCoreService:
             deposito_id = app_config_service.get_config('default_production_deposit_id')
 
         # 1. Coletar IDs de Miolos e Produtos Pais
-        miolo_ids = []
-        try:
-            # Filtra apenas IDs válidos (não nulos e não vazios)
-            raw_ids = [i.get('id_produto_miolo') for i in itens]
-            miolo_ids = list(set([str(rid) for rid in raw_ids if rid]))
-        except Exception as e:
-            print(f"Erro ao extrair IDs de miolo: {e}")
+        miolo_ids = set()
+        produto_pai_ids = set()
 
-        produto_pai_ids = []
-        try:
-            raw_pai_ids = [i.get('produto_id') for i in itens]
-            produto_pai_ids = list(set([str(rid) for rid in raw_pai_ids if rid]))
-        except:
-            pass
+        for i in itens:
+            if i.get('id_produto_miolo'):
+                miolo_ids.add(str(i['id_produto_miolo']))
+            if i.get('produto_id'):
+                produto_pai_ids.add(str(i['produto_id']))
 
-        # 2. Buscar saldos de Miolos
+        # 2. Buscar saldos de Miolos (Batch)
         saldos_miolos = {}
         if miolo_ids:
             try:
-                saldos_miolos = estoque_service.get_saldos_em_lote(miolo_ids, deposito_id)
+                saldos_miolos = estoque_service.get_saldos_em_lote(list(miolo_ids), deposito_id)
             except Exception as e:
                 print(f"Erro não fatal ao buscar estoque de miolos: {e}")
-                system_log_service.log(
-                    category='ESTOQUE',
-                    message=f"Falha ao buscar estoque de miolos durante atualização da demanda: {str(e)}",
-                    action='enrich_items_with_stock',
-                    reference_id=str(deposito_id),
-                    metadata={"miolo_ids": miolo_ids, "error": str(e)}
-                )
 
-        # 3. Para Capas, precisamos primeiro achar o ID do componente Capa na BOM de cada pai
-        capa_ids_map = {} # produto_pai_id -> id_produto_capa
-        impressao_ids_map = {} # produto_pai_id -> id_produto_impressao
-        all_target_ids = []
+        # 3. Buscar BOMs e IDENTIFICAR ROLES em Lote
+        pai_component_map = {} 
+        all_component_ids = set()
+        boms_by_pai = {}
 
-        for p_id in produto_pai_ids:
+        if produto_pai_ids:
             try:
-                # Busca rápida na BOM
-                comps = self.get_bom_components(p_id)
-                for c in comps:
-                    role = product_service.identify_product_role(str(c.componente_id))
-                    if role == 'CAPA_ACABADA':
-                        capa_ids_map[p_id] = str(c.componente_id)
-                        all_target_ids.append(str(c.componente_id))
-                    elif role == 'CAPA_IMPRESSAO':
-                        impressao_ids_map[p_id] = str(c.componente_id)
-                        all_target_ids.append(str(c.componente_id))
-            except: continue
+                # Batch fetch BOMs for all parent products
+                boms_by_pai = bom_service.get_bom_for_multiple_products(list(produto_pai_ids))
+                for components in boms_by_pai.values():
+                    for comp in components:
+                        all_component_ids.add(str(comp.componente_id))
+            except Exception as e:
+                print(f"Erro ao buscar BOMs em lote: {e}")
 
+        # 4. Batch Identify Roles (Otimizado)
+        # Em vez de chamar identify_product_role N vezes, buscamos as categorias dos componentes em uma única query
+        component_role_map = {}
+        if all_component_ids:
+            try:
+                from nistiprint_shared.services.app_config_service import app_config_service
+                miolo_cat = str(app_config_service.get_config('producao_miolos_category_id') or '6')
+                capa_cat = str(app_config_service.get_config('producao_capas_category_id') or '12')
+                impressao_cat = str(app_config_service.get_config('producao_capas_impressas_category_id') or '13')
+
+                # Busca categorias e nomes de todos os componentes de uma vez
+                comp_data_res = supabase_db.table('produtos').select('id, categoria_id, nome').in_('id', list(all_component_ids)).execute()
+
+                for p in comp_data_res.data:
+                    cid = str(p['id'])
+                    cat_id = str(p.get('categoria_id'))
+                    nome = p.get('nome', '').lower()
+
+                    role = 'OUTRO'
+                    if cat_id == miolo_cat or 'miolo' in nome:
+                        role = 'MIOLO'
+                    elif cat_id == capa_cat:
+                        role = 'CAPA_ACABADA'
+                    elif cat_id == impressao_cat:
+                        role = 'CAPA_IMPRESSAO'
+                    elif 'capa' in nome:
+                        role = 'CAPA_IMPRESSAO' if 'impress' in nome else 'CAPA_ACABADA'
+
+                    component_role_map[cid] = role
+            except Exception as e:
+                print(f"Erro ao identificar roles em lote: {e}")
+
+        # 5. Mapeap componentes por pai e role
+        all_target_ids = set()
+        for p_id_int, components in boms_by_pai.items():
+            p_id_str = str(p_id_int)
+            pai_component_map[p_id_str] = {}
+            for comp in components:
+                c_id_str = str(comp.componente_id)
+                role = component_role_map.get(c_id_str, 'OUTRO')
+                if role in ['CAPA_ACABADA', 'CAPA_IMPRESSAO']:
+                    pai_component_map[p_id_str][role] = c_id_str
+                    all_target_ids.add(c_id_str)
+
+        # 6. Buscar saldos dos componentes encontrados (Capas/Impressão) em Lote
         saldos_extra = {}
         if all_target_ids:
             try:
-                saldos_extra = estoque_service.get_saldos_em_lote(list(set(all_target_ids)), deposito_id)
+                saldos_extra = estoque_service.get_saldos_em_lote(list(all_target_ids), deposito_id)
             except Exception as e:
                 print(f"Erro não fatal ao buscar estoque de capas: {e}")
-                system_log_service.log(
-                    category='ESTOQUE',
-                    message=f"Falha ao buscar estoque de capas/impressão durante atualização da demanda: {str(e)}",
-                    action='enrich_items_with_stock',
-                    reference_id=str(deposito_id),
-                    metadata={"target_ids": all_target_ids, "error": str(e)}
-                )
 
-        # 4. Injetar nos itens
+        # 7. Injetar nos itens
         for item in itens:
             # Miolo
             m_id = str(item.get('id_produto_miolo'))
-            item['estoque_disponivel_miolo'] = saldos_miolos.get(m_id, {}).get('quantidade_disponivel', 0) if m_id in saldos_miolos else 0
+            if m_id in saldos_miolos:
+                item['estoque_disponivel_miolo'] = saldos_miolos[m_id].get('quantidade_disponivel', 0)
+            else:
+                item['estoque_disponivel_miolo'] = 0
 
-            # Capa e Impressão
+            # Capa e Impressão via Mapa BOM
             p_id = str(item.get('produto_id'))
+            bom_map = pai_component_map.get(p_id, {})
 
-            c_id = capa_ids_map.get(p_id)
-            item['estoque_disponivel_capa'] = saldos_extra.get(c_id, {}).get('quantidade_disponivel', 0) if c_id else 0
+            c_id = bom_map.get('CAPA_ACABADA')
+            if c_id and c_id in saldos_extra:
+                item['estoque_disponivel_capa'] = saldos_extra[c_id].get('quantidade_disponivel', 0)
+            else:
+                item['estoque_disponivel_capa'] = 0
 
-            i_id = impressao_ids_map.get(p_id)
-            item['estoque_disponivel_impressao'] = saldos_extra.get(i_id, {}).get('quantidade_disponivel', 0) if i_id else 0
+            i_id = bom_map.get('CAPA_IMPRESSAO')
+            if i_id and i_id in saldos_extra:
+                item['estoque_disponivel_impressao'] = saldos_extra[i_id].get('quantidade_disponivel', 0)
+            else:
+                item['estoque_disponivel_impressao'] = 0
 
         return itens
+    def _enrich_items_with_stock(self, itens: List[Dict[str, Any]], deposito_id: Any = None) -> List[Dict[str, Any]]:
+        """Alias para backward compatibility."""
+        return self.enrich_items_with_stock(itens, deposito_id)
 
     def _process_item_dict(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """Adiciona aliases e processa campos para o frontend."""
@@ -761,19 +895,17 @@ class DemandaCoreService:
 
             # --- INTEGRAÇÃO COM ESTOQUE (RESERVAS EM CASCATA & PREVISÃO) ---
             try:
-                # 1. Gerar a Previsão de Consumo na nova tabela dedicada
-                previsao_consumo_service.gerar_previsao_para_demanda(new_demanda_id, itens_payload)
-
-                # 2. Agenda a reserva inteligente para processamento ASSÍNCRONO na fila
-                # Isso evita bloqueio na criação da demanda e melhora a performance
+                # Agenda a reserva inteligente para processamento ASSÍNCRONO na fila.
+                # O worker irá gerar a previsão de consumo e executar a lógica Waterfall (estoque.py)
+                # sem travar o request HTTP de criação da demanda.
                 from nistiprint_shared.services.demanda_alocacao.queue import demanda_alocacao_queue_service
-                
+
                 agendamento_result = demanda_alocacao_queue_service.agendar_reserva_inteligente(
                     demanda_id=new_demanda_id,
                     itens_payload=itens_payload,
                     user_id=user_id
                 )
-                
+
                 # Armazena o correlation_id para rastreamento futuro
                 if agendamento_result.get('success'):
                     self.update_demanda_details(new_demanda_id, {
@@ -793,7 +925,6 @@ class DemandaCoreService:
                     estoque_service.reservar_estoque_em_lote(itens_reserva, allow_backorder=True)
                 except: pass
             # --------------------------------------------------
-
         auditoria_service.log_event('DEMANDA_CRIADA', {'demanda_id': new_demanda_id}, user_id)
         return self.get_demanda_with_itens(new_demanda_id)
 

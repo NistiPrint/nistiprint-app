@@ -32,9 +32,7 @@ const ControleProducaoPage = ({tipo}) => {
   const [isReverting, setIsReverting] = useState(false);
 
   const [activeTab, setActiveTab] = useState('estoque'); // Adiciona estado para controle das abas
-  const [capaSubTab, setCapaSubTab] = useState('impressao'); // Nova sub-aba para Capas: 'impressao' ou 'fechamento'
   const [demandSubTab, setDemandSubTab] = useState(tipo === 'miolo' ? 'miolo' : 'capa');
-
 
   // Estados para a visão de demandas
   const [mioloDemandSummary, setMioloDemandSummary] = useState([]);
@@ -68,22 +66,20 @@ const ControleProducaoPage = ({tipo}) => {
   // Inputs state for quantities
   const [inputs, setInputs] = useState({});
   
-  // Títulos dinâmicos considerando sub-aba
+  // Títulos dinâmicos simplificados
   const getPageTitle = () => {
     if (tipo === 'miolo') return 'Controle de Produção de Miolos';
-    return capaSubTab === 'impressao' ? 'Impressão de Capas' : 'Fechamento de Capas';
+    return 'Controle de Produção de Capas';
   };
-  
+
   const pageTitle = getPageTitle();
-  const totalLabel = tipo === 'miolo' ? 'Total de Miolos Ativos' : 
-                    capaSubTab === 'impressao' ? 'Total de Capas p/ Imprimir' : 'Total de Capas p/ Fechar';
+  const totalLabel = tipo === 'miolo' ? 'Total de Miolos Ativos' : 'Total de Capas';
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Se for capa e a sub-aba for fechamento, passamos o parâmetro correto para o service
-      const subtipo = (tipo === 'capa' && capaSubTab === 'fechamento') ? 'capa_acabada' : tipo;
-      const data = await ProductionService.getControleData(subtipo);
+      // Simplificado: sempre usa o tipo principal
+      const data = await ProductionService.getControleData(tipo);
       
       if (data.success) {
         setProducts(data.products || []);
@@ -107,7 +103,7 @@ const ControleProducaoPage = ({tipo}) => {
 
   useEffect(() => {
     fetchData();
-  }, [tipo, activeTab, capaSubTab]); // Adicionado capaSubTab para recarregar ao trocar de sub-aba
+  }, [tipo, activeTab]);
 
   // Resetar sub-aba de demandas quando o tipo da página mudar
   useEffect(() => {
@@ -142,8 +138,7 @@ const ControleProducaoPage = ({tipo}) => {
       // Determinar o campo de progresso baseado no contexto
       let field = null;
       if (tipo === 'miolo') field = 'miolos_prontos_retirada_qtd';
-      else if (capaSubTab === 'impressao') field = 'capas_impressas_qtd';
-      else if (capaSubTab === 'fechamento') field = 'capas_produzidas_qtd';
+      else if (tipo === 'capa') field = 'capas_impressas_qtd'; // Campo principal para capas
 
       // Tela de Controle de Produção: processamento SÍNCRONO (tempo real)
       const result = await ProductionService.registerProduction({
@@ -473,28 +468,6 @@ const ControleProducaoPage = ({tipo}) => {
       {/* Conteúdo baseado na aba selecionada */}
       {activeTab === 'estoque' ? (
         <>
-          {/* Sub-abas para Capas */}
-          {tipo === 'capa' && (
-            <div className="flex gap-2 mb-4 bg-gray-50 p-2 rounded-lg border">
-              <Button
-                variant={capaSubTab === 'impressao' ? 'default' : 'ghost'}
-                size="sm"
-                onClick={() => setCapaSubTab('impressao')}
-                className="flex-1 sm:flex-none"
-              >
-                1. Impressão
-              </Button>
-              <Button
-                variant={capaSubTab === 'fechamento' ? 'default' : 'ghost'}
-                size="sm"
-                onClick={() => setCapaSubTab('fechamento')}
-                className="flex-1 sm:flex-none"
-              >
-                2. Fechamento
-              </Button>
-            </div>
-          )}
-
           {filteredProducts.length === 0 && !loading ? (
             <Card className="border-gray-200 bg-gray-50/50">
               <CardContent className="pt-6">

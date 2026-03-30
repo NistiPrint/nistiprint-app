@@ -2,19 +2,18 @@ import React, { useState, useEffect } from 'react';
 import IntegracaoCard from '@/components/integracoes/IntegracaoCard';
 import VinculoModal from '@/components/integracoes/VinculoModal';
 import * as integracaoCanalService from '@/services/integracaoCanalService';
-import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { 
-  RefreshCw, 
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import {
   Search,
-  AlertCircle
+  AlertCircle,
+  HelpCircle
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
 
 /**
  * Tab de Configuração de Vínculos de Canais
- * Integrada na página /configuracoes/integracoes (tab "Vínculos de Canais")
+ * Gerencia vínculos entre canais de venda, lojas Bling e integrações
  */
 export default function IntegracoesConfigPage() {
   const [loading, setLoading] = useState(true);
@@ -35,14 +34,14 @@ export default function IntegracoesConfigPage() {
   async function carregarDados() {
     setLoading(true);
     setError('');
-    
+
     try {
       const [platformsData, canaisData, integracoesData] = await Promise.all([
         integracaoCanalService.listarPlataformas(),
         integracaoCanalService.listarCanais(),
         integracaoCanalService.listarIntegracoes()
       ]);
-      
+
       setPlatforms(platformsData);
       setCanais(canaisData);
       setIntegracoes(integracoesData);
@@ -94,7 +93,7 @@ export default function IntegracoesConfigPage() {
     const term = searchTerm.toLowerCase();
     return (
       platform.nome?.toLowerCase().includes(term) ||
-      platform.vinculos?.some(v => 
+      platform.vinculos?.some(v =>
         v.bling_loja_id?.toString().includes(term) ||
         v.canal_nome?.toLowerCase().includes(term)
       )
@@ -103,7 +102,35 @@ export default function IntegracoesConfigPage() {
 
   return (
     <div className="space-y-6">
-      {/* Barra de Ações */}
+      {/* Cabeçalho com título e ajuda */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <h2 className="text-xl font-semibold">Canais e Lojas Bling</h2>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger>
+                <HelpCircle className="h-4 w-4 text-muted-foreground" />
+              </TooltipTrigger>
+              <TooltipContent className="max-w-md">
+                <p className="text-sm">
+                  <strong>Vínculos</strong> conectam seus canais de venda às lojas no Bling e às integrações de marketplace.
+                </p>
+                <ul className="text-xs mt-2 space-y-1">
+                  <li>• <strong>Canal de Venda:</strong> Shopee, Amazon, Mercado Livre, etc.</li>
+                  <li>• <strong>Loja Bling:</strong> ID da loja conforme aparece no Bling</li>
+                  <li>• <strong>Integração Bling:</strong> Conta Bling usada para API</li>
+                  <li>• <strong>Integração Marketplace:</strong> Conexão com a plataforma de venda</li>
+                </ul>
+                <p className="text-xs mt-2 text-amber-600 font-medium">
+                  ⚠️ Importante: Para importar pedidos automaticamente, você precisa vincular tanto a integração Bling quanto a do Marketplace.
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+      </div>
+
+      {/* Barra de Busca */}
       <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -113,17 +140,6 @@ export default function IntegracoesConfigPage() {
             onChange={(e) => setSearchTerm(e.target.value)}
             className="pl-9"
           />
-        </div>
-
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={carregarDados}
-            disabled={loading}
-          >
-            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            Recarregar
-          </Button>
         </div>
       </div>
 
@@ -146,8 +162,10 @@ export default function IntegracoesConfigPage() {
       {/* Cards de Plataformas */}
       {loading ? (
         <div className="text-center py-20">
-          <RefreshCw className="w-12 h-12 mx-auto mb-4 animate-spin text-muted-foreground" />
-          <p className="text-muted-foreground">Carregando configurações...</p>
+          <div className="flex items-center justify-center gap-2 text-muted-foreground">
+            <div className="w-5 h-5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+            <p>Carregando configurações...</p>
+          </div>
         </div>
       ) : filteredPlatforms.length > 0 ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -172,31 +190,11 @@ export default function IntegracoesConfigPage() {
           <AlertCircle className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-20" />
           <p className="text-muted-foreground">
             {searchTerm
-                ? 'Nenhuma plataforma encontrada para sua busca' 
+                ? 'Nenhuma plataforma encontrada para sua busca'
                 : 'Nenhuma plataforma configurada'}
             </p>
           </div>
         )}
-
-        {/* Resumo */}
-        <div className="border-t pt-6">
-          <div className="flex items-center justify-between text-sm text-muted-foreground">
-            <div className="flex gap-4">
-              <span>
-                <strong className="text-foreground">{platforms.reduce((acc, p) => acc + p.total_vinculos, 0)}</strong> vínculos totais
-              </span>
-              <span>
-                <strong className="text-foreground">{platforms.reduce((acc, p) => acc + p.vinculos_ativos, 0)}</strong> ativos
-              </span>
-              <span>
-                <strong className="text-foreground">{canais.length}</strong> canais
-              </span>
-            </div>
-            <Badge variant="outline">
-              {integracoes.length} integrações instaladas
-            </Badge>
-          </div>
-        </div>
 
         {/* Modal de Vínculo */}
         <VinculoModal

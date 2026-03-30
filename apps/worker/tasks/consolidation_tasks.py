@@ -383,3 +383,93 @@ def sync_orders_with_bling(self, order_numbers: list, channel_id: int, platform:
             except: pass
         self.retry(exc=e)
         return {'status': 'FAILED', 'error': str(e)}
+
+
+@celery_app.task(
+    name='tasks.consolidation_tasks.persist_orders_batch',
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60
+)
+def persist_orders_batch(self, json_file_path: str, platform: str, channel_id: int, account_id: str):
+    """
+    Task dedicada para persistir pedidos em lote no banco unificado a partir de um JSON temporário.
+    Isso alivia o endpoint síncrono.
+    """
+    import json
+    import os
+    from nistiprint_shared.services.order_service import order_service
+    import logging
+    
+    logger = logging.getLogger(__name__)
+
+    print(f"[*] Persist Worker: Iniciando persistência assíncrona para {platform}...")
+    
+    if not os.path.exists(json_file_path):
+        return {'status': 'FAILED', 'error': 'JSON file not found'}
+        
+    try:
+        with open(json_file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            bling_orders_data = data.get('orders', [])
+            
+        if not bling_orders_data:
+            print("[*] Persist Worker: Lista de pedidos vazia.")
+            if os.path.exists(json_file_path):
+                os.remove(json_file_path)
+            return {'status': 'SKIPPED', 'count': 0}
+
+        success_count = 0
+        error_count = 0
+        
+        for order in bling_orders_data:
+            try:
+                # Normalização básica para o OrderService
+                order_to_upsert = {
+                    'codigo_pedido_externo': str(order.get('numeroLoja')),
+                    'numero_pedido': str(order.get('numero')),
+                    'cliente_nome': order.get('contato', {}).get('nome'),
+                    'cliente_documento': order.get('contato', {}).get('numeroDocumento'),
+                    'status_original': str(order.get('situacao', {}).get('id', 'IMPORTADO')),
+                    'total_pedido': float(order.get('totalProdutos', 0)),
+                    'origem': platform
+                }
+                
+                order_items = []
+                for item in order.get('itens', []):
+                    order_items.append({
+                        'sku_externo': item.get('codigo'),
+                        'descricao': item.get('descricao'),
+                        'quantidade': item.get('quantidade'),
+                        'preco_unitario': item.get('valor')
+                    })
+
+                order_service.upsert_order(
+                    order_data=order_to_upsert,
+                    platform=platform,
+                    platform_order_id=str(order.get('numeroLoja')),
+                    raw_payload=order,
+                    items=order_items,
+                    channel_id=channel_id,
+                    integration_id=account_id
+                )
+                success_count += 1
+            except Exception as item_err:
+                error_count += 1
+                logger.error(f"Erro ao persistir pedido individual no worker: {item_err}")
+
+        print(f"✅ Persist Worker: {success_count} processados, {error_count} falhas. Limpando arquivo.")
+        
+        # Cleanup
+        if os.path.exists(json_file_path):
+            os.remove(json_file_path)
+        
+        return {'status': 'SUCCESS', 'processed': success_count, 'errors': error_count}
+        
+    except Exception as e:
+        logger.error(f"Erro fatal no worker de persistência: {e}")
+        # Tenta remover arquivo mesmo em erro
+        if os.path.exists(json_file_path):
+            os.remove(json_file_path)
+        self.retry(exc=e)
+        return {'status': 'FAILED', 'error': str(e)}

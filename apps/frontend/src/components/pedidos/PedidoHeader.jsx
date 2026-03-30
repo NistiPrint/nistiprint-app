@@ -50,10 +50,16 @@ export default function PedidoHeader({
   return (
     <div className="flex flex-col gap-4 mb-6">
       {/* Navegação */}
-      <Button 
-        variant="ghost" 
-        size="sm" 
-        onClick={() => onBack?.() || navigate(-1)}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => {
+          if (onBack) {
+            onBack();
+          } else {
+            navigate(-1);
+          }
+        }}
         className="w-fit gap-2"
       >
         <ArrowLeft className="w-4 h-4" />

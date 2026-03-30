@@ -408,6 +408,18 @@ class BlingClient:
         except Exception as e:
             return None
 
+    def get_situacoes(self, modulo: str = "vendas"):
+        """Busca as situações (status) cadastradas no Bling para um módulo.
+
+        Args:
+            modulo (str): O módulo para buscar as situações (padrão: 'vendas')
+
+        Returns:
+            list: Lista de situações ou lista vazia em caso de erro.
+        """
+        response = self._request('GET', f'situacoes/{modulo}')
+        return response.get('data') if response else []
+
     # ==================== MÉTODOS PÚBLICOS DA API ====================
 
     def get_product(self, product_id):
