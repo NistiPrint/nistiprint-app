@@ -309,44 +309,39 @@ def get_pedido_demandas(pedido_id):
         
         pedido = pedido_response.data
         codigo_externo = pedido.get('codigo_pedido_externo')
-        
-        # Buscar demandas vinculadas via demandas_item_origem
-        # Join: demandas_producao → itens_demanda → demandas_item_origem
-        demandas_response = supabase_db.table('demandas_producao').select('''
+
+        # Buscar demandas vinculadas via tabela pivot demandas_pedidos
+        # Join: demandas_producao → demandas_pedidos (pivot)
+        pivot_response = supabase_db.table('demandas_pedidos').select('''
             demanda_id,
-            descricao,
-            status,
-            data_entrega,
-            horario_coleta,
-            tipo_demanda,
-            is_flex,
-            created_at,
-            canal_venda:canais_venda(nome),
-            itens:itens_demanda(
+            demandas_producao(
                 id,
-                quantidade,
+                demanda_id,
                 descricao,
-                sku,
-                origens:demandas_item_origem(
-                    pedido_externo_id,
-                    plataforma,
-                    quantidade_atendida
+                status,
+                data_entrega,
+                horario_coleta,
+                tipo_demanda,
+                is_flex,
+                created_at,
+                canal_venda:canais_venda(nome),
+                itens:itens_demanda(
+                    id,
+                    quantidade,
+                    descricao,
+                    sku,
+                    origens:demandas_item_origem(
+                        pedido_externo_id,
+                        plataforma,
+                        quantidade_atendida
+                    )
                 )
             )
         ''').eq('pedido_id', pedido_id).execute()
         
-        demandas = demandas_response.data or []
-        
-        # Se não encontrou por pedido_id, buscar via demandas_item_origem
-        if not demandas and codigo_externo:
-            # Buscar por pedidos vinculados via demandas_item_origem
-            demandas_response = supabase_db.rpc(
-                'get_demandas_por_pedido_externo',
-                {'p_pedido_externo_id': codigo_externo}
-            ).execute()
-            
-            if demandas_response.data:
-                demandas = demandas_response.data
+        demandas = []
+        if pivot_response.data:
+            demandas = [item['demandas_producao'] for item in pivot_response.data if item.get('demandas_producao')]
         
         # Formatando resposta
         demandas_formatadas = []
@@ -367,7 +362,8 @@ def get_pedido_demandas(pedido_id):
                         pedidos_vinculados.add(origem.get('pedido_externo_id'))
             
             demandas_formatadas.append({
-                'demanda_id': demanda.get('demanda_id'),
+                'id': demanda.get('id'),  # ID numérico para a rota
+                'demanda_id': demanda.get('demanda_id'),  # UUID
                 'descricao': demanda.get('descricao'),
                 'status': demanda.get('status'),
                 'data_entrega': demanda.get('data_entrega'),

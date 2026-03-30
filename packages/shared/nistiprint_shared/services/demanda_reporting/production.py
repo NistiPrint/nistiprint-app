@@ -167,8 +167,21 @@ class DemandaReportingProductionService:
         return self._get_aggregated_demandas(response.data)
 
     def get_consolidado_producao(self, trilha=None, sku=None):
-        """Busca dados da view consolidada com filtros opcionais."""
+        """
+        Busca dados da view consolidada com filtros opcionais.
+        Filtra apenas demandas em produção (exclui finalizadas, coletadas, canceladas).
+        """
         query = supabase_db.table('view_consolidado_producao').select("*")
+        
+        # Filtro adicional para garantir que apenas demandas ativas sejam retornadas
+        # A view já filtra, mas reforçamos no código para garantir consistência
+        query = query.neq('demanda_status', 'Finalizado')
+        query = query.neq('demanda_status', 'CONCLUIDO')
+        query = query.neq('demanda_status', 'Coletado')
+        query = query.neq('demanda_status', 'COLETADO')
+        query = query.neq('demanda_status', 'Cancelado')
+        query = query.neq('demanda_status', 'CANCELADO')
+        
         if trilha:
             query = query.eq('trilha', trilha)
         if sku:

@@ -71,32 +71,53 @@ class OrderSyncService:
 
     def sync_shopee_order(self, order_sn: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Sincroniza pedido Shopee buscando detalhes na API da Shopee.
+        FASE 2: Enriquece pedido com dados da API Shopee.
+
+        Este método:
+        - É OPCIONAL: Dados do Bling já foram persistidos na FASE 1
+        - É INDEPENDENTE: Pode ser chamado em outros pontos do sistema
+        - Adiciona dados específicos da Shopee que o Bling não fornece
+
+        Args:
+            order_sn: Número do pedido (numeroLoja no Bling)
+            instance_id: ID da instância de integração Shopee
+
+        Returns:
+            Dict com resultado do enriquecimento
         """
         try:
-            logger.info(f"Sincronizando pedido Shopee: {order_sn}")
+            logger.info("[FASE 2] Enriquecendo pedido Shopee: %s", order_sn)
             shopee_data = platform_api_service.get_order_detail([order_sn], instance_id, "shopee")
-            
+
             if "error" in shopee_data and shopee_data["error"]:
                 logger.error(f"Erro Shopee {order_sn}: {shopee_data['error']}")
                 return shopee_data
 
             raw_order = shopee_data.get("raw", {})
             recipient = raw_order.get('recipient_address', {})
-            
+
             # Extração Relacional
             cliente_nome = recipient.get('name') or raw_order.get('buyer_username')
             cliente_telefone = recipient.get('phone')
-            
-            # Data real de envio (ship_by_date)
+
+            # Data real de envio (ship_by_date) - CRÍTICO para Shopee
             ship_by_date_raw = raw_order.get('ship_by_date')
             data_prevista = datetime.fromtimestamp(ship_by_date_raw, tz=timezone.utc).isoformat() if ship_by_date_raw else None
             data_prevista = clean_date(data_prevista)
 
-            # Identificação FLEX (ESTRITA: 'entrega rápida')
+            # Identificação FLEX (Entrega Rápida)
+            # Shopee o termo: "Entrega Rápida"
             shipping_carrier = raw_order.get('shipping_carrier', '')
             norm_carrier = normalize_text(shipping_carrier)
-            is_flex = "ENTREGA RAPIDA" in norm_carrier
+
+            # Verifica múltiplos indicadores de entrega rápida
+            is_flex = any(termo in norm_carrier for termo in [
+                "ENTREGA RÁPIDA",    # Termo principal em português
+            ])
+
+            # Log para depuração
+            if is_flex:
+                logger.info("🚀 Pedido FLEX detectado: %s (carrier: %s)", order_sn, shipping_carrier)
 
             # Upsert
             # Para pedidos Shopee puros (sem Bling), usar order_sn como numero_pedido e codigo_pedido_externo
@@ -108,15 +129,15 @@ class OrderSyncService:
                 'origem': 'SHOPEE',
                 'is_flex': is_flex,
                 'data_limite_envio': data_prevista,
-                'servico_logistico': shipping_carrier,
+                'servico_logistico': shipping_carrier,  # shipping_carrier vai em servico_logistico, NÃO em informacoes_cliente
                 'data_venda': clean_date(shopee_data.get('date_created')),
                 'total_pedido': safe_float(shopee_data.get('total')),
                 'situacao_pedido_id': self._map_shopee_status(shopee_data.get('status_original')),
                 'status_original': shopee_data.get('status_original'),
                 'informacoes_cliente': {
                     'buyer_username': raw_order.get('buyer_username'),
-                    'shipping_carrier': shipping_carrier,
                     'full_address': recipient.get('full_address')
+                    # shipping_carrier NÃO vai mais em informacoes_cliente - é dado logístico, não do cliente
                 }
             }
 
@@ -150,32 +171,72 @@ class OrderSyncService:
             
             # Legacy Sync
             self._save_to_shopee_table(order_sn, raw_order, data_prevista)
+            
+            logger.info("[FASE 2] ✓ Enriquecimento Shopee concluído para %s", order_sn)
             return result
         except Exception as e:
-            logger.error(f"Erro sync_shopee_order: {e}")
+            logger.error("[FASE 2] ✗ Erro sync_shopee_order: %s", e)
             return {"error": str(e)}
 
     def sync_bling_order(self, bling_order_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Sincroniza pedido vindo do Bling (Webhook ou Importação).
+        FASE 1: Sincroniza pedido vindo do Bling (Webhook ou Importação).
+        
+        Este método:
+        - Processa pedidos de TODAS as plataformas (Shopee, Amazon, MercadoLivre, Shein, etc.)
+        - É a fonte primária de dados para todos os pedidos
+        - Deve ser executado ANTES de qualquer enriquecimento com marketplace
+        
+        Args:
+            bling_order_data: Dados completos do pedido no Bling
+            
+        Returns:
+            Dict com resultado da sincronização (id, external_id, status)
         """
         try:
             bling_id = str(bling_order_data.get('id'))
-            order_sn = bling_order_data.get('numeroLoja') 
+            order_sn = bling_order_data.get('numeroLoja')
             bling_numero = str(bling_order_data.get('numero'))
             external_id = order_sn if order_sn else f"BLING-{bling_numero}"
             
+            loja_id = bling_order_data.get('loja', {}).get('id')
+            logger.info(
+                "[FASE 1] Sincronizando pedido Bling %s (numeroLoja=%s, loja_id=%s)",
+                bling_id,
+                order_sn or "N/A",
+                loja_id or "N/A"
+            )
+
             # Extração Relacional
             contato = bling_order_data.get('contato', {})
             transporte = bling_order_data.get('transporte', {})
             volumes = transporte.get('volumes', [])
             servico_logistico = volumes[0].get('servico', '') if volumes else ""
-            
+
             norm_servico = normalize_text(servico_logistico)
-            is_flex = "ENTREGA RAPIDA" in norm_servico
             
-            loja_id = bling_order_data.get('loja', {}).get('id')
+            # Identificação FLEX (Entrega Rápida) - Bling
+            # Bling pode receber vários termos da Shopee e outros marketplaces
+            is_flex = any(termo in norm_servico for termo in [
+                "ENTREGA RAPIDA","ENTREGA RÁPIDA",    # Termo principal em português
+                "SPX EXPRESS",       # Shopee SPX Express
+                "SPX_FLEX",          # Variação SPX Flex
+                "FLEX",              # Termo genérico
+                "LOGGI",             # Loggi (usado para entrega rápida em alguns casos)
+            ])
+            
+            # Log para depuração
+            if is_flex:
+                logger.info("🚀 Pedido FLEX detectado (Bling): %s (servico: %s)", bling_id, servico_logistico)
+
             canal_id = self._get_canal_id_by_loja_id(loja_id)
+            
+            logger.info(
+                "[FASE 1] Pedido %s: canal_id=%s, is_flex=%s",
+                bling_id,
+                canal_id or "N/A",
+                is_flex
+            )
             
             order_core_dto = {
                 'numero_pedido': bling_numero,
@@ -216,9 +277,17 @@ class OrderSyncService:
                 items=items_dto,
                 channel_id=canal_id
             )
+            
+            logger.info(
+                "[FASE 1] ✓ Pedido Bling %s sincronizado (external_id=%s, status=%s)",
+                bling_id,
+                external_id,
+                result.get('status', 'unknown')
+            )
+            
             return result
         except Exception as e:
-            logger.error(f"Erro sync_bling_order: {e}")
+            logger.error("[FASE 1] ✗ Erro sync_bling_order: %s", e)
             return {"error": str(e)}
 
     def _save_to_shopee_table(self, order_sn: str, raw_order: dict, data_envio: str):
@@ -243,7 +312,30 @@ class OrderSyncService:
         except: pass
 
     def _map_bling_status(self, id: int) -> int:
-        return {6: 1, 15: 2, 9: 5, 12: 7, 18: 5}.get(id, 1)
+        """
+        Mapeia status do Bling para status internos do sistema.
+        
+        Mapeamento:
+        - Bling 6 (Em Aberto)     -> Interno 1 (Em Aberto/Pendente)
+        - Bling 15 (Em Andamento) -> Interno 2 (Em Andamento/Produção)
+        - Bling 9 (Atendido)      -> Interno 5 (Enviado)
+        - Bling 12 (Cancelado)    -> Interno 7 (Cancelado)
+        - Bling 18 (Arquivado)    -> Interno 5 (Enviado)
+        
+        Args:
+            id: ID do status no Bling
+            
+        Returns:
+            ID do status interno correspondente
+        """
+        mapeamento = {
+            6: 1,   # Em Aberto -> Em Aberto
+            15: 2,  # Em Andamento -> Em Andamento/Produção
+            9: 5,   # Atendido -> Enviado
+            12: 7,  # Cancelado -> Cancelado
+            18: 5,  # Arquivado -> Enviado
+        }
+        return mapeamento.get(id, 1)  # Default: Em Aberto
 
     def _map_shopee_status(self, status: str) -> int:
         return {

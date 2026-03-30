@@ -148,11 +148,11 @@ class DemandaProducaoService:
         )
 
     def _processar_reserva_inteligente_demanda(self, demanda_id, itens_payload, user_id):
-        """Calcula e executa reserva de estoque seguindo lógica Waterfall."""
-        return self._core._processar_reserva_inteligente_demanda(demanda_id, itens_payload, user_id)
+        """Calcula e executa reserva de estoque seguindo lógica Waterfall (V2)."""
+        return self._alocacao_estoque.processar_reserva_inteligente_v2(demanda_id, itens_payload, user_id)
 
     def _reservar_recursivo(self, produto_id, quantidade, deposito_id, report_list, nivel=0):
-        """Motor recursivo de reserva."""
+        """Motor recursivo de reserva (Deprecado - use V2 em alocacao_estoque)."""
         return self._core._reservar_recursivo(produto_id, quantidade, deposito_id, report_list, nivel)
 
     def criar_demanda_empresas(self, nome_demanda, canal_venda_id, data_entrega_str, lista_de_itens,
@@ -473,6 +473,11 @@ class DemandaProducaoService:
     # MÉTODOS REPORTING PRODUCTION (demanda_reporting.production)
     # ========================================================================
     
+    def get_stock_history_for_item(self, item_id: int) -> List[Dict[str, Any]]:
+        """Busca o histórico de reconciliação de estoque de um item de demanda."""
+        response = supabase_db.table('demanda_estoque_processado').select('*').eq('item_id', item_id).order('created_at', desc=True).execute()
+        return response.data
+
     def get_daily_production_summary(self):
         """Obtém sumário de produção diária."""
         return self._reporting_production.get_daily_production_summary()

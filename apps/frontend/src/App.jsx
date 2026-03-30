@@ -40,6 +40,7 @@ import ConfiguracoesProducaoPage from './pages/admin/configuracoes/Configuracoes
 import IntegrationRoutingPage from './pages/admin/configuracoes/IntegrationRoutingPage'
 import PermissoesDemandaPage from './pages/admin/configuracoes/PermissoesDemandaPage'
 import FilaEstoquePage from './pages/admin/relatorios/FilaEstoquePage'
+import MonitoramentoEstoquePage from './pages/admin/relatorios/MonitoramentoEstoquePage'
 import MonitoramentoPage from './pages/admin/relatorios/MonitoramentoPage'
 import HistoricoColetasPage from './pages/admin/relatorios/HistoricoColetasPage'
 import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPage'
@@ -70,9 +71,8 @@ import ProducaoPage from './pages/producao/ProducaoPage'
 import ResumoProducaoPage from './pages/producao/ResumoProducaoPage'
 import ProdutoFormPage from './pages/produtos/ProdutoFormPage'
 import ProdutoListPage from './pages/produtos/ProdutoListPage'
-import MarketplaceOrders from './pages/vendas/MarketplaceOrders'
-import UnifiedOrdersPage from './pages/vendas/UnifiedOrdersPage'
 import PedidoDetalhePage from './pages/pedidos/PedidoDetalhePage'
+import PedidosListPage from './pages/pedidos/PedidosListPage'
 import VendasPage from './pages/vendas/VendasPage'
 import VendasPersonalizadasPage from './pages/vendas/VendasPersonalizadasPage'
 function App() {
@@ -130,17 +130,17 @@ function App() {
           </Route>
 
           <Route path='vendas' element={<VendasPage />}>
+            <Route index element={<Navigate to='pedidos' replace />} />
             <Route
               path='personalizadas'
               element={<VendasPersonalizadasPage />}
             />
             <Route path='identificacao-ia' element={<AIDashboardPage />} />
-            <Route path='marketplaces' element={<MarketplaceOrders />} />
-            <Route path='unified-orders' element={<UnifiedOrdersPage />} />
+            <Route path='pedidos' element={<PedidosListPage />} />
             <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
           </Route>
 
-          <Route path='unified-orders' element={<UnifiedOrdersPage />} />
+          <Route path='pedidos' element={<PedidosListPage />} />
           <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
           <Route path='consolidar' element={<ConsolidarPage />} />
           <Route path='consolidar/revisao' element={<ConsolidarReviewPage />} />
@@ -285,8 +285,9 @@ function App() {
               element={<HistoricoProducaoPage />}
             />
             <Route path='historico-coletas' element={<HistoricoColetasPage />} />
-            <Route path='fila-estoque' element={<FilaEstoquePage />} />
-            <Route path='monitoramento' element={<MonitoramentoPage />} />
+            <Route path='fila-estoque' element={<MonitoramentoEstoquePage />} />
+            <Route path='monitoramento-estoque' element={<MonitoramentoEstoquePage />} />
+            <Route path='monitoramento' element={<Navigate to='/relatorios/monitoramento-estoque' replace />} />
             <Route path='auditoria' element={<AuditoriaPage />} />
             <Route path='gerencial-historico' element={<GerencialHistorico />} />
           </Route>

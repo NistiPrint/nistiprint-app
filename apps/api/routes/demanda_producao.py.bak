@@ -140,6 +140,22 @@ def api_auditoria_consumo_demanda(demanda_id):
         print(f"ERROR in api_auditoria_consumo_demanda: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
+@demanda_producao_api_bp.route('/item/<int:item_id>/stock-history', methods=['GET'])
+@check_permission('demanda_producao', 'ler')
+def get_stock_history_for_item(item_id):
+    """
+    Endpoint para buscar o histórico de reconciliação de estoque de um item específico.
+    Retorna uma lista de eventos de movimentação do ledger.
+    """
+    try:
+        history = demanda_producao_service.get_stock_history_for_item(item_id)
+        return jsonify({'success': True, 'history': history}), 200
+    except Exception as e:
+        print(f"ERROR fetching stock history for item {item_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
+
 @demanda_producao_api_bp.route('/retry-fila-estoque/<string:task_id>', methods=['POST'])
 @login_required
 def api_retry_fila_estoque(task_id):

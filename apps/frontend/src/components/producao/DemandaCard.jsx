@@ -13,7 +13,6 @@ import { calculateTimeRemaining, diasRestantes, isUrgente } from '@/lib/demandaU
 import { checkActionRequired } from '@/lib/notificationLogic';
 import {
   AlertTriangle,
-  ArrowRight,
   ArrowUp,
   ArrowUpCircle,
   CheckCircle,
@@ -22,10 +21,9 @@ import {
   MoreVertical,
   PlayCircle,
   Printer,
-  Trash2,
-  Truck,
   ShoppingCart,
-  Hash
+  Trash2,
+  Truck
 } from 'lucide-react';
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -88,8 +86,6 @@ const DemandaCard = React.memo(({
 
   // Progresso total considera estritamente itens finalizados manualmente
   const percentualConcluido = (itensFinalizados / totalItens) * 100;
-
-  const isStuck = demanda.is_stuck === true;
 
   const capasImpressas = demanda.capas_impressas_qtd || 0;
   const capasProduzidas = demanda.capas_produzidas_qtd || 0;
@@ -292,7 +288,6 @@ const DemandaCard = React.memo(({
                     diasRest > 3
                   );
                 })() && <Badge className="bg-teal-600 text-white border-none text-[10px] px-1.5 h-5">LATERAL</Badge>}
-                {isStuck && <Badge className="bg-amber-500 text-white border-none animate-pulse text-[10px] px-1.5 h-5">⚠️ TRAVADO</Badge>}
                 {modalidadeLogistica && modalidadeLogistica !== 'STANDARD' && (
                   <Badge className="bg-blue-100 text-blue-800 border-none text-[10px] px-1.5 h-5">
                     {modalidadeLogistica === 'EXPRESS' ? 'EXPRESS' :
@@ -312,19 +307,6 @@ const DemandaCard = React.memo(({
           </div>
 
           <div className="flex items-center gap-1">
-             {isStuck && isMainLine && (
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
-                  className="hidden md:flex items-center gap-1 text-amber-600 hover:text-amber-700 hover:bg-amber-50 text-[10px] font-bold"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    document.getElementById('side-tracks-section')?.scrollIntoView({ behavior: 'smooth' });
-                  }}
-                >
-                  Ver Encaixes <ArrowRight className="h-3 w-3" />
-                </Button>
-             )}
              <div className="text-right mr-2 hidden sm:block">
                 <div className={`text-xs font-bold ${timeRemainingObj.color}`}>
                   {timeRemainingObj.text || (diasRest > 0 ? `${diasRest}d` : 'Vencido')}
@@ -411,11 +393,6 @@ const DemandaCard = React.memo(({
                 <Badge variant="outline" className="text-[10px] font-bold text-amber-600 border-amber-200 bg-amber-50 animate-pulse">
                   <AlertTriangle className="h-3 w-3 mr-1" /> DESCOMPASSO SETORES
                 </Badge>
-              )}
-              {isLateral && demanda.readiness_score > 0 && (
-                <span className="text-[10px] font-bold text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded">
-                  PRONTIDÃO: {demanda.readiness_score}%
-                </span>
               )}
               <span className="text-[10px] font-bold text-gray-900">{Math.round(percentualConcluido)}% ({itensFinalizados}/{totalItens})</span>
             </div>

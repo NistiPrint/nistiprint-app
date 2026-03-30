@@ -8,35 +8,6 @@ from utils.api_response import ApiResponse
 vendas_bp = Blueprint('vendas', __name__, url_prefix='/vendas')
 vendas_api_bp = Blueprint('vendas_api', __name__, url_prefix='/api/v2/vendas')
 
-@vendas_api_bp.route('/unified-orders', methods=['GET'])
-@login_required
-def api_unified_orders():
-    """
-    Retorna a lista de pedidos unificados com paginação e filtros.
-    """
-    try:
-        page = int(request.args.get('page', 1))
-        per_page = int(request.args.get('perPage', 50))
-        
-        filters = {
-            'searchTerm': request.args.get('searchTerm'),
-            'status': request.args.get('status'),
-            'origin': request.args.get('origin'),
-            'canal_venda_id': request.args.get('canal_venda_id'),
-            'startDate': request.args.get('startDate'),
-            'endDate': request.args.get('endDate'),
-        }
-        
-        # Remove filtros vazios
-        filters = {k: v for k, v in filters.items() if v}
-
-        result = order_service.list_orders(page=page, per_page=per_page, filters=filters)
-        return ApiResponse.success(data=result)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return ApiResponse.error(message=str(e), status_code=500)
-
 @vendas_api_bp.route('/order-status-options', methods=['GET'])
 @login_required
 def api_order_status_options():

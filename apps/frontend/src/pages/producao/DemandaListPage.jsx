@@ -12,8 +12,8 @@ import { usePermissions } from '@/contexts/PermissionsContext'
 import useDebounce from '@/lib/hooks/useDebounce'
 import { useRealtimeDemandas } from '@/lib/hooks/useRealtimeDemandas'
 import { supabase } from '@/lib/supabase'
-import { Factory } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Factory, RefreshCw } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { toast } from 'sonner'
 
 import PartialCollectionModal from '@/components/producao/PartialCollectionModal'
@@ -104,35 +104,31 @@ function DemandaListPage() {
     }
   }, [])
 
-  useEffect(() => {
-    fetchTotals()
-    fetchDashboardSummary()
+  // Debounce para evitar chamadas em excesso
+  const debounceRef = useRef(null);
+  const refreshIntervalRef = useRef(null);
+  
+  const refreshStats = useCallback(() => {
+    fetchTotals();
+    fetchDashboardSummary();
+  }, [fetchTotals, fetchDashboardSummary]);
 
-    // Supabase Realtime Listener para Totais e Resumo
-    const channel = supabase
-      .channel('dashboard-stats')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'demandas_producao' },
-        () => {
-          fetchTotals();
-          fetchDashboardSummary();
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'itens_demanda' },
-        () => {
-          fetchTotals();
-          fetchDashboardSummary();
-        }
-      )
-      .subscribe();
+  useEffect(() => {
+    // Refresh inicial
+    refreshStats();
+    
+    // Refresh periódico a cada 1 minuto (60000ms)
+    refreshIntervalRef.current = setInterval(refreshStats, 60000);
 
     return () => {
-      supabase.removeChannel(channel);
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+      }
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
     };
-  }, [fetchTotals, fetchDashboardSummary])
+  }, [refreshStats])
 
   const uniqueChannels = useMemo(() => {
     const channels = new Set(
@@ -153,12 +149,13 @@ function DemandaListPage() {
 
       if (statusFilter !== 'all') {
         if (statusFilter === 'draft' && !['Rascunho', 'AGUARDANDO'].includes(demanda.status)) return false
-        if (statusFilter === 'completed' && !['Finalizado', 'CONCLUIDO', 'Coletado'].includes(demanda.status)) return false
+        if (statusFilter === 'completed' && !['Finalizado', 'CONCLUIDO', 'Coletado', 'COLETADO'].includes(demanda.status)) return false
         if (statusFilter === 'production' && !['Em Produção', 'EM_PRODUCAO', 'Em Andamento', 'COLETA_PARCIAL'].includes(demanda.status)) return false
         if (statusFilter === 'pending' && !['Pendente', 'AGUARDANDO'].includes(demanda.status)) return false
       } else {
-        // DEFAULT: Show everything except Drafts, Finalized and Collected
-        if (['Rascunho', 'AGUARDANDO', 'Finalizado', 'CONCLUIDO', 'Coletado'].includes(demanda.status)) return false
+        // DEFAULT: Show only active demands (excluding Drafts, Finalized and Collected)
+        const excludedStatuses = ['Rascunho', 'AGUARDANDO', 'Finalizado', 'CONCLUIDO', 'Coletado', 'COLETADO']
+        if (excludedStatuses.includes(demanda.status)) return false
       }
 
       if (channelFilter !== 'all') {
@@ -184,17 +181,21 @@ function DemandaListPage() {
   }, [demandas, debouncedSearchTerm, statusFilter, channelFilter, modalidadeFilter, classificacaoFilter])
 
   const demandasColetadas = useMemo(() => {
-    const todayStr = new Date().toISOString().split('T')[0]
+    // Demandas com status Coletado (independente da data)
     return demandas.filter(d => {
-      const isColetado = ['Coletado', 'COLETADO'].includes(d.status)
-      const foiConcluidoHoje = d.data_conclusao?.startsWith(todayStr)
-      return isColetado && foiConcluidoHoje
+      return ['Coletado', 'COLETADO'].includes(d.status)
     })
   }, [demandas])
 
   const demandasAguardandoColeta = useMemo(() => {
-    // Apenas demandas totalmente finalizadas aparecem como aguardando coleta
-    return demandas.filter(d => ['Finalizado', 'CONCLUIDO'].includes(d.status))
+    // Demandas finalizadas que AINDA NÃO foram coletadas
+    // Lista mutuamente exclusiva com demandasColetadas
+    return demandas.filter(d => {
+      const statusFinalizado = ['Finalizado', 'CONCLUIDO'].includes(d.status)
+      // Não incluir se já estiver coletado
+      const naoColetado = !['Coletado', 'COLETADO'].includes(d.status)
+      return statusFinalizado && naoColetado
+    })
   }, [demandas])
   const demandasAtivas = filteredDemandas
 
@@ -417,6 +418,19 @@ function DemandaListPage() {
         demandasColetadas={demandasColetadas}
         demandasAguardandoColeta={demandasAguardandoColeta}
       />
+
+      {/* Botão de Refresh Manual */}
+      <div className='flex justify-end mb-4'>
+        <Button
+          variant='outline'
+          size='sm'
+          onClick={refreshStats}
+          className='gap-2'
+        >
+          <RefreshCw className='h-4 w-4' />
+          Atualizar
+        </Button>
+      </div>
 
       {hasPendingChanges && (
         <div className="fixed bottom-8 right-8 z-50 bg-white p-4 rounded-lg shadow-2xl border-2 border-primary animate-in fade-in slide-in-from-bottom-4">

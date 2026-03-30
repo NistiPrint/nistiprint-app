@@ -121,6 +121,22 @@ class BlingClient:
         return BlingClient(account_data)
 
     @staticmethod
+    def create_client_for_integration_id(integration_id: int):
+        """
+        Carrega uma instância em installed_integrations pelo ID e retorna BlingClient.
+        Exige module_id = 'bling'.
+        """
+        if not integration_id:
+            raise ValueError("integration_id é obrigatório")
+        res = supabase_db.table('installed_integrations').select("*").eq('id', integration_id).execute()
+        if not res.data:
+            raise ValueError(f"Integração instalada {integration_id} não encontrada")
+        row = res.data[0]
+        if str(row.get('module_id', '')).lower() != 'bling':
+            raise ValueError(f"Integração {integration_id} não é Bling (module_id={row.get('module_id')})")
+        return BlingClient.create_client_from_integration(row)
+
+    @staticmethod
     def create_client(**kwargs):
         """Cria uma instância de BlingClient baseada em installed_integrations. (Otimizado)"""
         from nistiprint_shared.database.supabase_db_service import supabase_db
@@ -189,17 +205,16 @@ class BlingClient:
 
         # 0. Tentar resolver via novo serviço de vínculos (se channel_id fornecido)
         if channel_id:
-            config = integracao_canal_service.get_integration_by_canal(channel_id)
+            config = integracao_canal_service.get_integration_by_canal(channel_id, expected_module='bling')
             if config and config.get('integration_id'):
                 # Buscar integração e criar client
                 try:
-                    # Buscamos a integração, garantindo que seja do módulo 'bling'
-                    res = supabase_db.table('installed_integrations').select("*").eq('id', config['integration_id']).eq('module_id', 'bling').execute()
+                    res = supabase_db.table('installed_integrations').select("*").eq('id', config['integration_id']).execute()
                     if res.data:
                         print(f"✅ Vínculo encontrado: Canal {channel_id} → Bling Integration {config['integration_id']}")
                         return BlingClient.create_client_from_integration(res.data[0])
                     else:
-                        print(f"⚠️ Vínculo do Canal {channel_id} aponta para integração ID {config['integration_id']}, mas ela não é do módulo 'bling'.")
+                        print(f"⚠️ Vínculo do Canal {channel_id} aponta para integração ID {config['integration_id']}, mas ela não foi encontrada.")
                 except Exception as e:
                     print(f"⚠️ Erro ao buscar integração por vínculo: {e}")
         
@@ -701,7 +716,7 @@ class BlingClient:
             end_date (str): Data final (formato YYYY-MM-DD)
 
         Returns:
-            list: Lista de todos os pedidos encontrados
+            list: Lista de todos os pedidos encontrados (ordenados do mais recente para o mais antigo)
         """
         all_orders = []
         page = 1
@@ -714,7 +729,9 @@ class BlingClient:
                 'idLoja': store_id,
                 'dataInicial': start_date,
                 'dataFinal': end_date,
-                'limite': 100
+                'limite': 100,
+                'ordenacao': 'numeroPedido',
+                'ordem': 'desc'
             }
 
             url = "pedidos/vendas"

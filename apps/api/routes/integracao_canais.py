@@ -101,6 +101,8 @@ def criar_vinculo():
             bling_loja_id=data['bling_loja_id'],
             plataforma_nome=data['plataforma_nome'],
             integration_id=data.get('integration_id'),
+            bling_integration_id=data.get('bling_integration_id'),
+            marketplace_integration_id=data.get('marketplace_integration_id'),
             is_primary=data.get('is_primary', False),
             config_json=data.get('config_json', {})
         )
@@ -154,8 +156,9 @@ def atualizar_vinculo(config_id):
             }), 404
         
         # Campos permitidos para atualização
-        allowed_fields = ['canal_venda_id', 'bling_loja_id', 'plataforma_nome', 
-                         'integration_id', 'is_primary', 'is_active', 'config_json']
+        allowed_fields = ['canal_venda_id', 'bling_loja_id', 'plataforma_nome',
+                         'integration_id', 'bling_integration_id', 'marketplace_integration_id',
+                         'is_primary', 'is_active', 'config_json']
         updates = {k: v for k, v in data.items() if k in allowed_fields}
         
         config = integracao_canal_service.atualizar_vinculo(config_id, updates)
@@ -305,7 +308,7 @@ def listar_plataformas():
     try:
         # Buscar configurações agrupadas por plataforma
         configs = integracao_canal_service.listar_configuracoes()
-        
+
         # Agrupar por plataforma
         plataformas = {}
         for config in configs:
@@ -317,7 +320,7 @@ def listar_plataformas():
                     'canais': set(),
                     'integrations': set()
                 }
-            
+
             plataformas[plataforma]['vinculos'].append({
                 'id': config['id'],
                 'canal_nome': config.get('canal_nome'),
@@ -325,26 +328,31 @@ def listar_plataformas():
                 'bling_loja_id': config['bling_loja_id'],
                 'is_primary': config.get('is_primary', False),
                 'is_active': config.get('is_active', True),
-                'integration_instance': config.get('integration_instance_name')
+                'integration_instance': config.get('integration_instance_name'),
+                # Novos campos para bling_integration e marketplace_integration
+                'bling_integration_id': config.get('bling_integration_id'),
+                'marketplace_integration_id': config.get('marketplace_integration_id'),
+                'bling_integration': config.get('bling_integration'),
+                'marketplace_integration': config.get('marketplace_integration'),
             })
-            
+
             if config.get('canal_slug'):
                 plataformas[plataforma]['canais'].add(config['canal_slug'])
             if config.get('integration_instance_name'):
                 plataformas[plataforma]['integrations'].add(config['integration_instance_name'])
-        
+
         # Converter sets para listas para JSON serialization
-        for plataforma in plataformas.values():
-            plataforma['canais'] = list(plataforma['canais'])
-            plataforma['integrations'] = list(plataforma['integrations'])
-            plataforma['total_vinculos'] = len(plataforma['vinculos'])
-            plataforma['vinculos_ativos'] = sum(1 for v in plataforma['vinculos'] if v['is_active'])
-        
+        for plataforma in plataformas:
+            plataformas[plataforma]['canais'] = list(plataformas[plataforma]['canais'])
+            plataformas[plataforma]['integrations'] = list(plataformas[plataforma]['integrations'])
+            plataformas[plataforma]['total_vinculos'] = len(plataformas[plataforma]['vinculos'])
+            plataformas[plataforma]['vinculos_ativos'] = sum(1 for v in plataformas[plataforma]['vinculos'] if v['is_active'])
+
         return jsonify({
             'success': True,
             'data': list(plataformas.values())
         })
-        
+
     except Exception as e:
         logger.error(f"Erro ao listar plataformas: {e}")
         return jsonify({
@@ -400,3 +408,59 @@ def listar_integracoes_instaladas():
             'success': False,
             'error': str(e)
         }), 500
+
+
+@integracao_canais_bp.route('/importar-pedidos-em-andamento', methods=['POST'])
+@login_required
+def importar_pedidos_em_andamento():
+    """
+    Dispara importação manual de pedidos Em Andamento do Bling para o core.
+    Por padrão enfileira Celery; use async=false para execução síncrona (pode demorar).
+    """
+    try:
+        from nistiprint_shared.services.celery_app import celery_app
+        from nistiprint_shared.services.pedidos_bling_import_service import run_fetch_pedidos_em_andamento
+
+        data = request.get_json() or {}
+        config_id = data.get('config_id')
+        dias = int(data.get('dias', 7))
+        situacao_id = int(data.get('situacao_id', 15))
+        async_flag = data.get('async', True)
+        if isinstance(async_flag, str):
+            async_flag = async_flag.lower() in ('true', '1', 'yes')
+
+        if not config_id:
+            return jsonify({
+                'success': False,
+                'error': 'config_id é obrigatório (UUID do vínculo em integracao_canais_config)'
+            }), 400
+
+        if async_flag:
+            celery_app.send_task(
+                'tasks.pedidos_fetch_tasks.fetch_pedidos_em_andamento',
+                kwargs={
+                    'config_id': config_id,
+                    'dias': dias,
+                    'situacao_id': situacao_id,
+                }
+            )
+            return jsonify({
+                'success': True,
+                'queued': True,
+                'message': 'Importação enfileirada. Acompanhe os logs do worker.'
+            })
+
+        result = run_fetch_pedidos_em_andamento(
+            config_id=config_id,
+            dias=dias,
+            situacao_id=situacao_id,
+        )
+        return jsonify({
+            'success': True,
+            'queued': False,
+            'data': result
+        })
+
+    except Exception as e:
+        logger.error(f"Erro ao importar pedidos: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500

@@ -1,0 +1,106 @@
+"""
+Celery tasks para processamento da fila de estoque.
+Integração com o Motor de Reconciliação de Estoque (MRE).
+"""
+
+import os
+import logging
+from celery_config import celery_app
+
+logger = logging.getLogger(__name__)
+
+
+@celery_app.task(name='tasks.stock_tasks.process_stock_queue', bind=True, max_retries=3, default_retry_delay=60)
+def process_stock_queue(self, limit=50):
+    """
+    Tarefa Celery para processar a fila de processamento de estoque
+    usando o Motor de Reconciliação de Estoque (MRE).
+    
+    Args:
+        limit: Quantidade máxima de tarefas a processar por execução
+        
+    Returns:
+        dict: Status e quantidade processada
+    """
+    try:
+        # Importação local para evitar circular imports
+        from nistiprint_shared.services.motor_reconciliacao_estoque import motor_reconciliacao_estoque
+        
+        # Chama a lógica unificada do motor que processa o ledger
+        processed_count = motor_reconciliacao_estoque.processar_fila_unificada(limit=limit)
+        
+        if processed_count > 0:
+            logger.info(f"[MRE] Stock Worker: {processed_count} tarefas processadas com sucesso.")
+        else:
+            logger.debug("[MRE] Stock Worker: Nenhuma tarefa pendente.")
+            
+        return {
+            'status': 'SUCCESS',
+            'processed_count': processed_count,
+            'message': f'{processed_count} tarefas processadas'
+        }
+        
+    except Exception as e:
+        logger.error(f"[MRE] Stock Worker Error: {e}", exc_info=True)
+        
+        # Retry com backoff exponencial
+        self.retry(exc=e, countdown=min(60 * (2 ** self.request.retries), 600))
+        
+        return {
+            'status': 'FAILED',
+            'error': str(e)
+        }
+
+
+@celery_app.task(name='tasks.stock_tasks.reconcile_item', bind=True, max_retries=3)
+def reconcile_item_task(self, item_id: int, demanda_id: int, user_id: str = 'System'):
+    """
+    Tarefa Celery para reconciliar um item específico de demanda.
+    Usado para reconciliação sob demanda (não via fila).
+    
+    Args:
+        item_id: ID do item de demanda
+        demanda_id: ID da demanda de produção
+        user_id: ID do usuário que disparou
+        
+    Returns:
+        dict: Resultado da reconciliação
+    """
+    try:
+        import asyncio
+        from nistiprint_shared.services.motor_reconciliacao_estoque import motor_reconciliacao_estoque
+        
+        # Executa a reconciliação assíncrona
+        loop = asyncio.get_event_loop()
+        resultado = loop.run_until_complete(
+            motor_reconciliacao_estoque.reconcile_item(
+                item_id=item_id,
+                demanda_id=demanda_id,
+                user_id=user_id
+            )
+        )
+        
+        if resultado.sucesso:
+            logger.info(f"[MRE] Item {item_id} reconciliado com sucesso.")
+            return {
+                'status': 'SUCCESS',
+                'item_id': item_id,
+                'demanda_id': demanda_id,
+                'movimentos_count': len(resultado.movimentos)
+            }
+        else:
+            logger.error(f"[MRE] Falha na reconciliação do item {item_id}: {resultado.erros}")
+            return {
+                'status': 'FAILED',
+                'item_id': item_id,
+                'errors': resultado.erros
+            }
+            
+    except Exception as e:
+        logger.error(f"[MRE] Erro na reconciliação do item {item_id}: {e}", exc_info=True)
+        self.retry(exc=e, countdown=60)
+        return {
+            'status': 'ERROR',
+            'item_id': item_id,
+            'error': str(e)
+        }

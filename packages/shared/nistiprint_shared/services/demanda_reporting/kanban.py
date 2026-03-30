@@ -125,16 +125,6 @@ class DemandaReportingKanbanService:
         i['quantidade_total'] = i.get('quantidade')
         i['miolo_name'] = i.get('miolo_nome')
 
-        # Garante que o nome do miolo esteja disponível se tiver o id
-        if i.get('id_produto_miolo') and not i.get('miolo_nome'):
-            try:
-                p = product_service.get_by_id(str(i['id_produto_miolo']))
-                if p:
-                    i['miolo_nome'] = p.get('nome')
-                    i['miolo_name'] = p.get('nome')
-            except:
-                pass
-
         # Merge legado de dados_adicionais
         if i.get('dados_adicionais'):
             for k, v in i['dados_adicionais'].items():
@@ -149,12 +139,34 @@ class DemandaReportingKanbanService:
         demanda_ids = [row['id'] for row in response_data]
         itens_res = supabase_db.execute_with_retry(self.itens_table.select("*").in_('demanda_id', demanda_ids))
 
+        # OTIMIZAÇÃO: Coletar nomes de miolos em lote se estiverem faltando
+        missing_miolo_ids = set()
+        for i in itens_res.data:
+            if i.get('id_produto_miolo') and not i.get('miolo_nome'):
+                missing_miolo_ids.add(str(i['id_produto_miolo']))
+        
+        miolo_names_map = {}
+        if missing_miolo_ids:
+            try:
+                # Otimização via ProductService se tiver batch mode, ou via query direta
+                prods_res = supabase_db.table('produtos').select('id, nome').in_('id', list(missing_miolo_ids)).execute()
+                for p in prods_res.data:
+                    miolo_names_map[str(p['id'])] = p['nome']
+            except: pass
+
         itens_by_demanda = {}
         for item in itens_res.data:
+            processed_item = self._process_item_dict(item)
+            # Injetar nome do miolo se faltava e buscamos em lote
+            mid = str(processed_item.get('id_produto_miolo'))
+            if not processed_item.get('miolo_name') and mid in miolo_names_map:
+                processed_item['miolo_nome'] = miolo_names_map[mid]
+                processed_item['miolo_name'] = miolo_names_map[mid]
+
             did = item['demanda_id']
             if did not in itens_by_demanda:
                 itens_by_demanda[did] = []
-            itens_by_demanda[did].append(item)
+            itens_by_demanda[did].append(processed_item)
 
         coletas_res = supabase_db.execute_with_retry(
             supabase_db.table('entrega_producao')
@@ -174,6 +186,9 @@ class DemandaReportingKanbanService:
 
             row['quantidade_coletada_total'] = coleta_totals_map.get(row['id'], 0)
 
+            # Passar itens processados para o helper
+            demanda_itens = itens_by_demanda.get(row['id'], [])
+            
             processed = self._process_demanda_dict(
                 {
                     **row,
@@ -181,8 +196,10 @@ class DemandaReportingKanbanService:
                     'canal_venda_color': canal_color,
                     'canal_venda_plataforma': canal_plataforma
                 },
-                itens_by_demanda.get(row['id'], [])
+                demanda_itens
             )
+            # Garantir que itens fiquem no dict para evitar re-fetch
+            processed['itens'] = demanda_itens
             result.append(processed)
         return result
 
@@ -211,111 +228,54 @@ class DemandaReportingKanbanService:
         if not demanda_ids:
             return {}
         response = supabase_db.execute_with_retry(
-            self.itens_table.select("*").in_('demanda_id', demanda_ids)
+            self.itens_table.select("*").in_('demanda_id', [str(id) for id in demanda_ids])
         )
+
+        # OTIMIZAÇÃO: Coletar nomes de miolos em lote se estiverem faltando
+        missing_miolo_ids = set()
+        for i in response.data:
+            if i.get('id_produto_miolo') and not i.get('miolo_nome'):
+                missing_miolo_ids.add(str(i['id_produto_miolo']))
+        
+        miolo_names_map = {}
+        if missing_miolo_ids:
+            try:
+                prods_res = supabase_db.table('produtos').select('id, nome').in_('id', list(missing_miolo_ids)).execute()
+                for p in prods_res.data:
+                    miolo_names_map[str(p['id'])] = p['nome']
+            except: pass
 
         mapping = {}
         for item in response.data:
+            processed = self._process_item_dict(item)
+            
+            # Injetar nome do miolo se faltava
+            mid = str(processed.get('id_produto_miolo'))
+            if not processed.get('miolo_name') and mid in miolo_names_map:
+                processed['miolo_nome'] = miolo_names_map[mid]
+                processed['miolo_name'] = miolo_names_map[mid]
+
             did = str(item['demanda_id'])
             if did not in mapping:
                 mapping[did] = []
-            mapping[did].append(self._process_item_dict(item))
+            mapping[did].append(processed)
         return mapping
-
-    def _enrich_items_with_stock(self, itens: List[Dict[str, Any]], deposito_id: Any = None) -> List[Dict[str, Any]]:
-        """
-        Adiciona informações de saldo de estoque (miolo e capas) aos itens em lote.
-        """
-        if not itens:
-            return []
-
-        # 1. Coletar IDs de Miolos e Produtos Pais
-        miolo_ids = []
-        try:
-            raw_ids = [i.get('id_produto_miolo') for i in itens]
-            miolo_ids = list(set([str(rid) for rid in raw_ids if rid]))
-        except Exception as e:
-            print(f"Erro ao extrair IDs de miolo: {e}")
-
-        produto_pai_ids = []
-        try:
-            raw_pai_ids = [i.get('produto_id') for i in itens]
-            produto_pai_ids = list(set([str(rid) for rid in raw_pai_ids if rid]))
-        except:
-            pass
-
-        # 2. Buscar saldos de Miolos
-        saldos_miolos = {}
-        if miolo_ids:
-            try:
-                saldos_miolos = estoque_service.get_saldos_em_lote(miolo_ids, deposito_id)
-            except Exception as e:
-                print(f"Erro não fatal ao buscar estoque de miolos: {e}")
-                system_log_service.log(
-                    category='ESTOQUE',
-                    message=f"Falha ao buscar estoque de miolos durante atualização da demanda: {str(e)}",
-                    action='enrich_items_with_stock',
-                    reference_id=str(deposito_id),
-                    metadata={"miolo_ids": miolo_ids, "error": str(e)}
-                )
-
-        # 3. Para Capas, precisamos primeiro achar o ID do componente Capa na BOM de cada pai
-        capa_ids_map = {}
-        impressao_ids_map = {}
-        all_target_ids = []
-
-        for p_id in produto_pai_ids:
-            try:
-                comps = bom_service.get_bom_for_produto(p_id)
-                for c in comps:
-                    role = product_service.identify_product_role(str(c.componente_id))
-                    if role == 'CAPA_ACABADA':
-                        capa_ids_map[p_id] = str(c.componente_id)
-                        all_target_ids.append(str(c.componente_id))
-                    elif role == 'CAPA_IMPRESSAO':
-                        impressao_ids_map[p_id] = str(c.componente_id)
-                        all_target_ids.append(str(c.componente_id))
-            except:
-                continue
-
-        saldos_extra = {}
-        if all_target_ids:
-            try:
-                saldos_extra = estoque_service.get_saldos_em_lote(list(set(all_target_ids)), deposito_id)
-            except Exception as e:
-                print(f"Erro não fatal ao buscar estoque de capas: {e}")
-                system_log_service.log(
-                    category='ESTOQUE',
-                    message=f"Falha ao buscar estoque de capas/impressão durante atualização da demanda: {str(e)}",
-                    action='enrich_items_with_stock',
-                    reference_id=str(deposito_id),
-                    metadata={"target_ids": all_target_ids, "error": str(e)}
-                )
-
-        # 4. Injetar nos itens
-        for item in itens:
-            # Miolo
-            m_id = str(item.get('id_produto_miolo'))
-            item['estoque_disponivel_miolo'] = saldos_miolos.get(m_id, {}).get('quantidade_disponivel', 0) if m_id in saldos_miolos else 0
-
-            # Capa e Impressão
-            p_id = str(item.get('produto_id'))
-
-            c_id = capa_ids_map.get(p_id)
-            item['estoque_disponivel_capa'] = saldos_extra.get(c_id, {}).get('quantidade_disponivel', 0) if c_id else 0
-
-            i_id = impressao_ids_map.get(p_id)
-            item['estoque_disponivel_impressao'] = saldos_extra.get(i_id, {}).get('quantidade_disponivel', 0) if i_id else 0
-
-        return itens
 
     def get_painel_producao_setores(self, setor_id_ou_nome):
         """Retorna dados do painel de produção organizado por setores/colunas Kanban."""
-        # Busca demandas ativas
-        demandas_ativas = self.get_demandas_by_status(['Pendente', 'Em Produção', 'Em Andamento', 'Criada'])
+        # Busca demandas ativas (status normalizados para Upper Snake Case)
+        # Exclui: Finalizado (CONCLUIDO), Coletado (COLETADO), Cancelado (CANCELADO)
+        demandas_ativas = self.get_demandas_by_status(['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL'])
 
-        demanda_ids = [d['id'] for d in demandas_ativas]
-        itens_mapping = self.get_items_for_multiple_demandas([str(id) for id in demanda_ids])
+        # Coletar todos os itens para enriquecer com estoque em lote
+        all_items_flat = []
+        itens_mapping = {}
+        
+        for d in demandas_ativas:
+            # Pega os itens que já foram processados e anexados à demanda
+            itens = d.get('itens', [])
+            all_items_flat.extend(itens)
+            itens_mapping[str(d['id'])] = itens
 
         colunas = {
             'a_imprimir_capas': [],
@@ -335,17 +295,12 @@ class DemandaReportingKanbanService:
             'Expedição': 0
         }
 
-        # Coletar todos os itens para enriquecer com estoque em lote
-        all_items_flat = []
-        for d in demandas_ativas:
-            did_str = str(d['id'])
-            all_items_flat.extend(itens_mapping.get(did_str, []))
-
         # Obter o depósito padrão para produção
         deposito_id = app_config_service.get_config('default_production_deposit_id')
 
-        # Enriquecer itens com dados de estoque
-        enriched_items = self._enrich_items_with_stock(all_items_flat, deposito_id)
+        # Enriquecer itens com dados de estoque (Delegado para o Core Service Otimizado)
+        from nistiprint_shared.services.demanda.core import demanda_core_service
+        enriched_items = demanda_core_service.enrich_items_with_stock(all_items_flat, deposito_id)
 
         # Remapear enriquecidos de volta para o itens_mapping
         itens_mapping = {}
@@ -358,6 +313,11 @@ class DemandaReportingKanbanService:
         for d in demandas_ativas:
             did_str = str(d['id'])
             itens = itens_mapping.get(did_str, [])
+
+            # Pular demandas finalizadas, coletadas ou canceladas (filtro de segurança)
+            status_normalizado = d.get('status', '').upper().replace(' ', '_')
+            if status_normalizado in ['CONCLUIDO', 'COLETADO', 'CANCELADO']:
+                continue
 
             # Check urgency (Express ou Deadline Crítico)
             is_critical = d.get('modalidade_logistica') == 'EXPRESS' or d.get('is_flex') or d.get('manual_priority_score', 0) >= 100

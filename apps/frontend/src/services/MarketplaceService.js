@@ -86,21 +86,6 @@ export const getInstalledIntegrations = async () => {
 };
 
 /**
- * Get live orders list from a marketplace integration
- */
-export const getMarketplaceOrdersList = async (instanceId, filters = {}) => {
-  try {
-    const response = await api.post(`${BASE_URL}/orders/list`, {
-      instance_id: instanceId,
-      filters
-    });
-    return response.data;
-  } catch (error) {
-    return { success: false, error: error.response?.data?.message || error.message };
-  }
-};
-
-/**
  * Get details of a specific order from a marketplace integration
  */
 export const getMarketplaceOrderDetail = async (instanceId, orderId) => {
@@ -152,6 +137,18 @@ export const uninstallModule = async (instanceId) => {
 };
 
 /**
+ * Sync tokens from Firestore to Supabase
+ */
+export const syncFirestore = async () => {
+  try {
+    const response = await api.post('/integracoes/sync-firestore');
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+/**
  * Get available Bling stores
  */
 export const getBlingStores = async () => {
@@ -178,6 +175,30 @@ export const createChannelLink = async (linkData) => {
   }
 };
 
+/**
+ * Lista vínculos integracao_canais_config (canal ↔ loja Bling ↔ integrações).
+ */
+export const listIntegracaoCanaisConfigs = async (params = {}) => {
+  try {
+    const response = await api.get('/integracao-canais/configuracoes', { params });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+/**
+ * Importa/atualiza pedidos Em Andamento do Bling para o vínculo informado.
+ */
+export const importarPedidosEmAndamento = async (payload) => {
+  try {
+    const response = await api.post('/integracao-canais/importar-pedidos-em-andamento', payload);
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
 const MarketplaceService = {
   getAvailableModules,
   getModuleDetails,
@@ -185,13 +206,15 @@ const MarketplaceService = {
   initAuth,
   exchangeCode,
   getInstalledIntegrations,
-  getMarketplaceOrdersList,
   getMarketplaceOrderDetail,
   renewToken,
   testIntegration,
   uninstallModule,
+  syncFirestore,
   getBlingStores,
-  createChannelLink
+  createChannelLink,
+  listIntegracaoCanaisConfigs,
+  importarPedidosEmAndamento,
 };
 
 export default MarketplaceService;

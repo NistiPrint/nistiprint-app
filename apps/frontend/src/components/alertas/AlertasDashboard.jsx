@@ -94,7 +94,7 @@ export default function AlertasDashboard({ compact = false }) {
   }
 
   function handleVerPedidosOrfaos() {
-    navigate('/vendas/unified-orders?has_demanda=false');
+    navigate('/pedidos');
   }
 
   function handleVerDemandasAtrasadas() {

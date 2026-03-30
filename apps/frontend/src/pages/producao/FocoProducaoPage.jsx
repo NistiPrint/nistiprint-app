@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLayout } from '@/contexts/LayoutContext';
-import { supabase } from '@/lib/supabase';
 import ProductionService from '@/services/ProductionService';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -44,20 +43,6 @@ const FocoProducaoPage = () => {
 
   useEffect(() => {
     fetchPainelData();
-
-    // Realtime Subscription
-    const channel = supabase
-      .channel('foco-producao-changes')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'itens_demanda' },
-        () => fetchPainelData()
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
   }, []);
 
   const sortedItems = useMemo(() => {

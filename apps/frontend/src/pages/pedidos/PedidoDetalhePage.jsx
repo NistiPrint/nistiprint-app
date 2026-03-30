@@ -58,7 +58,8 @@ export default function PedidoDetalhePage() {
   }
 
   function handleBack() {
-    navigate('/vendas/unified-orders');
+    console.log('Voltando para lista de pedidos...');
+    navigate('/pedidos', { replace: true });
   }
 
   function handlePrint() {
@@ -91,7 +92,7 @@ export default function PedidoDetalhePage() {
           </p>
           <div className="flex gap-2 justify-center">
             <button
-              onClick={() => navigate('/vendas/unified-orders')}
+              onClick={() => navigate('/pedidos')}
               className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
             >
               Voltar para Lista

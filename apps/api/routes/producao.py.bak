@@ -7,7 +7,9 @@ from nistiprint_shared.services.daily_production_log_service import daily_produc
 from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
 from nistiprint_shared.services.estoque_service import estoque_service # Importar
 from nistiprint_shared.services.ordem_producao_service import ordem_producao_service # Importar
+from nistiprint_shared.services.motor_reconciliacao_estoque import motor_reconciliacao_estoque
 from datetime import datetime
+import asyncio
 
 producao_bp = Blueprint('producao', __name__, url_prefix='/producao')
 
@@ -224,7 +226,7 @@ def registrar_saida_estoque():
     try:
         quantity = int(quantity_str)
         selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-        
+
         product = product_service.get_by_id(product_id)
         if not product:
             return jsonify({'success': False, 'error': f'Produto com ID {product_id} não encontrado.'}), 404
@@ -237,7 +239,7 @@ def registrar_saida_estoque():
             quantity=quantity,
             user_email=get_current_user().get('email') if get_current_user() else None
         )
-        
+
         # Se uma demanda foi especificada, tenta associar a saída a ela
         if demanda_id:
             # Basic check for Firestore ID format (usually 20 characters, alphanumeric)
@@ -269,8 +271,8 @@ def registrar_saida_estoque():
         new_daily_removed = daily_log.get('quantityRemoved', 0)
 
         return jsonify({
-            'success': True, 
-            'message': 'Saída de estoque registrada com sucesso!', 
+            'success': True,
+            'message': 'Saída de estoque registrada com sucesso!',
             'new_stock': new_stock,
             'new_daily_produced': new_daily_produced,
             'new_daily_removed': new_daily_removed
@@ -281,6 +283,205 @@ def registrar_saida_estoque():
     except Exception as e:
         current_app.logger.error(f"Erro no endpoint {request.path}: {str(e)}")
         return jsonify({'success': False, 'error': f"Erro no processamento: {str(e)}"}), 500
+
+
+# ============================================================
+# NOVOS ENDPOINTS - MOTOR DE RECONCILIAÇÃO DE ESTOQUE
+# ============================================================
+
+@producao_bp.route('/registrar-sinal', methods=['POST'])
+def registrar_sinal_producao():
+    """
+    Registra APENAS sinal visual de progresso (E1-E6).
+    NÃO consome estoque.
+    NÃO dispara BOM explosion.
+    Apenas atualiza o campo visual no item de demanda e registra em eventos_producao.
+    """
+    data = request.get_json()
+    item_id = data.get('item_id')
+    demanda_id = data.get('demanda_id')
+    campo = data.get('campo')  # ex: 'capas_impressas_qtd', 'capas_produzidas_qtd', etc.
+    quantidade = data.get('quantidade')
+    correlation_id = data.get('correlation_id')  # Opcional, para idempotência
+
+    if not all([item_id, demanda_id, campo, quantidade]):
+        return jsonify({
+            'success': False, 
+            'error': 'Dados incompletos. Necessário: item_id, demanda_id, campo, quantidade.'
+        }), 400
+
+    try:
+        user = get_current_user()
+        user_id = str(user.get('id')) if user else 'System'
+        
+        import uuid as uuid_lib
+        if not correlation_id:
+            correlation_id = str(uuid_lib.uuid4())
+
+        # 1. Atualizar campo visual no item de demanda (opcional, para UI)
+        supabase_db.table('itens_demanda')\
+            .update({campo: float(quantidade)})\
+            .eq('id', item_id)\
+            .execute()
+
+        # 2. Registrar em eventos_producao como 'SINAL'
+        evento = {
+            'item_demanda_id': item_id,
+            'demanda_id': demanda_id,
+            'estagio': campo,
+            'quantidade_reportada': float(quantidade),
+            'quantidade_efetiva': None,  # Será calculado na finalização
+            'tipo_evento': 'SINAL',
+            'processado': False,
+            'correlation_id': correlation_id,
+            'created_at': datetime.now().isoformat()
+        }
+
+        supabase_db.table('eventos_producao').insert(evento).execute()
+
+        # 3. Retornar sucesso imediato (rápido, sem processamento de estoque)
+        return jsonify({
+            'success': True,
+            'message': 'Sinal de produção registrado com sucesso. Estoque será consumido apenas na finalização.',
+            'correlation_id': correlation_id,
+            'processamento_estoque': 'pendente_finalizacao'
+        })
+
+    except Exception as e:
+        current_app.logger.error(f"Erro no endpoint {request.path}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': f"Erro no processamento: {str(e)}"}), 500
+
+
+@producao_bp.route('/finalizar-item', methods=['POST'])
+def finalizar_item_demanda():
+    """
+    Gatilho único de liquidação de estoque (E7).
+    Dispara motor de reconciliação assíncrono.
+    
+    Body:
+    {
+        "item_id": 123,
+        "demanda_id": 456,
+        "quantidade_finalizada": 100
+    }
+    """
+    data = request.get_json()
+    item_id = data.get('item_id')
+    demanda_id = data.get('demanda_id')
+    quantidade_finalizada = data.get('quantidade_finalizada')
+
+    if not all([item_id, demanda_id, quantidade_finalizada]):
+        return jsonify({
+            'success': False,
+            'error': 'Dados incompletos. Necessário: item_id, demanda_id, quantidade_finalizada.'
+        }), 400
+
+    try:
+        user = get_current_user()
+        user_id = str(user.get('id')) if user else 'System'
+
+        import uuid as uuid_lib
+        correlation_id = str(uuid_lib.uuid4())
+
+        # 1. Obter dados atuais do item para validação (RN-03)
+        item_res = supabase_db.table('itens_demanda').select('quantidade, finalizados_qtd').eq('id', item_id).single().execute()
+        if not item_res.data:
+            return jsonify({'success': False, 'error': 'Item não encontrado.'}), 404
+            
+        item = item_res.data
+        qtd_demanda = float(item.get('quantidade', 0) or 0)
+        
+        # Validar se a nova quantidade finalizada excede a demanda (RN-03)
+        if float(quantidade_finalizada) > qtd_demanda:
+            return jsonify({
+                'success': False, 
+                'error': f'Quantidade finalizada ({quantidade_finalizada}) excede a quantidade da demanda ({qtd_demanda}).'
+            }), 400
+
+        # 2. Atualizar finalizados_qtd em itens_demanda e status
+        supabase_db.table('itens_demanda')\
+            .update({
+                'finalizados_qtd': float(quantidade_finalizada),
+                'status_item': 'FINALIZADO'
+            })\
+            .eq('id', item_id)\
+            .execute()
+
+        # 3. Registrar evento de produção como 'LIQUIDACAO'
+        evento = {
+            'item_demanda_id': item_id,
+            'demanda_id': demanda_id,
+            'estagio': 'finalizados_qtd',
+            'quantidade_reportada': float(quantidade_finalizada),
+            'quantidade_efetiva': float(quantidade_finalizada),
+            'tipo_evento': 'LIQUIDACAO',
+            'processado': False,
+            'correlation_id': correlation_id,
+            'created_at': datetime.now().isoformat()
+        }
+
+        supabase_db.table('eventos_producao').insert(evento).execute()
+
+        # 4. Inserir na fila de processamento assíncrona do Postgres (Sprint 4)
+        # Substitui threading.Thread por uma fila persistente e escalável
+        tarefa_fila = {
+            'item_id': item_id,
+            'demanda_id': demanda_id,
+            'quantidade': float(quantidade_finalizada),
+            'tipo_operacao': 'RECONCILIACAO_ITEM',
+            'correlation_id': correlation_id,
+            'user_id': user_id,
+            'status': 'PENDENTE',
+            'created_at': datetime.now().isoformat()
+        }
+        
+        supabase_db.table('fila_processamento_estoque').insert(tarefa_fila).execute()
+
+        # 5. Retornar sucesso (processamento via fila)
+        return jsonify({
+            'success': True,
+            'message': 'Item finalizado. Reconciliação de estoque agendada para processamento assíncrono.',
+            'correlation_id': correlation_id,
+            'item_id': item_id,
+            'demanda_id': demanda_id,
+            'quantidade_finalizada': float(quantidade_finalizada),
+            'processamento': 'assincrono'
+        })
+
+    except Exception as e:
+        current_app.logger.error(f"Erro no endpoint {request.path}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': f"Erro no processamento: {str(e)}"}), 500
+
+
+@producao_bp.route('/api/item/<int:item_id>/ledger', methods=['GET'])
+def get_item_ledger(item_id):
+    """
+    Retorna ledger completo de um item para auditoria.
+    """
+    try:
+        response = supabase_db.table('view_ledger_completo')\
+            .select('*')\
+            .eq('item_id', item_id)\
+            .order('created_at', desc=False)\
+            .execute()
+
+        return jsonify({
+            'success': True,
+            'ledger': response.data or [],
+            'total': len(response.data) if response.data else 0
+        })
+
+    except Exception as e:
+        current_app.logger.error(f"Erro no endpoint {request.path}: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# Importar supabase_db para os novos endpoints
+from nistiprint_shared.database.supabase_db_service import supabase_db
 
 @producao_bp.route('/components/<product_id>', methods=['GET'])
 def get_product_components(product_id):

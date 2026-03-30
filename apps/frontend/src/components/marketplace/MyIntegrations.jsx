@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { RefreshCw } from 'lucide-react'
 import LiveOrderConsultation from './LiveOrderConsultation'
 import './Marketplace.css'
 
 const MyIntegrations = () => {
   const [installations, setInstallations] = useState([])
   const [isLoading, setIsLoading] = useState(true)
+  const [renewingId, setRenewingId] = useState(null)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -101,6 +103,64 @@ const MyIntegrations = () => {
     }
   }
 
+  const renewToken = async instanceId => {
+    if (!window.confirm('Deseja renovar o token desta integração?')) {
+      return
+    }
+
+    setRenewingId(instanceId)
+    try {
+      const response = await fetch(
+        `/api/v2/marketplace/installed/${instanceId}/renew`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      )
+
+      const data = await response.json()
+
+      if (data.status === 'success') {
+        // Update the UI with new token status
+        setInstallations(prev =>
+          prev.map(installation =>
+            installation.id === instanceId
+              ? {
+                  ...installation,
+                  sync_status: 'success',
+                  last_sync: new Date().toISOString(),
+                  refresh_error: null,
+                }
+              : installation
+          )
+        )
+        alert('Token renovado com sucesso!')
+      } else {
+        throw new Error(data.error || 'Erro ao renovar token')
+      }
+    } catch (error) {
+      console.error('Renew token error:', error)
+      alert(`Erro ao renovar token: ${error.message}`)
+      
+      // Update UI to show error
+      setInstallations(prev =>
+        prev.map(installation =>
+          installation.id === instanceId
+            ? {
+                ...installation,
+                sync_status: 'error',
+                refresh_error: error.message,
+              }
+            : installation
+        )
+      )
+    } finally {
+      setRenewingId(null)
+    }
+  }
+
   if (isLoading) {
     return <div>Carregando...</div>
   }
@@ -171,6 +231,11 @@ const MyIntegrations = () => {
                   ) : installation.sync_status === 'error' ? (
                     <React.Fragment>
                       <span className='sync-indicator sync-error'></span> Erro
+                      {installation.refresh_error && (
+                        <span className="text-xs text-red-500 ml-2">
+                          {installation.refresh_error}
+                        </span>
+                      )}
                     </React.Fragment>
                   ) : installation.sync_status === 'syncing' ? (
                     <React.Fragment>
@@ -186,9 +251,9 @@ const MyIntegrations = () => {
               </div>
 
               <div className='integration-actions'>
-                <LiveOrderConsultation 
-                  integrationId={installation.id} 
-                  moduleName={installation.module_name} 
+                <LiveOrderConsultation
+                  integrationId={installation.id}
+                  moduleName={installation.module_name}
                   moduleId={installation.module_id}
                 />
                 <button
@@ -196,6 +261,19 @@ const MyIntegrations = () => {
                   onClick={() => syncIntegration(installation.id)}>
                   Sincronizar
                 </button>
+                {/* Botão Renovar Token - Apenas para Shopee */}
+                {installation.module_name.toLowerCase().includes('shopee') && (
+                  <button
+                    className='btn btn-sm btn-warning'
+                    onClick={() => renewToken(installation.id)}
+                    disabled={renewingId === installation.id}>
+                    {renewingId === installation.id ? (
+                      <><RefreshCw className="h-4 w-4 mr-1 animate-spin" /> Renovando...</>
+                    ) : (
+                      <><RefreshCw className="h-4 w-4 mr-1" /> Renovar Token</>
+                    )}
+                  </button>
+                )}
                 <button
                   className='btn btn-sm btn-warning'
                   onClick={() =>

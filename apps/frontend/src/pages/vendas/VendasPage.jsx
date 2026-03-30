@@ -1,10 +1,16 @@
 import { useLayout } from '@/contexts/LayoutContext';
 import { cn } from '@/lib/utils';
-import { ShoppingBag, Users, FileText, Brain, Globe, PackageCheck } from 'lucide-react';
+import { ShoppingBag, Users, FileText, Brain, Globe, PackageCheck, ClipboardList } from 'lucide-react';
 import { useEffect } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
 const vendasMenu = [
+  {
+    name: 'Pedidos',
+    href: '/pedidos',
+    icon: ClipboardList,
+    description: 'Gestão unificada de pedidos e demandas'
+  },
   {
     name: 'Personalizadas',
     href: '/vendas/personalizadas',
@@ -16,18 +22,6 @@ const vendasMenu = [
     href: '/vendas/identificacao-ia',
     icon: Brain,
     description: 'Extração automática de nomes via IA'
-  },
-  {
-    name: 'Marketplaces',
-    href: '/vendas/marketplaces',
-    icon: Globe,
-    description: 'Pedidos de diferentes plataformas'
-  },
-  {
-    name: 'Pedidos Unificados',
-    href: '/vendas/unified-orders',
-    icon: PackageCheck,
-    description: 'Gestão centralizada de pedidos'
   },
   {
     name: 'Consolidar',
@@ -85,7 +79,7 @@ function VendasPage() {
     setLeftSidebarMenuItems(vendasMenu);
 
     return () => {
-      if (!window.location.pathname.startsWith('/vendas') && !window.location.pathname.startsWith('/consolidar')) {
+      if (!window.location.pathname.startsWith('/vendas') && !window.location.pathname.startsWith('/consolidar') && !window.location.pathname.startsWith('/pedidos')) {
         setLeftSidebarContent(null);
         setLeftSidebarMenuItems([]);
       }

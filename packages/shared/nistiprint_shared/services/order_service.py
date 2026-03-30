@@ -61,7 +61,7 @@ class OrderService:
                     'payload_canonico': canonical_payload,
                     'updated_at': datetime.now(timezone.utc).isoformat()
                 }
-                
+
                 # Atualizar numero_pedido e codigo_pedido_externo apenas se vierem do Bling (prioridade)
                 if platform.upper() == 'BLING':
                     if order_data.get('numero_pedido'):
@@ -77,14 +77,31 @@ class OrderService:
                         update_core['cliente_email'] = order_data.get('cliente_email')
                 # Shopee/Outros: NÃO atualizar numero_pedido, codigo_pedido_externo ou dados do cliente
                 # para não sobrescrever dados do Bling. Apenas atualiza dados enriquecidos:
-                # - is_flex, data_limite_envio, servico_logistico
+                # - is_flex, data_limite_envio, servico_logistico, informacoes_cliente
                 if platform.upper() != 'BLING':
+                    # Dados enriquecidos da Shopee (sempre atualizar se vierem)
                     if order_data.get('is_flex') is not None:
                         update_core['is_flex'] = order_data.get('is_flex')
                     if order_data.get('data_limite_envio'):
                         update_core['data_limite_envio'] = order_data.get('data_limite_envio')
                     if order_data.get('servico_logistico'):
                         update_core['servico_logistico'] = order_data.get('servico_logistico')
+                    
+                    # CRÍTICO: Atualizar informacoes_cliente com shipping_carrier e outros dados da Shopee
+                    # Isso garante que o trigger SQL possa calcular is_flex automaticamente
+                    if order_data.get('informacoes_cliente'):
+                        # Mesclar com dados existentes para não perder informações
+                        existing = self.pedidos_table.select('informacoes_cliente').eq('id', core_id).single().execute()
+                        if existing.data:
+                            info_existente = existing.data.get('informacoes_cliente', {}) or {}
+                            if isinstance(info_existente, dict):
+                                # Mesclar: dados novos sobrescrevem existentes
+                                info_existente.update(order_data.get('informacoes_cliente'))
+                                update_core['informacoes_cliente'] = info_existente
+                            else:
+                                update_core['informacoes_cliente'] = order_data.get('informacoes_cliente')
+                        else:
+                            update_core['informacoes_cliente'] = order_data.get('informacoes_cliente')
                 
                 update_core = {k: v for k, v in update_core.items() if v is not None}
                 self.pedidos_table.update(update_core).eq('id', core_id).execute()
@@ -227,6 +244,13 @@ class OrderService:
             if filters.get('endDate'):
                 query = query.lte('data_venda', filters['endDate'])
             
+            # Filtro por pedidos Flex (Entrega Rápida)
+            if filters.get('is_flex') is not None:
+                is_flex = filters.get('is_flex')
+                if isinstance(is_flex, str):
+                    is_flex = is_flex.lower() in ('true', '1', 'yes')
+                query = query.eq('is_flex', is_flex)
+
             # Novos filtros para consolidação
             if filters.get('has_demanda') is not None:
                 # Filtrar pedidos com ou sem demanda vinculada
@@ -255,8 +279,31 @@ class OrderService:
         offset = (page - 1) * per_page
         res = query.range(offset, offset + per_page - 1).order('data_venda', desc=True).execute()
 
+        # Formatar dados para garantir que o status tenha nome e cor
+        orders_formatted = []
+        for order in res.data:
+            order_dict = dict(order)
+            
+            # Garantir formato consistente do status
+            situacao = order.get('situacao_pedido')
+            if situacao:
+                order_dict['status'] = {
+                    'id': order.get('situacao_pedido_id'),
+                    'nome': situacao.get('nome', 'Desconhecido'),
+                    'cor': situacao.get('cor_status', '#9ca3af')
+                }
+            else:
+                # Fallback: usar apenas o ID se não houver join
+                order_dict['status'] = {
+                    'id': order.get('situacao_pedido_id'),
+                    'nome': 'Desconhecido',
+                    'cor': '#9ca3af'
+                }
+            
+            orders_formatted.append(order_dict)
+
         return {
-            "orders": res.data,
+            "orders": orders_formatted,
             "total": res.count,
             "page": page,
             "per_page": per_page
