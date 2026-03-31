@@ -7,6 +7,8 @@ Rotas:
     POST   /api/v2/pedidos/upload-planilha      - Upload + processamento
     POST   /api/v2/pedidos/consolidar-selecionados - Consolidar selecionados
     POST   /api/v2/pedidos/gerar-demanda        - Gerar demanda em lote
+    GET    /api/v2/pedidos/canais-proximos-coleta - Canais com coleta mais próxima
+    GET    /api/v2/pedidos/contagem-por-canal   - Contagem de pedidos por canal
 """
 
 from flask import request, Blueprint, jsonify
@@ -70,17 +72,20 @@ def get_pedidos_estatisticas():
                     raise
         
         total_pedidos = result.count if hasattr(result, 'count') else len(result.data)
-        
+
         # Estatísticas por status
         status_counts = {}
         for pedido in result.data:
             status = str(pedido.get('situacao_pedido_id', 'Unknown'))
             status_counts[status] = status_counts.get(status, 0) + 1
-        
+
         # Contar pedidos com demanda (usando demandas_pedidos pivot) com retry
         pedidos_com_demanda = 0
         pedidos_com_demanda_ids = set()
-        
+
+        # Extrair IDs dos pedidos retornados
+        pedidos_ids = [p['id'] for p in result.data] if result.data else []
+
         if pedidos_ids:
             for retry_attempt in range(max_retries):
                 try:
@@ -96,7 +101,7 @@ def get_pedidos_estatisticas():
                     else:
                         logger.error(f"Erro ao contar demandas: {e}")
                         break
-        
+
         pedidos_sem_demanda = total_pedidos - pedidos_com_demanda
         
         # Estatísticas por canal
@@ -188,16 +193,25 @@ def importar_pedidos_bling():
     Payload:
     {
         "config_id": "uuid-do-vinculo",  # Opcional, se não informado usa todos
-        "dias": 7,                        # Opcional, default: 7
+        "dias": 7,                        # Opcional, se não houver datas
         "situacao_id": 15,                # Opcional, default: 15 (Em Andamento)
+        "data_inicial": "2026-03-01",     # Opcional
+        "data_final": "2026-03-30",       # Opcional
         "async": true                     # Opcional, default: true
     }
     """
     try:
         data = request.get_json() or {}
         config_id = data.get('config_id')
-        dias = int(data.get('dias', 7))
-        situacao_id = int(data.get('situacao_id', 15))
+        dias = data.get('dias')
+        
+        # Aceita situacao_id ou id_situacao (para compatibilidade com exemplo do usuário)
+        situacao_id = int(data.get('situacao_id') or data.get('id_situacao') or 15)
+        
+        # Aceita data_inicial ou dataInicial
+        data_inicial = data.get('data_inicial') or data.get('dataInicial')
+        data_final = data.get('data_final') or data.get('dataFinal')
+        
         async_flag = data.get('async', True)
         
         if isinstance(async_flag, str):
@@ -206,9 +220,14 @@ def importar_pedidos_bling():
         if async_flag:
             # Disparar task Celery
             task_kwargs = {
-                'dias': dias,
                 'situacao_id': situacao_id,
             }
+            
+            if data_inicial and data_final:
+                task_kwargs['data_inicial'] = data_inicial
+                task_kwargs['data_final'] = data_final
+            else:
+                task_kwargs['dias'] = int(dias or 7)
             
             if config_id:
                 task_kwargs['config_id'] = config_id
@@ -218,16 +237,24 @@ def importar_pedidos_bling():
                 kwargs=task_kwargs
             )
             
+            msg = f'Importação enfileirada.'
+            if data_inicial and data_final:
+                msg += f' Período: {data_inicial} até {data_final}.'
+            else:
+                msg += f' Buscando pedidos dos últimos {dias or 7} dias.'
+
             return ApiResponse.success(data={
                 'queued': True,
-                'message': f'Importação enfileirada. Buscando pedidos dos últimos {dias} dias.'
+                'message': msg
             })
         
         # Execução síncrona
         result = run_fetch_pedidos_em_andamento(
             config_id=config_id,
-            dias=dias,
+            dias=int(dias or 7) if not (data_inicial and data_final) else None,
             situacao_id=situacao_id,
+            data_inicial=data_inicial,
+            data_final=data_final
         )
         
         return ApiResponse.success(data={
@@ -609,7 +636,134 @@ def gerar_demanda_pedidos():
             })
         
         return ApiResponse.error(message='Nenhum pedido_ids ou itens fornecidos', status_code=400)
-        
+
     except Exception as e:
         logger.error(f"Erro ao gerar demanda: {e}", exc_info=True)
+        return ApiResponse.error(message=str(e), status_code=500)
+
+
+@pedidos_gestao_bp.route('/canais-proximos-coleta', methods=['GET'])
+@login_required
+def get_canais_proximos_coleta():
+    """
+    Retorna os 2 canais com horário de coleta mais próximo do horário atual.
+    Usa a função SQL fn_canais_proximos_coleta().
+    """
+    try:
+        from datetime import datetime
+
+        logger.info("=== get_canais_proximos_coleta iniciado ===")
+
+        # Primeiro, verificar se existem canais com horario_coleta
+        canais_check = supabase_db.table('canais_venda').select('id, nome, horario_coleta, ativo').eq('ativo', True).not_.is_('horario_coleta', None).execute()
+        logger.info(f"Canais ativos com horario_coleta: {len(canais_check.data) if canais_check.data else 0}")
+        if canais_check.data:
+            logger.info(f"Canais encontrados: {[(c['nome'], str(c['horario_coleta'])) for c in canais_check.data]}")
+
+        # Chamar função SQL
+        logger.info("Chamando fn_canais_proximos_coleta...")
+        result = supabase_db.rpc('fn_canais_proximos_coleta', {'p_limit': 2}).execute()
+        
+        # Verificar erro no resultado do Supabase
+        if hasattr(result, 'error') and result.error:
+            logger.error(f"Erro na função SQL: {result.error}")
+            return ApiResponse.error(message=f"Erro na função SQL: {result.error}", status_code=500)
+        
+        # Verificar se há exception no resultado
+        if hasattr(result, 'exception') and result.exception:
+            logger.error(f"Exception na função SQL: {result.exception}")
+            return ApiResponse.error(message=f"Erro na função SQL: {result.exception}", status_code=500)
+
+        canais_proximos = result.data if result.data else []
+        logger.info(f"Canais próximos retornados: {len(canais_proximos)}")
+
+        # Formatar dados
+        canais_formatados = []
+        for canal in canais_proximos:
+            canais_formatados.append({
+                'id': canal.get('fn_id'),
+                'nome': canal.get('fn_nome'),
+                'horario_coleta': canal.get('fn_horario_coleta', ''),  # Já vem formatado HH:MI
+                'flex': canal.get('fn_flex', False),
+                'fulfillment': canal.get('fn_fulfillment', False),
+                'color': canal.get('fn_color'),
+                'distancia_minutos': canal.get('fn_dist_min', 0),
+                'is_proximo': canal.get('fn_is_proximo', True),
+            })
+
+        # Obter horário atual
+        horario_atual = datetime.now().strftime('%H:%M')
+
+        # Contar total de canais ativos
+        total_canais = supabase_db.table('canais_venda').select('id', count='exact').eq('ativo', True).not_.is_('horario_coleta', None).execute()
+
+        logger.info(f"=== get_canais_proximos_coleta concluído: {len(canais_formatados)} canais ===")
+
+        return ApiResponse.success(data={
+            'canais_proximos': canais_formatados,
+            'horario_atual': horario_atual,
+            'total_canais_ativos': total_canais.count if hasattr(total_canais, 'count') else 0
+        })
+
+    except Exception as e:
+        logger.error(f"Erro ao buscar canais próximos: {e}")
+        import traceback
+        traceback.print_exc()
+        return ApiResponse.error(message=str(e), status_code=500)
+
+
+@pedidos_gestao_bp.route('/contagem-por-canal', methods=['GET'])
+@login_required
+def get_contagem_pedidos_por_canal():
+    """
+    Retorna contagem de pedidos por canal de venda.
+    Usa a função SQL fn_contar_pedidos_por_canal().
+
+    Query params:
+    - canal_venda_id: Filtrar por canal específico (opcional)
+    - dias: Período em dias (default: 7)
+    - has_demanda: true/false (opcional) - Filtrar por pedidos com/sem demanda
+    """
+    try:
+        canal_venda_id = request.args.get('canal_venda_id', type=int)
+        dias = request.args.get('dias', 7, type=int)
+        has_demanda = request.args.get('has_demanda', type=str)
+
+        # Converter has_demanda para boolean ou None
+        if has_demanda:
+            has_demanda = has_demanda.lower() in ('true', '1', 'yes')
+        else:
+            has_demanda = None
+
+        # Chamar função SQL
+        result = supabase_db.rpc('fn_contar_pedidos_por_canal', {
+            'p_canal_venda_id': canal_venda_id,
+            'p_dias': dias,
+            'p_has_demanda': has_demanda
+        }).execute()
+
+        contagens = result.data if result.data else []
+
+        # Formatar dados
+        contagens_formatadas = []
+        for contagem in contagens:
+            contagens_formatadas.append({
+                'canal_venda_id': contagem.get('canal_venda_id'),
+                'canal_venda_nome': contagem.get('canal_venda_nome'),
+                'total_pedidos': contagem.get('total_pedidos', 0),
+                'pedidos_sem_demanda': contagem.get('pedidos_sem_demanda', 0),
+                'pedidos_com_demanda': contagem.get('pedidos_com_demanda', 0),
+            })
+
+        return ApiResponse.success(data={
+            'contagens': contagens_formatadas,
+            'periodo_dias': dias,
+            'filtro_canal': canal_venda_id,
+            'filtro_demanda': has_demanda
+        })
+
+    except Exception as e:
+        logger.error(f"Erro ao buscar contagem de pedidos: {e}")
+        import traceback
+        traceback.print_exc()
         return ApiResponse.error(message=str(e), status_code=500)

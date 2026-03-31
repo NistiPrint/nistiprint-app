@@ -139,7 +139,9 @@ def process_consolidacao(self, consolidacao_id: int):
                         'cliente_documento': order.get('contato', {}).get('numeroDocumento'),
                         'status_original': str(order.get('situacao', {}).get('id', 'IMPORTADO')),
                         'total_pedido': float(order.get('totalProdutos', 0)),
-                        'origem': plataforma
+                        'origem': plataforma,
+                        'is_flex': order.get('is_flex'),
+                        'servico_logistico': order.get('servico_logistico')
                     }
                     
                     order_items = []
@@ -348,7 +350,8 @@ def sync_orders_with_bling(self, order_numbers: list, channel_id: int, platform:
                     order_data=order_data,
                     platform='BLING',
                     platform_order_id=str(mapping['numeroLoja']),
-                    raw_payload={'bling_mapping': mapping}
+                    raw_payload={'bling_mapping': mapping},
+                    channel_id=channel_id
                 )
                 updated_count += 1
             except Exception as e:
@@ -432,7 +435,9 @@ def persist_orders_batch(self, json_file_path: str, platform: str, channel_id: i
                     'cliente_documento': order.get('contato', {}).get('numeroDocumento'),
                     'status_original': str(order.get('situacao', {}).get('id', 'IMPORTADO')),
                     'total_pedido': float(order.get('totalProdutos', 0)),
-                    'origem': platform
+                    'origem': platform,
+                    'is_flex': order.get('is_flex'),
+                    'servico_logistico': order.get('servico_logistico')
                 }
                 
                 order_items = []

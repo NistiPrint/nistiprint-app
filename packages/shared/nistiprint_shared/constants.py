@@ -202,7 +202,7 @@ SITUACOES_PEDIDOS_BLING = {
     'Cancelado': 12,
     'Em Aberto': 6,
     'Em Andamento': 15,
-    
+    'Verificado': 24,
 }
 
 PLATFORM_X_BLING_VERSION = {

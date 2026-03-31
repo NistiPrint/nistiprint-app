@@ -18,12 +18,18 @@ import {
   Store,
   Link,
   AlertCircle,
-  HelpCircle
+  HelpCircle,
+  CheckCircle2
 } from 'lucide-react';
 
 /**
  * Tabela de vínculos de lojas por canal
- * Mostra separadamente as integrações Bling (ERP) e Marketplace
+ * Mostra separadamente as integrações Bling (ERP) e Marketplace.
+ * 
+ * Cada linha representa um vínculo entre:
+ * - Uma loja no Bling (identificada pelo ID)
+ * - Uma instância de integração Bling (ERP)
+ * - Uma instância de integração Marketplace
  */
 export default function LojaVinculoTable({
   vinculos = [],
@@ -34,7 +40,7 @@ export default function LojaVinculoTable({
   const getIntegrationName = (integrationId) => {
     if (!integrationId) return null;
     const integracao = integracoes.find(i => i.id === integrationId);
-    return integracao?.instance_name || `Integration ${integrationId}`;
+    return integracao?.instance_name || `Integração ${integrationId}`;
   };
 
   const getIntegrationModule = (integrationId) => {
@@ -63,6 +69,7 @@ export default function LojaVinculoTable({
           <TableHead>Loja Bling</TableHead>
           <TableHead>
             <div className="flex items-center gap-1">
+              <Building2 className="w-3 h-3" />
               Bling (ERP)
               <Tooltip>
                 <TooltipTrigger>
@@ -70,12 +77,16 @@ export default function LojaVinculoTable({
                 </TooltipTrigger>
                 <TooltipContent>
                   <p className="text-xs">Conta Bling usada para API de pedidos</p>
+                  <p className="text-xs mt-1 text-muted-foreground">
+                    Gerencie tokens na aba "Integrações"
+                  </p>
                 </TooltipContent>
               </Tooltip>
             </div>
           </TableHead>
           <TableHead>
             <div className="flex items-center gap-1">
+              <Link className="w-3 h-3" />
               Marketplace
               <Tooltip>
                 <TooltipTrigger>
@@ -83,6 +94,9 @@ export default function LojaVinculoTable({
                 </TooltipTrigger>
                 <TooltipContent>
                   <p className="text-xs">Integração com a plataforma de venda</p>
+                  <p className="text-xs mt-1 text-muted-foreground">
+                    Gerencie tokens na aba "Integrações"
+                  </p>
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -113,7 +127,7 @@ export default function LojaVinculoTable({
           const hasBoth = blingIntegrationId && marketplaceIntegrationId;
           const hasOnlyBling = blingIntegrationId && !marketplaceIntegrationId;
           const hasOnlyMarketplace = marketplaceIntegrationId && !blingIntegrationId;
-          
+
           return (
             <TableRow key={vinculo.id}>
               <TableCell>
@@ -145,9 +159,14 @@ export default function LojaVinculoTable({
                 <div className="flex items-center gap-2">
                   <Building2 className="w-4 h-4 text-muted-foreground" />
                   {blingIntegrationId ? (
-                    <span className="text-sm">
-                      {getIntegrationName(blingIntegrationId)}
-                    </span>
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium">
+                        {getIntegrationName(blingIntegrationId)}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {getIntegrationModule(blingIntegrationId)}
+                      </span>
+                    </div>
                   ) : (
                     <Badge variant="secondary" className="text-xs gap-1">
                       <AlertCircle className="w-3 h-3" />
@@ -160,9 +179,14 @@ export default function LojaVinculoTable({
                 <div className="flex items-center gap-2">
                   <Link className="w-4 h-4 text-muted-foreground" />
                   {marketplaceIntegrationId ? (
-                    <span className="text-sm">
-                      {getIntegrationName(marketplaceIntegrationId)}
-                    </span>
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium">
+                        {getIntegrationName(marketplaceIntegrationId)}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {getIntegrationModule(marketplaceIntegrationId)}
+                      </span>
+                    </div>
                   ) : (
                     <Badge variant="secondary" className="text-xs gap-1">
                       <AlertCircle className="w-3 h-3" />
@@ -174,7 +198,7 @@ export default function LojaVinculoTable({
               <TableCell>
                 {hasBoth ? (
                   <Badge variant="secondary" className="bg-green-100 text-green-800 gap-1">
-                    <Crown className="w-3 h-3" />
+                    <CheckCircle2 className="w-3 h-3" />
                     Completo
                   </Badge>
                 ) : (

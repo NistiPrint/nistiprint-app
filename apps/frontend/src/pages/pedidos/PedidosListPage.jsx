@@ -41,7 +41,10 @@ function PedidosListPage() {
   
   // Estados de seleção
   const [pedidosSelecionados, setPedidosSelecionados] = useState([]);
-  
+
+  // Estados de canais próximos (para highlight na tabela)
+  const [canaisProximosIds, setCanaisProximosIds] = useState([]);
+
   // Estados de modais
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [gerarDemandaModalOpen, setGerarDemandaModalOpen] = useState(false);
@@ -78,6 +81,20 @@ function PedidosListPage() {
       }
     } catch (error) {
       console.error('Erro ao carregar estatísticas:', error);
+    }
+  };
+
+  // Carregar canais próximos (para highlight e contexto)
+  const carregarCanaisProximos = async () => {
+    try {
+      const response = await fetch('/api/v2/pedidos/canais-proximos-coleta');
+      const data = await response.json();
+      if (data.success) {
+        const ids = (data.data.canais_proximos || []).map(c => c.id);
+        setCanaisProximosIds(ids);
+      }
+    } catch (error) {
+      console.error('Erro ao carregar canais próximos:', error);
     }
   };
 
@@ -156,6 +173,7 @@ function PedidosListPage() {
   // Efeito: carregar dados iniciais
   useEffect(() => {
     carregarEstatisticas();
+    carregarCanaisProximos();
   }, []);
 
   // Efeito: recarregar pedidos quando filtros mudam
@@ -207,23 +225,28 @@ function PedidosListPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          config_id: config.config_id,
-          dias: config.dias || 7,
-          situacao_id: 15,
-          async: true,
+          ...config,
+          config_id: config.config_id === 'all' ? null : config.config_id,
+          async: false, // Síncrono para mostrar resultado na tela
         }),
       });
 
       const data = await response.json();
       
       if (data.success) {
-        toast.success(data.data.message || 'Importação iniciada!');
+        const stats = data.data.result;
+        if (stats && stats.totals) {
+          const { orders_synced, errors, orders_listed } = stats.totals;
+          toast.success(
+            `Importação concluída: ${orders_synced} pedidos sincronizados de ${orders_listed} encontrados. ${errors > 0 ? `(${errors} erros)` : ''}`
+          );
+        } else {
+          toast.success(data.data.message || 'Importação concluída!');
+        }
+        
         setImportModalOpen(false);
-        // Recarregar após alguns segundos
-        setTimeout(() => {
-          carregarPedidos();
-          carregarEstatisticas();
-        }, 3000);
+        carregarPedidos();
+        carregarEstatisticas();
       } else {
         toast.error(data.message || 'Erro ao importar pedidos');
       }
@@ -403,6 +426,7 @@ function PedidosListPage() {
           total={total}
           onPageChange={setPage}
           onLimitChange={setLimit}
+          canaisProximosIds={canaisProximosIds}
         />
       </TooltipProvider>
 

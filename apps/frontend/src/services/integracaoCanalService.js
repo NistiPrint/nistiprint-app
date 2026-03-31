@@ -133,6 +133,24 @@ export async function renewToken(instanceId) {
   return response.data;
 }
 
+/**
+ * Sincroniza tokens do Bling do Firestore para o Supabase
+ * @returns {Promise<Object>} Resultado da sincronização
+ */
+export async function syncFirestore() {
+  const response = await api.post('/integracoes/sync-firestore');
+  return response.data;
+}
+
+/**
+ * Obtém análise de status dos vínculos
+ * @returns {Promise<Object>} Análise com completos, incompletos, orfaos, placeholders
+ */
+export async function getAnaliseStatus() {
+  const response = await api.get(`${BASE_URL}/analise-status`);
+  return response.data?.data || null;
+}
+
 export default {
   listarConfiguracoes,
   criarVinculo,
@@ -144,4 +162,6 @@ export default {
   listarCanais,
   listarIntegracoes,
   renewToken,
+  syncFirestore,
+  getAnaliseStatus,
 };

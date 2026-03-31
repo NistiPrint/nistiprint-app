@@ -1,15 +1,15 @@
--- Migration: Corrige ordenação da função list_pedidos_filtrados para ordenar por numero_pedido
--- Data: 2026-03-29
+-- Migration: Remove prioridade de pedidos Flex na ordenação
+-- Data: 2026-03-30
 --
--- Problema: A ordenação estava por created_at, não por numero_pedido
--- Solução: Adicionar ORDER BY numero_pedido DESC (como número, não string)
+-- Problema: Os pedidos Flex estavam aparecendo no topo da lista
+-- Solução: Remover o ORDER BY p.is_flex DESC, mantendo apenas a ordem numérica
 
 -- Remover TODAS as versões da função existente (com diferentes assinaturas)
 DROP FUNCTION IF EXISTS public.list_pedidos_filtrados(INTEGER, INTEGER, BOOLEAN, TEXT, TEXT, TEXT, INTEGER, INTEGER);
 DROP FUNCTION IF EXISTS public.list_pedidos_filtrados(INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT, TEXT, INTEGER, INTEGER);
 DROP FUNCTION IF EXISTS public.list_pedidos_filtrados(INTEGER, INTEGER, BOOLEAN, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER);
 
--- Criar função com ordenação por numero_pedido
+-- Criar função com ordenação apenas por numero_pedido (sem prioridade para Flex)
 CREATE OR REPLACE FUNCTION public.list_pedidos_filtrados(
     p_situacao_pedido_id INTEGER DEFAULT NULL,
     p_canal_venda_id INTEGER DEFAULT NULL,
@@ -115,7 +115,7 @@ GRANT EXECUTE ON FUNCTION public.list_pedidos_filtrados TO anon;
 
 -- Comentário na função
 COMMENT ON FUNCTION public.list_pedidos_filtrados IS
-'Retorna lista de pedidos com filtros avançados, ordenada por numero_pedido (ordem numérica).';
+'Retorna lista de pedidos com filtros avançados, ordenada por numero_pedido (ordem numérica, sem prioridade para Flex).';
 
 -- Testar
 -- SELECT * FROM list_pedidos_filtrados(p_limit => 10);

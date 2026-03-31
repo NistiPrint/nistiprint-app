@@ -397,13 +397,64 @@ def listar_integracoes_instaladas():
     """
     try:
         result = supabase_db.table('installed_integrations').select('*').eq('is_active', True).execute()
-        
+
         return jsonify({
             'success': True,
             'data': result.data or []
         })
     except Exception as e:
         logger.error(f"Erro ao listar integrações: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@integracao_canais_bp.route('/analise-status', methods=['GET'])
+@login_required
+def analisar_status_vinculos():
+    """
+    Retorna análise completa dos vínculos com status detalhado.
+
+    Retorna:
+        {
+            "completos": [...],
+            "incompletos": [...],
+            "orfaos": [...],
+            "placeholders": [...]
+        }
+    """
+    try:
+        analise = integracao_canal_service.analisar_vinculos_com_status()
+
+        return jsonify({
+            'success': True,
+            'data': analise
+        })
+    except Exception as e:
+        logger.error(f"Erro ao analisar status dos vínculos: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@integracao_canais_bp.route('/plataformas-com-status', methods=['GET'])
+@login_required
+def listar_plataformas_com_status():
+    """
+    Lista plataformas com status detalhado de cada vínculo.
+    Similar a /plataformas, mas inclui informações de saúde do vínculo.
+    """
+    try:
+        plataformas = integracao_canal_service.get_vinculos_por_plataforma_com_status()
+
+        return jsonify({
+            'success': True,
+            'data': plataformas
+        })
+    except Exception as e:
+        logger.error(f"Erro ao listar plataformas com status: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -423,17 +474,23 @@ def importar_pedidos_em_andamento():
 
         data = request.get_json() or {}
         config_id = data.get('config_id')
-        dias = int(data.get('dias', 7))
-        situacao_id = int(data.get('situacao_id', 15))
+        dias = data.get('dias')
+        # Aceita situacao_id ou id_situacao (para compatibilidade com exemplo do usuário)
+        situacao_id = int(data.get('situacao_id') or data.get('id_situacao') or 15)
+        
+        data_inicial = data.get('data_inicial') or data.get('dataInicial')
+        data_final = data.get('data_final') or data.get('dataFinal')
+        
         async_flag = data.get('async', True)
         if isinstance(async_flag, str):
             async_flag = async_flag.lower() in ('true', '1', 'yes')
 
-        if not config_id:
-            return jsonify({
-                'success': False,
-                'error': 'config_id é obrigatório (UUID do vínculo em integracao_canais_config)'
-            }), 400
+        # Se não houver config_id, mas houver id_loja, tentar resolver config_id
+        if not config_id and data.get('id_loja'):
+            id_loja = int(data.get('id_loja'))
+            res = integracao_canal_service.get_config_by_bling_loja_id(id_loja)
+            if res:
+                config_id = res['id']
 
         if async_flag:
             celery_app.send_task(
@@ -442,6 +499,8 @@ def importar_pedidos_em_andamento():
                     'config_id': config_id,
                     'dias': dias,
                     'situacao_id': situacao_id,
+                    'data_inicial': data_inicial,
+                    'data_final': data_final
                 }
             )
             return jsonify({
@@ -454,11 +513,13 @@ def importar_pedidos_em_andamento():
             config_id=config_id,
             dias=dias,
             situacao_id=situacao_id,
+            data_inicial=data_inicial,
+            data_final=data_final
         )
         return jsonify({
             'success': True,
             'queued': False,
-            'data': result
+            'result': result
         })
 
     except Exception as e:

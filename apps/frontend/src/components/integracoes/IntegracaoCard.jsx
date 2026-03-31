@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -6,21 +6,21 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import {
   Package,
   Link,
-  Edit2,
-  Trash2,
   CheckCircle2,
-  XCircle,
   Building2,
   AlertCircle,
   HelpCircle,
-  RefreshCw
+  AlertTriangle,
+  PlugZap
 } from 'lucide-react';
 import LojaVinculoTable from './LojaVinculoTable';
-import * as integracaoCanalService from '@/services/integracaoCanalService';
 
 /**
  * Card de configuração de integração por plataforma
- * Mostra status separado para Bling (ERP) e Marketplace
+ * Mostra os vínculos entre canais de venda e lojas Bling.
+ *
+ * ⚠️ IMPORTANTE: A renovação de tokens deve ser feita na aba "Integrações",
+ * não nesta tela de vínculos.
  */
 export default function IntegracaoCard({
   plataforma,
@@ -31,9 +31,6 @@ export default function IntegracaoCard({
   onDeleteVinculo,
   onAddVinculo
 }) {
-  const [renewingId, setRenewingId] = useState(null);
-  const [renewError, setRenewError] = useState(null);
-
   // Agrupar vínculos por canal
   const vinculosPorCanal = vinculos.reduce((acc, vinculo) => {
     const canalNome = vinculo.canal_nome || `Canal ${vinculo.canal_venda_id}`;
@@ -71,37 +68,85 @@ export default function IntegracaoCard({
     return colors[nome?.toLowerCase()] || 'bg-gray-500';
   };
 
-  // Calcular estatísticas
-  const totalVinculos = vinculos.length;
-  const vinculosAtivos = vinculos.filter(v => v.is_active).length;
-  const vinculosCompletos = vinculos.filter(v => v.bling_integration_id && v.marketplace_integration_id).length;
-  const vinculosIncompletos = totalVinculos - vinculosCompletos;
-  
+  // Criar mapa de integrações por ID para lookup rápido
+  const integracaoMap = React.useMemo(() => {
+    const map = {};
+    integracoes.forEach(i => { map[i.id] = i; });
+    return map;
+  }, [integracoes]);
+
+  // Analisar status de cada vínculo
+  const statusAnalise = React.useMemo(() => {
+    let orfaos = 0;
+    let placeholders = 0;
+    let incompletos = 0;
+    let completos = 0;
+
+    vinculos.forEach(v => {
+      const blingInt = integracaoMap[v.bling_integration_id];
+      const mpInt = integracaoMap[v.marketplace_integration_id];
+
+      const blingOk = blingInt?.is_active && blingInt?.module_id === 'bling';
+      const mpOk = mpInt?.is_active && mpInt?.module_id !== 'bling';
+
+      const blingOrfao = v.bling_integration_id && !blingInt;
+      const mpOrfao = v.marketplace_integration_id && !mpInt;
+      const isPlaceholder = blingInt?.is_placeholder || mpInt?.is_placeholder;
+
+      if (blingOrfao || mpOrfao) {
+        orfaos++;
+      } else if (isPlaceholder) {
+        placeholders++;
+      } else if (blingOk && mpOk) {
+        completos++;
+      } else {
+        incompletos++;
+      }
+    });
+
+    return { orfaos, placeholders, incompletos, completos, total: vinculos.length };
+  }, [vinculos, integracaoMap]);
+
   // Verificar se há integração marketplace ativa
   const marketplaceIntegrations = integracoes.filter(i => i.module_id === plataforma.toLowerCase());
   const integracaoAtiva = marketplaceIntegrations.find(i => i.is_active);
 
-  // Função para renovar token (apenas Shopee)
-  async function handleRenewToken(instanceId) {
-    if (!window.confirm('Deseja renovar o token desta integração?')) {
-      return;
+  // Determinar status geral da plataforma
+  const getStatusBadge = () => {
+    if (statusAnalise.orfaos > 0) {
+      return (
+        <Badge variant="destructive" className="text-xs gap-1">
+          <AlertCircle className="w-3 h-3" />
+          {statusAnalise.orfaos} órfão(s)
+        </Badge>
+      );
     }
-
-    setRenewingId(instanceId);
-    setRenewError(null);
-
-    try {
-      await integracaoCanalService.renewToken(instanceId);
-      alert('Token renovado com sucesso!');
-      setRenewError(null);
-    } catch (err) {
-      console.error('Erro ao renovar token:', err);
-      alert(`Erro ao renovar token: ${err.message || 'Tente novamente'}`);
-      setRenewError(err.message);
-    } finally {
-      setRenewingId(null);
+    if (statusAnalise.placeholders > 0) {
+      return (
+        <Badge variant="secondary" className="text-xs gap-1 bg-yellow-100 text-yellow-800 border-yellow-300">
+          <PlugZap className="w-3 h-3" />
+          {statusAnalise.placeholders} pendente(s)
+        </Badge>
+      );
     }
-  }
+    if (statusAnalise.incompletos > 0) {
+      return (
+        <Badge variant="outline" className="text-xs gap-1 border-amber-500 text-amber-600">
+          <AlertTriangle className="w-3 h-3" />
+          {statusAnalise.incompletos} incompleto(s)
+        </Badge>
+      );
+    }
+    if (statusAnalise.completos > 0) {
+      return (
+        <Badge variant="secondary" className="text-xs gap-1">
+          <CheckCircle2 className="w-3 h-3 mr-1 text-green-600" />
+          {statusAnalise.completos} completo(s)
+        </Badge>
+      );
+    }
+    return null;
+  };
 
   return (
     <Card className="border-2 hover:shadow-lg transition-shadow">
@@ -120,58 +165,48 @@ export default function IntegracaoCard({
               </div>
             )}
             <div>
-              <CardTitle className="text-lg capitalize flex items-center gap-2">
+              <CardTitle className="text-lg capitalize flex items-center gap-2 flex-wrap">
                 {plataforma}
-                {integracaoAtiva && (
-                  <Badge variant="secondary" className="text-xs">
-                    <CheckCircle2 className="w-3 h-3 mr-1 text-green-600" />
-                    Integrada
-                  </Badge>
-                )}
-                {/* Botão Renovar Token - Apenas para Shopee */}
-                {plataforma.toLowerCase() === 'shopee' && integracaoAtiva && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleRenewToken(integracaoAtiva.id)}
-                    disabled={renewingId === integracaoAtiva.id}
-                    className="h-6 text-xs"
-                  >
-                    {renewingId === integracaoAtiva.id ? (
-                      <><RefreshCw className="w-3 h-3 mr-1 animate-spin" /> Renovando...</>
-                    ) : (
-                      <><RefreshCw className="w-3 h-3 mr-1" /> Renovar Token</>
-                    )}
-                  </Button>
-                )}
-                {renewError && plataforma.toLowerCase() === 'shopee' && (
-                  <Badge variant="destructive" className="text-xs">
-                    <AlertCircle className="w-3 h-3 mr-1" />
-                    Erro no token
-                  </Badge>
-                )}
+                {getStatusBadge()}
               </CardTitle>
               <p className="text-sm text-muted-foreground">
-                {totalVinculos} {totalVinculos === 1 ? 'vínculo' : 'vínculos'} • {vinculosAtivos} ativos
+                {statusAnalise.total} {statusAnalise.total === 1 ? 'vínculo' : 'vínculos'} • {statusAnalise.completos} completos
               </p>
-              {vinculosIncompletos > 0 && (
+
+              {/* Mensagens de alerta */}
+              {statusAnalise.orfaos > 0 && (
                 <Tooltip>
                   <TooltipTrigger>
-                    <p className="text-xs text-amber-600 flex items-center gap-1 mt-1 cursor-help">
+                    <p className="text-xs text-red-600 flex items-center gap-1 mt-1 cursor-help">
                       <AlertCircle className="w-3 h-3" />
-                      {vinculosIncompletos} incompleto(s)
+                      {statusAnalise.orfaos} vínculo(s) com integração inexistente
                     </p>
                   </TooltipTrigger>
                   <TooltipContent className="max-w-xs">
                     <p className="text-xs">
-                      <strong>Vínculos incompletos</strong> faltam uma ou ambas as integrações:
+                      <strong>Vínculos órfãos</strong> referenciam integrações que não existem mais.
                     </p>
-                    <ul className="text-xs mt-1 list-disc list-inside">
-                      <li>Integração Bling (ERP)</li>
-                      <li>Integração Marketplace</li>
-                    </ul>
                     <p className="text-xs mt-2 text-muted-foreground">
-                      Clique em "Adicionar Vínculo" para completar.
+                      Execute o script de correção ou remova os vínculos manualmente.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              )}
+
+              {statusAnalise.placeholders > 0 && (
+                <Tooltip>
+                  <TooltipTrigger>
+                    <p className="text-xs text-yellow-600 flex items-center gap-1 mt-1 cursor-help">
+                      <PlugZap className="w-3 h-3" />
+                      {statusAnalise.placeholders} integração(ões) precisa(m) configuração
+                    </p>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p className="text-xs">
+                      <strong>Placeholders</strong> são integrações criadas automaticamente.
+                    </p>
+                    <p className="text-xs mt-2">
+                      Vá para <strong>Integrações</strong> e configure cada uma.
                     </p>
                   </TooltipContent>
                 </Tooltip>

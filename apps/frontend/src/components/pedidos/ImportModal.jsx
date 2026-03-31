@@ -28,7 +28,12 @@ export default function ImportModal({
 
   // Estado para Bling
   const [configId, setConfigId] = useState('');
+  const [blingConfigs, setBlingConfigs] = useState([]);
   const [dias, setDias] = useState(7);
+  const [useDateRange, setUseDateRange] = useState(false);
+  const [blingStartDate, setBlingStartDate] = useState('');
+  const [blingEndDate, setBlingEndDate] = useState('');
+  const [situacaoId, setSituacaoId] = useState(15);
 
   // Estado para Planilha (igual ao Consolidar)
   const [file, setFile] = useState(null);
@@ -38,29 +43,46 @@ export default function ImportModal({
   const [printOrders, setPrintOrders] = useState(false);
   const [isFlex, setIsFlex] = useState(false);
 
-  // Carregar canais ao abrir o modal
+  // Carregar canais e configurações ao abrir o modal
   useEffect(() => {
     if (open) {
+      // Carregar canais para aba Planilha
       fetch('/api/v2/cadastros/canal-venda?active_only=true')
         .then((res) => res.json())
         .then((data) => {
           if (data.canais) {
             setChannels(data.canais);
-            // Selecionar primeiro canal por padrão
             if (data.canais.length > 0 && !canal) {
               setCanal(data.canais[0].slug || data.canais[0].nome);
             }
           }
-        })
-        .catch((error) => {
-          toast.error('Erro ao carregar canais de venda');
-          console.error('Erro ao carregar canais:', error);
+        });
+
+      // Carregar configurações de vínculo para aba Bling
+      fetch('/api/v2/integracao-canais/configuracoes')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success && data.data) {
+            setBlingConfigs(data.data);
+          }
         });
     }
   }, [open]);
 
   const handleBlingSubmit = () => {
-    onImportarBling({ config_id: configId || null, dias });
+    const payload = { 
+      config_id: configId || null, 
+      situacao_id: situacaoId 
+    };
+
+    if (useDateRange) {
+      payload.data_inicial = blingStartDate;
+      payload.data_final = blingEndDate;
+    } else {
+      payload.dias = dias;
+    }
+
+    onImportarBling(payload);
   };
 
   const handlePlanilhaSubmit = () => {
@@ -232,42 +254,92 @@ export default function ImportModal({
               <CardContent className="space-y-4">
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <p className="text-sm text-blue-700">
-                    Busca pedidos "Em Andamento" diretamente da API do Bling.
-                    Os pedidos serão importados e poderão ser consolidados em demanda.
+                    Busca pedidos diretamente da API do Bling por situação e período.
                   </p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="config-id">
-                      Configuração (Opcional)
-                    </Label>
-                    <Input
-                      id="config-id"
-                      value={configId}
-                      onChange={(e) => setConfigId(e.target.value)}
-                      placeholder="UUID do vínculo"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Deixe em branco para usar todas as configurações
-                    </p>
+                    <Label htmlFor="config-id">Loja/Vínculo</Label>
+                    <Select value={configId} onValueChange={setConfigId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Todas as lojas ativas" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todas as lojas ativas</SelectItem>
+                        {blingConfigs.map((cfg) => (
+                          <SelectItem key={cfg.id} value={cfg.id}>
+                            {cfg.plataforma_nome} - {cfg.canal_nome || 'Sem nome'} ({cfg.bling_loja_id})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
 
                   <div className="space-y-2">
+                    <Label htmlFor="situacao-id">ID Situação Bling</Label>
+                    <Input
+                      id="situacao-id"
+                      type="number"
+                      value={situacaoId}
+                      onChange={(e) => setSituacaoId(parseInt(e.target.value) || 15)}
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      6: Em Aberto, 15: Em Andamento, 9: Atendido, 24: Verificado
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 pt-2">
+                  <Input
+                    type="checkbox"
+                    id="use-date-range"
+                    checked={useDateRange}
+                    onChange={(e) => setUseDateRange(e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <Label htmlFor="use-date-range" className="cursor-pointer font-medium">
+                    Usar intervalo de datas explícito
+                  </Label>
+                </div>
+
+                {useDateRange ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-1">
+                    <div className="space-y-2">
+                      <Label htmlFor="bling-start-date">Data Inicial</Label>
+                      <Input
+                        id="bling-start-date"
+                        type="date"
+                        value={blingStartDate}
+                        onChange={(e) => setBlingStartDate(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="bling-end-date">Data Final</Label>
+                      <Input
+                        id="bling-end-date"
+                        type="date"
+                        value={blingEndDate}
+                        onChange={(e) => setBlingEndDate(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
                     <Label htmlFor="dias">
                       <Clock className="h-4 w-4 inline mr-1" />
-                      Período (dias)
+                      Período (últimos X dias)
                     </Label>
                     <Input
                       id="dias"
                       type="number"
                       min="1"
-                      max="30"
+                      max="90"
                       value={dias}
                       onChange={(e) => setDias(parseInt(e.target.value) || 7)}
                     />
                   </div>
-                </div>
+                )}
 
                 <div className="flex gap-3 pt-4">
                   <Button
