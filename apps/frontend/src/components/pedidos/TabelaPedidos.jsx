@@ -1,13 +1,13 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Card, CardContent } from '@/components/ui/card';
-import { Loader2, ChevronLeft, ChevronRight, Zap } from 'lucide-react';
-import { Link } from 'react-router-dom';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { ChevronLeft, ChevronRight, Loader2, Zap } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 export default function TabelaPedidos({
   pedidos,
@@ -20,6 +20,7 @@ export default function TabelaPedidos({
   total,
   onPageChange,
   onLimitChange,
+  canaisProximosIds = [],  // IDs dos canais com coleta próxima para highlight
 }) {
   const totalPages = Math.ceil(total / limit);
   const todosSelecionados = pedidos.length > 0 && pedidosSelecionados.length === pedidos.length;
@@ -27,14 +28,17 @@ export default function TabelaPedidos({
   // Formatador de data
   const formatarData = (dataStr) => {
     if (!dataStr) return '-';
-    return new Date(dataStr).toLocaleDateString('pt-BR');
+    const date = new Date(dataStr);
+    if (isNaN(date.getTime())) return '-';
+    return date.toLocaleDateString('pt-BR');
   };
 
   // Formatador de data/hora para "Enviar Até"
   const formatarDataHora = (dataStr) => {
-    if (!dataStr) return 'N/A';
+    if (!dataStr) return '-';
     try {
       const date = new Date(dataStr);
+      if (isNaN(date.getTime())) return '-';
       return date.toLocaleDateString('pt-BR', {
         day: '2-digit',
         month: '2-digit',
@@ -43,7 +47,7 @@ export default function TabelaPedidos({
         minute: '2-digit'
       });
     } catch {
-      return dataStr;
+      return '-';
     }
   };
 
@@ -94,8 +98,21 @@ export default function TabelaPedidos({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {pedidos.map((pedido) => (
-                <TableRow key={pedido.id} className={pedido.is_flex ? 'bg-orange-50/50 hover:bg-orange-50' : ''}>
+              {pedidos.map((pedido) => {
+                // Verificar se pedido é de canal com coleta próxima
+                const isCanalProximo = canaisProximosIds.length > 0 && 
+                  pedido.canal_venda_id && 
+                  canaisProximosIds.includes(pedido.canal_venda_id);
+                
+                // Determinar classe da linha
+                const rowClass = pedido.is_flex 
+                  ? 'bg-orange-50/50 hover:bg-orange-50' 
+                  : isCanalProximo 
+                    ? 'bg-blue-50/30 hover:bg-blue-50' 
+                    : '';
+
+                return (
+                <TableRow key={pedido.id} className={rowClass}>
                   <TableCell>
                     <Checkbox
                       checked={pedidosSelecionados.includes(pedido.id)}
@@ -118,6 +135,11 @@ export default function TabelaPedidos({
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-col gap-1">
+                      {isCanalProximo && (
+                        <Badge variant="outline" className="w-fit bg-blue-100 text-blue-700 border-blue-300 text-xs">
+                          🕐 Coleta Próxima
+                        </Badge>
+                      )}
                       <span className="font-medium">#{pedido.numero_pedido}</span>
                       {pedido.codigo_pedido_externo && (
                         <span className="text-xs text-muted-foreground font-mono">
@@ -175,7 +197,8 @@ export default function TabelaPedidos({
                     </Button>
                   </TableCell>
                 </TableRow>
-              ))}
+              );
+              })}
             </TableBody>
           </Table>
         </CardContent>
@@ -321,8 +344,17 @@ function CanalIcon({ canalNome }) {
 
   // Fallback: exibir nome do canal
   return (
-    <Badge variant="outline" className="text-xs">
-      {canalNome || 'Unknown'}
-    </Badge>
+    <Tooltip>
+      <TooltipTrigger>
+        <Badge variant="outline" className={`text-xs ${!canalNome ? 'border-red-300 text-red-500' : ''}`}>
+          {canalNome || 'Unknown'}
+        </Badge>
+      </TooltipTrigger>
+      {!canalNome && (
+        <TooltipContent>
+          <p>Canal não identificado. Verifique o mapeamento do "ID da Loja" em Configurações {'>'} Canais.</p>
+        </TooltipContent>
+      )}
+    </Tooltip>
   );
 }

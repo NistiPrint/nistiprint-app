@@ -549,6 +549,143 @@ class IntegracaoCanalService:
             logger.error(f"resolver_por_bling_integration_e_loja: {e}")
             return None
 
+    def analisar_vinculos_com_status(self) -> Dict[str, Any]:
+        """
+        Analisa todos os vínculos e retorna status detalhado.
+
+        Returns:
+            dict com:
+                - completos: vínculos com ambas integrações ativas
+                - incompletos: vínculos com apenas uma integração ativa
+                - orfaos: vínculos com integração que não existe
+                - placeholders: vínculos com integração placeholder
+        """
+        vinculos = self.listar_configuracoes(include_inactive=False)
+
+        # Buscar todas as integrações para montar mapa
+        integrations_result = supabase_db.table('installed_integrations').select('*').execute()
+        integrations = integrations_result.data or []
+        integration_map = {i['id']: i for i in integrations}
+
+        resultados = {
+            'completos': [],
+            'incompletos': [],
+            'orfaos': [],
+            'placeholders': []
+        }
+
+        for vinculo in vinculos:
+            bling_int_id = vinculo.get('bling_integration_id')
+            mp_int_id = vinculo.get('marketplace_integration_id')
+
+            bling_int = integration_map.get(bling_int_id) if bling_int_id else None
+            mp_int = integration_map.get(mp_int_id) if mp_int_id else None
+
+            # Verificar status
+            bling_ok = (bling_int and bling_int.get('is_active', False) and
+                       bling_int.get('module_id') == 'bling')
+            mp_ok = (mp_int and mp_int.get('is_active', False) and
+                    mp_int.get('module_id') != 'bling')
+
+            # Verificar se é placeholder
+            is_placeholder = ((bling_int and bling_int.get('is_placeholder')) or
+                            (mp_int and mp_int.get('is_placeholder')))
+
+            # Verificar se há integração órfã (ID não existe)
+            bling_orfao = bling_int_id and not bling_int
+            mp_orfao = mp_int_id and not mp_int
+
+            info = {
+                'vinculo_id': vinculo['id'],
+                'canal_venda_id': vinculo['canal_venda_id'],
+                'canal_nome': vinculo.get('canal_nome'),
+                'canal_slug': vinculo.get('canal_slug'),
+                'bling_loja_id': vinculo['bling_loja_id'],
+                'plataforma': vinculo.get('plataforma_nome'),
+                'bling_integration_id': bling_int_id,
+                'marketplace_integration_id': mp_int_id,
+            }
+
+            if bling_orfao or mp_orfao:
+                info['problema'] = {
+                    'bling_orfao': bling_orfao,
+                    'marketplace_orfao': mp_orfao,
+                }
+                info['integrations_missing'] = {
+                    'bling': bling_int_id if bling_orfao else None,
+                    'marketplace': mp_int_id if mp_orfao else None,
+                }
+                resultados['orfaos'].append(info)
+            elif is_placeholder:
+                info['placeholder_info'] = {
+                    'bling': bling_int.get('instance_name') if bling_int else None,
+                    'marketplace': mp_int.get('instance_name') if mp_int else None,
+                }
+                resultados['placeholders'].append(info)
+            elif bling_ok and mp_ok:
+                info['integrations'] = {
+                    'bling': bling_int.get('instance_name'),
+                    'marketplace': mp_int.get('instance_name'),
+                }
+                resultados['completos'].append(info)
+            else:
+                info['incompleto_info'] = {
+                    'bling_ok': bling_ok,
+                    'marketplace_ok': mp_ok,
+                    'bling_instance': bling_int.get('instance_name') if bling_int else None,
+                    'marketplace_instance': mp_int.get('instance_name') if mp_int else None,
+                    'bling_is_placeholder': bling_int.get('is_placeholder') if bling_int else False,
+                    'marketplace_is_placeholder': mp_int.get('is_placeholder') if mp_int else False,
+                }
+                resultados['incompletos'].append(info)
+
+        return resultados
+
+    def get_vinculos_por_plataforma_com_status(self) -> List[Dict[str, Any]]:
+        """
+        Retorna plataformas agrupadas com status de cada vínculo.
+
+        Returns:
+            Lista de plataformas com seus vínculos e status detalhado
+        """
+        analise = self.analisar_vinculos_com_status()
+
+        # Agrupar todos os vínculos por plataforma
+        todas_plataformas = {}
+
+        for categoria in ['completos', 'incompletos', 'orfaos', 'placeholders']:
+            for vinculo in analise[categoria]:
+                plataforma = vinculo.get('plataforma', 'unknown')
+
+                if plataforma not in todas_plataformas:
+                    todas_plataformas[plataforma] = {
+                        'nome': plataforma,
+                        'vinculos': [],
+                        'total_vinculos': 0,
+                        'vinculos_completos': 0,
+                        'vinculos_incompletos': 0,
+                        'vinculos_orfaos': 0,
+                        'vinculos_placeholders': 0,
+                    }
+
+                vinculo_com_status = {
+                    **vinculo,
+                    'status_categoria': categoria,
+                }
+                todas_plataformas[plataforma]['vinculos'].append(vinculo_com_status)
+                todas_plataformas[plataforma]['total_vinculos'] += 1
+
+                # Atualizar contadores
+                todas_plataformas[plataforma][f'vinculos_{categoria}'] += 1
+
+        # Adicionar indicador de saúde da plataforma
+        for plataforma in todas_plataformas.values():
+            total = plataforma['total_vinculos']
+            completos = plataforma['vinculos_completos']
+            plataforma['saude'] = 'saudavel' if completos == total else 'atencao' if completos > 0 else 'critico'
+
+        return list(todas_plataformas.values())
+
     def clear_cache(self):
         """Limpa o cache em memória."""
         self._cache.clear()

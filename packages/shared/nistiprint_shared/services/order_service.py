@@ -38,7 +38,7 @@ class OrderService:
 
         try:
             # 1. Tentar encontrar o pedido Core existente
-            existing_order = self.pedidos_table.select("id, situacao_pedido_id").eq('codigo_pedido_externo', external_id).execute()
+            existing_order = self.pedidos_table.select("id, situacao_pedido_id, is_flex, servico_logistico").eq('codigo_pedido_externo', external_id).execute()
             
             core_id = None
             old_status = None
@@ -81,11 +81,32 @@ class OrderService:
                 if platform.upper() != 'BLING':
                     # Dados enriquecidos da Shopee (sempre atualizar se vierem)
                     if order_data.get('is_flex') is not None:
-                        update_core['is_flex'] = order_data.get('is_flex')
+                        # PROTEÇÃO: Se já for Flex, não permitir voltar para False via planilha
+                        # a menos que o status atual permita essa mudança (ex: raras correções)
+                        # No momento, vamos ser conservadores: uma vez Flex, sempre Flex.
+                        current_is_flex = existing_order.data[0].get('is_flex', False)
+                        if current_is_flex and order_data.get('is_flex') is False:
+                            logging.info(f"Ignorando atualização de is_flex para FALSE no pedido {core_id} (já é TRUE)")
+                            if 'is_flex' in update_core:
+                                del update_core['is_flex']
+                        else:
+                            update_core['is_flex'] = order_data.get('is_flex')
+
                     if order_data.get('data_limite_envio'):
                         update_core['data_limite_envio'] = order_data.get('data_limite_envio')
+                    
                     if order_data.get('servico_logistico'):
-                        update_core['servico_logistico'] = order_data.get('servico_logistico')
+                        # PROTEÇÃO similar para servico_logistico
+                        current_servico = existing_order.data[0].get('servico_logistico', '')
+                        new_servico = order_data.get('servico_logistico', '')
+                        
+                        # Se o atual é Entrega Rápida e o novo não é, ignore
+                        if 'ENTREGA RÁPIDA' in str(current_servico).upper() and 'ENTREGA RÁPIDA' not in str(new_servico).upper():
+                             logging.info(f"Ignorando atualização de servico_logistico no pedido {core_id} para preservar Flex")
+                             if 'servico_logistico' in update_core:
+                                 del update_core['servico_logistico']
+                        else:
+                            update_core['servico_logistico'] = order_data.get('servico_logistico')
                     
                     # CRÍTICO: Atualizar informacoes_cliente com shipping_carrier e outros dados da Shopee
                     # Isso garante que o trigger SQL possa calcular is_flex automaticamente

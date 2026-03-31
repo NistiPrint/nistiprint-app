@@ -3,14 +3,18 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
-import { X, Zap, Loader2 } from 'lucide-react';
+import { X, Zap, Loader2, ChevronDown, ChevronUp, Filter } from 'lucide-react';
 import { useEffect, useState } from 'react';
+
+import FiltrosContextuais from './FiltrosContextuais';
 
 export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltros }) {
   const [canais, setCanais] = useState([]);
   const [statusList, setStatusList] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [filtrosAbertos, setFiltrosAbertos] = useState(false);
 
   // Buscar canais e status ao montar o componente
   useEffect(() => {
@@ -49,10 +53,64 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
     filtros.delivery_end ||
     filtros.is_flex;
 
+  // Handler para filtros contextuais
+  const handleFiltroContextual = (filtroContextual) => {
+    const novosFiltros = {};
+    
+    switch (filtroContextual.tipo) {
+      case 'canal':
+        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id;
+        break;
+      case 'flex':
+        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id;
+        novosFiltros.is_flex = true;
+        break;
+      case 'sem_demanda':
+        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id;
+        novosFiltros.has_demanda = false;
+        break;
+    }
+    
+    onFiltroChange(novosFiltros);
+  };
+
   return (
-    <Card className="mb-4">
-      <CardContent className="pt-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    <>
+      {/* Filtros Contextuais (baseados em horário de coleta) */}
+      <FiltrosContextuais onFiltroContextual={handleFiltroContextual} />
+
+      {/* Filtros Manuais (colapsável) */}
+      <Card className="mb-4">
+        <div className="flex items-center justify-between p-4 border-b cursor-pointer" onClick={() => setFiltrosAbertos(!filtrosAbertos)}>
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-muted-foreground" />
+            <span className="font-medium text-sm">Filtros Manuais</span>
+            {hasFiltros && (
+              <Badge variant="secondary" className="text-xs">
+                Ativos
+              </Badge>
+            )}
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0"
+            onClick={(e) => {
+              e.stopPropagation();
+              setFiltrosAbertos(!filtrosAbertos);
+            }}
+          >
+            {filtrosAbertos ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+        
+        {filtrosAbertos && (
+          <CardContent className="pt-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {/* Busca */}
           <div className="space-y-2">
             <Label>Busca</Label>
@@ -183,7 +241,7 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
               <Switch
                 id="filtro-flex"
                 checked={filtros.is_flex === true}
-                onCheckedChange={(checked) => 
+                onCheckedChange={(checked) =>
                   onFiltroChange({ is_flex: checked ? true : null })
                 }
               />
@@ -212,7 +270,9 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
             </Button>
           </div>
         )}
-      </CardContent>
-    </Card>
+          </CardContent>
+        )}
+      </Card>
+    </>
   );
 }

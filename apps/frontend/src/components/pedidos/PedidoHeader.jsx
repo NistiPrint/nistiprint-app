@@ -95,7 +95,7 @@ export default function PedidoHeader({
               <Copy className="w-3 h-3 mr-1" />
               Copiar ID
             </Button>
-            {pedido.logistica?.canal_venda?.nome && (
+            {pedido.logistica?.canal_venda?.nome ? (
               <>
                 <span>•</span>
                 <Badge variant="outline" className="text-xs" style={{
@@ -103,6 +103,16 @@ export default function PedidoHeader({
                   color: pedido.logistica.canal_venda.cor
                 }}>
                   {pedido.logistica.canal_venda.nome}
+                </Badge>
+              </>
+            ) : (
+              <>
+                <span>•</span>
+                <Badge variant="destructive" className="text-xs bg-red-50 text-red-600 border-red-200">
+                  Canal Não Mapeado 
+                  {pedido.cliente?.informacoes_adicionais?.bling_loja_id && 
+                    ` (ID Loja: ${pedido.cliente.informacoes_adicionais.bling_loja_id})`
+                  }
                 </Badge>
               </>
             )}

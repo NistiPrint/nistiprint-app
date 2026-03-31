@@ -899,7 +899,9 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
                     } for _, row in order_rows.iterrows()
                 ],
                 "totalProdutos": float(first_row.get('Total pago pelo comprador', 0)) if 'Total pago pelo comprador' in first_row else 0,
-                "situacao": {"id": "IMPORTADO_PLANILHA"}
+                "situacao": {"id": "IMPORTADO_PLANILHA"},
+                "is_flex": is_flex,
+                "servico_logistico": "Entrega Rápida" if is_flex else first_row.get('Opção de envio')
             }
             bling_orders_data.append(basic_order)
 

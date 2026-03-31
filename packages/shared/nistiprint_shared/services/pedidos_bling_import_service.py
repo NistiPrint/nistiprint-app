@@ -160,12 +160,14 @@ def _bling_client_for_config(cfg: Dict[str, Any]) -> BlingClient:
 
 
 def run_fetch_pedidos_em_andamento(
-    dias: int = 7,
+    dias: Optional[int] = None,
     situacao_id: int = 15,
     config_id: Optional[str] = None,
     config_ids: Optional[List[str]] = None,
     only_plataformas: Optional[List[str]] = None,
     limit_pedidos: Optional[int] = None,
+    data_inicial: Optional[str] = None,
+    data_final: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Busca pedidos no Bling por loja configurada e sincroniza no core.
@@ -173,17 +175,21 @@ def run_fetch_pedidos_em_andamento(
     - Se config_id ou config_ids forem informados, processa apenas esses vínculos.
     - Caso contrário, processa todos os vínculos ativos (uso avançado).
     """
-    try:
-        dias = int(dias or 7)
-        if dias < 1:
-            dias = 1
-    except Exception:
-        dias = 7
+    if not data_inicial or not data_final:
+        try:
+            dias_val = int(dias or 7)
+            if dias_val < 1:
+                dias_val = 1
+        except Exception:
+            dias_val = 7
 
-    start = datetime.utcnow() - timedelta(days=dias)
-    end = datetime.utcnow()
-    data_inicial = _iso_date(start)
-    data_final = _iso_date(end)
+        start = datetime.utcnow() - timedelta(days=dias_val)
+        end = datetime.utcnow()
+        data_inicial = _iso_date(start)
+        data_final = _iso_date(end)
+    else:
+        # Se datas foram fornecidas, ignorar 'dias'
+        pass
 
     plataformas_filter = None
     if only_plataformas:

@@ -255,7 +255,8 @@ class OrderSyncService:
                 'informacoes_cliente': {
                     'servico_logistico': servico_logistico,
                     'contato_id': contato.get('id'),
-                    'numero_loja': order_sn
+                    'numero_loja': order_sn,
+                    'bling_loja_id': loja_id
                 }
             }
 
@@ -330,7 +331,8 @@ class OrderSyncService:
         """
         mapeamento = {
             6: 1,   # Em Aberto -> Em Aberto
-            15: 2,  # Em Andamento -> Em Andamento/Produção
+            15: 2,  # Em Andamento -> Pago/Em Andamento
+            24: 4,  # Verificado -> Pronto para Envio (Produzido/Checkout)
             9: 5,   # Atendido -> Enviado
             12: 7,  # Cancelado -> Cancelado
             18: 5,  # Arquivado -> Enviado

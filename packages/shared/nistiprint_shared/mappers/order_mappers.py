@@ -101,7 +101,7 @@ class ShopeeMapper(BaseOrderMapper):
             },
             "shipping": {
                 "service": shipping_carrier,
-                "is_flex": any(x in str(shipping_carrier).upper() for x in ["FLEX", "DIRETA", "SPX"]),
+                "is_flex": 'ENTREGA RÁPIDA' in str(shipping_carrier).upper() or 'ENTREGA RAPIDA' in str(shipping_carrier).upper(),
                 "estimated_delivery": BaseOrderMapper._to_iso(raw.get('ship_by_date')),
                 "address": recipient
             },

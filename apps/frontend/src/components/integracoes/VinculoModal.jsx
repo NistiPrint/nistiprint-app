@@ -177,7 +177,12 @@ export default function VinculoModal({
                   <HelpCircle className="h-3 w-3 text-muted-foreground" />
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs">
-                  <p className="text-xs">O canal de venda interno que será vinculado a esta loja Bling</p>
+                  <p className="text-xs">
+                    <strong>Canal de venda interno</strong> que será vinculado a esta loja Bling.
+                  </p>
+                  <p className="text-xs mt-1 text-muted-foreground">
+                    Os canais são configurados em "Cadastros → Canais de Venda" e representam suas frentes de venda.
+                  </p>
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -207,7 +212,12 @@ export default function VinculoModal({
                   <HelpCircle className="h-3 w-3 text-muted-foreground" />
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs">
-                  <p className="text-xs">Plataforma de marketplace (Shopee, Amazon, etc.)</p>
+                  <p className="text-xs">
+                    <strong>Plataforma de marketplace</strong> (Shopee, Amazon, etc.) onde seus produtos são vendidos.
+                  </p>
+                  <p className="text-xs mt-1 text-muted-foreground">
+                    Esta plataforma será vinculada a uma loja no Bling e a uma instância de integração.
+                  </p>
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -282,10 +292,13 @@ export default function VinculoModal({
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs">
                   <p className="text-xs">
-                    <strong>Opcional.</strong> Selecione a conta Bling que será usada para consultar e atualizar pedidos deste vínculo.
+                    <strong>Selecione uma instância Bling</strong> que será usada para consultar e atualizar pedidos deste vínculo.
                   </p>
-                  <p className="text-xs mt-1 text-muted-foreground">
-                    Deixe "Nenhuma" se quiser usar apenas o marketplace.
+                  <p className="text-xs mt-2 text-muted-foreground">
+                    Cada instância representa uma conta Bling diferente. Você pode instalar o Bling múltiplas vezes na aba "Integrações".
+                  </p>
+                  <p className="text-xs mt-1 text-amber-600 font-medium">
+                    ⚠️ Deixe "Nenhuma" se quiser usar apenas o marketplace.
                   </p>
                 </TooltipContent>
               </Tooltip>
@@ -297,13 +310,13 @@ export default function VinculoModal({
                 onValueChange={(value) => setFormData(prev => ({ ...prev, bling_integration_id: value === 'none' ? null : value }))}
               >
                 <SelectTrigger className="pl-9">
-                  <SelectValue placeholder="Selecione a integração Bling" />
+                  <SelectValue placeholder="Selecione a instância Bling" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">Nenhuma (apenas marketplace)</SelectItem>
                   {blingIntegrations.map((integ) => (
                     <SelectItem key={integ.id} value={integ.id.toString()}>
-                      {integ.instance_name}
+                      {integ.instance_name} {integ.cnpj && `(CNPJ: ${integ.cnpj})`}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -323,10 +336,13 @@ export default function VinculoModal({
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs">
                   <p className="text-xs">
-                    <strong>Opcional.</strong> Selecione a integração com a plataforma de venda (Shopee, Amazon, etc.) para este vínculo.
+                    <strong>Selecione uma instância de marketplace</strong> para este vínculo.
                   </p>
-                  <p className="text-xs mt-1 text-muted-foreground">
-                    Deixe "Nenhuma" se quiser usar apenas o Bling.
+                  <p className="text-xs mt-2 text-muted-foreground">
+                    Cada instância representa uma conta diferente da plataforma ({formData.plataforma_nome || 'marketplace'}). Você pode instalar múltiplas contas na aba "Integrações".
+                  </p>
+                  <p className="text-xs mt-1 text-amber-600 font-medium">
+                    ⚠️ Deixe "Nenhuma" se quiser usar apenas o Bling.
                   </p>
                 </TooltipContent>
               </Tooltip>
@@ -338,7 +354,7 @@ export default function VinculoModal({
                 onValueChange={(value) => setFormData(prev => ({ ...prev, marketplace_integration_id: value === 'none' ? null : value }))}
               >
                 <SelectTrigger className="pl-9">
-                  <SelectValue placeholder="Selecione a integração marketplace" />
+                  <SelectValue placeholder="Selecione a instância de marketplace" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">Nenhuma (apenas Bling)</SelectItem>
@@ -353,12 +369,12 @@ export default function VinculoModal({
           </div>
 
           {/* Alerta se nenhuma integração selecionada */}
-          {(!formData.bling_integration_id || formData.bling_integration_id === 'none') && 
+          {(!formData.bling_integration_id || formData.bling_integration_id === 'none') &&
            (!formData.marketplace_integration_id || formData.marketplace_integration_id === 'none') && (
             <Alert className="bg-amber-50 border-amber-200">
               <AlertCircle className="h-4 w-4 text-amber-600" />
               <AlertDescription className="text-amber-800 text-xs">
-                Selecione pelo menos uma integração (Bling ou Marketplace) para este vínculo.
+                <strong>Atenção:</strong> Selecione pelo menos uma instância de integração (Bling ou Marketplace) para este vínculo.
               </AlertDescription>
             </Alert>
           )}

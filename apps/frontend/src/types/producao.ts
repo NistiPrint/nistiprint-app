@@ -394,3 +394,44 @@ export interface TemplateObsCanal {
   is_default: boolean;
   created_at?: string;
 }
+
+// ============================================================================
+// FILTROS CONTEXTUAIS - PEDIDOS
+// ============================================================================
+
+/**
+ * Canal com horário de coleta próximo do horário atual.
+ * Retornado pela função fn_canais_proximos_coleta().
+ */
+export interface CanalProximoColeta {
+  id: number;
+  nome: string;
+  horario_coleta: string;  // HH:MM:SS ou HH:MM
+  flex: boolean;
+  fulfillment: boolean;
+  color?: string;
+  distancia_minutos: number;
+  is_proximo: boolean;
+  plataforma_id?: number;
+  plataforma_nome?: string;
+}
+
+/**
+ * Contagem de pedidos por canal para exibição nos filtros contextuais.
+ */
+export interface ContagemPedidosCanal {
+  canal_venda_id: number;
+  canal_venda_nome: string;
+  total_pedidos: number;
+  pedidos_sem_demanda: number;
+  pedidos_com_demanda: number;
+}
+
+/**
+ * Resposta da API de canais próximos de coleta.
+ */
+export interface CanaisProximosColetaResponse {
+  canais_proximos: CanalProximoColeta[];
+  horario_atual: string;  // HH:MM
+  total_canais_ativos: number;
+}
