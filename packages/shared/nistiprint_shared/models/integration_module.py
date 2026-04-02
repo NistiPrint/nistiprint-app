@@ -2,12 +2,21 @@
 Data model for integration modules in the marketplace
 """
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal
+
+
+PlatformTipo = Literal['MARKETPLACE', 'ERP', 'ECOMMERCE']
 
 
 class IntegrationModule:
     """
     Represents an integration module available in the marketplace
+    
+    Nova arquitetura unificada (Fase 1 - Refatoração):
+    - Unifica conceitos de 'plataformas' e 'integration_modules'
+    - slug: identificador único URL-friendly (ex: 'shopee', 'bling')
+    - tipo: MARKETPLACE, ERP ou ECOMMERCE
+    - is_aggregator: true para ERPs que agregam múltiplas lojas (ex: Bling)
     """
     def __init__(
         self,
@@ -25,7 +34,11 @@ class IntegrationModule:
         auth_config: Dict = None,
         data_mapping_spec: Dict = None,
         created_at: datetime = None,
-        updated_at: datetime = None
+        updated_at: datetime = None,
+        # Novos campos da Fase 1
+        tipo: PlatformTipo = None,
+        slug: str = None,
+        is_aggregator: bool = False
     ):
         self.id = id
         self.name = name
@@ -42,9 +55,13 @@ class IntegrationModule:
         self.data_mapping_spec = data_mapping_spec or {}
         self.created_at = created_at or datetime.utcnow()
         self.updated_at = updated_at or datetime.utcnow()
+        # Novos campos da Fase 1
+        self.tipo = tipo
+        self.slug = slug or (id.lower().replace(' ', '') if id else None)
+        self.is_aggregator = is_aggregator
 
     def to_dict(self):
-        """Convert to dictionary for Firestore storage"""
+        """Convert to dictionary for Supabase storage"""
         return {
             'name': self.name,
             'description': self.description,
@@ -58,6 +75,9 @@ class IntegrationModule:
             'auth_flow': self.auth_flow,
             'auth_config': self.auth_config,
             'data_mapping_spec': self.data_mapping_spec,
+            'tipo': self.tipo,
+            'slug': self.slug,
+            'is_aggregator': self.is_aggregator,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
@@ -93,13 +113,21 @@ class IntegrationModule:
             auth_config=data.get('auth_config', {}),
             data_mapping_spec=data.get('data_mapping_spec', {}),
             created_at=parse_datetime(data.get('created_at')) if data.get('created_at') else datetime.utcnow(),
-            updated_at=parse_datetime(data.get('updated_at')) if data.get('updated_at') else datetime.utcnow()
+            updated_at=parse_datetime(data.get('updated_at')) if data.get('updated_at') else datetime.utcnow(),
+            # Novos campos da Fase 1
+            tipo=data.get('tipo'),
+            slug=data.get('slug'),
+            is_aggregator=data.get('is_aggregator', False)
         )
 
 
 class InstalledIntegration:
     """
     Represents an installed instance of an integration module
+    
+    Nova arquitetura (Fase 1 - Refatoração):
+    - platform_slug: referência ao slug em integration_modules
+    - Substitui gradualmente module_id como chave primária de relação
     """
     def __init__(
         self,
@@ -122,7 +150,9 @@ class InstalledIntegration:
         description: str = None,
         parent_integration_id: int = None,
         is_default: bool = False,
-        functional_scopes: List[str] = None
+        functional_scopes: List[str] = None,
+        # Novo campo da Fase 1
+        platform_slug: str = None
     ):
         self.id = id
         self.module_id = module_id
@@ -144,6 +174,8 @@ class InstalledIntegration:
         self.parent_integration_id = parent_integration_id
         self.is_default = is_default
         self.functional_scopes = functional_scopes or []
+        # Novo campo da Fase 1
+        self.platform_slug = platform_slug or (module_id.lower().replace(' ', '') if module_id else None)
 
     def to_dict(self):
         """Convert to dictionary for Firestore/Supabase storage"""
@@ -165,7 +197,9 @@ class InstalledIntegration:
             'description': self.description,
             'parent_integration_id': self.parent_integration_id,
             'is_default': self.is_default,
-            'functional_scopes': self.functional_scopes
+            'functional_scopes': self.functional_scopes,
+            # Novo campo da Fase 1
+            'platform_slug': self.platform_slug
         }
 
     @classmethod
@@ -208,5 +242,7 @@ class InstalledIntegration:
             description=data.get('description'),
             parent_integration_id=data.get('parent_integration_id'),
             is_default=data.get('is_default', False),
-            functional_scopes=data.get('functional_scopes', [])
+            functional_scopes=data.get('functional_scopes', []),
+            # Novo campo da Fase 1
+            platform_slug=data.get('platform_slug')
         )

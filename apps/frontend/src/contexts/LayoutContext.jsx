@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react';
+import { createContext, useContext, useState, useEffect } from 'react';
 
 const LayoutContext = createContext();
 
@@ -11,11 +11,20 @@ export const useLayout = () => {
 };
 
 export const LayoutProvider = ({ children }) => {
-  const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(true);
+  // Initialize state from localStorage if available
+  const [isLeftSidebarOpen, setIsLeftSidebarOpen] = useState(() => {
+    const saved = localStorage.getItem('layout.sidebar.open');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
   const [leftSidebarContent, setLeftSidebarContent] = useState(null);
   const [leftSidebarMenuItems, setLeftSidebarMenuItems] = useState([]);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
   const [rightSidebarContent, setRightSidebarContent] = useState(null);
+
+  // Persist sidebar open state to localStorage
+  useEffect(() => {
+    localStorage.setItem('layout.sidebar.open', JSON.stringify(isLeftSidebarOpen));
+  }, [isLeftSidebarOpen]);
 
   const toggleLeftSidebar = () => setIsLeftSidebarOpen(prev => !prev);
   const toggleRightSidebar = () => setIsRightSidebarOpen(prev => !prev);

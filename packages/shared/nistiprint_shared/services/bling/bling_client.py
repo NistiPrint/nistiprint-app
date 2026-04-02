@@ -7,7 +7,7 @@ import datetime
 import base64
 import requests
 import time
-from typing import List
+from typing import List, Dict
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from ...constants import PLATFORM_X_CNPJ
@@ -48,6 +48,9 @@ class BlingClient:
             self.expires_in = expires_in or 0
         self.client_id = account_data.get('client_id')
         self.client_secret = account_data.get('client_secret')
+        
+        # Cache de produtos para reduzir API calls
+        self._product_cache = {}
 
         # Timestamp da criação das credenciais
         created_at_raw = account_data.get('created_at')
@@ -493,8 +496,119 @@ class BlingClient:
         Returns:
             dict: Dados do produto ou None em caso de erro
         """
+        # Verificar cache primeiro
+        if product_id in self._product_cache:
+            return self._product_cache[product_id]
+
         response = self._request('GET', f'produtos/{str(product_id)}')
-        return response.get('data') if response else None
+        product = response.get('data') if response else None
+
+        # Cache para próxima verificação
+        if product:
+            self._product_cache[product_id] = product
+
+        return product
+
+    def is_product_personalized(self, product_id: int, custom_field_id: int = 2797770) -> bool:
+        """
+        Verifica se um produto é personalizado.
+
+        Critérios (por ordem de prioridade/eficiência):
+        1. Nome do produto contém "personaliza" (case-insensitive) → SEM API call (se cacheado)
+        2. Tem campo customizado com id == custom_field_id E valor == "true" → REQUER API call
+
+        Esta ordem otimiza reduzindo chamadas à API do Bling.
+
+        Args:
+            product_id (int): ID do produto no Bling
+            custom_field_id (int): ID do campo customizado de personalização (default: 2797770)
+
+        Returns:
+            bool: True se produto é personalizado, False caso contrário
+        """
+        # Buscar produto (usa cache interno se disponível)
+        product = self.get_product(product_id)
+        if not product:
+            return False
+
+        # Critério 1: Nome do produto (mais rápido, sem API call adicional)
+        if 'personaliza' in product.get('nome', '').lower():
+            return True
+
+        # Critério 2: Campo customizado (requer parsing dos dados)
+        for campo in product.get('camposCustomizados', []):
+            if (campo.get('idCampoCustomizado') == custom_field_id and
+                str(campo.get('valor', '')).lower() == 'true'):
+                return True
+
+        return False
+
+    def get_products_by_ids(self, product_ids: List[int]) -> Dict[int, dict]:
+        """
+        Busca múltiplos produtos de uma vez (otimização para pedidos com muitos itens).
+
+        Args:
+            product_ids (List[int]): Lista de IDs de produtos
+
+        Returns:
+            Dict[int, dict]: Dicionário {product_id: product_data}
+        """
+        products = {}
+        for pid in product_ids:
+            if pid in self._product_cache:
+                products[pid] = self._product_cache[pid]
+            else:
+                product = self.get_product(pid)
+                if product:
+                    products[pid] = product
+                    # Cache é atualizado automaticamente no get_product()
+                else:
+                    products[pid] = None
+        return products
+
+    def identify_personalized_products_batch(
+        self,
+        product_ids: List[int],
+        custom_field_id: int = 2797770
+    ) -> Dict[int, bool]:
+        """
+        Verifica múltiplos produtos de uma vez.
+
+        Args:
+            product_ids (List[int]): Lista de IDs de produtos
+            custom_field_id (int): ID do campo customizado de personalização
+
+        Returns:
+            Dict[int, bool]: Dicionário {product_id: is_personalized}
+        """
+        products = self.get_products_by_ids(product_ids)
+        results = {}
+
+        for pid, product in products.items():
+            if not product:
+                results[pid] = False
+                continue
+
+            # Critério 1: Nome (rápido)
+            if 'personaliza' in product.get('nome', '').lower():
+                results[pid] = True
+                continue
+
+            # Critério 2: Campo customizado
+            is_personalized = False
+            for campo in product.get('camposCustomizados', []):
+                if (campo.get('idCampoCustomizado') == custom_field_id and
+                    str(campo.get('valor', '')).lower() == 'true'):
+                    is_personalized = True
+                    break
+
+            results[pid] = is_personalized
+
+        return results
+
+    def clear_product_cache(self):
+        """Limpa cache de produtos."""
+        self._product_cache = {}
 
     def get_stores(self):
         """Busca a lista de lojas virtuais cadastradas no Bling.

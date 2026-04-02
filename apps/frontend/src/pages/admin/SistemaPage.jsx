@@ -52,7 +52,7 @@ const sistemaMenu = [
 
 function SistemaPage() {
   const location = useLocation();
-  const { setLeftSidebarContent, setLeftSidebarMenuItems } = useLayout();
+  const { setLeftSidebarContent, setLeftSidebarMenuItems, setIsLeftSidebarOpen } = useLayout();
 
   const renderMenuItems = (items) => {
     return items.map((item, index) => {
@@ -111,6 +111,8 @@ function SistemaPage() {
   };
 
   useEffect(() => {
+    setIsLeftSidebarOpen(true);
+    
     const sidebarContent = (
       <div className="flex flex-col gap-4">
         <div className="px-3 py-2">
@@ -130,10 +132,12 @@ function SistemaPage() {
     setLeftSidebarMenuItems(extractMenuItems(sistemaMenu));
 
     return () => {
-      setLeftSidebarContent(null);
-      setLeftSidebarMenuItems([]);
+      if (!location.pathname.startsWith('/sistema')) {
+        setLeftSidebarContent(null);
+        setLeftSidebarMenuItems([]);
+      }
     };
-  }, [location.pathname]);
+  }, [location.pathname, setLeftSidebarContent, setLeftSidebarMenuItems, setIsLeftSidebarOpen]);
 
   return (
     <div className="p-6">

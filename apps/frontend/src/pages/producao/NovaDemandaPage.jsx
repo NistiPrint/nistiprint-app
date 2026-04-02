@@ -243,7 +243,7 @@ function NovaDemandaPage() {
     fetchInitialData();
   }, [isEditing, id, form, navigate]);
 
-  // Efeito para preencher automaticamente o horário de coleta quando o canal de venda é selecionado
+  // Preencher automaticamente o horário de coleta quando o canal de venda é selecionado
   useEffect(() => {
     if (watchCanalVenda && !userEditedHorario) {
       const canal = channels.find(c => String(c.id) === watchCanalVenda);
@@ -253,29 +253,27 @@ function NovaDemandaPage() {
     }
   }, [watchCanalVenda, channels, form, userEditedHorario]);
 
-  // Efeito para preencher automaticamente a data de finalização prevista quando ambos os campos estão preenchidos
+  // Calcular data de finalização prevista automaticamente
   useEffect(() => {
     if (watchDataEntrega && watchHorarioColeta && !userEditedFinalizacao) {
       try {
-        // watchHorarioColeta pode vir do DB como HH:mm:ss, mas o input datetime-local/Date espera algo parseável
-        // Vamos garantir que pegamos apenas HH:mm para a composição da string se necessário
-        const timePart = watchHorarioColeta.includes(':') ? watchHorarioColeta.split(':').slice(0, 2).join(':') : watchHorarioColeta;
+        // Garantir que a data esteja no formato completo YYYY-MM-DD
+        if (!watchDataEntrega || watchDataEntrega.length !== 10) {
+          return;
+        }
         
-        // Combina a data de entrega com o horário de coleta
+        const timePart = watchHorarioColeta.includes(':') ? watchHorarioColeta.split(':').slice(0, 2).join(':') : watchHorarioColeta;
         const dataEntregaCompleta = new Date(`${watchDataEntrega}T${timePart}`);
 
         if (!isNaN(dataEntregaCompleta.getTime())) {
-          // Subtrai 1 hora para obter a data de finalização prevista
           dataEntregaCompleta.setHours(dataEntregaCompleta.getHours() - 1);
 
-          // Formata para o formato aceito pelo input datetime-local (YYYY-MM-DDTHH:mm)
-          // Usando fuso local para evitar que mude o dia no toISOString
           const year = dataEntregaCompleta.getFullYear();
           const month = String(dataEntregaCompleta.getMonth() + 1).padStart(2, '0');
           const day = String(dataEntregaCompleta.getDate()).padStart(2, '0');
           const hours = String(dataEntregaCompleta.getHours()).padStart(2, '0');
           const minutes = String(dataEntregaCompleta.getMinutes()).padStart(2, '0');
-          
+
           const formatted = `${year}-${month}-${day}T${hours}:${minutes}`;
           form.setValue('data_finalizacao_prevista', formatted);
         }
@@ -616,7 +614,6 @@ function NovaDemandaPage() {
                         {...field}
                         onChange={(e) => {
                           field.onChange(e);
-                          // Marcar que o usuário editou manualmente o campo
                           setUserEditedHorario(true);
                         }}
                       />
