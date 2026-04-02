@@ -289,7 +289,7 @@ class BlingOrderProcessingService:
                 'itens': order_data.get('itens', []), # JSONB
                 'contato': json.dumps(contato), # Texto/JSON para backup conforme solicitado
                 'bling_id': str(order_data['id']),
-                'personalizado': True,
+                'personalizado': False,  # Será atualizado pelo personalized_order_identifier
                 'atualizado_em': datetime.utcnow().isoformat()
             }
             
@@ -315,11 +315,27 @@ class BlingOrderProcessingService:
                     'preco_unitario': float(item_data['valor']),
                     'descricao': item_data['descricao'],
                     'produto': item_data.get('produto', {}), # Supabase handle dict to JSONB
-                    'personalizado': True # Na consolidação V2 tudo é tratado como personalizável inicialmente
+                    'personalizado': False # Será atualizado abaixo se for personalizado
                 })
             if items_to_insert:
                 supabase_db.table('itens_pedido_bling').insert(items_to_insert).execute()
-        
+
+            # NOVO: Identificar e marcar itens personalizados
+            try:
+                from nistiprint_shared.services.personalized_order_identifier import (
+                    personalized_order_identifier
+                )
+
+                result = personalized_order_identifier.process_order(order_data)
+
+                if result.get('success') and result.get('personalized_items'):
+                    print(f"✓ Pedido {order_data.get('numero')}: {len(result['personalized_items'])} itens personalizados identificados")
+                elif result.get('error'):
+                    print(f"⚠️ Pedido {order_data.get('numero')}: Erro ao identificar personalizados: {result['error']}")
+
+            except Exception as e:
+                print(f"⚠️ Erro ao identificar itens personalizados: {e}")
+
         # --- GERAÇÃO DE DEMANDA DESATIVADA (AGORA É MANUAL PELO USUÁRIO) ---
         # print(f"🏭 [LOG] Gerando Demanda de Produção para o pedido {order_data.get('numero')}...")
         # demanda_producao_service.create_from_order(order_data)

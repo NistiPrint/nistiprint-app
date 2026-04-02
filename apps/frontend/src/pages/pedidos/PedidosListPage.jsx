@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   CheckCircle2,
   Upload
@@ -13,15 +13,20 @@ import GerarDemandaModal from '@/components/pedidos/GerarDemandaModal';
 import ImportModal from '@/components/pedidos/ImportModal';
 import TabelaPedidos from '@/components/pedidos/TabelaPedidos';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 function PedidosListPage() {
   const navigate = useNavigate();
-  
+
   // Estados principais
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [estatisticas, setEstatisticas] = useState(null);
-  
+
   // Estados de filtro
   const [filtros, setFiltros] = useState({
     search: '',
@@ -32,13 +37,13 @@ function PedidosListPage() {
     delivery_start: '',
     delivery_end: '',
   });
-  
+
   // Estados de paginação
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(50);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
-  
+
   // Estados de seleção
   const [pedidosSelecionados, setPedidosSelecionados] = useState([]);
 
@@ -48,9 +53,14 @@ function PedidosListPage() {
   // Estados de modais
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [gerarDemandaModalOpen, setGerarDemandaModalOpen] = useState(false);
-  
+  const [resultadosModalOpen, setResultadosModalOpen] = useState(false);
+
   // Estado de importação
   const [importando, setImportando] = useState(false);
+  
+  // Estados para resultados da consolidação
+  const [resultadosConsolidacao, setResultadosConsolidacao] = useState(null);
+  const [demandName, setDemandName] = useState('');
 
   // Carregar estatísticas com retry
   const carregarEstatisticas = async () => {
@@ -264,10 +274,10 @@ function PedidosListPage() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('channel', options.canal);
-      formData.append('async', 'true');
       
       if (options.startDate) formData.append('start_date', options.startDate);
-      if (options.endDate) formData.append('end_date', options.endDate);
+      // Usar end_datetime igual à ConsolidarPage
+      if (options.endDate) formData.append('end_datetime', options.endDate);
       formData.append('print_orders', options.printOrders ? 'true' : 'false');
       formData.append('is_flex', options.isFlex ? 'true' : 'false');
 
@@ -277,17 +287,18 @@ function PedidosListPage() {
       });
 
       const data = await response.json();
-      
-      if (data.success) {
-        toast.success(data.data.message || 'Upload realizado! Processando...');
+
+      if (response.ok && data) {
         setImportModalOpen(false);
-        // Recarregar após processamento
-        setTimeout(() => {
-          carregarPedidos();
-          carregarEstatisticas();
-        }, 3000);
+        // Processamento SÍNCRONO: resultados já estão disponíveis
+        // O endpoint retorna os dados diretamente (igual /consolidar)
+        const processedResult = processarResultData(data);
+        setResultadosConsolidacao(processedResult);
+        setDemandName(`Demanda - ${new Date().toLocaleDateString('pt-BR')}`);
+        setResultadosModalOpen(true);
+        toast.success('Planilha processada com sucesso!');
       } else {
-        toast.error(data.message || 'Erro ao processar planilha');
+        toast.error(data.message || data.error || 'Erro ao processar planilha');
       }
     } catch (error) {
       console.error('Erro ao upload:', error);
@@ -295,6 +306,25 @@ function PedidosListPage() {
     } finally {
       setImportando(false);
     }
+  };
+
+  const processarResultData = (result) => {
+    const processed = {};
+    for (const [platform, platformData] of Object.entries(result)) {
+      const capasMiolosData = platformData.capas_miolos_data?.map(item => ({
+        ...item,
+        pedidos_origem: item.pedidos_origem || (item.order_refs?.map(ref => ({
+          codigo_pedido_externo: ref,
+          numero_pedido: null
+        })) || [])
+      })) || [];
+
+      processed[platform] = {
+        ...platformData,
+        capas_miolos_data: capasMiolosData
+      };
+    }
+    return processed;
   };
 
   // Handlers de demanda
@@ -445,8 +475,239 @@ function PedidosListPage() {
         onGerarDemanda={handleGerarDemanda}
         quantidadePedidos={pedidosSelecionados.length}
       />
+
+      {/* NOVO: Modal de Resultados da Consolidação (igual à ConsolidarReviewPage) */}
+      {resultadosModalOpen && (
+        <ResultadosConsolidacaoModal
+          open={resultadosModalOpen}
+          onOpenChange={setResultadosModalOpen}
+          resultados={resultadosConsolidacao}
+          demandName={demandName}
+          onGerarDemanda={async (dadosDemanda) => {
+            try {
+              const response = await fetch('/api/v2/demanda_producao/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  ...dadosDemanda,
+                  itens: Object.values(resultadosConsolidacao)[0]?.capas_miolos_data?.map(item => ({
+                    sku: item.sku,
+                    descricao: item.descricao,
+                    quantidade: item.quantidade,
+                    pedidos_origem: item.pedidos_origem
+                  })) || []
+                })
+              });
+
+              if (response.ok) {
+                toast.success('Demanda criada com sucesso!');
+                setResultadosModalOpen(false);
+                carregarPedidos();
+                carregarEstatisticas();
+              } else {
+                const error = await response.json();
+                throw new Error(error.message);
+              }
+            } catch (error) {
+              toast.error(error.message || 'Erro ao criar demanda');
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
 
 export default PedidosListPage;
+
+// NOVO: Componente Modal de Resultados (inline para evitar importação complexa)
+function ResultadosConsolidacaoModal({ open, onOpenChange, resultados, demandName, onGerarDemanda }) {
+  const [nome, setNome] = useState(demandName);
+  const [dataEntrega, setDataEntrega] = useState(new Date().toISOString().split('T')[0]);
+  const [horarioColeta, setHorarioColeta] = useState('');
+  const [observacoes, setObservacoes] = useState('');
+  const [canalSelecionado, setCanalSelecionado] = useState('');
+  const [canais, setCanais] = useState([]);
+  const [criando, setCriando] = useState(false);
+
+  // Carregar canais ao abrir modal
+  useEffect(() => {
+    if (open) {
+      fetch('/api/v2/cadastros/canal-venda?active_only=true')
+        .then(res => res.json())
+        .then(data => {
+          if (data.canais) {
+            setCanais(data.canais);
+            if (data.canais.length > 0) {
+              setCanalSelecionado(String(data.canais[0].id));
+            }
+          }
+        });
+    }
+  }, [open]);
+
+  // Extrair dados da primeira plataforma
+  const plataformaData = Object.values(resultados || {})[0];
+  const capasMiolos = plataformaData?.capas_miolos_data || [];
+  const totalCapas = plataformaData?.total_capas || 0;
+  const totalMiolos = plataformaData?.total_miolos || 0;
+  const totalPedidos = plataformaData?.total_pedidos_plataforma || 0;
+
+  const handleGerar = async () => {
+    if (!nome || !dataEntrega || !canalSelecionado) {
+      toast.error('Preencha nome, canal de venda e data de entrega');
+      return;
+    }
+
+    setCriando(true);
+    try {
+      await onGerarDemanda({
+        nome,
+        canal_venda_id: parseInt(canalSelecionado),
+        data_entrega: dataEntrega,
+        horario_coleta: horarioColeta || null,
+        observacoes
+      });
+    } finally {
+      setCriando(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-background rounded-lg max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+        <div className="p-6 border-b">
+          <h2 className="text-2xl font-bold">Revisão da Consolidação</h2>
+          <p className="text-muted-foreground">Revise os pedidos e itens antes de criar a demanda</p>
+        </div>
+
+        <div className="p-6 space-y-6">
+          {/* Resumo */}
+          <div className="grid grid-cols-3 gap-4">
+            <Card>
+              <CardContent className="pt-6">
+                <div className="text-2xl font-bold">{totalPedidos}</div>
+                <p className="text-xs text-muted-foreground">pedidos processados</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="text-2xl font-bold">{totalCapas}</div>
+                <p className="text-xs text-muted-foreground">capas</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="text-2xl font-bold">{totalMiolos}</div>
+                <p className="text-xs text-muted-foreground">miolos</p>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Itens consolidados */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Itens para Produção ({capasMiolos.length})</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>SKU</TableHead>
+                    <TableHead>Descrição</TableHead>
+                    <TableHead className="text-right">Qtd</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {capasMiolos.map((item, idx) => (
+                    <TableRow key={idx}>
+                      <TableCell className="font-mono text-sm">{item.sku || '-'}</TableCell>
+                      <TableCell className="text-sm">{item.descricao}</TableCell>
+                      <TableCell className="text-right font-bold">{item.quantidade}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          {/* Formulário */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Dados da Demanda</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="nome-demanda">Nome da Demanda *</Label>
+                <Input
+                  id="nome-demanda"
+                  value={nome}
+                  onChange={(e) => setNome(e.target.value)}
+                  placeholder="Ex: Demanda Shopee - Março/2026"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="canal-venda">Canal de Venda *</Label>
+                <Select value={canalSelecionado} onValueChange={setCanalSelecionado}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione o canal" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {canais.map((canal) => (
+                      <SelectItem key={canal.id} value={String(canal.id)}>
+                        {canal.nome}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="data-entrega">Data de Entrega *</Label>
+                <Input
+                  id="data-entrega"
+                  type="date"
+                  value={dataEntrega}
+                  onChange={(e) => setDataEntrega(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="horario-coleta">Horário de Coleta</Label>
+                <Input
+                  id="horario-coleta"
+                  type="time"
+                  value={horarioColeta}
+                  onChange={(e) => setHorarioColeta(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="obs">Observações</Label>
+                <Textarea
+                  id="obs"
+                  value={observacoes}
+                  onChange={(e) => setObservacoes(e.target.value)}
+                  placeholder="Observações adicionais..."
+                  rows={3}
+                />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="p-6 border-t flex gap-2 justify-end">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancelar
+          </Button>
+          <Button
+            onClick={handleGerar}
+            disabled={criando || !nome || !dataEntrega}
+            className="bg-green-600 hover:bg-green-700"
+          >
+            {criando ? 'Criando...' : 'Confirmar e Criar Demanda'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}

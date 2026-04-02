@@ -1,8 +1,13 @@
 """
 Serviço para gerenciar configuração de vínculos entre:
 - Canais de venda internos
-- Lojas Bling (bling_loja_id)
+- Lojas Bling (aggregator_store_id)
 - Instâncias de integração (installed_integrations)
+
+Nova arquitetura (Fase 2 - Refatoração):
+- Usa channel_connections como tabela principal
+- Mantém fallback para integracao_canais_config durante transição
+- Mantém fallback para canais_venda.colunas_legacy
 
 Este serviço substitui o uso de constants.py (BLING_ID_LOJA) para resolução dinâmica.
 """
@@ -19,27 +24,74 @@ class IntegracaoCanalService:
     """Serviço para gestão de vínculos de integração."""
 
     def __init__(self):
-        self.table_name = "integracao_canais_config"
+        # Tabela principal (nova arquitetura)
+        self.table_name = "channel_connections"
+        # Tabela legada (fallback durante transição)
+        self.legacy_table_name = "integracao_canais_config"
         self._cache = {}
         self._cache_ttl = 300  # 5 minutos
 
     def get_canal_by_bling_loja_id(self, bling_loja_id: int) -> Optional[Dict[str, Any]]:
         """
         Busca o canal de venda vinculado a um ID de loja Bling.
-        
+
         Args:
             bling_loja_id: ID da loja no Bling (ex: 204047801, 205218967)
-            
+
         Returns:
             Dicionário com dados do canal ou None se não encontrado
         """
         cache_key = f"canal_by_bling_{bling_loja_id}"
         if cache_key in self._cache:
             return self._cache[cache_key]
-        
+
         try:
-            # Buscar configuração ativa
+            # 1. Buscar em channel_connections (nova tabela)
             result = supabase_db.table(self.table_name).select("""
+                id,
+                channel_id,
+                integration_id,
+                bling_integration_id,
+                marketplace_integration_id,
+                aggregator_store_id,
+                aggregator_store_name,
+                config,
+                is_active,
+                canais_venda!inner (
+                    id,
+                    nome,
+                    slug,
+                    plataforma_id,
+                    conta_bling_id,
+                    ativo
+                )
+            """).eq('aggregator_store_id', str(bling_loja_id)).eq('is_active', True).execute()
+
+            if result.data:
+                config = result.data[0]
+                canal = config.get('canais_venda')
+
+                response = {
+                    'canal_venda_id': config['channel_id'],
+                    'connection_id': config['id'],
+                    'integration_id': config.get('integration_id'),
+                    'bling_integration_id': config.get('bling_integration_id'),
+                    'marketplace_integration_id': config.get('marketplace_integration_id'),
+                    'bling_loja_id': config['aggregator_store_id'],
+                    'aggregator_store_name': config.get('aggregator_store_name'),
+                    'plataforma_nome': self._extract_platform_from_store_name(config.get('aggregator_store_name')),
+                    'is_primary': config.get('sync_status') == 'pending',  # Usando sync_status como fallback
+                    'canal_nome': canal.get('nome') if canal else None,
+                    'canal_slug': canal.get('slug') if canal else None,
+                    'canal_ativo': canal.get('ativo', True) if canal else False,
+                    'config': config.get('config', {})
+                }
+
+                self._cache[cache_key] = response
+                return response
+
+            # 2. Fallback: buscar em integracao_canais_config (tabela legada)
+            fallback_legacy = supabase_db.table(self.legacy_table_name).select("""
                 id,
                 canal_venda_id,
                 integration_id,
@@ -58,44 +110,50 @@ class IntegracaoCanalService:
                     ativo
                 )
             """).eq('bling_loja_id', bling_loja_id).eq('is_active', True).execute()
-            
-            if result.data:
-                config = result.data[0]
+
+            if fallback_legacy.data:
+                config = fallback_legacy.data[0]
                 canal = config.get('canais_venda')
-                
+
                 response = {
                     'canal_venda_id': config['canal_venda_id'],
+                    'connection_id': config['id'],
                     'integration_id': config.get('integration_id'),
                     'bling_integration_id': config.get('bling_integration_id'),
                     'marketplace_integration_id': config.get('marketplace_integration_id'),
                     'bling_loja_id': config['bling_loja_id'],
+                    'aggregator_store_name': None,
                     'plataforma_nome': config.get('plataforma_nome'),
                     'is_primary': config.get('is_primary', False),
                     'canal_nome': canal.get('nome') if canal else None,
                     'canal_slug': canal.get('slug') if canal else None,
-                    'canal_ativo': canal.get('ativo', True) if canal else False
+                    'canal_ativo': canal.get('ativo', True) if canal else False,
+                    'config': config.get('config_json', {}),
+                    'fallback': 'legacy_table'
                 }
-                
+
                 self._cache[cache_key] = response
                 return response
-            
-            # Fallback: buscar em canais_venda (coluna de fallback)
+
+            # 3. Fallback: buscar em canais_venda (colunas legacy)
             fallback = supabase_db.table('canais_venda').select('id, nome, slug').eq('bling_loja_id_principal', bling_loja_id).execute()
             # ✅ VALIDAÇÃO DEFENSIVA: verificar se fallback.data existe e tem elementos
             if fallback.data and len(fallback.data) > 0:
                 canal = fallback.data[0]
                 response = {
                     'canal_venda_id': canal['id'],
+                    'connection_id': None,
                     'integration_id': None,
                     'bling_integration_id': None,
                     'marketplace_integration_id': None,
                     'bling_loja_id': bling_loja_id,
+                    'aggregator_store_name': None,
                     'plataforma_nome': None,
                     'is_primary': True,
                     'canal_nome': canal.get('nome'),
                     'canal_slug': canal.get('slug'),
                     'canal_ativo': True,
-                    'fallback': True
+                    'fallback': 'canais_venda_legacy'
                 }
                 self._cache[cache_key] = response
                 return response
@@ -106,76 +164,114 @@ class IntegracaoCanalService:
             logger.error(f"Erro ao buscar canal por bling_loja_id {bling_loja_id}: {e}", exc_info=True)
             return None
 
+    def _extract_platform_from_store_name(self, store_name: str) -> Optional[str]:
+        """Extrai nome da plataforma do aggregator_store_name."""
+        if not store_name:
+            return None
+        
+        store_name_lower = store_name.lower()
+        if 'shopee' in store_name_lower:
+            return 'shopee'
+        elif 'amazon' in store_name_lower:
+            return 'amazon'
+        elif 'mercado livre' in store_name_lower or 'mercadolivre' in store_name_lower:
+            return 'mercadolivre'
+        elif 'shein' in store_name_lower:
+            return 'shein'
+        elif 'tiktok' in store_name_lower:
+            return 'tiktokshop'
+        else:
+            return None
+
     def get_bling_loja_id_by_canal(self, canal_venda_id: int, plataforma_nome: Optional[str] = None) -> Optional[int]:
         """
         Busca o ID da loja Bling vinculado a um canal de venda.
-        
+
         Args:
             canal_venda_id: ID do canal de venda
             plataforma_nome: Nome da plataforma para filtrar (opcional)
-            
+
         Returns:
             ID da loja Bling ou None se não encontrado
         """
         cache_key = f"bling_by_canal_{canal_venda_id}_{plataforma_nome}"
         if cache_key in self._cache:
             return self._cache[cache_key]
-        
+
         try:
-            query = supabase_db.table(self.table_name).select('bling_loja_id, is_primary') \
+            # 1. Buscar em channel_connections (nova tabela)
+            query = supabase_db.table(self.table_name).select('aggregator_store_id, is_active') \
+                .eq('channel_id', canal_venda_id) \
+                .eq('is_active', True)
+
+            if plataforma_nome:
+                # Filtrar por plataforma usando LIKE no aggregator_store_name
+                query = query.ilike('aggregator_store_name', f'%{plataforma_nome}%')
+
+            result = query.order('created_at', desc=True).execute()
+
+            if result.data:
+                aggregator_store_id = result.data[0]['aggregator_store_id']
+                if aggregator_store_id:
+                    bling_loja_id = int(aggregator_store_id)
+                    self._cache[cache_key] = bling_loja_id
+                    return bling_loja_id
+
+            # 2. Fallback: buscar em integracao_canais_config (tabela legada)
+            fallback_legacy = supabase_db.table(self.legacy_table_name).select('bling_loja_id, is_primary') \
                 .eq('canal_venda_id', canal_venda_id) \
                 .eq('is_active', True)
-            
+
             if plataforma_nome:
-                query = query.eq('plataforma_nome', plataforma_nome.lower())
-            
-            result = query.order('is_primary', desc=True).execute()
-            
-            if result.data:
-                # Retorna o primário primeiro, ou o primeiro disponível
-                bling_loja_id = result.data[0]['bling_loja_id']
+                fallback_legacy = fallback_legacy.eq('plataforma_nome', plataforma_nome.lower())
+
+            fallback_legacy_result = fallback_legacy.order('is_primary', desc=True).execute()
+
+            if fallback_legacy_result.data:
+                bling_loja_id = fallback_legacy_result.data[0]['bling_loja_id']
                 self._cache[cache_key] = bling_loja_id
                 return bling_loja_id
-            
-            # Fallback: buscar em canais_venda
+
+            # 3. Fallback: buscar em canais_venda
             fallback = supabase_db.table('canais_venda').select('bling_loja_id_principal').eq('id', canal_venda_id).execute()
             if fallback.data and fallback.data[0].get('bling_loja_id_principal'):
                 self._cache[cache_key] = fallback.data[0]['bling_loja_id_principal']
                 return fallback.data[0]['bling_loja_id_principal']
-            
+
             return None
-            
+
         except Exception as e:
             logger.error(f"Erro ao buscar bling_loja_id por canal {canal_venda_id}: {e}")
             return None
 
     def get_integration_by_canal(
-        self, 
-        canal_venda_id: int, 
+        self,
+        canal_venda_id: int,
         expected_module: str = None
     ) -> Optional[Dict[str, Any]]:
         """
         Busca a instância de integração vinculada a um canal.
-        
+
         Args:
             canal_venda_id: ID do canal de venda
             expected_module: Módulo esperado ('bling', 'shopee', 'amazon', etc.)
                            Se None, usa comportamento legado (pode retornar módulo errado)
-        
+
         Returns:
             Dicionário com dados da integração ou None se não encontrado
-            
-        Raises:
-            ValueError: Se expected_module for fornecido mas a integração não for do módulo esperado
         """
         try:
+            # 1. Buscar em channel_connections (nova tabela)
             result = supabase_db.table(self.table_name).select(
-                "integration_id, bling_integration_id, marketplace_integration_id, plataforma_nome"
-            ).eq('canal_venda_id', canal_venda_id).eq('is_active', True).order('is_primary', desc=True).execute()
+                "id, channel_id, integration_id, bling_integration_id, marketplace_integration_id, aggregator_store_id, aggregator_store_name, config"
+            ).eq('channel_id', canal_venda_id).eq('is_active', True).order('created_at', desc=True).execute()
 
             if result.data:
                 row = result.data[0]
                 
+                # Extrair plataforma do aggregator_store_name
+                plataforma_nome = self._extract_platform_from_store_name(row.get('aggregator_store_name'))
+
                 # Selecionar integração baseada no module_id esperado
                 if expected_module:
                     if expected_module.lower() == 'bling':
@@ -190,26 +286,26 @@ class IntegracaoCanalService:
                 else:
                     # Comportamento legado: priorizar marketplace_integration_id
                     target_id = row.get('marketplace_integration_id') or row.get('integration_id')
-                
+
                 if not target_id:
                     logger.debug(f"Canal {canal_venda_id}: Nenhum ID de integração encontrado")
                     return None
-                
+
                 # Buscar integração com validação de module_id se expected_module for fornecido
                 query = supabase_db.table('installed_integrations').select('*').eq('id', target_id)
-                
+
                 if expected_module:
                     query = query.eq('module_id', expected_module.lower())
-                
+
                 query = query.eq('is_active', True).execute()
-                
+
                 integration_result = query
-                
+
                 if not integration_result.data:
                     if expected_module:
                         logger.error(
                             f"Integração {target_id} não é do módulo '{expected_module}' ou está inativa. "
-                            f"Verifique o vínculo em integracao_canais_config para canal {canal_venda_id}"
+                            f"Verifique o vínculo em channel_connections para canal {canal_venda_id}"
                         )
                         return None
                     else:
@@ -217,13 +313,15 @@ class IntegracaoCanalService:
                             f"Integração {target_id} não encontrada ou inativa para canal {canal_venda_id}"
                         )
                         return None
-                
+
                 integration = integration_result.data[0]
                 return {
+                    'connection_id': row.get('id'),
                     'integration_id': target_id,
                     'bling_integration_id': row.get('bling_integration_id'),
                     'marketplace_integration_id': row.get('marketplace_integration_id'),
-                    'plataforma_nome': row.get('plataforma_nome'),
+                    'aggregator_store_id': row.get('aggregator_store_id'),
+                    'plataforma_nome': plataforma_nome,
                     'module_id': integration.get('module_id'),
                     'instance_name': integration.get('instance_name'),
                     'is_active': integration.get('is_active', True),
@@ -231,32 +329,93 @@ class IntegracaoCanalService:
                     'credentials': integration.get('credentials', {}),
                 }
 
-            # Fallback: buscar em canais_venda
+            # 2. Fallback: buscar em integracao_canais_config (tabela legada)
+            fallback_legacy = supabase_db.table(self.legacy_table_name).select(
+                "id, canal_venda_id, integration_id, bling_integration_id, marketplace_integration_id, bling_loja_id, plataforma_nome"
+            ).eq('canal_venda_id', canal_venda_id).eq('is_active', True).order('is_primary', desc=True).execute()
+
+            if fallback_legacy.data:
+                row = fallback_legacy.data[0]
+
+                # Selecionar integração baseada no module_id esperado
+                if expected_module:
+                    if expected_module.lower() == 'bling':
+                        target_id = row.get('bling_integration_id') or row.get('integration_id')
+                    elif expected_module.lower() in ['shopee', 'amazon', 'mercadolivre', 'shein', 'tiktok']:
+                        target_id = row.get('marketplace_integration_id') or row.get('integration_id')
+                    else:
+                        target_id = row.get('marketplace_integration_id') or row.get('integration_id')
+                else:
+                    target_id = row.get('marketplace_integration_id') or row.get('integration_id')
+
+                if not target_id:
+                    logger.debug(f"Canal {canal_venda_id}: Nenhum ID de integração encontrado (legado)")
+                    return None
+
+                # Buscar integração
+                query = supabase_db.table('installed_integrations').select('*').eq('id', target_id)
+                if expected_module:
+                    query = query.eq('module_id', expected_module.lower())
+                query = query.eq('is_active', True).execute()
+
+                integration_result = query
+
+                if not integration_result.data:
+                    if expected_module:
+                        logger.error(
+                            f"Integração {target_id} não é do módulo '{expected_module}' ou está inativa."
+                        )
+                        return None
+                    else:
+                        logger.warning(
+                            f"Integração {target_id} não encontrada ou inativa para canal {canal_venda_id}"
+                        )
+                    return None
+
+                integration = integration_result.data[0]
+                return {
+                    'connection_id': row.get('id'),
+                    'integration_id': target_id,
+                    'bling_integration_id': row.get('bling_integration_id'),
+                    'marketplace_integration_id': row.get('marketplace_integration_id'),
+                    'aggregator_store_id': str(row.get('bling_loja_id')) if row.get('bling_loja_id') else None,
+                    'plataforma_nome': row.get('plataforma_nome'),
+                    'module_id': integration.get('module_id'),
+                    'instance_name': integration.get('instance_name'),
+                    'is_active': integration.get('is_active', True),
+                    'config': integration.get('config', {}),
+                    'credentials': integration.get('credentials', {}),
+                    'fallback': 'legacy_table'
+                }
+
+            # 3. Fallback: buscar em canais_venda (colunas legacy)
             fallback = supabase_db.table('canais_venda').select('integration_id_principal').eq('id', canal_venda_id).execute()
             if fallback.data and fallback.data[0].get('integration_id_principal'):
                 integration_id = fallback.data[0]['integration_id_principal']
-                
+
                 # Validar module_id se expected_module for fornecido
                 query = supabase_db.table('installed_integrations').select('*').eq('id', integration_id)
                 if expected_module:
                     query = query.eq('module_id', expected_module.lower())
                 query = query.eq('is_active', True).execute()
-                
+
                 integration_result = query
-                
+
                 if integration_result.data and len(integration_result.data) > 0:
                     integration = integration_result.data[0]
                     return {
+                        'connection_id': None,
                         'integration_id': integration_id,
                         'bling_integration_id': None,
                         'marketplace_integration_id': None,
+                        'aggregator_store_id': None,
                         'plataforma_nome': integration.get('module_id'),
                         'module_id': integration.get('module_id'),
                         'instance_name': integration.get('instance_name'),
                         'is_active': integration.get('is_active', True),
                         'config': integration.get('config', {}),
                         'credentials': integration.get('credentials', {}),
-                        'fallback': True
+                        'fallback': 'canais_venda_legacy'
                     }
 
             return None
@@ -297,9 +456,10 @@ class IntegracaoCanalService:
                     id,
                     nome,
                     slug,
-                    ativo
+                    ativo,
+                    plataforma_id
                 )
-            """).order('plataforma_nome', desc=False).order('is_primary', desc=True)
+            """).order('created_at', desc=False)
 
             if plataforma_nome:
                 query = query.eq('plataforma_nome', plataforma_nome.lower())
@@ -334,6 +494,16 @@ class IntegracaoCanalService:
                 leg = ii_map.get(row.get('integration_id')) if row.get('integration_id') else None
                 bi = ii_map.get(row.get('bling_integration_id')) if row.get('bling_integration_id') else None
                 mi = ii_map.get(row.get('marketplace_integration_id')) if row.get('marketplace_integration_id') else None
+                
+                # Buscar nome da plataforma via plataforma_id (FK para plataformas)
+                plataforma_nome = None
+                if canal.get('plataforma_id'):
+                    try:
+                        plat_result = supabase_db.table('plataformas').select('nome').eq('id', canal.get('plataforma_id')).execute()
+                        if plat_result.data:
+                            plataforma_nome = plat_result.data[0].get('nome')
+                    except Exception:
+                        pass  # Se não encontrar, deixa None
 
                 config = {
                     'id': row['id'],
@@ -342,7 +512,7 @@ class IntegracaoCanalService:
                     'bling_integration_id': row.get('bling_integration_id'),
                     'marketplace_integration_id': row.get('marketplace_integration_id'),
                     'bling_loja_id': row['bling_loja_id'],
-                    'plataforma_nome': row.get('plataforma_nome'),
+                    'plataforma_nome': plataforma_nome,
                     'is_active': row.get('is_active', True),
                     'is_primary': row.get('is_primary', False),
                     'config_json': row.get('config_json', {}),

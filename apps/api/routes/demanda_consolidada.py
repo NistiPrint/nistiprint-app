@@ -140,30 +140,60 @@ def gerar_demanda_consolidada():
         
         if not itens_demanda:
             return ApiResponse.error(message='Nenhum item válido para criar demanda', status_code=400)
+
+        # ========================================================================
+        # NOVA ARQUITETURA: Calcular sugestões antes de criar demanda
+        # ========================================================================
+        from nistiprint_shared.services.demandas_sugestoes_service import DemandasSugestoesService
         
-        # 5. Criar demanda única consolidada
+        sugestoes = None
         canal_venda_id = data.get('canal_venda_id') or itens_consolidados[0].get('canal_venda_id')
+        
+        if canal_venda_id:
+            try:
+                data_entrega_str = data.get('data_entrega')
+                data_entrega = None
+                if data_entrega_str:
+                    data_entrega = datetime.strptime(data_entrega_str, '%Y-%m-%d').date()
+                
+                sugestoes = DemandasSugestoesService.calcular_sugestoes(
+                    canal_venda_id=canal_venda_id,
+                    tipo_demanda='PLATAFORMA',
+                    data_entrega=data_entrega
+                )
+                logger.info(f"Sugestões calculadas para canal {canal_venda_id}: {sugestoes}")
+            except Exception as e:
+                logger.warning(f"Erro ao calcular sugestões: {e}")
+                sugestoes = None
+        # ========================================================================
+
         nome_demanda = data.get('nome_demanda') or f"Demanda Consolidada - {datetime.now().strftime('%d/%m')}"
         
+        # Usar horario_coleta do payload ou da sugestão
+        horario_coleta = data.get('horario_coleta')
+        if not horario_coleta and sugestoes:
+            horario_coleta = sugestoes.get('horario_coleta')
+
+        # 5. Criar demanda única consolidada
         nova_demanda = demanda_producao_service.criar_demanda_direta(
             nome_demanda=nome_demanda,
             canal_venda_id=canal_venda_id,
             data_entrega_str=data.get('data_entrega', datetime.now().strftime('%Y-%m-%d')),
             lista_de_itens=itens_demanda,
-            horario_coleta_especifico=data.get('horario_coleta'),
+            horario_coleta_especifico=horario_coleta,
             observacoes=data.get('observacoes'),
             user_id=user_id,
             tipo_demanda='PLATAFORMA',
             status='EM_PRODUCAO'
         )
-        
+
         if not nova_demanda:
             return ApiResponse.error(message='Falha ao criar demanda', status_code=500)
-        
+
         # 6. Vincular pedidos à demanda criada (tabela pivot demandas_pedidos)
         demanda_id = nova_demanda.get('id')
         vinculos = []
-        
+
         for pedido_id in pedido_ids:
             try:
                 supabase_db.table('demandas_pedidos').insert({
@@ -173,16 +203,17 @@ def gerar_demanda_consolidada():
                 vinculos.append(pedido_id)
             except Exception as e:
                 logger.error(f"Erro ao vincular pedido {pedido_id}: {e}")
-        
+
         logger.info(f"Demanda {demanda_id} criada com {len(itens_demanda)} itens consolidados")
         logger.info(f"Pedidos vinculados: {len(vinculos)} de {len(pedido_ids)}")
-        
+
         return ApiResponse.success(data={
             'demanda_id': demanda_id,
             'demanda_uuid': nova_demanda.get('demanda_id'),
             'itens_consolidados': len(itens_demanda),
             'pedidos_vinculados': len(vinculos),
             'total_pedidos_origem': len(pedido_ids),
+            'sugestoes': sugestoes,  # NOVA ARQUITETURA: Retornar sugestões
             'message': f'Demanda consolidada criada com {len(itens_demanda)} itens de {len(pedido_ids)} pedidos!'
         })
         

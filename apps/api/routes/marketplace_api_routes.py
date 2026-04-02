@@ -361,3 +361,32 @@ def get_order_detail():
     if not order_sn: return ApiResponse.error(message="Required", status_code=400)
     result = platform_api_service.get_order_detail([sn.strip() for sn in order_sn.split(',') if sn.strip()], instance_id=data.get('instance_id') or request.args.get('instance_id'), module_id=data.get('module_id') or request.args.get('module_id') or "shopee")
     return ApiResponse.success(data=result) if not (result.get("error") and result.get("error") != "") else ApiResponse.error(message=result["error"], errors=result, status_code=500)
+
+@marketplace_api_bp.route('/instances', methods=['GET'])
+def get_marketplace_instances():
+    """Get all marketplace instances (non-Bling), optionally filtered by active status"""
+    try:
+        from nistiprint_shared.services.installed_integration_service import installed_integration_service
+        
+        active = request.args.get('active', 'false').lower() == 'true'
+        
+        # Get all installed integrations
+        insts = installed_integration_service.get_all_installed()
+        
+        # Filter out Bling (ERP) instances
+        insts = [i for i in insts if i.module_id != 'bling']
+        
+        # Filter by active status if requested
+        if active:
+            insts = [i for i in insts if i.is_active]
+        
+        return jsonify({
+            'data': [{
+                'id': i.id,
+                'module_id': i.module_id,
+                'instance_name': i.instance_name,
+                'is_active': i.is_active,
+            } for i in insts]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500

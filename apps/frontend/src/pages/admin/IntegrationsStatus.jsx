@@ -6,9 +6,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import MarketplaceService from '@/services/MarketplaceService';
 import * as integracaoCanalService from '@/services/integracaoCanalService';
-import { AlertCircle, CheckCircle2, Plus, RefreshCw, Trash2, Zap, Package, Building2, HelpCircle, Database } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Plus, RefreshCw, Trash2, Zap, Package, Building2, HelpCircle, Database, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import BlingInstanceConfigModal from '@/pages/integracoes/BlingInstanceConfigModal';
 
 export default function IntegrationsStatus({ onAddClick }) {
   const [integrations, setIntegrations] = useState([]);
@@ -16,6 +17,13 @@ export default function IntegrationsStatus({ onAddClick }) {
   const [testingId, setTestingId] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [moduleFilter, setModuleFilter] = useState('all');
+  const [configModalOpen, setConfigModalOpen] = useState(false);
+  const [selectedIntegrationId, setSelectedIntegrationId] = useState(null);
+
+  const handleOpenConfig = (id) => {
+    setSelectedIntegrationId(id);
+    setConfigModalOpen(true);
+  };
 
   const fetchIntegrations = async () => {
     try {
@@ -243,6 +251,14 @@ export default function IntegrationsStatus({ onAddClick }) {
                     {/* Ações para Bling (ERP) */}
                     {item.module_id === 'bling' ? (
                       <div className="grid grid-cols-2 gap-2 pt-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleOpenConfig(item.id)}
+                          className="gap-2 col-span-2"
+                        >
+                          <Settings className="h-3 w-3" /> Configurar
+                        </Button>
                         <LiveOrderConsultation integrationId={item.id} moduleName={item.instance_name} moduleId={item.module_id} />
                         <Button variant="ghost" size="sm" onClick={() => handleDelete(item.id, item.instance_name)} className="text-destructive gap-2">
                           <Trash2 className="h-3 w-3" /> Excluir
@@ -275,6 +291,15 @@ export default function IntegrationsStatus({ onAddClick }) {
           )}
         </div>
       </Tabs>
+
+      {/* Modal de Configuração Bling */}
+      {selectedIntegrationId && (
+        <BlingInstanceConfigModal
+          integrationId={selectedIntegrationId}
+          open={configModalOpen}
+          onOpenChange={setConfigModalOpen}
+        />
+      )}
     </div>
   );
 }

@@ -76,6 +76,7 @@ from routes.demandas import demandas_bp
 from routes.alertas import alertas_bp
 from routes.webhooks import webhooks_bp
 from routes.producao_contexto import producao_contexto_bp
+from routes.erp_links import erp_links_bp
 
 # Import Models to ensure they are registered
 from nistiprint_shared.models import *
@@ -213,6 +214,7 @@ def create_app():
     app.register_blueprint(alertas_bp)
     app.register_blueprint(webhooks_bp)
     app.register_blueprint(producao_contexto_bp, url_prefix='/api/v2/producao-contexto')
+    app.register_blueprint(erp_links_bp)
 
     @app.route('/test_route')
     def test_route():

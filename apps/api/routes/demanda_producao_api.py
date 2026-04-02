@@ -1426,3 +1426,301 @@ def registrar_producao_sincrona_lote(demanda_id):
         'errors': errors,
         'modo': 'sincrono_lote'
     }), 200
+
+
+# ============================================================================
+# ROTAS DE SUGESTÕES E OVERRIDES (Nova Arquitetura)
+# ============================================================================
+
+from nistiprint_shared.services.demandas_sugestoes_service import DemandasSugestoesService
+from nistiprint_shared.services.demandas_override_service import DemandasOverrideService
+
+
+@demanda_producao_api_bp.route('/sugestoes', methods=['POST'])
+@login_required
+def get_sugestoes_demanda():
+    """
+    Calcula sugestões de valores para criação de demanda.
+    
+    Payload:
+    {
+        "canal_venda_id": 1,
+        "tipo_demanda": "PLATAFORMA",
+        "data_entrega": "2026-04-15"  # Opcional
+    }
+    
+    Response:
+    {
+        "success": true,
+        "sugestoes": {
+            "horario_coleta": "14:00",
+            "modalidade_logistica": "STANDARD",
+            "data_limite_execucao": "2026-04-13",
+            "is_flex": false,
+            "fulfillment": false,
+            "prazo_dias": 2,
+            "horario_limite": "15:00",
+            "regra_origem": "regras_logisticas_canal",
+            "alertas": []
+        }
+    }
+    """
+    try:
+        data = request.get_json() or {}
+        
+        canal_venda_id = data.get('canal_venda_id')
+        if not canal_venda_id:
+            return jsonify({
+                'success': False,
+                'message': 'canal_venda_id é obrigatório'
+            }), 400
+        
+        tipo_demanda = data.get('tipo_demanda', 'PLATAFORMA')
+        data_entrega_str = data.get('data_entrega')
+        
+        # Converter data_entrega se fornecido
+        from datetime import datetime
+        data_entrega = None
+        if data_entrega_str:
+            try:
+                data_entrega = datetime.strptime(data_entrega_str, '%Y-%m-%d').date()
+            except ValueError:
+                pass
+        
+        # Calcular sugestões
+        sugestoes = DemandasSugestoesService.calcular_sugestoes(
+            canal_venda_id=canal_venda_id,
+            tipo_demanda=tipo_demanda,
+            data_entrega=data_entrega
+        )
+        
+        return jsonify({
+            'success': True,
+            'sugestoes': sugestoes
+        }), 200
+        
+    except Exception as e:
+        print(f"ERROR in get_sugestoes_demanda: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+
+@demanda_producao_api_bp.route('/validar-override', methods=['POST'])
+@login_required
+def validar_override():
+    """
+    Valida se um override é compatível com as regras do canal.
+    
+    Payload:
+    {
+        "campo": "horario_coleta",
+        "valor_alterado": "16:00",
+        "canal_venda_id": 1
+    }
+    
+    Response:
+    {
+        "success": true,
+        "validacao": {
+            "valid": true,
+            "alertas": ["Horário após limite de coleta (15:00)"],
+            "bloqueios": []
+        }
+    }
+    """
+    try:
+        data = request.get_json() or {}
+        
+        campo = data.get('campo')
+        valor_alterado = data.get('valor_alterado')
+        canal_venda_id = data.get('canal_venda_id')
+        
+        if not all([campo, valor_alterado, canal_venda_id]):
+            return jsonify({
+                'success': False,
+                'message': 'campo, valor_alterado e canal_venda_id são obrigatórios'
+            }), 400
+        
+        # Validar override
+        validacao = DemandasSugestoesService.validar_override(
+            campo=campo,
+            valor_alterado=valor_alterado,
+            canal_venda_id=canal_venda_id
+        )
+        
+        return jsonify({
+            'success': True,
+            'validacao': validacao
+        }), 200
+        
+    except Exception as e:
+        print(f"ERROR in validar_override: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+
+@demanda_producao_api_bp.route('/<string:demanda_id>/overrides', methods=['GET'])
+@login_required
+def get_overrides_demanda(demanda_id):
+    """
+    Busca todos os overrides de uma demanda.
+    
+    Response:
+    {
+        "success": true,
+        "overrides": [
+            {
+                "id": 1,
+                "campo": "horario_coleta",
+                "valor_original": "14:00",
+                "valor_alterado": "16:00",
+                "justificativa": "Coleta extra solicitada",
+                "justificativa_tipo": "COLETA_ALTERNATIVA",
+                "usuario_nome": "João Silva",
+                "contexto_origem": "PLANILHA",
+                "created_at": "2026-04-01T10:30:00Z"
+            }
+        ]
+    }
+    """
+    try:
+        # Converter demanda_id para int se for numérico
+        try:
+            demanda_id_int = int(demanda_id)
+        except ValueError:
+            # Se for UUID, buscar ID numérico primeiro
+            from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
+            demanda = demanda_producao_service.get_demanda_with_itens(demanda_id)
+            if not demanda:
+                return jsonify({
+                    'success': False,
+                    'message': 'Demanda não encontrada'
+                }), 404
+            demanda_id_int = demanda['id']
+        
+        # Buscar overrides
+        overrides = DemandasOverrideService.get_overrides(demanda_id_int)
+        
+        return jsonify({
+            'success': True,
+            'overrides': overrides
+        }), 200
+        
+    except Exception as e:
+        print(f"ERROR in get_overrides_demanda: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+
+@demanda_producao_api_bp.route('/<string:demanda_id>/overrides', methods=['POST'])
+@login_required
+def create_override_demanda(demanda_id):
+    """
+    Cria um novo override para uma demanda.
+    
+    Payload:
+    {
+        "campo": "horario_coleta",
+        "valor_original": "14:00",
+        "valor_alterado": "16:00",
+        "justificativa": "Coleta extra solicitada pela plataforma",
+        "justificativa_tipo": "COLETA_ALTERNATIVA",
+        "contexto_origem": "PLANILHA"  # Opcional, default: DIRETA
+    }
+    """
+    try:
+        # Converter demanda_id para int
+        try:
+            demanda_id_int = int(demanda_id)
+        except ValueError:
+            from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
+            demanda = demanda_producao_service.get_demanda_with_itens(demanda_id)
+            if not demanda:
+                return jsonify({
+                    'success': False,
+                    'message': 'Demanda não encontrada'
+                }), 404
+            demanda_id_int = demanda['id']
+        
+        data = request.get_json() or {}
+        
+        # Obter usuário atual
+        usuario_id = None
+        try:
+            usuario_atual = get_current_user()
+            if usuario_atual:
+                usuario_id = usuario_atual.get('id')
+        except:
+            pass
+        
+        # Registrar override
+        override = DemandasOverrideService.registrar(
+            demanda_id=demanda_id_int,
+            campo=data.get('campo'),
+            valor_original=data.get('valor_original'),
+            valor_alterado=data.get('valor_alterado'),
+            justificativa=data.get('justificativa'),
+            justificativa_tipo=data.get('justificativa_tipo'),
+            usuario_id=usuario_id,
+            contexto_origem=data.get('contexto_origem', 'DIRETA')
+        )
+        
+        if override:
+            return jsonify({
+                'success': True,
+                'override': override
+            }), 201
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Falha ao criar override. Verifique os dados.'
+            }), 400
+        
+    except Exception as e:
+        print(f"ERROR in create_override_demanda: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+
+@demanda_producao_api_bp.route('/justificativas-tipo', methods=['GET'])
+@login_required
+def get_justificativas_tipo():
+    """
+    Retorna lista de justificativas pré-definidas para overrides.
+    
+    Response:
+    {
+        "success": true,
+        "justificativas": [
+            {
+                "value": "COLETA_ALTERNATIVA",
+                "label": "Coleta Alternativa",
+                "description": "Plataforma definiu horário alternativo no dia"
+            }
+        ]
+    }
+    """
+    try:
+        justificativas = DemandasSugestoesService.get_justificativas_tipo()
+        
+        return jsonify({
+            'success': True,
+            'justificativas': justificativas
+        }), 200
+        
+    except Exception as e:
+        print(f"ERROR in get_justificativas_tipo: {e}")
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500

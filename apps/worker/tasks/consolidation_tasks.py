@@ -43,6 +43,17 @@ def process_consolidacao(self, consolidacao_id: int):
         filepath = consolidacao['file_path']
         options = consolidacao.get('options', {})
         
+        # Verificar se arquivo existe
+        if not os.path.exists(filepath):
+            # Tentar caminho alternativo (apenas nome do arquivo em /app/temp)
+            filename = os.path.basename(filepath)
+            filepath_alt = os.path.join('/app', 'temp', filename)
+            if os.path.exists(filepath_alt):
+                filepath = filepath_alt
+                print(f"[*] Usando caminho alternativo: {filepath}")
+            else:
+                raise ValueError(f"Arquivo não encontrado: {filepath}. File na consolidação: {consolidacao.get('file_name')}")
+        
         # Prepara period filter
         period_filter = {
             'start': pd.to_datetime(consolidacao.get('period_filter_start')),
@@ -51,7 +62,7 @@ def process_consolidacao(self, consolidacao_id: int):
         
         # Importa processadores
         from nistiprint_shared.services.file_processors import process_mercadolivre, process_shopee, process_amazon, process_shein
-        from utils import prepare_ml_file
+        from nistiprint_shared.utils import prepare_ml_file
         from nistiprint_shared.services.bling.bling_client import BlingClient
         from nistiprint_shared.services.canal_venda_service import canal_venda_service
         from nistiprint_shared.services.integration_routing_service import integration_routing_service
@@ -118,7 +129,26 @@ def process_consolidacao(self, consolidacao_id: int):
             display_capas_miolos = capas_miolos
         
         conflicts = order_tracker_service.check_conflicts(all_orders_to_check, plataforma)
+
+        # ========================================================================
+        # NOVA ARQUITETURA: Calcular sugestões para demanda
+        # ========================================================================
+        from nistiprint_shared.services.demandas_sugestoes_service import DemandasSugestoesService
         
+        sugestoes_demanda = None
+        if channel_id:
+            try:
+                # Calcular sugestões baseadas no canal
+                sugestoes_demanda = DemandasSugestoesService.calcular_sugestoes(
+                    canal_venda_id=channel_id,
+                    tipo_demanda='PLATAFORMA'
+                )
+                print(f"💡 Sugestões calculadas para canal {channel_id}: {sugestoes_demanda}")
+            except Exception as e:
+                print(f"⚠️ Erro ao calcular sugestões: {e}")
+                sugestoes_demanda = None
+        # ========================================================================
+
         # Persistência dos pedidos no banco unificado (Bacth Mode)
         if bling_orders_data:
             print(f"💾 Preparando persistência em lote de {len(bling_orders_data)} pedidos...")
@@ -202,7 +232,9 @@ def process_consolidacao(self, consolidacao_id: int):
                 'bling_orders_not_found': bling_orders_not_found,
                 'raw_data': raw_data.where(pd.notnull(raw_data), None).to_dict('records') if hasattr(raw_data, 'to_dict') else raw_data,
                 'options': options,
-                'conflicts': conflicts
+                'conflicts': conflicts,
+                # NOVA ARQUITETURA: Sugestões para demanda
+                'sugestoes_demanda': sugestoes_demanda
             }
         }
         

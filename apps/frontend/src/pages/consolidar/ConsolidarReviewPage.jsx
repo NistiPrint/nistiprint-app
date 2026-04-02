@@ -8,12 +8,12 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { 
-  ArrowLeft, 
-  Package, 
-  Users, 
-  Calendar, 
-  Clock, 
+import {
+  ArrowLeft,
+  Package,
+  Users,
+  Calendar,
+  Clock,
   CheckCircle2,
   AlertCircle,
   Loader2
@@ -29,18 +29,23 @@ import {
 /**
  * Página de Revisão Pré-Demanda
  * Exibe resumo da consolidação antes de criar demanda
+ * 
+ * NOVA ARQUITETURA:
+ * - Busca sugestões automáticas baseadas no canal
+ * - Permite personalização com justificativa
+ * - Registra overrides com auditoria completa
  */
 export default function ConsolidarReviewPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
-  
+
   // Dados da consolidação
   const [pedidos, setPedidos] = useState([]);
   const [itensConsolidados, setItensConsolidados] = useState([]);
   const [canais, setCanais] = useState([]);
-  
+
   // Dados da demanda
   const [demandaNome, setDemandaNome] = useState('');
   const [demandaData, setDemandaData] = useState('');
@@ -55,7 +60,7 @@ export default function ConsolidarReviewPage() {
       navigate('/consolidar');
       return;
     }
-    
+
     carregarCanais();
     carregarResumo(pedidoIds);
   }, []);
@@ -145,7 +150,7 @@ export default function ConsolidarReviewPage() {
       toast.error('Preencha todos os campos obrigatórios');
       return;
     }
-    
+
     setCreating(true);
     try {
       // Preparar payload
@@ -155,7 +160,7 @@ export default function ConsolidarReviewPage() {
         data_entrega: demandaData,
         horario_coleta: demandaHorario || null,
         observacoes: demandaObs,
-        tipo_demanda: 'Standard',
+        tipo_demanda: 'PLATAFORMA',
         status: 'EM_PRODUCAO',
         itens: itensConsolidados.map(item => ({
           sku: item.sku,
@@ -168,15 +173,13 @@ export default function ConsolidarReviewPage() {
           }))
         }))
       };
-      
-      console.log("Payload enviado para criar demanda:", payload); // DEBUG LOG
-      
+
       const response = await fetch('/api/v2/demanda_producao/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      
+
       if (response.ok) {
         toast.success('Demanda criada com sucesso!');
         setTimeout(() => {
@@ -394,7 +397,7 @@ export default function ConsolidarReviewPage() {
                     />
                   </div>
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label htmlFor="horario">Horário de Coleta</Label>
                   <div className="relative">
@@ -408,7 +411,7 @@ export default function ConsolidarReviewPage() {
                     />
                   </div>
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label htmlFor="obs">Observações</Label>
                   <Textarea

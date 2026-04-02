@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { Link2, ShoppingBag, GitBranch, HelpCircle } from 'lucide-react';
+import { Link2, ShoppingBag, HelpCircle } from 'lucide-react';
 import IntegrationsStatus from './IntegrationsStatus';
 import Marketplace from '@/components/marketplace/Marketplace';
-import IntegracoesConfigPage from './configuracoes/IntegracoesConfigPage';
 
 export default function IntegracoesPage() {
   const [activeTab, setActiveTab] = useState("integracoes");
@@ -33,7 +32,7 @@ export default function IntegracoesPage() {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-3 max-w-xl">
+          <TabsList className="grid w-full grid-cols-2 max-w-xl">
             <TabsTrigger value="integracoes" className="flex items-center gap-2">
               <Link2 className="h-4 w-4" />
               Integrações
@@ -58,18 +57,6 @@ export default function IntegracoesPage() {
                 </TooltipContent>
               </Tooltip>
             </TabsTrigger>
-            <TabsTrigger value="vinculos" className="flex items-center gap-2">
-              <GitBranch className="h-4 w-4" />
-              Canais e Lojas
-              <Tooltip>
-                <TooltipTrigger className="ml-1">
-                  <HelpCircle className="h-3 w-3 text-muted-foreground" />
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p className="text-xs">Vínculos entre canais e lojas Bling</p>
-                </TooltipContent>
-              </Tooltip>
-            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="integracoes" className="space-y-4 border-none p-0 outline-none">
@@ -78,10 +65,6 @@ export default function IntegracoesPage() {
 
           <TabsContent value="marketplace" className="space-y-4 border-none p-0 outline-none">
             <Marketplace />
-          </TabsContent>
-
-          <TabsContent value="vinculos" className="space-y-4 border-none p-0 outline-none">
-            <IntegracoesConfigPage />
           </TabsContent>
         </Tabs>
       </div>

@@ -4,6 +4,7 @@ import ProtectedRoute from './components/ProtectedRoute'
 import MainLayout from './components/layout/MainLayout'
 import InstallWizard from './components/marketplace/InstallWizard'
 import { Toaster } from './components/ui/sonner'
+import { LayoutProvider } from './contexts/LayoutContext'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import CadastrosPage from './pages/admin/CadastrosPage'
@@ -86,7 +87,9 @@ function App() {
           path='/'
           element={
             <ProtectedRoute>
-              <MainLayout />
+              <LayoutProvider>
+                <MainLayout />
+              </LayoutProvider>
             </ProtectedRoute>
           }>
           {/* Dashboard/Home Route */}
@@ -262,11 +265,12 @@ function App() {
               path='demanda-permissions'
               element={<PermissoesDemandaPage />}
             />
-            <Route path='integracoes' element={<IntegracoesPage />} />
-            <Route
-              path='integracoes/install/:moduleId'
-              element={<InstallWizard />}
-            />
+            <Route path='integracoes' element={<IntegracoesPage />}>
+              <Route
+                path='install/:moduleId'
+                element={<InstallWizard />}
+              />
+            </Route>
             <Route path='roteamento' element={<IntegrationRoutingPage />} />
             <Route path='bling' element={<ConfiguracoesBlingPage />} />
           </Route>

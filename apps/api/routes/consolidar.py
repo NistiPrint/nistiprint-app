@@ -3,14 +3,17 @@ from datetime import datetime, timedelta
 import pandas as pd
 from flask import request, Blueprint, jsonify
 from routes.auth import login_required
-from nistiprint_shared.services.file_processors import process_mercadolivre, process_shopee, process_amazon, process_shein
+# Removido: importação direta dos processadores (agora usamos PlatformProcessorRegistry)
 from constants import PLATFORM_X_CNPJ
 from nistiprint_shared.services.bling.bling_client import BlingClient
 from nistiprint_shared.services.canal_venda_service import canal_venda_service
 from nistiprint_shared.services.conta_bling_service import conta_bling_service
 from utils import prepare_ml_file
-import traceback # Import traceback
+import traceback
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 consolidar_bp = Blueprint('consolidar', __name__, url_prefix='/api/v2')
 
@@ -104,19 +107,29 @@ def consolidar():
             filepath = os.path.join(basedir, _file.filename)
             _file.save(filepath)
 
-            if plataforma_normalized == 'mercadolivre':
-                new_file_path = prepare_ml_file(filepath)
-                result = process_mercadolivre(
-                    new_file_path, period_filter, options, bling_client)
-                os.remove(new_file_path)
-            elif 'shopee' in plataforma_normalized:
-                result = process_shopee(filepath, period_filter, options, bling_client)
-            elif plataforma_normalized == 'amazon':
-                result = process_amazon(filepath, period_filter, options, bling_client)
-            elif plataforma_normalized == 'shein':
-                result = process_shein(filepath, period_filter, options, bling_client)
-            else:
-                raise ValueError(f"Plataforma '{plataforma}' não suportada")
+            # NOVA ARQUITETURA (Fase 7): Usar PlatformProcessorRegistry
+            # Substitui if/else hardcoded por registry lookup
+            from nistiprint_shared.services.platform_processor_registry import PlatformProcessorRegistry
+            
+            try:
+                processor_func = PlatformProcessorRegistry.get_processor(plataforma_normalized)
+                
+                # Caso especial: Mercado Livre requer preparo do arquivo
+                if plataforma_normalized == 'mercadolivre':
+                    new_file_path = prepare_ml_file(filepath)
+                    result = processor_func(
+                        new_file_path, period_filter, options, bling_client)
+                    os.remove(new_file_path)
+                else:
+                    result = processor_func(filepath, period_filter, options, bling_client)
+                    
+            except ValueError as e:
+                # Erro do registry (processador não encontrado)
+                raise ValueError(f"Plataforma '{plataforma}' não suportada. Detalhes: {str(e)}")
+            except Exception as e:
+                # Erro no processamento
+                logger.error(f"Erro ao processar arquivo para plataforma {plataforma}: {e}")
+                raise
 
             capas, total_capas, miolos, total_miolos, capas_miolos, ids_pedidos, total_pedidos_plataforma, bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found, raw_data = result
 

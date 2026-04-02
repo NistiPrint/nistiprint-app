@@ -272,131 +272,16 @@ def importar_pedidos_bling():
 def upload_planilha_pedidos():
     """
     Processa upload de planilha de pedidos (Shopee, ML, Amazon).
-    
-    Form-data:
-    - file: Arquivo .xlsx ou .csv
-    - channel: Slug ou ID do canal de venda
-    - start_date: Data início (opcional)
-    - end_date: Data fim (opcional)
-    - print_orders: true/false (opcional)
-    - is_flex: true/false (opcional)
-    - async: true/false (opcional, default: true)
+    Chama o endpoint /consolidar existente para manter consistência.
     """
     try:
-        from werkzeug.utils import secure_filename
-        import os
-        from datetime import datetime, timedelta
+        # Importar função consolidar diretamente
+        from routes.consolidar import consolidar as consolidar_func
         
-        # Validar arquivo
-        if 'file' not in request.files:
-            return ApiResponse.error(message='Nenhum arquivo enviado', status_code=400)
-        
-        file = request.files['file']
-        if file.filename == '':
-            return ApiResponse.error(message='Nome de arquivo vazio', status_code=400)
-        
-        # Validar extensão
-        allowed_extensions = {'xlsx', 'csv'}
-        ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
-        if ext not in allowed_extensions:
-            return ApiResponse.error(message=f'Extensão não permitida: {ext}. Use .xlsx ou .csv', status_code=400)
-        
-        # Validar canal
-        channel_param = request.form.get('channel')
-        if not channel_param:
-            return ApiResponse.error(message='Canal de venda é obrigatório', status_code=400)
-
-        # Buscar canal
-        channel_slug = channel_param.lower().strip().replace(' ', '-').replace('_', '-')
-        all_channels = integracao_canal_service.listar_configuracoes(include_inactive=False)
-        
-        # Buscar canal por slug (dentro de canais_venda)
-        channel = next((c for c in all_channels if (c.get('canais_venda') or {}).get('slug') == channel_slug), None)
-
-        # Se não encontrou por slug, tentar por nome (dentro de canais_venda)
-        if not channel:
-            channel = next((c for c in all_channels if (c.get('canais_venda') or {}).get('nome') == channel_param), None)
-
-        # Se ainda não encontrou, tentar por canal_venda_id (caso o frontend envie o ID)
-        if not channel:
-            try:
-                channel_id = int(channel_param)
-                channel = next((c for c in all_channels if c.get('canal_venda_id') == channel_id), None)
-            except (ValueError, TypeError):
-                pass
-
-        if not channel:
-            return ApiResponse.error(message=f'Canal não encontrado: {channel_param}. Canais disponíveis: {[c.get("canais_venda", {}).get("nome") for c in all_channels]}', status_code=404)
-        
-        plataforma = channel.get('plataforma_nome')
-        channel_id = channel.get('canal_venda_id')
-        
-        # Salvar arquivo temporário
-        temp_dir = os.path.join(os.getcwd(), 'temp')
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        filename = secure_filename(f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}")
-        filepath = os.path.join(temp_dir, filename)
-        file.save(filepath)
-        
-        # Processar assincronamente ou síncrono
-        async_flag = request.form.get('async', 'true').lower() in ('true', '1', 'yes')
-        
-        if async_flag:
-            # Criar registro na tabela consolidacoes_pedido
-            consolidacao_record = {
-                'status': 'PENDENTE',
-                'platform': plataforma,
-                'channel_id': channel_id,
-                'channel_slug': channel_slug,
-                'file_path': filepath,
-                'file_name': filename,
-                'options': {
-                    'print_orders': request.form.get('print_orders', 'false').lower() in ('true', '1', 'yes'),
-                    'is_flex': request.form.get('is_flex', 'false').lower() in ('true', '1', 'yes'),
-                }
-            }
+        # O request atual já tem os dados necessários, só chamar a função
+        # O consolidar() vai ler de request.form e request.files diretamente
+        return consolidar_func()
             
-            result = supabase_db.table('consolidacoes_pedido').insert(consolidacao_record).execute()
-            
-            if not result.data:
-                os.remove(filepath)
-                return ApiResponse.error(message='Falha ao criar registro de consolidação', status_code=500)
-            
-            consolidacao_id = result.data[0]['id']
-            
-            # Disparar task Celery
-            celery_app.send_task(
-                'tasks.consolidation_tasks.process_consolidacao',
-                args=[consolidacao_id]
-            )
-            
-            return ApiResponse.success(data={
-                'queued': True,
-                'consolidacao_id': consolidacao_id,
-                'message': 'Processamento iniciado em background'
-            })
-        
-        # Processamento síncrono (redireciona para endpoint existente)
-        from routes.consolidar import consolidar
-        from flask import current_app
-        
-        # Criar request context para chamar o endpoint existente
-        with current_app.test_request_context(
-            '/api/v2/consolidar',
-            method='POST',
-            data=request.form,
-            files={'file': file}
-        ):
-            # Chamar função diretamente
-            # Nota: Esta é uma solução temporária, o ideal é refatorar o consolidar.py
-            pass
-        
-        return ApiResponse.success(data={
-            'queued': False,
-            'message': 'Processamento síncrono não implementado ainda. Use async=true.'
-        })
-        
     except Exception as e:
         logger.error(f"Erro ao processar planilha: {e}", exc_info=True)
         return ApiResponse.error(message=str(e), status_code=500)
@@ -503,16 +388,16 @@ def consolidar_pedidos_selecionados():
 def gerar_demanda_pedidos():
     """
     Gera demanda de produção a partir de pedidos selecionados ou itens consolidados.
-    
+
     Payload (opção 1 - pedidos selecionados):
     {
         "pedido_ids": [123, 456],
         "nome_demanda": "Demanda Shopee - Março",
         "data_entrega": "2026-04-15",
-        "horario_coleta": "14:00",
+        "horario_coleta": "14:00",  # Opcional: se não fornecido, usa sugestão
         "observacoes": "Urgente"
     }
-    
+
     Payload (opção 2 - itens consolidados):
     {
         "itens": [
@@ -526,21 +411,69 @@ def gerar_demanda_pedidos():
         "nome_demanda": "Demanda Consolidada",
         "data_entrega": "2026-04-15",
         "canal_venda_id": 1,
-        "horario_coleta": "14:00",
+        "horario_coleta": "14:00",  # Opcional: se não fornecido, usa sugestão
         "observacoes": ""
+    }
+    
+    Response inclui sugestões calculadas:
+    {
+        "success": true,
+        "demandas_criadas": [...],
+        "sugestoes": {
+            "horario_coleta": "14:00",
+            "modalidade_logistica": "STANDARD",
+            ...
+        }
     }
     """
     try:
         data = request.get_json() or {}
         user_id = request.headers.get('X-User-Email', 'System')
+
+        # ========================================================================
+        # NOVA ARQUITETURA: Calcular sugestões antes de criar demanda
+        # ========================================================================
+        from nistiprint_shared.services.demandas_sugestoes_service import DemandasSugestoesService
         
+        sugestoes = None
+        canal_venda_id_para_sugestao = None
+        
+        # Descobrir canal_venda_id para sugestões
+        pedido_ids = data.get('pedido_ids')
+        if pedido_ids and len(pedido_ids) > 0:
+            # Buscar primeiro pedido para obter canal_venda_id
+            primeiro_pedido = supabase_db.table('pedidos').select('canal_venda_id').eq('id', pedido_ids[0]).single().execute()
+            if primeiro_pedido.data:
+                canal_venda_id_para_sugestao = primeiro_pedido.data.get('canal_venda_id')
+        else:
+            canal_venda_id_para_sugestao = data.get('canal_venda_id')
+        
+        # Calcular sugestões se temos canal
+        if canal_venda_id_para_sugestao:
+            try:
+                from datetime import datetime
+                data_entrega_str = data.get('data_entrega')
+                data_entrega = None
+                if data_entrega_str:
+                    data_entrega = datetime.strptime(data_entrega_str, '%Y-%m-%d').date()
+                
+                sugestoes = DemandasSugestoesService.calcular_sugestoes(
+                    canal_venda_id=canal_venda_id_para_sugestao,
+                    tipo_demanda='PLATAFORMA',
+                    data_entrega=data_entrega
+                )
+            except Exception as e:
+                logger.warning(f"Erro ao calcular sugestões: {e}")
+                sugestoes = None
+        # ========================================================================
+
         # Opção 1: Gerar a partir de pedidos selecionados
         pedido_ids = data.get('pedido_ids')
         if pedido_ids:
             # Buscar pedidos e criar demanda automaticamente
             # Cada pedido gera sua própria demanda (ou consolidar se preferir)
             demandas_criadas = []
-            
+
             for pedido_id in pedido_ids:
                 # Buscar pedido completo
                 pedido_result = supabase_db.table('pedidos').select('''
@@ -552,12 +485,12 @@ def gerar_demanda_pedidos():
                         produto_id
                     )
                 ''').eq('id', pedido_id).single().execute()
-                
+
                 if not pedido_result.data:
                     continue
-                
+
                 pedido = pedido_result.data
-                
+
                 # Preparar itens da demanda
                 itens_demanda = []
                 for item in pedido.get('itens_pedido', []):
@@ -567,43 +500,49 @@ def gerar_demanda_pedidos():
                         'quantidade': item.get('quantidade'),
                         'produto_id': item.get('produto_id')
                     })
-                
+
                 # Criar demanda
                 nome_demanda = data.get('nome_demanda') or f"Pedido {pedido.get('numero_pedido', pedido_id)}"
                 
+                # Usar horario_coleta do payload ou da sugestão
+                horario_coleta = data.get('horario_coleta')
+                if not horario_coleta and sugestoes:
+                    horario_coleta = sugestoes.get('horario_coleta')
+
                 nova_demanda = demanda_producao_service.criar_demanda_direta(
                     nome_demanda=nome_demanda,
                     canal_venda_id=pedido.get('canal_venda_id'),
                     data_entrega_str=data.get('data_entrega', datetime.now().strftime('%Y-%m-%d')),
                     lista_de_itens=itens_demanda,
-                    horario_coleta_especifico=data.get('horario_coleta'),
+                    horario_coleta_especifico=horario_coleta,
                     observacoes=data.get('observacoes'),
                     user_id=user_id,
                     tipo_demanda='PLATAFORMA',
                     status='EM_PRODUCAO',
                     pedido_id=pedido_id
                 )
-                
+
                 if nova_demanda:
                     demandas_criadas.append({
                         'pedido_id': pedido_id,
                         'demanda_id': nova_demanda.get('id'),
                         'demanda_uuid': nova_demanda.get('demanda_id')
                     })
-            
+
             return ApiResponse.success(data={
                 'demandas_criadas': demandas_criadas,
                 'total': len(demandas_criadas),
+                'sugestoes': sugestoes,  # NOVA ARQUITETURA: Retornar sugestões
                 'message': f'{len(demandas_criadas)} demanda(s) criada(s) com sucesso!'
             })
-        
+
         # Opção 2: Gerar a partir de itens consolidados
         itens = data.get('itens', [])
         if itens:
             canal_venda_id = data.get('canal_venda_id')
             if not canal_venda_id:
                 return ApiResponse.error(message='canal_venda_id é obrigatório para itens consolidados', status_code=400)
-            
+
             # Preparar lista de itens
             lista_itens = []
             for item in itens:
@@ -613,28 +552,34 @@ def gerar_demanda_pedidos():
                     'quantidade': item.get('quantidade'),
                     'produto_id': item.get('produto_id')
                 })
-            
+
             # Criar demanda
             nome_demanda = data.get('nome_demanda') or f"Demanda Consolidada - {datetime.now().strftime('%d/%m')}"
             
+            # Usar horario_coleta do payload ou da sugestão
+            horario_coleta = data.get('horario_coleta')
+            if not horario_coleta and sugestoes:
+                horario_coleta = sugestoes.get('horario_coleta')
+
             nova_demanda = demanda_producao_service.criar_demanda_direta(
                 nome_demanda=nome_demanda,
                 canal_venda_id=canal_venda_id,
                 data_entrega_str=data.get('data_entrega', datetime.now().strftime('%Y-%m-%d')),
                 lista_de_itens=lista_itens,
-                horario_coleta_especifico=data.get('horario_coleta'),
+                horario_coleta_especifico=horario_coleta,
                 observacoes=data.get('observacoes'),
                 user_id=user_id,
                 tipo_demanda='PLATAFORMA',
                 status='EM_PRODUCAO'
             )
-            
+
             return ApiResponse.success(data={
                 'demanda_id': nova_demanda.get('id'),
                 'demanda_uuid': nova_demanda.get('demanda_id'),
+                'sugestoes': sugestoes,  # NOVA ARQUITETURA: Retornar sugestões
                 'message': 'Demanda consolidada criada com sucesso!'
             })
-        
+
         return ApiResponse.error(message='Nenhum pedido_ids ou itens fornecidos', status_code=400)
 
     except Exception as e:

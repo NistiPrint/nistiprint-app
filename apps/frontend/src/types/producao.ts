@@ -201,6 +201,112 @@ export interface UserPreferences {
 }
 
 // ============================================================================
+// CHANNEL SNAPSHOT (Fase 4)
+// ============================================================================
+
+/**
+ * Channel Snapshot
+ *
+ * Snapshot do estado do canal no momento da criação do pedido/demanda.
+ * Usado para auditoria e garantir consistência histórica.
+ *
+ * Nova arquitetura (Fase 4):
+ * - Pedidos e demandas capturam estado do canal via trigger
+ * - is_flex e fulfillment são herdados no momento da criação
+ * - horario_coleta é snapshotado para referência futura
+ */
+export interface ChannelSnapshot {
+  flex: boolean;
+  fulfillment: boolean;
+  horario_coleta?: string;  // HH:MM
+  color?: string;
+  canal_nome?: string;
+  canal_id?: number;
+  overrides?: DemandaOverride[];  // Nova arquitetura: overrides
+}
+
+// ============================================================================
+// OVERRIDES DE DEMANDA (Nova Arquitetura)
+// ============================================================================
+
+/**
+ * Tipo de justificativa para override
+ */
+export type JustificativaTipo =
+  | 'COLETA_ALTERNATIVA'      // Plataforma definiu horário alternativo no dia
+  | 'MUDANCA_CLIENTE'         // Solicitação do cliente
+  | 'ERRO_OPERACIONAL'        // Correção de erro operacional
+  | 'OTIMIZACAO_LOGISTICA'    // Melhoria operacional/logística
+  | 'OUTRO';                  // Outro motivo
+
+/**
+ * Contexto de origem da demanda
+ */
+export type ContextoOrigem =
+  | 'PLANILHA'           // Gerada a partir de planilha
+  | 'MULTIPLOS_PEDIDOS'  // Gerada a partir de múltiplos pedidos
+  | 'DIRETA'             // Criação direta (formulário)
+  | 'CONSOLIDADA';       // Demanda consolidada
+
+/**
+ * Override de campo herdado em demanda
+ *
+ * Nova arquitetura: permite personalizar valores herdados do canal
+ * com rastreabilidade completa (quem, quando, por quê)
+ */
+export interface DemandaOverride {
+  id: number;
+  demanda_id: number;
+  campo: 'horario_coleta' | 'modalidade_logistica' | 'data_limite_execucao' | 'is_flex' | 'fulfillment';
+  valor_original: any;  // Valor herdado do canal
+  valor_alterado: any;  // Valor personalizado
+  justificativa?: string;  // Motivo da alteração (texto livre)
+  justificativa_tipo?: JustificativaTipo;  // Tipo de justificativa (dropdown)
+  usuario_id?: number;
+  usuario_nome?: string;
+  contexto_origem?: ContextoOrigem;
+  created_at: string;
+  updated_at?: string;
+}
+
+/**
+ * Sugestões de valores para criação de demanda
+ *
+ * Retornado pela API /api/v2/demanda_producao/sugestoes
+ */
+export interface DemandaSugestoes {
+  horario_coleta: string;  // HH:MM
+  modalidade_logistica: string;  // STANDARD, EXPRESS, FULFILLMENT, RETIRADA
+  data_limite_execucao?: string;  // YYYY-MM-DD
+  is_flex: boolean;
+  fulfillment: boolean;
+  prazo_dias: number;
+  horario_limite: string;  // HH:MM
+  regra_origem: string;  // 'regras_logisticas_canal' ou 'padrao_sistema'
+  alertas: string[];  // Alertas de validação
+}
+
+/**
+ * Validação de override
+ *
+ * Retornado pela API /api/v2/demanda_producao/validar-override
+ */
+export interface OverrideValidacao {
+  valid: boolean;
+  alertas: string[];
+  bloqueios: string[];
+}
+
+/**
+ * Justificativa pré-definida para override
+ */
+export interface JustificativaTipoOption {
+  value: JustificativaTipo;
+  label: string;
+  description: string;
+}
+
+// ============================================================================
 // TIPOS AUXILIARES PARA DEMANDAS
 // ============================================================================
 
@@ -210,6 +316,13 @@ export type ClassificacaoCliente = 'B2C' | 'B2B' | 'INTERNO';
 
 export type DemandaStatus = 'AGUARDANDO' | 'EM_PRODUCAO' | 'COLETA_PARCIAL' | 'CONCLUIDO' | 'CANCELADO';
 
+/**
+ * Demanda de Produção (Nova Arquitetura - Fase 4)
+ * 
+ * Mudanças:
+ * - channel_snapshot: snapshot do canal no momento da criação
+ * - horario_coleta: deprecated (usar channel_snapshot.horario_coleta)
+ */
 export interface DemandaProducao {
   id: number;
   demanda_id: string;
@@ -222,21 +335,23 @@ export interface DemandaProducao {
   status: DemandaStatus;
   responsavel_id?: number;
   responsavel_nome?: string;
-  
+
   // Vínculos
   canal_venda_id?: number;
   canal_venda_nome?: string;
-  horario_coleta?: string;
   
+  // DEPRECATED: usar channel_snapshot.horario_coleta
+  horario_coleta?: string;
+
   // Tipo e classificação
   tipo_demanda: TipoDemanda;
   classificacao_cliente: ClassificacaoCliente;
   modalidade_logistica: ModalidadeLogistica;
-  
-  // Flags
+
+  // Flags (herdadas do canal via trigger)
   is_flex: boolean;
   fulfillment: boolean;
-  
+
   // Planejamento
   observacoes?: string;
   prioridade_manual: number;
@@ -245,7 +360,10 @@ export interface DemandaProducao {
   data_limite_execucao?: string;
   setores_envolvidos?: string[];
   categoria_temporal?: CategoriaTemporal;
-  
+
+  // Nova arquitetura Fase 4
+  channel_snapshot?: ChannelSnapshot;
+
   // Metadados
   dados_adicionais?: Record<string, any>;
   created_at?: string;
@@ -316,19 +434,35 @@ export interface PontoColeta {
 // CANAIS DE VENDA
 // ============================================================================
 
+/**
+ * Canal de Venda (Nova Arquitetura - Fase 3)
+ * 
+ * Mudanças:
+ * - plataforma_id: agora optional (vínculo via channel_connections)
+ * - conta_bling_id: deprecated (usar channel_connections.aggregator_store_id)
+ * - flex, fulfillment, horario_coleta: mantidos como fonte primária
+ */
 export interface CanalVenda {
   id: number;
   nome: string;
-  plataforma_id?: number;
+  plataforma_id?: number;  // Optional na nova arquitetura
   plataforma_nome?: string;
   descricao?: string;
   configuracao?: Record<string, any>;
   ativo: boolean;
   slug?: string;
+  
+  // DEPRECATED: usar channel_connections.aggregator_store_id
   conta_bling_id?: string;
+  
+  // Fonte primária de horário de coleta
   horario_coleta?: string;
+  
+  // Flags de logística (herdadas via trigger para pedidos/demandas)
   flex: boolean;
   fulfillment: boolean;
+  
+  // UI
   color?: string;
   created_at?: string;
   updated_at?: string;
@@ -338,6 +472,12 @@ export interface CanalVenda {
 // PLATAFORMAS
 // ============================================================================
 
+/**
+ * Plataforma (Nova Arquitetura - Fase 1)
+ * 
+ * Nota: Na nova arquitetura, plataformas são absorvidas por integration_modules.
+ * Esta interface é mantida para backward compatibility.
+ */
 export interface Plataforma {
   id: number;
   nome: string;
@@ -353,6 +493,13 @@ export interface Plataforma {
 // INTEGRAÇÕES
 // ============================================================================
 
+/**
+ * Integração Instalada (Nova Arquitetura - Fase 1)
+ * 
+ * Mudanças:
+ * - platform_slug: novo campo, referência ao slug em integration_modules
+ * - module_id: mantido para backward compatibility
+ */
 export interface InstalledIntegration {
   id: number;
   module_id: string;  // shopee, amazon, mercadolivre, shein, bling
@@ -364,8 +511,43 @@ export interface InstalledIntegration {
   sync_status: string;
   created_at?: string;
   updated_at?: string;
+  // Novo campo Fase 1
+  platform_slug?: string;
 }
 
+/**
+ * Channel Connection (Nova Arquitetura - Fase 2)
+ * 
+ * Substitui IntegracaoCanaisConfig na nova arquitetura.
+ * Vínculo explícito entre canal de venda e integração.
+ */
+export interface ChannelConnection {
+  id: string;
+  channel_id: number;  // canal_venda_id
+  integration_id?: number;
+  
+  // Para integrações via agregador (ex: Bling)
+  aggregator_store_id?: string;  // bling_loja_id
+  aggregator_store_name?: string;
+  
+  // Dual-FK para transição (Fase 2)
+  bling_integration_id?: number;
+  marketplace_integration_id?: number;
+  
+  config?: Record<string, any>;
+  is_active: boolean;
+  last_sync?: string;
+  sync_status?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/**
+ * Integracao Canais Config (Legado - Fase 2)
+ * 
+ * DEPRECATED: Usar ChannelConnection na nova arquitetura.
+ * Mantido para backward compatibility durante transição.
+ */
 export interface IntegracaoCanaisConfig {
   id: string;
   canal_venda_id: number;
