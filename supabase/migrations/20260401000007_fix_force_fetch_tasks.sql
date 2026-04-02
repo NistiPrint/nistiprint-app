@@ -1,13 +1,8 @@
--- Migration: 20260325000002_create_force_fetch_tasks_rpc.sql
--- Data: 2026-03-25
--- Propósito: Criar RPC force_fetch_all_tasks para o novo Motor de Reconciliação (MRE)
---
--- Esta RPC é consumida pelo método processar_fila_unificada() do MotorReconciliacaoEstoque
--- para buscar tarefas de RECONCILIACAO_ITEM e ITEM_TOTAL_BOM_PROCESS.
---
--- Diferença para fetch_and_lock_stock_tasks():
--- - fetch_and_lock_stock_tasks: worker LEGADO, processa CONSUMO_BOM/ESTORNO_BOM
--- - force_fetch_all_tasks: worker NOVO (MRE), processa RECONCILIACAO_ITEM/ITEM_TOTAL_BOM_PROCESS
+-- ============================================
+-- Migration: Correção force_fetch_all_tasks
+-- ============================================
+-- Remove referência a updated_at que não existe em fila_processamento_estoque
+-- ============================================
 
 CREATE OR REPLACE FUNCTION "public"."force_fetch_all_tasks"(
     p_worker_id TEXT,
@@ -41,5 +36,3 @@ COMMENT ON FUNCTION "public"."force_fetch_all_tasks"(TEXT, INTEGER) IS
 'RPC para o NOVO Motor de Reconciliação (MRE) buscar e lockar tarefas da fila.
 Processa apenas tarefas do tipo RECONCILIACAO_ITEM e ITEM_TOTAL_BOM_PROCESS.
 Usa FOR UPDATE SKIP LOCKED para evitar concorrência entre workers.';
-
--- FIM DA MIGRATION
