@@ -76,7 +76,7 @@ class BlingOrderProcessingService:
                 # A situação será atualizada posteriormente via webhook quando mudar
                 if situacao_id in [15, 6]:
                     print(f"💾 Sincronizando pedido {order_id} na base unificada (situação {situacao_id})...")
-                    
+
                     # Se for Shopee, sincroniza dados do Bling (número, cliente) E Shopee (ship_by_date, Flex)
                     if loja_id in [204047801, 205218967] and full_order_data.get('numeroLoja'):
                         # Primeiro sincroniza Bling para garantir numero_pedido e dados do cliente
@@ -90,6 +90,17 @@ class BlingOrderProcessingService:
 
                     # Salva no banco legado (BlingPedidos) para manter compatibilidade
                     self._save_order_to_db(full_order_data)
+
+                    # ✅ NOVO: Consolidação Automática em Rascunho
+                    # Após sincronizar o pedido, chama o service de consolidação
+                    if sync_result and sync_result.get('id'):
+                        try:
+                            from nistiprint_shared.services.consolidation_service import consolidation_service
+                            print(f"🔄 [CONSOLIDAÇÃO] Processando pedido {sync_result['id']} para consolidação automática...")
+                            consolidation_service.consolidar_pedido(sync_result['id'])
+                            print(f"✅ [CONSOLIDAÇÃO] Pedido {sync_result['id']} processado com sucesso")
+                        except Exception as e:
+                            print(f"⚠️ [CONSOLIDAÇÃO] Erro ao consolidar pedido {sync_result['id']}: {e}")
 
                     return {"status": "success", "message": f"Order {order_id} processed fully (situação {situacao_id}).", "core_id": sync_result.get('id')}
                 

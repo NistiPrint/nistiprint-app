@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   ArrowUp,
   ArrowUpCircle,
+  Bot,
   CheckCircle,
   CheckSquare,
   Edit,
@@ -272,6 +273,20 @@ const DemandaCard = React.memo(({
               </div>
               
               <div className="flex flex-wrap gap-1.5">
+                {/* Origem da demanda */}
+                {demanda.origem_demanda === 'AUTOMATICA' && (
+                  <Badge className="bg-blue-100 text-blue-700 border-blue-300 text-[10px] px-1.5 h-5 gap-1">
+                    <Bot className="h-3 w-3" />
+                    Automática
+                  </Badge>
+                )}
+                {demanda.origem_demanda === 'MANUAL' && (
+                  <Badge className="bg-gray-100 text-gray-700 border-gray-300 text-[10px] px-1.5 h-5 gap-1">
+                    <Edit className="h-3 w-3" />
+                    Manual
+                  </Badge>
+                )}
+
                 {isExpress && <Badge className="bg-purple-600 text-white border-none text-[10px] px-1.5 h-5">EXPRESS</Badge>}
                 {isEmergency && <Badge className="bg-red-600 text-white border-none animate-pulse text-[10px] px-1.5 h-5">PRIORIDADE MÁXIMA</Badge>}
                 {isLastChance && urgente && <Badge className="bg-orange-600 text-white border-none text-[10px] px-1.5 h-5">⚠️ ÚLTIMA CHANCE</Badge>}

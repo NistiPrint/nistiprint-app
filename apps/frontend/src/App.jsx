@@ -47,9 +47,11 @@ import HistoricoColetasPage from './pages/admin/relatorios/HistoricoColetasPage'
 import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPage'
 import RelatoriosIndexPage from './pages/admin/relatorios/RelatoriosIndexPage'
 import AIDashboardPage from './pages/ai/AIDashboardPage'
+import { AILogsPage } from './pages/ai/AILogsPage'
 import AuditoriaPage from './pages/auditoria/AuditoriaPage'
 import ConsolidarPage from './pages/consolidar/ConsolidarPage'
 import ConsolidarReviewPage from './pages/consolidar/ConsolidarReviewPage'
+import RascunhosListPage from './pages/consolidar/RascunhosListPage'
 import EstoqueAjustePage from './pages/estoque/EstoqueAjustePage'
 import EstoqueDashboardPage from './pages/estoque/EstoqueDashboardPage'
 import EstoqueHistoricoPage from './pages/estoque/EstoqueHistoricoPage'
@@ -64,6 +66,7 @@ import DemandaCalendarPage from './pages/producao/DemandaCalendarPage'
 import DemandaDashboardPage from './pages/producao/DemandaDashboardPage'
 import DemandaListPage from './pages/producao/DemandaListPage'
 import DemandaPrioridadePage from './pages/producao/DemandaPrioridadePage'
+import DemandaRascunhosPage from './pages/producao/DemandaRascunhosPage'
 import ExpedicaoDashboardPage from './pages/producao/ExpedicaoDashboardPage'
 import FocoProducaoPage from './pages/producao/FocoProducaoPage'
 import NovaDemandaPage from './pages/producao/NovaDemandaPage'
@@ -76,6 +79,7 @@ import PedidoDetalhePage from './pages/pedidos/PedidoDetalhePage'
 import PedidosListPage from './pages/pedidos/PedidosListPage'
 import VendasPage from './pages/vendas/VendasPage'
 import VendasPersonalizadasPage from './pages/vendas/VendasPersonalizadasPage'
+import ConfiguracoesIA from './pages/configuracoes/ConfiguracoesIA'
 function App() {
   return (
     <>
@@ -106,6 +110,7 @@ function App() {
             <Route path='foco' element={<FocoProducaoPage />} />
             <Route path='resumo' element={<ResumoProducaoPage />} />
             <Route path='demanda' element={<DemandaListPage />} />
+            <Route path='demanda/rascunhos' element={<DemandaRascunhosPage />} />
             <Route path='demanda/nova' element={<NovaDemandaPage />} />
             <Route path='demanda/:id/editar' element={<NovaDemandaPage />} />
             <Route
@@ -144,9 +149,15 @@ function App() {
           </Route>
 
           <Route path='pedidos' element={<PedidosListPage />} />
+
+          {/* Configurações */}
+          <Route path='configuracoes'>
+            <Route path='ia' element={<ConfiguracoesIA />} />
+          </Route>
           <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
           <Route path='consolidar' element={<ConsolidarPage />} />
           <Route path='consolidar/revisao' element={<ConsolidarReviewPage />} />
+          <Route path='consolidar/rascunhos' element={<RascunhosListPage />} />
 
           {/* Estoque Routes */}
           <Route path='estoque'>

@@ -60,7 +60,7 @@ const navigation = [
       },
       {
         name: 'Vendas',
-        href: '/vendas/personalizadas',
+        href: '/pedidos',
         type: 'link',
         permission: { a: 'vendas', I: 'ler' }
       },

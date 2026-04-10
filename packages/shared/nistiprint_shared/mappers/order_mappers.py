@@ -1,5 +1,8 @@
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
+import logging
+
+logger = logging.getLogger(__name__)
 
 def safe_float(value: Any, default: float = 0.0) -> float:
     """Converte valores de forma segura, tratando se vierem como dicionários da API."""
@@ -14,6 +17,79 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return float(str(value).replace(',', '.'))
     except:
         return default
+
+
+def derivar_modalidade_do_servico(
+    servico_logistico: str,
+    canal_venda_id: Optional[int] = None,
+    is_flex: bool = False,
+    fulfillment: bool = False
+) -> str:
+    """
+    Deriva modalidade logística a partir do servico_logístico.
+    
+    Prioridade:
+    1. Tenta usar canal_modalidade_service se canal_venda_id disponível
+    2. Fallback para detecção por palavras-chave (legado)
+    3. Fallback para flags is_flex/fulfillment
+    4. Default: STANDARD
+    
+    Args:
+        servico_logistico: String do serviço logístico
+        canal_venda_id: ID do canal (opcional, para mapeamento configurável)
+        is_flex: Flag de flex (fallback)
+        fulfillment: Flag de fulfillment (fallback)
+    
+    Returns:
+        Modalidade: STANDARD, EXPRESS, FULFILLMENT, RETIRADA
+    """
+    # Tentar mapeamento configurável se canal disponível
+    if canal_venda_id:
+        try:
+            from nistiprint_shared.services.canal_modalidade_service import canal_modalidade_service
+            modalidade = canal_modalidade_service.derivar_modalidade(
+                canal_venda_id,
+                servico_logistico
+            )
+            if modalidade:
+                logger.debug(
+                    "Modalidade derivada via mapeamento: %s (canal %s, servico: %s)",
+                    modalidade,
+                    canal_venda_id,
+                    servico_logistico
+                )
+                return modalidade
+        except ImportError:
+            logger.warning("canal_modalidade_service não disponível, usando fallback")
+        except Exception as e:
+            logger.warning(
+                "Erro ao derivar modalidade via service: %s. Usando fallback.",
+                str(e)
+            )
+    
+    # Fallback: detecção por palavras-chave (legado)
+    servico_upper = str(servico_logistico).upper() if servico_logistico else ""
+    
+    # EXPRESS
+    if any(x in servico_upper for x in ["FLEX", "DIRETA", "LOGGI", "RÁPIDA", "RAPIDA", "EXPRESS"]):
+        return 'EXPRESS'
+    
+    # FULFILLMENT
+    if any(x in servico_upper for x in ["FULL", "FULFILLMENT", "REPOSIÇÃO", "REPOSICAO"]):
+        return 'FULFILLMENT'
+    
+    # RETIRADA
+    if any(x in servico_upper for x in ["RETIRADA", "PICKUP", "BALCÃO", "BALCAO"]):
+        return 'RETIRADA'
+    
+    # Fallback para flags
+    if is_flex:
+        return 'EXPRESS'
+    if fulfillment:
+        return 'FULFILLMENT'
+    
+    # Default
+    return 'STANDARD'
 
 class BaseOrderMapper:
     """
@@ -35,14 +111,22 @@ class BaseOrderMapper:
 
 class BlingMapper(BaseOrderMapper):
     """Normalizador de Pedidos do Bling com conversão segura."""
-    
+
     @staticmethod
-    def map(raw: Dict[str, Any]) -> Dict[str, Any]:
+    def map(raw: Dict[str, Any], canal_venda_id: Optional[int] = None) -> Dict[str, Any]:
         contato = raw.get('contato', {})
         transporte = raw.get('transporte', {})
         volumes = transporte.get('volumes', [])
         servico = volumes[0].get('servico', '') if volumes else ""
         
+        # Derivar modalidade logística
+        is_flex_legacy = any(x in str(servico).upper() for x in ["FLEX", "DIRETA", "LOGGI"])
+        modalidade = derivar_modalidade_do_servico(
+            servico,
+            canal_venda_id=canal_venda_id,
+            is_flex=is_flex_legacy
+        )
+
         return {
             "id": str(raw.get('id')),
             "source": "BLING",
@@ -58,7 +142,8 @@ class BlingMapper(BaseOrderMapper):
             },
             "shipping": {
                 "service": servico,
-                "is_flex": any(x in str(servico).upper() for x in ["FLEX", "DIRETA", "LOGGI"]),
+                "is_flex": is_flex_legacy,
+                "modalidade_logistica": modalidade,
                 "estimated_delivery": BaseOrderMapper._to_iso(raw.get('dataPrevista')),
                 "address": raw.get('enderecoEntrega', {})
             },
@@ -81,12 +166,20 @@ class BlingMapper(BaseOrderMapper):
 
 class ShopeeMapper(BaseOrderMapper):
     """Normalizador de Pedidos da Shopee com conversão segura."""
-    
+
     @staticmethod
-    def map(raw: Dict[str, Any]) -> Dict[str, Any]:
+    def map(raw: Dict[str, Any], canal_venda_id: Optional[int] = None) -> Dict[str, Any]:
         recipient = raw.get('recipient_address', {})
         shipping_carrier = raw.get('shipping_carrier', '')
         
+        # Derivar modalidade logística
+        is_flex_legacy = 'ENTREGA RÁPIDA' in str(shipping_carrier).upper() or 'ENTREGA RAPIDA' in str(shipping_carrier).upper()
+        modalidade = derivar_modalidade_do_servico(
+            shipping_carrier,
+            canal_venda_id=canal_venda_id,
+            is_flex=is_flex_legacy
+        )
+
         return {
             "id": raw.get('order_sn'),
             "source": "SHOPEE",
@@ -101,7 +194,8 @@ class ShopeeMapper(BaseOrderMapper):
             },
             "shipping": {
                 "service": shipping_carrier,
-                "is_flex": 'ENTREGA RÁPIDA' in str(shipping_carrier).upper() or 'ENTREGA RAPIDA' in str(shipping_carrier).upper(),
+                "is_flex": is_flex_legacy,
+                "modalidade_logistica": modalidade,
                 "estimated_delivery": BaseOrderMapper._to_iso(raw.get('ship_by_date')),
                 "address": recipient
             },

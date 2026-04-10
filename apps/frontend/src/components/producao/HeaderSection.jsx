@@ -1,6 +1,6 @@
 import Can from '@/components/auth/Can'
 import { Button } from '@/components/ui/button'
-import { AlertCircle, CalendarRange, Factory, PlusCircle, TruckIcon } from 'lucide-react'
+import { AlertCircle, Bot, CalendarRange, ClipboardList, Factory, PlusCircle, TruckIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 function HeaderSection({ isCollectedDemandsModalOpen, setIsCollectedDemandsModalOpen, setIsDailyTotalsModalOpen, demandasColetadas, demandasAguardandoColeta }) {
@@ -8,6 +8,12 @@ function HeaderSection({ isCollectedDemandsModalOpen, setIsCollectedDemandsModal
     <div className='flex justify-between items-center mb-6'>
       <h1 className='text-3xl font-bold'>Demandas de Produção</h1>
       <div className='flex gap-3'>
+        <Link to='/producao/demanda/rascunhos'>
+          <Button variant='outline' className='gap-2'>
+            <Bot className='h-4 w-4' />
+            Rascunhos
+          </Button>
+        </Link>
         <Button
           variant='outline'
           onClick={() => setIsDailyTotalsModalOpen(true)}>
