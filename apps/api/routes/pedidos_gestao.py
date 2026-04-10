@@ -79,17 +79,18 @@ def get_pedidos_estatisticas():
             status = str(pedido.get('situacao_pedido_id', 'Unknown'))
             status_counts[status] = status_counts.get(status, 0) + 1
 
-        # Contar pedidos com demanda (usando demandas_pedidos pivot) com retry
+        # Contar pedidos COM DEMANDA (apenas situação 15 - Em Andamento)
+        # Pedidos em outras situações não geram demanda
         pedidos_com_demanda = 0
         pedidos_com_demanda_ids = set()
 
-        # Extrair IDs dos pedidos retornados
-        pedidos_ids = [p['id'] for p in result.data] if result.data else []
+        # Filtrar apenas pedidos em andamento (situação 15)
+        pedidos_em_andamento_ids = [p['id'] for p in result.data if p.get('situacao_pedido_id') == 15]
 
-        if pedidos_ids:
+        if pedidos_em_andamento_ids:
             for retry_attempt in range(max_retries):
                 try:
-                    demandas_pivot = supabase_db.table('demandas_pedidos').select('pedido_id').in_('pedido_id', pedidos_ids).execute()
+                    demandas_pivot = supabase_db.table('demandas_pedidos').select('pedido_id').in_('pedido_id', pedidos_em_andamento_ids).execute()
                     pedidos_com_demanda_ids = set(p['pedido_id'] for p in demandas_pivot.data) if demandas_pivot.data else set()
                     pedidos_com_demanda = len(pedidos_com_demanda_ids)
                     break
@@ -102,7 +103,9 @@ def get_pedidos_estatisticas():
                         logger.error(f"Erro ao contar demandas: {e}")
                         break
 
-        pedidos_sem_demanda = total_pedidos - pedidos_com_demanda
+        # Total de pedidos em andamento (para cálculo dos sem demanda)
+        pedidos_em_andamento_total = len(pedidos_em_andamento_ids)
+        pedidos_sem_demanda = pedidos_em_andamento_total - pedidos_com_demanda
         
         # Estatísticas por canal
         canais_stats = {}

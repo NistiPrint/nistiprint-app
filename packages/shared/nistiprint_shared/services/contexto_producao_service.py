@@ -503,24 +503,50 @@ class ContextoProducaoService:
         regra_modalidade: Optional[Dict[str, Any]],
         canal: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Constrói snapshot da logística."""
-        modalidade = origem.get('modalidade_logistica') or 'STANDARD'
+        """
+        Constrói snapshot da logística.
         
-        # Usar dados da regra se disponível, senão usar defaults
+        REGRA DE PRECEDÊNCIA PARA horario_coleta:
+        1. regras_logisticas_canal.horario_limite WHERE (canal_venda_id, modalidade) — FONTE CANÔNICA
+        2. FALLBACK: canais_venda.horario_coleta — Legado, será depreciado
+        3. FALLBACK: '23:59' — Default se nada configurado
+        
+        Esta função implementa explicitamente a regra de que a fonte primária de
+        horario_coleta é sempre a combinação (canal, modalidade), nunca o campo
+        genérico canais_venda.horario_coleta.
+        """
+        modalidade = origem.get('modalidade_logistica') or 'STANDARD'
+
+        # VALORES DEFAULT
         horario_corte = '23:59'
         ponto_coleta_id = None
         ponto_coleta_nome = None
         tipo_envio = 'COLETA_LOCAL'
 
+        # PRIORIDADE 1: Usar dados da regra logística por modalidade (FONTE CANÔNICA)
         if regra_modalidade:
             horario_corte = regra_modalidade.get('horario_limite', '23:59')
             ponto_coleta_id = regra_modalidade.get('ponto_coleta_id')
             ponto_coleta_nome = regra_modalidade.get('ponto_coleta_nome')
             tipo_envio = regra_modalidade.get('tipo_envio', 'COLETA_LOCAL')
+            
+            logger.debug(
+                "Horário de corte derivado de regras_logisticas_canal: %s (canal=%s, modalidade=%s)",
+                horario_corte,
+                canal.get('id') if canal else None,
+                modalidade
+            )
+        
+        # PRIORIDADE 2: Fallback para canais_venda.horario_coleta (LEGADO)
         elif canal:
-            # Fallback para dados do canal
             if canal.get('horario_coleta'):
                 horario_corte = canal.get('horario_coleta')
+                logger.warning(
+                    "Horário de corte derivado de canais_venda.horario_coleta (LEGADO). "
+                    "Considere configurar regras_logisticas_canal para (canal=%s, modalidade=%s).",
+                    canal.get('id'),
+                    modalidade
+                )
 
         return {
             'modalidade': modalidade,
@@ -529,7 +555,9 @@ class ContextoProducaoService:
             'ponto_coleta_nome': ponto_coleta_nome,
             'horario_corte': horario_corte if isinstance(horario_corte, str) else str(horario_corte),
             'is_flex': origem.get('is_flex', False) or modalidade == 'EXPRESS',
-            'is_fulfillment': origem.get('fulfillment', False) or modalidade == 'FULFILLMENT'
+            'is_fulfillment': origem.get('fulfillment', False) or modalidade == 'FULFILLMENT',
+            # Metadados para debug/auditoria
+            '_fonte_horario_corte': 'regras_logisticas_canal' if regra_modalidade else ('canais_venda' if canal and canal.get('horario_coleta') else 'default')
         }
 
     def _build_snapshot_temporal(

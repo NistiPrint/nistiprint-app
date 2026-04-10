@@ -25,7 +25,10 @@ from nistiprint_shared.services.previsao_consumo_service import previsao_consumo
 from nistiprint_shared.services.unit_of_work import UnitOfWork
 from typing import List, Dict, Any, Optional
 import uuid
+import logging
 from nistiprint_shared.utils.date_utils import get_now, get_now_iso
+
+logger = logging.getLogger(__name__)
 
 
 class DemandaCoreService:
@@ -753,6 +756,82 @@ class DemandaCoreService:
 
         return new_demanda
 
+    def _resolver_horario_coleta(
+        self,
+        canal_venda_id: Optional[int],
+        modalidade_logistica: str,
+        horario_coleta_especifico: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Resolve horário de coleta com base na regra de precedência.
+        
+        PRECEDÊNCIA:
+        1. horario_coleta_especifico (se fornecido explicitamente)
+        2. regras_logisticas_canal.horario_limite WHERE (canal_venda_id, modalidade) — FONTE CANÔNICA
+        3. canais_venda.horario_coleta — FALLBACK LEGADO
+        4. None — Se nada configurado
+        
+        Args:
+            canal_venda_id: ID do canal de venda
+            modalidade_logistica: STANDARD, EXPRESS, FULFILLMENT, RETIRADA
+            horario_coleta_especifico: Horário explícito (opcional)
+        
+        Returns:
+            Horário de coleta (HH:MM) ou None
+        """
+        # Prioridade 1: Horário explícito
+        if horario_coleta_especifico:
+            return horario_coleta_especifico
+        
+        # Prioridade 2: Buscar em regras_logisticas_canal
+        if canal_venda_id and modalidade_logistica:
+            try:
+                response = supabase_db.table('regras_logisticas_canal').select('horario_limite') \
+                    .eq('canal_venda_id', canal_venda_id) \
+                    .eq('modalidade', modalidade_logistica) \
+                    .maybe_single() \
+                    .execute()
+                
+                if response.data and response.data.get('horario_limite'):
+                    horario = response.data['horario_limite']
+                    # Converter time para string HH:MM se necessário
+                    if hasattr(horario, 'isoformat'):
+                        return horario.strftime('%H:%M')
+                    return str(horario)
+            except Exception as e:
+                logger.warning(
+                    "Erro ao buscar horario_limite em regras_logisticas_canal: %s",
+                    str(e)
+                )
+        
+        # Prioridade 3: Fallback para canais_venda.horario_coleta (LEGADO)
+        if canal_venda_id:
+            try:
+                response = supabase_db.table('canais_venda').select('horario_coleta') \
+                    .eq('id', canal_venda_id) \
+                    .maybe_single() \
+                    .execute()
+                
+                if response.data and response.data.get('horario_coleta'):
+                    horario = response.data['horario_coleta']
+                    logger.warning(
+                        "Horário de coleta derivado de canais_venda.horario_coleta (LEGADO). "
+                        "Considere configurar regras_logisticas_canal para (canal=%s, modalidade=%s).",
+                        canal_venda_id,
+                        modalidade_logistica
+                    )
+                    if hasattr(horario, 'isoformat'):
+                        return horario.strftime('%H:%M')
+                    return str(horario)
+            except Exception as e:
+                logger.warning(
+                    "Erro ao buscar horario_coleta em canais_venda: %s",
+                    str(e)
+                )
+        
+        # Prioridade 4: Nenhum configurado
+        return None
+
     def criar_demanda_direta(self, nome_demanda, canal_venda_id, data_entrega_str, lista_de_itens,
                              horario_coleta_especifico=None, data_finalizacao_prevista=None,
                              observacoes=None, user_id='System', tipo_demanda='PLATAFORMA',
@@ -803,13 +882,21 @@ class DemandaCoreService:
         if data_finalizacao_prevista:
             kwargs['data_finalizacao_prevista'] = data_finalizacao_prevista.isoformat() if hasattr(data_finalizacao_prevista, 'isoformat') else data_finalizacao_prevista
 
+        # Resolver horário de coleta com base na regra de precedência
+        # 1. horario_coleta_especifico > 2. regras_logisticas_canal > 3. canais_venda > 4. None
+        horario_coleta_resolvido = self._resolver_horario_coleta(
+            canal_venda_id,
+            modalidade_logistica,
+            horario_coleta_especifico
+        )
+
         demanda_payload = {
             'demanda_id': provided_id,
             'descricao': nome_demanda,
             'data_entrega': data_entrega_str,
             'status': status,
             'canal_venda_id': canal_venda_id,
-            'horario_coleta': horario_coleta_especifico or None,
+            'horario_coleta': horario_coleta_resolvido,
             'tipo_demanda': tipo_demanda,
             'observacoes': observacoes or None,
             'pedido_id': pedido_id,

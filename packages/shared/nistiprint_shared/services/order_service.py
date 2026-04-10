@@ -34,7 +34,8 @@ class OrderService:
 
         # Gerar Payload Canônico se o Mapper existir
         mapper = self._get_mapper(platform)
-        canonical_payload = mapper.map(raw_payload) if mapper else {}
+        # Passar canal_venda_id para o mapper derivar modalidade logística
+        canonical_payload = mapper.map(raw_payload, canal_venda_id=channel_id) if mapper else {}
 
         try:
             # 1. Tentar encontrar o pedido Core existente
@@ -184,7 +185,14 @@ class OrderService:
             if items:
                 existing_items = self.itens_table.select("id", count='exact').eq('pedido_id', core_id).execute()
                 if existing_items.count == 0:
+                    has_personalized_item = False
                     for item in items:
+                        descricao = item.get('descricao', '').lower()
+                        # Verificar se o item é personalizado pela descrição
+                        is_personalizado = 'personaliza' in descricao
+                        if is_personalizado:
+                            has_personalized_item = True
+
                         item_record = {
                             'pedido_id': core_id,
                             'produto_id': item.get('produto_id'),
@@ -193,9 +201,17 @@ class OrderService:
                             'quantidade': item.get('quantidade', 1),
                             'preco_unitario': item.get('preco_unitario', 0),
                             'subtotal': item.get('subtotal') or (float(item.get('preco_unitario', 0)) * float(item.get('quantidade', 1))),
+                            'personalizado': is_personalizado,
                             'created_at': datetime.now(timezone.utc).isoformat()
                         }
                         self.itens_table.insert(item_record).execute()
+
+                    # Se algum item é personalizado, marcar o pedido como personalizado
+                    if has_personalized_item:
+                        self.pedidos_table.update({
+                            'personalizado': True,
+                            'updated_at': datetime.now(timezone.utc).isoformat()
+                        }).eq('id', core_id).execute()
 
             return {"id": core_id, "external_id": external_id, "status": "success"}
 

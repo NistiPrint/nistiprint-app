@@ -1,23 +1,10 @@
 import os
 import json
 import logging
-import traceback
 from datetime import datetime, timedelta
-from sqlalchemy import text
-from nistiprint_shared.database.database import db
-from nistiprint_shared.database.supabase_db_service import get_db_session as get_supabase_session, supabase_db
+from nistiprint_shared.database.supabase_db_service import supabase_db
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import current_app
-
-from nistiprint_shared.models.bling_pedidos import BlingPedidos
-from nistiprint_shared.models.bling_pedido_itens import BlingPedidoItens
-from nistiprint_shared.models.shopee_orders import ShopeeOrders
-# from nistiprint_shared.models.v2_chat_events import V2ChatEvents # Deprecated
-# from nistiprint_shared.models.order_personalizations import OrderPersonalizations # Deprecated
-# from nistiprint_shared.models.ai_execution_log import AiExecutionLog # Deprecated
-from nistiprint_shared.models.supabase_chat import MensagemChatShopee
-from nistiprint_shared.models.supabase_ai_log import LogsExecucaoIA
-from nistiprint_shared.models.supabase_personalizacao import PersonalizacaoPedido
 
 from nistiprint_shared.utils import process_message_content
 
@@ -93,149 +80,301 @@ AI RESPONSE:
 
     return file_path
 
-# Load prompt template from file or environment
+# Load prompt template from DB, then env, then file, then default
 def load_prompt_template():
-    # 1. Try loading from environment variable for easy updates without redeploy
+    """
+    Carrega o prompt template com a seguinte prioridade:
+    1. Banco de dados (configuracoes_aplicacao) — salvo via UI de configuração
+    2. Variável de ambiente AI_PROMPT_TEMPLATE
+    3. Arquivo prompt_template.txt
+    4. Fallback hardcoded
+    """
+    # 1. Try loading from database (highest priority — user-configured via UI)
+    try:
+        from nistiprint_shared.services.app_config_service import app_config_service
+        db_config = app_config_service.get_config('prompt_template')
+        if db_config:
+            # Pode vir como string ou objeto { text: ... }
+            if isinstance(db_config, dict):
+                prompt = db_config.get('text', '')
+            else:
+                prompt = db_config
+            if prompt:
+                logger.info("Prompt template carregado do banco de dados (%d caracteres)", len(prompt))
+                return prompt
+    except Exception as e:
+        logger.warning(f"Não foi possível carregar prompt do DB: {e}")
+
+    # 2. Try loading from environment variable
     env_prompt = os.environ.get("AI_PROMPT_TEMPLATE")
     if env_prompt:
+        logger.info("Prompt template carregado da variável de ambiente")
         return env_prompt
 
-    # 2. Fallback to file using absolute path relative to this script
+    # 3. Fallback to file using absolute path relative to this script
     base_path = os.path.dirname(os.path.abspath(__file__))
-    # Look for templates in the package directory
     file_path = os.path.join(base_path, "..", "templates", "prompts", "prompt_template.txt")
-    
+
     try:
         if os.path.exists(file_path):
             with open(file_path, 'r', encoding='utf-8') as file:
+                logger.info("Prompt template carregado do arquivo %s", file_path)
                 return file.read()
         else:
             logger.warning(f"Prompt template file not found at {file_path}. Using default.")
     except Exception as e:
         logger.error(f"Error loading prompt template from file: {e}")
-    
-    # 3. Last resort fallback
+
+    # 4. Last resort fallback
+    logger.warning("Usando prompt template fallback (nenhuma fonte configurada)")
     return "Você é um assistente especialista em extrair nomes de textos. Extraia os nomes do seguinte texto: {context}"
 
 # Load prompt template
 PROMPT_TEMPLATE = load_prompt_template()
 
-def get_orders_with_chats(order_sn=None, limit=None):
+def get_orders_with_chats(order_sn=None, limit=None, mode=None):
     """
     Retrieve orders with their related items and chat messages using Supabase Views.
-    Optimized to use view_vendas_personalizadas and view_mensagens_chat.
+
+    Args:
+        order_sn: Optional Shopee order SN to filter by
+        limit: Optional limit on number of orders
+        mode: 'v3' for unified model, 'legacy' for Bling MySQL view (default: 'legacy')
+    """
+    if not mode:
+        from nistiprint_shared.services.app_config_service import app_config_service
+        mode = 'v3' if app_config_service.get_operational_mode() == 'v2' else 'legacy'
+
+    if mode == 'v3':
+        return _get_orders_with_chats_v3(order_sn=order_sn, limit=limit)
+    return _get_orders_with_chats_legacy(order_sn=order_sn, limit=limit)
+
+
+def _get_orders_with_chats_v3(order_sn=None, limit=None):
+    """
+    Retrieve orders using unified model view (pedidos + itens_pedido).
+    Uses view_vendas_personalizadas_v3 which filters by itens_pedido.personalizado=true.
     """
     try:
-        logger.info(f"get_orders_with_chats optimized called with order_sn={order_sn}, limit={limit}")
-        
-        # 1. Fetch Orders from the NEW View V3 (Unified Model)
+        logger.info(f"get_orders_with_chats V3 called with order_sn={order_sn}, limit={limit}")
+
         query = supabase_db.table('view_vendas_personalizadas_v3') \
             .select('*') \
             .order('data_pedido', desc=True)
 
         if order_sn:
             query = query.eq('numero_loja', order_sn)
-        
-        # We need a strict filter here: only orders that have shopee data (buyer_username)
-        # to match the original logic. The view does a LEFT JOIN, so we filter in memory or query.
-        # Original logic: WHERE so.informacoes_comprador IS NOT NULL
-        query = query.not_.is_('buyer_username', 'null')
 
         if limit and not order_sn:
             query = query.limit(limit)
 
         response = query.execute()
         rows = response.data if response else []
-        
+
         if not rows:
+            logger.info("No orders found (V3 view).")
             return []
 
         now = datetime.now()
-        
+        processed_orders = []
+
         for row in rows:
-            order_date_str = row['data_pedido']
+            # Filter: only orders with buyer_username (Shopee data)
+            buyer_username = row.get('buyer_username')
+            if not buyer_username:
+                continue
+
+            order_date_str = row.get('data_pedido')
             try:
                 if isinstance(order_date_str, str):
                     order_date = datetime.fromisoformat(order_date_str.replace('Z', '+00:00'))
                 else:
                     order_date = datetime.combine(order_date_str, datetime.min.time())
-            except:
+            except Exception:
                 order_date = now
 
-            # Construct the order dictionary matching the expected structure
+            # Parse buyer_info
+            buyer_info = row.get('informacoes_comprador') or {}
+            if isinstance(buyer_info, str):
+                try:
+                    buyer_info = json.loads(buyer_info)
+                except Exception:
+                    buyer_info = {}
+
+            # Parse items (view returns JSONB)
+            items = row.get('itens') or []
+            if isinstance(items, str):
+                try:
+                    items = json.loads(items)
+                except Exception:
+                    items = []
+
+            # Construct the order dictionary
             order_dict = {
-                'order_id': row['id'],
-                'bling_number': row['numero_pedido'],
-                'shopee_order_sn': row['numero_loja'],
+                'order_id': str(row.get('id', '')),
+                'bling_number': row.get('numero_pedido', ''),
+                'shopee_order_sn': row.get('numero_loja', ''),
                 'order_date': order_date.isoformat(),
-                'bling_id': row['bling_id'],
-                'buyer_info': row['informacoes_comprador'],
-                'message_to_seller': row['shopee_message'],
-                'items': row['itens'] if row['itens'] else []
+                'bling_id': row.get('bling_id', ''),
+                'buyer_info': buyer_info,
+                'message_to_seller': row.get('shopee_message') or '',
+                'items': items
             }
 
-            # Parse buyer_info if it's a string (though view tries to handle it)
-            if isinstance(order_dict['buyer_info'], str):
-                try:
-                    order_dict['buyer_info'] = json.loads(order_dict['buyer_info'])
-                except:
-                    order_dict['buyer_info'] = {}
-            elif not order_dict['buyer_info']:
-                order_dict['buyer_info'] = {}
+            # Fetch chat messages using view_mensagens_chat
+            try:
+                chat_query = supabase_db.table('view_mensagens_chat') \
+                    .select("*") \
+                    .or_(f"from_user_name.eq.{buyer_username},to_user_name.eq.{buyer_username}")
 
-            # Fetch chat messages using the view_mensagens_chat
-            # If order_sn is provided, we look 30 days around the order date
-            # Otherwise, we look at last 7 days from now
-            username = row.get('buyer_username')
-            if username:
-                try:
-                    chat_query = supabase_db.table('view_mensagens_chat') \
-                        .select("*") \
-                        .or_(f"from_user_name.eq.{username},to_user_name.eq.{username}")
-                    
-                    if order_sn:
-                        # Window: 30 days before order date until 2 days after
-                        start_date = (order_date - timedelta(days=30)).isoformat()
-                        end_date = (order_date + timedelta(days=2)).isoformat()
-                        chat_query = chat_query.gte('created_at', start_date).lte('created_at', end_date)
-                    else:
-                        fourteen_days_ago_iso = (now - timedelta(days=14)).isoformat()
-                        chat_query = chat_query.gt('created_at', fourteen_days_ago_iso)
-                    
-                    chat_data = chat_query.order('created_at', desc=False).execute()
-                    chat_rows = chat_data.data if chat_data else []
-                except Exception as e:
-                    logger.error(f"Error fetching chats from view for {username}: {e}")
-                    chat_rows = []
+                if order_sn:
+                    start_date = (order_date - timedelta(days=30)).isoformat()
+                    end_date = (order_date + timedelta(days=2)).isoformat()
+                    chat_query = chat_query.gte('created_at', start_date).lte('created_at', end_date)
+                else:
+                    fourteen_days_ago_iso = (now - timedelta(days=14)).isoformat()
+                    chat_query = chat_query.gt('created_at', fourteen_days_ago_iso)
 
-                processed_messages = []
-                for msg_row in chat_rows:
-                    # Message is already formatted by the view
-                    message = {
-                        'id': str(msg_row.get('id')),
-                        'from_user_name': msg_row.get('from_user_name') or '',
-                        'to_user_name': msg_row.get('to_user_name') or '',
-                        'content': msg_row.get('content', ''),
-                        'created_at': msg_row.get('created_at'),
-                        'type': msg_row.get('type', 'text').lower(),
-                        'display_content': msg_row.get('display_content'),
-                        'is_sender': msg_row.get('from_user_name') == username
-                    }
-                    processed_messages.append(message)
+                chat_data = chat_query.order('created_at', desc=False).execute()
+                chat_rows = chat_data.data if chat_data else []
+            except Exception as e:
+                logger.error(f"Error fetching chats from view for {buyer_username}: {e}")
+                chat_rows = []
 
-                order_dict['chat_messages'] = processed_messages
-            else:
-                order_dict['chat_messages'] = []
+            processed_messages = []
+            for msg_row in chat_rows:
+                message = {
+                    'id': str(msg_row.get('id')),
+                    'from_user_name': msg_row.get('from_user_name') or '',
+                    'to_user_name': msg_row.get('to_user_name') or '',
+                    'content': msg_row.get('content', ''),
+                    'created_at': msg_row.get('created_at'),
+                    'type': (msg_row.get('type') or 'text').lower(),
+                    'display_content': msg_row.get('display_content', ''),
+                    'is_sender': msg_row.get('from_user_name') == buyer_username
+                }
+                processed_messages.append(message)
 
+            order_dict['chat_messages'] = processed_messages
             processed_orders.append(order_dict)
 
+        logger.info(f"Returning {len(processed_orders)} orders with chats (V3).")
         return processed_orders
 
     except Exception as e:
-        logger.error(f"Error fetching orders with chats: {str(e)}")
+        logger.error(f"Error fetching orders with chats (V3): {str(e)}")
         raise
 
 
+def _get_orders_with_chats_legacy(order_sn=None, limit=None):
+    """
+    Retrieve orders using legacy Bling MySQL view (pedidos_bling + itens_pedido_bling).
+    Kept for backward compatibility during migration.
+    """
+    try:
+        logger.info(f"get_orders_with_chats LEGACY called with order_sn={order_sn}, limit={limit}")
+
+        query = supabase_db.table('view_vendas_personalizadas') \
+            .select('*') \
+            .order('data_pedido', desc=True)
+
+        if order_sn:
+            query = query.eq('numero_loja', order_sn)
+
+        if limit and not order_sn:
+            query = query.limit(limit)
+
+        response = query.execute()
+        rows = response.data if response else []
+
+        if not rows:
+            logger.info("No orders found (Legacy view).")
+            return []
+
+        now = datetime.now()
+        processed_orders = []
+
+        for row in rows:
+            buyer_username = row.get('buyer_username')
+            if not buyer_username:
+                continue
+
+            order_date_str = row.get('data_pedido')
+            try:
+                if isinstance(order_date_str, str):
+                    order_date = datetime.fromisoformat(order_date_str.replace('Z', '+00:00'))
+                else:
+                    order_date = datetime.combine(order_date_str, datetime.min.time())
+            except Exception:
+                order_date = now
+
+            buyer_info = row.get('informacoes_comprador') or {}
+            if isinstance(buyer_info, str):
+                try:
+                    buyer_info = json.loads(buyer_info)
+                except Exception:
+                    buyer_info = {}
+
+            items = row.get('itens') or []
+            if isinstance(items, str):
+                try:
+                    items = json.loads(items)
+                except Exception:
+                    items = []
+
+            order_dict = {
+                'order_id': str(row.get('id', '')),
+                'bling_number': row.get('numero_pedido', ''),
+                'shopee_order_sn': row.get('numero_loja', ''),
+                'order_date': order_date.isoformat(),
+                'bling_id': row.get('bling_id', ''),
+                'buyer_info': buyer_info,
+                'message_to_seller': row.get('shopee_message') or '',
+                'items': items
+            }
+
+            try:
+                chat_query = supabase_db.table('view_mensagens_chat') \
+                    .select("*") \
+                    .or_(f"from_user_name.eq.{buyer_username},to_user_name.eq.{buyer_username}")
+
+                if order_sn:
+                    start_date = (order_date - timedelta(days=30)).isoformat()
+                    end_date = (order_date + timedelta(days=2)).isoformat()
+                    chat_query = chat_query.gte('created_at', start_date).lte('created_at', end_date)
+                else:
+                    fourteen_days_ago_iso = (now - timedelta(days=14)).isoformat()
+                    chat_query = chat_query.gt('created_at', fourteen_days_ago_iso)
+
+                chat_data = chat_query.order('created_at', desc=False).execute()
+                chat_rows = chat_data.data if chat_data else []
+            except Exception as e:
+                logger.error(f"Error fetching chats from view for {buyer_username}: {e}")
+                chat_rows = []
+
+            processed_messages = []
+            for msg_row in chat_rows:
+                message = {
+                    'id': str(msg_row.get('id')),
+                    'from_user_name': msg_row.get('from_user_name') or '',
+                    'to_user_name': msg_row.get('to_user_name') or '',
+                    'content': msg_row.get('content', ''),
+                    'created_at': msg_row.get('created_at'),
+                    'type': (msg_row.get('type') or 'text').lower(),
+                    'display_content': msg_row.get('display_content', ''),
+                    'is_sender': msg_row.get('from_user_name') == buyer_username
+                }
+                processed_messages.append(message)
+
+            order_dict['chat_messages'] = processed_messages
+            processed_orders.append(order_dict)
+
+        logger.info(f"Returning {len(processed_orders)} orders with chats (Legacy).")
+        return processed_orders
+
+    except Exception as e:
+        logger.error(f"Error fetching orders with chats (Legacy): {str(e)}")
+        raise
 
 def generate_prompt_payload(order):
     prompt_payload = ">>> ORDER DATA\n"
@@ -294,9 +433,8 @@ def delete_extraction_records(order_data, session=None):
     """
     Delete extraction records from the Supabase database.
     """
-    # Using SupabaseDBService directly since we don't have scoped session management same as Flask-SQLAlchemy
     try:
-        shopee_order_sn = order_data.get('shopee_order_sn') or order_data.get('loja_id') # loja_id fallback
+        shopee_order_sn = order_data.get('shopee_order_sn')
         if not shopee_order_sn:
              logger.warning("No shopee_order_sn provided for deletion.")
              return
@@ -313,9 +451,67 @@ def delete_extraction_records(order_data, session=None):
         raise
 
 
+def _resolve_item_pedido_id(shopee_order_sn: str, item_description: str) -> int | None:
+    """
+    Resolve o ID do itens_pedido unificado a partir do shopee_order_sn e descricao.
+    Retorna None se não encontrar.
+    """
+    try:
+        # 1. Encontrar o pedido unificado pelo codigo_pedido_externo
+        pedido_result = supabase_db.table('pedidos') \
+            .select('id') \
+            .eq('codigo_pedido_externo', shopee_order_sn) \
+            .execute()
+
+        if not pedido_result.data:
+            logger.debug(
+                "Pedido unificado não encontrado para shopee_order_sn=%s",
+                shopee_order_sn
+            )
+            return None
+
+        pedido_id = pedido_result.data[0]['id']
+
+        # 2. Encontrar o item pela descricao
+        item_result = supabase_db.table('itens_pedido') \
+            .select('id') \
+            .eq('pedido_id', pedido_id) \
+            .eq('descricao', item_description) \
+            .execute()
+
+        if item_result.data:
+            return item_result.data[0]['id']
+
+        # 3. Fallback: tentativa por parcial match na descricao
+        item_result = supabase_db.table('itens_pedido') \
+            .select('id') \
+            .eq('pedido_id', pedido_id) \
+            .ilike('descricao', f'%{item_description[:50]}%') \
+            .execute()
+
+        if item_result.data:
+            logger.info(
+                "Match parcial de descricao para item_pedido_id: '%s' -> %d",
+                item_description[:50], item_result.data[0]['id']
+            )
+            return item_result.data[0]['id']
+
+        logger.debug(
+            "Item não encontrado para pedido_id=%d, descricao=%s",
+            pedido_id, item_description[:50]
+        )
+        return None
+
+    except Exception as e:
+        logger.error(f"Erro ao resolver item_pedido_id: {e}", exc_info=True)
+        return None
+
+
 def save_extraction_results(order_data, extraction_result):
     """
     Save the extraction results to the Supabase database.
+    Uses direct supabase_db.insert for reliability.
+    Resolves item_pedido_id for direct match with unified itens_pedido table.
     """
     try:
         # Parse the JSON response if it's a string
@@ -332,44 +528,55 @@ def save_extraction_results(order_data, extraction_result):
             logger.error(f"Missing required fields in extraction result: {extraction_result}")
             return False
 
+        shopee_order_sn = extraction_result['shopee_order_sn']
+
         # Delete existing records first
         delete_extraction_records(order_data)
 
-        # Insert each personalized item using Supabase Session
-        with get_supabase_session() as session:
-            for item in extraction_result.get('personalized_items', []):
-                personalization = PersonalizacaoPedido()
-                personalization.shopee_order_sn = str(extraction_result['shopee_order_sn'])
-                personalization.codigo_pedido = str(extraction_result['shopee_order_sn'])
-                personalization.bling_id = str(order_data.get('bling_id') or '')
-                personalization.status = extraction_result['status']
-                personalization.reasoning = extraction_result.get('reasoning')
-                personalization.item_id = str(item.get('item_id') or '')
-                personalization.item_description = item.get('item_description', '')[:1000]
-                personalization.customization_name = item.get('customization_name')
-                personalization.name_source_message_id = str(item.get('name_source_message_id') or '')
-                personalization.customization_initial = item.get('customization_initial')
-                personalization.updated_at = datetime.utcnow()
-                
-                # Metadata field in Supabase is JSONB, handle appropriately
-                metadata = {
+        # Insert each personalized item
+        items_to_insert = []
+        for item in extraction_result.get('personalized_items', []):
+            item_description = (item.get('item_description', '') or '')[:1000]
+
+            # Resolver item_pedido_id para match direto com itens_pedido
+            item_pedido_id = _resolve_item_pedido_id(
+                shopee_order_sn, item_description
+            )
+
+            # Move extra fields to detalhes_personalizacao JSONB
+            detalhes = {
+                'quantity_to_personalize': item.get('quantity_to_personalize', 1),
+                'initial_source_message_id': item.get('initial_source_message_id')
+            }
+
+            record = {
+                'codigo_pedido': str(shopee_order_sn),
+                'shopee_order_sn': str(shopee_order_sn),
+                'bling_id': str(order_data.get('bling_id') or ''),
+                'status': extraction_result['status'],
+                'reasoning': extraction_result.get('reasoning'),
+                'item_id': str(item.get('item_id') or ''),
+                'item_description': item_description,
+                'item_pedido_id': item_pedido_id,
+                'customization_name': item.get('customization_name'),
+                'name_source_message_id': str(item.get('name_source_message_id') or '') if item.get('name_source_message_id') else None,
+                'customization_initial': item.get('customization_initial'),
+                'dados_cliente': order_data.get('buyer_info', {}),
+                'detalhes_personalizacao': detalhes,
+                'metadata': {
                     'extraction_timestamp': datetime.utcnow().isoformat(),
                     'source': model_name,
-                    'version': '2.0',
-                    'processed_at': datetime.utcnow().isoformat(),
-                    'quantity_to_personalize': item.get('quantity_to_personalize', 1),
-                    'initial_source_message_id': item.get('initial_source_message_id')
-                }
-                # The model wrapper might expect a dict for JSONB columns if using Supabase client directly,
-                # but since we are using get_supabase_session (simulated SQLAlchemy), we use json.dumps
-                personalization.metadata = json.dumps(metadata)
+                    'version': '2.1',
+                    'processed_at': datetime.utcnow().isoformat()
+                },
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            items_to_insert.append(record)
 
-                session.add(personalization)
-            
-            # The context manager handles commit/rollback simulation
-            pass
+        if items_to_insert:
+            supabase_db.table('personalizacoes_pedido').insert(items_to_insert).execute()
 
-        logger.info(f"Successfully saved extraction results for order {extraction_result['order_id']}")
+        logger.info(f"Successfully saved {len(items_to_insert)} extraction results for order {shopee_order_sn}")
         return True
 
     except Exception as e:
@@ -378,24 +585,23 @@ def save_extraction_results(order_data, extraction_result):
 
 
 def log_ai_execution(order_sn, input_data, chat_context, extracted_personalization, model_result, status, error_message=None, user_feedback_id=None):
+    """Log AI execution to logs_execucao_ia table."""
     try:
-        with get_supabase_session() as session:
-            log_entry = LogsExecucaoIA()
-            log_entry.order_sn = order_sn
-            log_entry.executed_at = datetime.utcnow()
-            
-            # Supabase handles JSONB, but model defines as Text for compatibility, so dumps.
-            log_entry.input_data = json.dumps(input_data, ensure_ascii=False, default=str)
-            log_entry.chat_context = json.dumps(chat_context, ensure_ascii=False, default=str)
-            log_entry.extracted_personalization = json.dumps(extracted_personalization, ensure_ascii=False, default=str) if extracted_personalization else None
-            log_entry.model_result = json.dumps(model_result, ensure_ascii=False, default=str) if model_result else None
-            
-            log_entry.status = status
-            log_entry.error_message = error_message
-            log_entry.user_feedback_id = user_feedback_id
-            
-            session.add(log_entry)
-            
+        supabase_db.table('logs_execucao_ia').insert({
+            'order_sn': order_sn,
+            'executed_at': datetime.utcnow().isoformat(),
+            'input_data': input_data,
+            'chat_context': chat_context,
+            'extracted_personalization': extracted_personalization,
+            'model_result': model_result,
+            'status': status,
+            'error_message': error_message,
+            'user_feedback_id': user_feedback_id,
+            'metadata': {
+                'logged_at': datetime.utcnow().isoformat(),
+                'source': model_name
+            }
+        }).execute()
     except Exception as e:
         logger.error(f"Error logging AI execution: {str(e)}", exc_info=True)
 
@@ -405,21 +611,24 @@ def get_logs_by_order_sn(order_sn):
     Retrieve AI execution logs for a specific order SN from Supabase.
     """
     try:
-        # Use SupabaseQueryInterface via Model
-        # Pass string 'executed_at desc' for ordering as SupabaseQueryInterface handles it, 
-        # whereas the mock Column object doesn't have a .desc() method.
-        logs = LogsExecucaoIA.query.filter_by(order_sn=order_sn).order_by('executed_at desc').all()
+        response = supabase_db.table('logs_execucao_ia') \
+            .select('*') \
+            .eq('order_sn', order_sn) \
+            .order('executed_at', desc=True) \
+            .execute()
+
+        logs = response.data if response else []
         return [
             {
-                'id': log.id,
-                'order_sn': log.order_sn,
-                'executed_at': log.executed_at.isoformat() if hasattr(log.executed_at, 'isoformat') else str(log.executed_at),
-                'input_data': json.loads(log.input_data) if isinstance(log.input_data, str) else log.input_data,
-                'chat_context': json.loads(log.chat_context) if isinstance(log.chat_context, str) else log.chat_context,
-                'extracted_personalization': json.loads(log.extracted_personalization) if isinstance(log.extracted_personalization, str) else log.extracted_personalization,
-                'model_result': json.loads(log.model_result) if isinstance(log.model_result, str) else log.model_result,
-                'status': log.status,
-                'error_message': log.error_message,
+                'id': log.get('id'),
+                'order_sn': log.get('order_sn'),
+                'executed_at': log.get('executed_at'),
+                'input_data': log.get('input_data'),
+                'chat_context': log.get('chat_context'),
+                'extracted_personalization': log.get('extracted_personalization'),
+                'model_result': log.get('model_result'),
+                'status': log.get('status'),
+                'error_message': log.get('error_message'),
             }
             for log in logs
         ]
@@ -485,18 +694,10 @@ def _process_single_order(app, order, processed_count, total_orders):
 def process_orders(limit=None, order_sn=None):
     """Main function to process orders and extract personalizations."""
     try:
-        logger.info(f"Starting order processing... Limit: {limit}, Order SN: {order_sn}") # DEBUG LOG
-        print(f"DEBUG PRINT: Starting process_orders. Order SN: {order_sn}") # EXTREME DEBUG
+        logger.info(f"Starting order processing... Limit: {limit}, Order SN: {order_sn}")
         app = current_app._get_current_object()
 
         orders = get_orders_with_chats(order_sn=order_sn, limit=limit)
-        # Slicing is no longer needed here as it is handled in the query, but we keep it safe for now or remove if confident.
-        # If limit was passed, orders should already be limited. 
-        # But wait, we fetch Bling orders with limit, then we filter by Shopee. 
-        # So we might get fewer than 'limit' orders.
-        # If we really need 'limit' processed orders, we'd need to fetch more and slice here.
-        # For now, let's assume the query limit is a "fetch limit" strategy.
-
         total_orders = len(orders)
         logger.info(f"Found {total_orders} orders to process")
 
@@ -504,15 +705,12 @@ def process_orders(limit=None, order_sn=None):
             return True, "No orders to process."
 
         processed_count = 0
-        # Using ThreadPoolExecutor to process orders in parallel
         with ThreadPoolExecutor(max_workers=10) as executor:
-            # Create a future for each order
             futures = {executor.submit(_process_single_order, app, order, i + 1, total_orders): order for i, order in enumerate(orders)}
 
             for future in as_completed(futures):
                 order = futures[future]
                 try:
-                    # Get the result of the future
                     status = future.result()
                     if status == 'success':
                         processed_count += 1

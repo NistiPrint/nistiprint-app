@@ -6,10 +6,11 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Textarea } from '@/components/ui/textarea';
 import OrderCard from '@/components/vendas/OrderCard';
 import OrderFilters from '@/components/vendas/OrderFilters';
-import { ArrowLeft, Badge, Brain, Loader2, ThumbsDown, Database, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Badge, Brain, Loader2, ThumbsDown, Database, ChevronDown, Settings } from 'lucide-react';
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
+import { personalizadosService } from '@/services/personalizadosService';
 
 const ITEMS_PER_PAGE = 20;
 
@@ -48,13 +49,19 @@ function VendasPersonalizadasPage() {
   const [selectedOrderForFeedback, setSelectedOrderForFeedback] = useState(null);
   
   // Operational Mode State
-  const [opMode, setOpMode] = useState('v2');
+  const [opMode, setOpMode] = useState(null); // null = ainda não carregou
   const [updatingMode, setUpdatingMode] = useState(false);
 
   useEffect(() => {
-    fetchOrders();
     fetchMode();
   }, []);
+
+  // Só carrega pedidos DEPOIS de saber o modo correto
+  useEffect(() => {
+    if (opMode !== null) {
+      fetchOrders();
+    }
+  }, [opMode]);
 
   // Debounce search term
   useEffect(() => {
@@ -86,7 +93,7 @@ function VendasPersonalizadasPage() {
         if (data.success) {
             setOpMode(newMode);
             toast.success(`Modo de operação alterado para: ${newMode.toUpperCase()}`);
-            fetchOrders();
+            // fetchOrders será chamado automaticamente pelo useEffect em opMode
         } else {
             toast.error("Erro ao alterar modo.");
         }
@@ -223,17 +230,7 @@ function VendasPersonalizadasPage() {
     }
     const toastId = toast.loading('Processando com IA...');
     try {
-      const response = await fetch('/api/v2/ferramentas/processar_nomes_ia', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          'shopee_order_sn': orderSn
-        })
-      });
-
-      const data = await response.json();
+      const data = await personalizadosService.processar({ shopee_order_sn: orderSn });
       if (data.success) {
         toast.success(data.message || 'Pedido processado com sucesso!', { id: toastId });
         fetchOrders();
@@ -270,11 +267,12 @@ function VendasPersonalizadasPage() {
     setHighlightedMessages(personalizationMessageIds);
 
     try {
-      const response = await fetch(`/api/messages/${encodeURIComponent(username)}?mode=${opMode}`);
-      if (!response.ok) throw new Error('Falha ao carregar mensagens');
-      const data = await response.json();
-      if (data.error) throw new Error(data.error);
-      setChatMessages(Array.isArray(data.data) ? data.data : []);
+      const data = await personalizadosService.getChat(username);
+      if (data.success) {
+        setChatMessages(Array.isArray(data.data?.messages) ? data.data.messages : []);
+      } else {
+        throw new Error(data.message || 'Falha ao carregar mensagens');
+      }
     } catch (e) {
       toast.error(e.message);
     } finally {
@@ -301,11 +299,12 @@ function VendasPersonalizadasPage() {
     setAiLogs([]);
 
     try {
-      const response = await fetch(`/api/ai_logs/${orderSn}`);
-      if (!response.ok) throw new Error('Falha ao carregar logs');
-      const data = await response.json();
-      if (data.error) throw new Error(data.error);
-      setAiLogs(Array.isArray(data.data) ? data.data : []);
+      const data = await personalizadosService.getLogs(orderSn);
+      if (data.success) {
+        setAiLogs(Array.isArray(data.data?.logs) ? data.data.logs : []);
+      } else {
+        throw new Error(data.message || 'Falha ao carregar logs');
+      }
     } catch (e) {
       toast.error(e.message);
     } finally {
@@ -327,17 +326,11 @@ function VendasPersonalizadasPage() {
   const submitFeedback = async (orderId, feedbackType, notes = '') => {
     const toastId = toast.loading('Enviando feedback...');
     try {
-      const response = await fetch('/api/submit_feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          order_id: orderId,
-          feedback: feedbackType,
-          feedback_notes: notes
-        })
+      const data = await personalizadosService.salvarFeedback({
+        order_sn: orderId,
+        avaliacao: feedbackType === 1 ? 5 : 1,
+        texto_feedback: notes
       });
-
-      const data = await response.json();
       if (data.success) {
         toast.success(feedbackType === 1 ? 'Obrigado pelo feedback positivo!' : 'Obrigado pelo feedback. Vamos analisar o ocorrido.', { id: toastId });
         setIsFeedbackModalOpen(false);
@@ -358,18 +351,25 @@ function VendasPersonalizadasPage() {
         <Button variant="outline" onClick={() => navigate('/')}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Voltar
         </Button>
+        <Button variant="outline" onClick={() => navigate('/configuracoes/ia')}>
+          <Settings className="mr-2 h-4 w-4" /> Config IA
+        </Button>
         <Button variant="outline" onClick={() => navigate('/ferramentas')}>
           <Brain className="mr-2 h-4 w-4" /> Identificar Nomes IA
         </Button>
-        <Button 
-          variant={opMode === 'legacy' ? 'destructive' : 'outline'} 
-          onClick={toggleOpMode} 
-          disabled={updatingMode}
+        <Button
+          variant={opMode === 'legacy' ? 'destructive' : 'outline'}
+          onClick={toggleOpMode}
+          disabled={updatingMode || opMode === null}
           className="gap-2"
-          title={opMode === 'legacy' ? "Usando MySQL (Legado)" : "Usando Supabase (V2)"}
+          title={`Fonte atual: ${opMode === 'legacy' ? 'MySQL (Legado)' : opMode === 'v2' ? 'Supabase (V2)' : 'Carregando...'} — Clique para alternar`}
         >
           <Database className={`h-4 w-4 ${updatingMode ? 'animate-pulse' : ''}`} />
-          Modo: {opMode.toUpperCase()}
+          {opMode === null ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <>Fonte: {opMode.toUpperCase()}</>
+          )}
         </Button>
         Pedidos Personalizados
       </h1>

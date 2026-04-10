@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { CheckCircle2, Copy, Database, FileSpreadsheet, Filter, Loader2, Upload } from 'lucide-react';
+import { CheckCircle2, ClipboardList, Copy, Database, FileSpreadsheet, Filter, Loader2, Upload } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import ConsolidarBaseTab from './ConsolidarBaseTab';
@@ -356,9 +356,14 @@ function ConsolidarPage() {
             <h1 className="text-2xl font-bold tracking-tight">Consolidar Produção</h1>
             <p className="text-muted-foreground">Agrupe pedidos e gere demandas de fabricação.</p>
         </div>
-        <Button variant={opMode === 'legacy' ? 'destructive' : 'outline'} onClick={toggleOpMode} disabled={updatingMode} className="gap-2">
-            <Database className="h-4 w-4" /> Base: {opMode.toUpperCase()}
-        </Button>
+        <div className="flex gap-2">
+            <Button variant="outline" onClick={() => window.location.href = '/consolidar/rascunhos'} className="gap-2">
+                <ClipboardList className="h-4 w-4" /> Rascunhos Automáticos
+            </Button>
+            <Button variant={opMode === 'legacy' ? 'destructive' : 'outline'} onClick={toggleOpMode} disabled={updatingMode} className="gap-2">
+                <Database className="h-4 w-4" /> Base: {opMode.toUpperCase()}
+            </Button>
+        </div>
       </div>
 
       {!results ? (

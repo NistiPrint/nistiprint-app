@@ -316,6 +316,9 @@ class PersonalizedOrderIdentifier:
     ):
         """
         Marca pedido e itens como personalizados no Supabase.
+        Marca tanto nas tabelas legado (pedidos_bling, itens_pedido_bling)
+        quanto nas tabelas unificadas (pedidos, itens_pedido).
+        Também marca produtos internos como personalizados se vinculados.
 
         Args:
             pedido_bling_id: ID do pedido em pedidos_bling
@@ -323,27 +326,38 @@ class PersonalizedOrderIdentifier:
             personalized_indices: Índices dos itens personalizados
         """
         try:
-            # 1. Marcar pedido como personalizado
+            # 1. Marcar pedido legado como personalizado
             supabase_db.table('pedidos_bling').update({
                 'personalizado': True,
                 'updated_at': datetime.utcnow().isoformat()
             }).eq('id', pedido_bling_id).execute()
 
-            # 2. Marcar itens como personalizados
+            # 1.1 Marcar pedido unificado como personalizado
+            self._mark_unified_pedido_as_personalized(order_data)
+
+            # 2. Marcar itens legado e unificado como personalizados
             items = order_data.get('itens', [])
-            items_to_update = []
 
             for idx in personalized_indices:
                 if idx < len(items):
                     item = items[idx]
                     bling_item_id = item.get('id')
+                    produto_bling_id = item.get('produto', {}).get('id')
+                    item_descricao = item.get('descricao', '')
 
                     if bling_item_id:
-                        # Atualizar por bling_item_id
+                        # 2a. Atualizar item legado por bling_item_id
                         supabase_db.table('itens_pedido_bling').update({
                             'personalizado': True,
                             'updated_at': datetime.utcnow().isoformat()
                         }).eq('bling_item_id', str(bling_item_id)).execute()
+
+                    # 2b. Atualizar item unificado por pedido + descricao
+                    self._mark_unified_item_as_personalized(order_data, item_descricao)
+
+                    # 3. NOVO: Marcar produto interno como personalizado
+                    if produto_bling_id:
+                        self._mark_internal_product_as_personalized(produto_bling_id)
 
             logger.info(
                 "Pedido %d e %d itens marcados como personalizados",
@@ -353,6 +367,148 @@ class PersonalizedOrderIdentifier:
 
         except Exception as e:
             logger.error(f"Erro ao marcar como personalizado: {e}", exc_info=True)
+
+    def _mark_unified_pedido_as_personalized(self, order_data: dict):
+        """
+        Marca pedido unificado (tabela 'pedidos') como personalizado.
+
+        Busca por codigo_pedido_externo (numeroLoja) ou numero_pedido.
+        """
+        try:
+            numero_loja = order_data.get('numeroLoja')
+            numero_pedido = order_data.get('numero')
+
+            if numero_loja:
+                result = supabase_db.table('pedidos') \
+                    .select('id') \
+                    .eq('codigo_pedido_externo', str(numero_loja)) \
+                    .execute()
+                if result.data:
+                    supabase_db.table('pedidos').update({
+                        'personalizado': True,
+                        'updated_at': datetime.utcnow().isoformat()
+                    }).eq('id', result.data[0]['id']).execute()
+                    logger.debug(
+                        "Pedido unificado %d marcado como personalizado (via numeroLoja=%s)",
+                        result.data[0]['id'], numero_loja
+                    )
+                    return
+
+            if numero_pedido:
+                result = supabase_db.table('pedidos') \
+                    .select('id') \
+                    .eq('numero_pedido', str(numero_pedido)) \
+                    .execute()
+                if result.data:
+                    supabase_db.table('pedidos').update({
+                        'personalizado': True,
+                        'updated_at': datetime.utcnow().isoformat()
+                    }).eq('id', result.data[0]['id']).execute()
+                    logger.debug(
+                        "Pedido unificado %d marcado como personalizado (via numero=%s)",
+                        result.data[0]['id'], numero_pedido
+                    )
+                    return
+
+            logger.warning(
+                "Não encontrou pedido unificado para marcar como personalizado: numeroLoja=%s, numero=%s",
+                numero_loja, numero_pedido
+            )
+
+        except Exception as e:
+            logger.error(f"Erro ao marcar pedido unificado como personalizado: {e}", exc_info=True)
+
+    def _mark_unified_item_as_personalized(self, order_data: dict, item_descricao: str):
+        """
+        Marca item unificado (tabela 'itens_pedido') como personalizado.
+
+        Busca por pedido_id + descricao.
+        """
+        try:
+            numero_loja = order_data.get('numeroLoja')
+            if not numero_loja or not item_descricao:
+                return
+
+            # Primeiro, encontrar o pedido unificado
+            pedido_result = supabase_db.table('pedidos') \
+                .select('id') \
+                .eq('codigo_pedido_externo', str(numero_loja)) \
+                .execute()
+
+            if not pedido_result.data:
+                logger.debug(
+                    "Não encontrou pedido unificado para marcar item personalizado (numeroLoja=%s)",
+                    numero_loja
+                )
+                return
+
+            pedido_id = pedido_result.data[0]['id']
+
+            # Marcar itens por pedido_id + descricao
+            supabase_db.table('itens_pedido').update({
+                'personalizado': True,
+                'updated_at': datetime.utcnow().isoformat()
+            }).eq('pedido_id', pedido_id).eq('descricao', item_descricao).execute()
+
+            logger.debug(
+                "Item unificado marcado como personalizado (pedido_id=%d, descricao=%s)",
+                pedido_id, item_descricao[:50]
+            )
+
+        except Exception as e:
+            logger.error(f"Erro ao marcar item unificado como personalizado: {e}", exc_info=True)
+
+    def _mark_internal_product_as_personalized(self, bling_product_id: int):
+        """
+        Marca produto interno como personalizado se vinculado ao produto Bling.
+
+        Fluxo:
+        1. Buscar vínculo Bling → produto interno via vinculos_bling
+        2. Se encontrado, update produtos.personalizado = true
+        3. Se não encontrado, log para revisão manual
+        """
+        try:
+            from nistiprint_shared.database.supabase_db_service import supabase_db
+
+            # Buscar produto interno vinculado
+            result = supabase_db.table('vinculos_bling') \
+                .select('produto_id') \
+                .eq('codigo_bling', str(bling_product_id)) \
+                .limit(1) \
+                .execute()
+
+            if result.data:
+                internal_product_id = result.data[0]['produto_id']
+
+                # Verificar se já está marcado
+                product_check = supabase_db.table('produtos') \
+                    .select('id, personalizado') \
+                    .eq('id', internal_product_id) \
+                    .limit(1) \
+                    .execute()
+
+                if product_check.data and not product_check.data[0].get('personalizado'):
+                    supabase_db.table('produtos').update({
+                        'personalizado': True,
+                        'updated_at': datetime.utcnow().isoformat()
+                    }).eq('id', internal_product_id).execute()
+
+                    logger.info(
+                        "Produto interno %d marcado como personalizado (Bling ID: %d)",
+                        internal_product_id, bling_product_id
+                    )
+                elif product_check.data:
+                    logger.debug(
+                        "Produto interno %d já está marcado como personalizado",
+                        internal_product_id
+                    )
+            else:
+                logger.warning(
+                    "Produto Bling %d não vinculado a produto interno — revisar cadastro",
+                    bling_product_id
+                )
+        except Exception as e:
+            logger.error(f"Erro ao marcar produto interno como personalizado (Bling {bling_product_id}): {e}")
 
     def clear_cache(self):
         """Limpa cache de produtos."""

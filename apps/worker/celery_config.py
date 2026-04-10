@@ -22,6 +22,7 @@ celery_app = Celery(
         'tasks.eventos_tasks',
         'tasks.consolidation_tasks',
         'tasks.pedidos_fetch_tasks',
+        'tasks.personalizados_tasks',
     ]
 )
 
@@ -61,6 +62,7 @@ celery_app.autodiscover_tasks(lambda: [
     'tasks.eventos_tasks',
     'tasks.consolidation_tasks',
     'tasks.pedidos_fetch_tasks',
+    'tasks.personalizados_tasks',
 ])
 
 

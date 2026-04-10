@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   CheckCircle2,
+  ClipboardList,
   Upload
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -376,6 +377,15 @@ function PedidosListPage() {
         </div>
         
         <div className="flex gap-3">
+          <Button
+            variant="outline"
+            onClick={() => navigate('/consolidar/rascunhos')}
+            className="gap-2"
+          >
+            <ClipboardList className="h-4 w-4" />
+            Rascunhos Automáticos
+          </Button>
+
           {estatisticas && (
             <Card className="p-3 min-w-[200px]">
               <div className="flex justify-between items-center">
@@ -394,7 +404,7 @@ function PedidosListPage() {
               </div>
             </Card>
           )}
-          
+
           <Button
             variant="default"
             onClick={() => setImportModalOpen(true)}

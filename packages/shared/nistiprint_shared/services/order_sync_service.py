@@ -278,18 +278,126 @@ class OrderSyncService:
                 items=items_dto,
                 channel_id=canal_id
             )
-            
+
+            # NOVO: Detectar e marcar itens personalizados
+            pedido_id = result.get('id')
+            if pedido_id:
+                self._detect_and_mark_personalized(bling_order_data, pedido_id)
+
             logger.info(
                 "[FASE 1] ✓ Pedido Bling %s sincronizado (external_id=%s, status=%s)",
                 bling_id,
                 external_id,
                 result.get('status', 'unknown')
             )
-            
+
             return result
         except Exception as e:
             logger.error("[FASE 1] ✗ Erro sync_bling_order: %s", e)
             return {"error": str(e)}
+
+    def _detect_and_mark_personalized(self, bling_order_data: Dict[str, Any], pedido_id: int):
+        """
+        Detecta itens personalizados e marca nas tabelas unificadas.
+
+        Critérios (mesma lógica do PHP legado):
+        1. Descrição contém "personaliza" → sem API call
+        2. Produto Bling tem campo customizado = true → com API call
+
+        Também marca produtos internos como personalizados se ainda não marcados.
+        """
+        try:
+            from nistiprint_shared.services.personalized_order_identifier import (
+                personalized_order_identifier
+            )
+
+            result = personalized_order_identifier.process_order(bling_order_data)
+
+            if not result.get('success') or not result.get('personalized_items'):
+                return
+
+            personalized_indices = result['personalized_items']
+            items = bling_order_data.get('itens', [])
+
+            marked_count = 0
+            for idx in personalized_indices:
+                if idx >= len(items):
+                    continue
+
+                item = items[idx]
+                descricao = item.get('descricao', '')
+                produto_bling_id = item.get('produto', {}).get('id')
+
+                # 1. Marcar item no modelo unificado (itens_pedido)
+                supabase_db.table('itens_pedido').update({
+                    'personalizado': True,
+                    'updated_at': datetime.utcnow().isoformat()
+                }).eq('pedido_id', pedido_id).eq('descricao', descricao).execute()
+
+                marked_count += 1
+
+                # 2. Marcar produto interno como personalizado
+                if produto_bling_id:
+                    self._mark_internal_product_as_personalized(produto_bling_id)
+
+            if marked_count > 0:
+                logger.info(
+                    "✓ Pedido %d: %d itens marcados como personalizados (modelo unificado)",
+                    pedido_id, marked_count
+                )
+
+        except Exception as e:
+            logger.error(f"Erro ao detectar personalizados no pedido {pedido_id}: {e}", exc_info=True)
+
+    def _mark_internal_product_as_personalized(self, bling_product_id: int):
+        """
+        Marca produto interno como personalizado se vinculado ao produto Bling.
+
+        Fluxo:
+        1. Buscar vínculo Bling → produto interno via vinculos_bling
+        2. Se encontrado, update produtos.personalizado = true
+        3. Se não encontrado, log para revisão manual
+        """
+        try:
+            # Buscar produto interno vinculado
+            result = supabase_db.table('vinculos_bling') \
+                .select('produto_id') \
+                .eq('codigo_bling', str(bling_product_id)) \
+                .limit(1) \
+                .execute()
+
+            if result.data:
+                internal_product_id = result.data[0]['produto_id']
+
+                # Verificar se já está marcado
+                product_check = supabase_db.table('produtos') \
+                    .select('id, personalizado') \
+                    .eq('id', internal_product_id) \
+                    .limit(1) \
+                    .execute()
+
+                if product_check.data and not product_check.data[0].get('personalizado'):
+                    supabase_db.table('produtos').update({
+                        'personalizado': True,
+                        'updated_at': datetime.utcnow().isoformat()
+                    }).eq('id', internal_product_id).execute()
+
+                    logger.info(
+                        "Produto interno %d marcado como personalizado (Bling ID: %d)",
+                        internal_product_id, bling_product_id
+                    )
+                elif product_check.data:
+                    logger.debug(
+                        "Produto interno %d já está marcado como personalizado",
+                        internal_product_id
+                    )
+            else:
+                logger.warning(
+                    "Produto Bling %d não vinculado a produto interno — revisar cadastro",
+                    bling_product_id
+                )
+        except Exception as e:
+            logger.error(f"Erro ao marcar produto interno como personalizado (Bling {bling_product_id}): {e}")
 
     def _save_to_shopee_table(self, order_sn: str, raw_order: dict, data_envio: str):
         try:
