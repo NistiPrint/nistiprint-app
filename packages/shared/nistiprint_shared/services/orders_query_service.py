@@ -37,11 +37,18 @@ class OrdersQueryService:
         """
         try:
             from nistiprint_shared.database.supabase_db_service import supabase_db
-            
+            from datetime import datetime, timedelta
+
+            # Calculate date 5 days ago
+            five_days_ago = (datetime.now() - timedelta(days=5)).isoformat()
+
             # Use Supabase client to query the NEW view V3
+            # Order by numero_loja (Bling number) descending to match orders screen
+            # Filter orders from last 5 days
             response = supabase_db.table('view_vendas_personalizadas_v3') \
                 .select('*') \
-                .order('data_pedido', desc=True) \
+                .order('numero_loja', desc=True) \
+                .gte('data_pedido', five_days_ago) \
                 .execute()
             
             rows = response.data if response.data else []
@@ -59,7 +66,7 @@ class OrdersQueryService:
                 processed_orders.append({
                     'id': row['id'],
                     'numero': row['numero_pedido'],
-                    'nome_cliente': row.get('nome_cliente', ''),
+                    'nome_cliente': row.get('nome_cliente', '') or '',
                     'numeroLoja': row['numero_loja'],
                     'data': row['data_pedido'],
                     'contato': contato,

@@ -1,11 +1,11 @@
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import ProductSelector from '@/components/ui/ProductSelector';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import ProductSelector from '@/components/ui/ProductSelector';
 import { estoqueService } from '@/services/EstoqueService';
-import { Filter, History, Search, ChevronDown, ChevronRight, Package, Box } from 'lucide-react';
-import { useEffect, useState, useMemo } from 'react';
+import { Box, ChevronDown, ChevronRight, Filter, History, Package, Search } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 function EstoqueHistoricoPage() {
@@ -47,14 +47,18 @@ function EstoqueHistoricoPage() {
     fetchHistorico();
   }, [filtroProdutoId, filtroDepositoId, filtroTipoMovimento, filtroDataInicio, filtroDataFim]);
 
-  // Agrupamento de movimentações por Demanda/Documento
+  // Agrupamento de movimentações por correlation_id (produção) ou documento_referencia (demanda)
   const groupedMovimentacoes = useMemo(() => {
     const groups = {};
     movimentacoes.forEach(mov => {
-      const ref = mov.documento_referencia || 'SEM_REFERENCIA';
+      // Prioriza correlation_id para agrupar movimentos relacionados (produção + componentes)
+      // Se não tiver correlation_id, usa documento_referencia
+      // Se não tiver nenhum, usa 'SEM_REFERENCIA'
+      const ref = mov.correlation_id || mov.documento_referencia || 'SEM_REFERENCIA';
       if (!groups[ref]) {
         groups[ref] = {
           ref,
+          correlation_id: mov.correlation_id,
           items: [],
           firstData: mov.data_movimentacao,
           motivo: mov.motivo || 'Diversos'
@@ -193,7 +197,20 @@ function EstoqueHistoricoPage() {
                             <div className="flex items-center gap-2">
                               {hasRef ? <Package className="h-4 w-4 text-primary" /> : <Box className="h-4 w-4 text-gray-400" />}
                               <div>
-                                <span className="font-bold text-sm">{hasRef ? `DEMANDA: ${group.ref}` : 'MOVIMENTAÇÃO AVULSA'}</span>
+                                <span className="font-bold text-sm">
+                                  {group.correlation_id 
+                                    ? (() => {
+                                        // Para produção com correlation_id, mostra o nome do produto principal
+                                        const entradaPrincipal = group.items.find(m => m.tipo_movimento === 'ENTRADA' && m.quantidade > 0);
+                                        if (entradaPrincipal) {
+                                          return `PRODUÇÃO: ${entradaPrincipal.produtos?.nome || 'Produto ' + entradaPrincipal.produto_id}`;
+                                        }
+                                        return 'PRODUÇÃO';
+                                      })()
+                                    : hasRef 
+                                      ? `DEMANDA: ${group.ref}` 
+                                      : 'MOVIMENTAÇÃO AVULSA'}
+                                </span>
                                 <p className="text-xs text-muted-foreground truncate max-w-md">{group.motivo}</p>
                               </div>
                             </div>

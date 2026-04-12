@@ -1,17 +1,17 @@
+import { ChatSidebar } from '@/components/chat/ChatSidebar';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Badge } from '@/components/ui/badge';
-import { ChatSidebar } from '@/components/chat/ChatSidebar';
 import OrderCard from '@/components/vendas/OrderCard';
 import OrderFilters from '@/components/vendas/OrderFilters';
-import { ArrowLeft, Brain, Loader2, ThumbsDown, Database, ChevronDown, ChevronRight, Settings, Terminal, FileText, RefreshCw, Search, AlertTriangle, CheckCircle, XCircle, Clock, ListChecks, MessageSquare } from 'lucide-react';
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { personalizadosService } from '@/services/personalizadosService';
+import { ArrowLeft, Brain, CheckCircle, ChevronDown, ChevronRight, Clock, Database, FileText, Loader2, RefreshCw, Settings, Terminal, ThumbsDown } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { personalizadosService } from '@/services/personalizadosService';
 
 const ITEMS_PER_PAGE = 20;
 
@@ -26,13 +26,9 @@ function VendasPersonalizadasPage() {
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
 
-  // Tab navigation (4 abas consolidadas)
-  const [activeTab, setActiveTab] = useState('pendentes'); // pendentes | identificados | historico | logs
+  // Tab navigation (2 abas: Pendentes e Processados)
+  const [activeTab, setActiveTab] = useState('pendentes'); // pendentes | processados
 
-  // AI Logs (for Logs tab)
-  const [globalAiLogs, setGlobalAiLogs] = useState([]);
-  const [loadingGlobalLogs, setLoadingGlobalLogs] = useState(false);
-  
   // Pagination/Slicing
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
 
@@ -156,20 +152,26 @@ function VendasPersonalizadasPage() {
     if (activeTab === 'pendentes') {
       result = result.filter(order => {
         if (!order.itens || order.itens.length === 0) return false;
+        // Pedidos pendentes: itens personalizados SEM nome extraído
         return order.itens.some(item =>
-          item.personalizations &&
-          item.personalizations.length > 0 &&
-          item.personalizations.some(p =>
-            p.status === 'NEEDS_REVIEW' ||
-            !p.nome ||
-            p.nome === null ||
-            p.nome === ''
+          // Itens personalizados sem personalizações registradas (precisam de extração)
+          (item.personalizado && (!item.personalizations || item.personalizations.length === 0)) ||
+          // OU itens com personalizações pendentes (sem nome ou status NEEDS_REVIEW)
+          (item.personalizations &&
+            item.personalizations.length > 0 &&
+            item.personalizations.some(p =>
+              !p.nome ||
+              p.nome === null ||
+              p.nome === '' ||
+              p.status === 'NEEDS_REVIEW'
+            )
           )
         );
       });
-    } else if (activeTab === 'identificados') {
+    } else if (activeTab === 'processados') {
       result = result.filter(order => {
         if (!order.itens || order.itens.length === 0) return false;
+        // Pedidos processados: itens com nome extraído com sucesso
         return order.itens.some(item =>
           item.personalizations &&
           item.personalizations.length > 0 &&
@@ -177,7 +179,7 @@ function VendasPersonalizadasPage() {
         );
       });
     }
-    // 'historico' = todos, 'logs' = não filtra orders
+    // 'pendentes' = não processados
 
     // 2. Busca textual
     if (debouncedSearchTerm) {
@@ -191,13 +193,7 @@ function VendasPersonalizadasPage() {
     }
 
     // 3. Filtro por status IA (funciona como refinamento da aba)
-    if (statusFilter === 'success') {
-      result = result.filter(order =>
-        order.itens?.some(item =>
-          item.personalizations?.some(p => p.status === 'SUCCESS')
-        )
-      );
-    } else if (statusFilter === 'needs_review') {
+    if (statusFilter === 'needs_review') {
       result = result.filter(order =>
         order.itens?.some(item =>
           item.personalizations?.some(p => p.status === 'NEEDS_REVIEW')
@@ -224,10 +220,8 @@ function VendasPersonalizadasPage() {
     const counts = {
       all: orders.length,
       pendentes: 0,
-      identificados: 0,
-      historico: orders.length,
+      processados: 0,
       // IA status counts (para os botões de filtro)
-      success: 0,
       needs_review: 0,
       no_personalization: 0,
       // Chat counts
@@ -237,21 +231,24 @@ function VendasPersonalizadasPage() {
 
     orders.forEach(order => {
       let hasPending = false;
-      let hasIdentified = false;
-      let hasSuccess = false;
+      let hasProcessed = false;
       let hasNeedsReview = false;
-      let hasNoPersonalization = true;
+      let hasNoPersonalization = false;
       let hasAnyPersonalizations = false;
 
       if (order.itens && order.itens.length > 0) {
         for (const item of order.itens) {
+          // Itens personalizados sem personalizações registradas (precisam de extração)
+          if (item.personalizado && (!item.personalizations || item.personalizations.length === 0)) {
+            hasPending = true;
+            hasNoPersonalization = true;
+          }
+
           if (item.personalizations && item.personalizations.length > 0) {
             hasAnyPersonalizations = true;
-            hasNoPersonalization = false;
 
-            if (item.personalizations.some(p => p.status === 'SUCCESS')) {
-              hasSuccess = true;
-              if (item.personalizations.some(p => p.nome)) hasIdentified = true;
+            if (item.personalizations.some(p => p.status === 'SUCCESS' && p.nome)) {
+              hasProcessed = true;
             }
             if (item.personalizations.some(p => p.status === 'NEEDS_REVIEW')) {
               hasNeedsReview = true;
@@ -259,46 +256,22 @@ function VendasPersonalizadasPage() {
             }
             if (item.personalizations.some(p => !p.nome || p.nome === null || p.nome === '')) {
               hasPending = true;
+              hasNoPersonalization = true;
             }
           }
         }
       }
 
       if (hasPending) counts.pendentes++;
-      if (hasIdentified) counts.identificados++;
-      if (hasSuccess) counts.success++;
+      if (hasProcessed) counts.processados++;
       if (hasNeedsReview) counts.needs_review++;
-      if (hasNoPersonalization && hasAnyPersonalizations) counts.no_personalization++;
+      if (hasNoPersonalization) counts.no_personalization++;
       if (order.has_chat_messages === true) counts.with_chat++;
       else counts.without_chat++;
     });
 
     return counts;
   }, [orders]);
-
-  // Load global AI logs for the Logs tab
-  const loadGlobalLogs = async () => {
-    setLoadingGlobalLogs(true);
-    try {
-      const data = await personalizadosService.getAllLogs({ limit: 100 });
-      if (data.success && data.data?.logs) {
-        setGlobalAiLogs(data.data.logs);
-      }
-    } catch (e) {
-      console.error('Erro ao carregar logs globais:', e);
-    } finally {
-      setLoadingGlobalLogs(false);
-    }
-  };
-
-  // Load global logs when switching to logs tab
-  const logsLoadedRef = useRef(false);
-  useEffect(() => {
-    if (activeTab === 'logs' && !logsLoadedRef.current) {
-      logsLoadedRef.current = true;
-      loadGlobalLogs();
-    }
-  }, [activeTab]);
 
   // Sliced orders for display
   const slicedOrders = useMemo(() => {
@@ -503,15 +476,9 @@ function VendasPersonalizadasPage() {
         <Button variant="outline" onClick={() => navigate('/')}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Voltar
         </Button>
-        <Button variant="outline" onClick={() => navigate('/configuracoes/ia')}>
-          <Settings className="mr-2 h-4 w-4" /> Config IA
-        </Button>
-        <Button variant="outline" onClick={() => navigate('/ferramentas')}>
-          <Brain className="mr-2 h-4 w-4" /> Ferramentas IA
-        </Button>
         <Button variant="outline" onClick={handleProcessarLote} disabled={isProcessingLote}>
           {isProcessingLote ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Brain className="mr-2 h-4 w-4" />}
-          {isProcessingLote ? 'Processando...' : 'Processar Lote IA'}
+          {isProcessingLote ? 'Processando...' : 'Extrair nomes (IA)'}
         </Button>
         <Button
           variant={opMode === 'legacy' ? 'destructive' : 'outline'}
@@ -532,7 +499,7 @@ function VendasPersonalizadasPage() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); setVisibleCount(ITEMS_PER_PAGE); }} className="mb-6">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-2">
           <TabsTrigger value="pendentes" className="flex items-center gap-2">
             <Clock className="h-4 w-4" />
             Pendentes Extração
@@ -540,29 +507,17 @@ function VendasPersonalizadasPage() {
               {statusCounts.pendentes}
             </Badge>
           </TabsTrigger>
-          <TabsTrigger value="identificados" className="flex items-center gap-2">
+          <TabsTrigger value="processados" className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4" />
-            Nomes Extraídos
-            <Badge variant={statusCounts.identificados > 0 ? "default" : "secondary"} className="ml-1 h-5 min-w-5 flex items-center justify-center text-xs">
-              {statusCounts.identificados}
+            Processados
+            <Badge variant={statusCounts.processados > 0 ? "default" : "secondary"} className="ml-1 h-5 min-w-5 flex items-center justify-center text-xs">
+              {statusCounts.processados}
             </Badge>
-          </TabsTrigger>
-          <TabsTrigger value="historico" className="flex items-center gap-2">
-            <ListChecks className="h-4 w-4" />
-            Histórico
-            <Badge variant="outline" className="ml-1 h-5 min-w-5 flex items-center justify-center text-xs">
-              {statusCounts.historico}
-            </Badge>
-          </TabsTrigger>
-          <TabsTrigger value="logs" className="flex items-center gap-2">
-            <MessageSquare className="h-4 w-4" />
-            Logs IA
           </TabsTrigger>
         </TabsList>
       </Tabs>
 
       {/* Tab Content: Orders (pendentes, identificados, historico) */}
-      {activeTab !== 'logs' && (
       <Card className="shadow-sm border-light">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -626,86 +581,6 @@ function VendasPersonalizadasPage() {
           )}
         </CardContent>
       </Card>
-      )}
-
-      {/* Tab Content: Logs IA */}
-      {activeTab === 'logs' && (
-      <Card className="shadow-sm border-light">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-medium flex items-center justify-between">
-            <span className="flex items-center gap-2">
-              <MessageSquare className="h-4 w-4" />
-              Logs de Execução da IA
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={loadGlobalLogs}
-              disabled={loadingGlobalLogs}
-            >
-              {loadingGlobalLogs ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <RefreshCw className="h-3 w-3 mr-1" />}
-              Atualizar
-            </Button>
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {loadingGlobalLogs ? (
-            <div className="flex justify-center p-8">
-              <Loader2 className="h-8 w-8 animate-spin" />
-            </div>
-          ) : globalAiLogs.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              Nenhum log de execução encontrado.
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {globalAiLogs.map((log, index) => (
-                <Card key={log.id} className="border">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm flex items-center justify-between">
-                      <span className="font-mono text-xs">
-                        {log.order_sn || 'N/A'}
-                      </span>
-                      <Badge variant={log.status === 'success' ? 'default' : 'destructive'} className="text-xs">
-                        {log.status}
-                      </Badge>
-                    </CardTitle>
-                    <div className="text-xs text-muted-foreground">
-                      {log.executed_at ? new Date(log.executed_at).toLocaleString('pt-BR') : '-'}
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-2">
-                    <CollapsibleSection
-                      icon={Terminal}
-                      title="Prompt enviado"
-                      content={log.input_data}
-                      defaultOpen={false}
-                    />
-                    <CollapsibleSection
-                      icon={Brain}
-                      title="Resposta IA"
-                      content={log.model_result}
-                      defaultOpen={false}
-                    />
-                    <CollapsibleSection
-                      icon={FileText}
-                      title="Personalizações"
-                      content={log.extracted_personalization}
-                      defaultOpen={false}
-                    />
-                    {log.error_message && (
-                      <div className="bg-red-50 border border-red-200 rounded p-3">
-                        <p className="text-xs font-medium text-red-800">Erro: {log.error_message}</p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-      )}
 
       {/* Chat Sidebar */}
       <ChatSidebar

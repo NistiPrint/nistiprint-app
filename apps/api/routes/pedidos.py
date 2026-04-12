@@ -139,6 +139,51 @@ def get_pedido_detalhe(pedido_id):
             )
         }
         
+        # Buscar correlation_ids do pedido
+        try:
+            corr_response = supabase_db.table('entity_correlation_mapping')\
+                .select('correlation_id')\
+                .eq('entity_type', 'pedido')\
+                .eq('entity_id', pedido_id)\
+                .execute()
+            
+            correlation_ids = [c['correlation_id'] for c in corr_response.data or []]
+            
+            # Buscar task_execution_logs por correlation_id
+            task_events = []
+            if correlation_ids:
+                tasks_response = supabase_db.table('task_execution_logs')\
+                    .select('*')\
+                    .in_('correlation_id', correlation_ids)\
+                    .order('created_at', desc=True)\
+                    .execute()
+                
+                # Converter para formato de timeline
+                for task in tasks_response.data or []:
+                    task_events.append({
+                        'id': f'task-{task["id"]}',
+                        'tipo': 'task',
+                        'tipo_evento': f'TASK_{task["status"]}',
+                        'descricao': f'Tarefa: {task["task_name"]}',
+                        'created_at': task.get('started_at') or task.get('created_at'),
+                        'metadata': {
+                            'task_name': task['task_name'],
+                            'task_type': task.get('task_type'),
+                            'status': task['status'],
+                            'error_message': task.get('error_message')
+                        },
+                        'correlation_id': task['correlation_id']
+                    })
+            
+            # Mesclar com timeline existente
+            timeline_completa = pedido.get('eventos', []) + task_events
+            timeline_completa.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+            resultado['timeline'] = timeline_completa
+            
+        except Exception as e:
+            logger.error(f"Erro ao buscar tarefas por correlation_id: {e}")
+            # Continuar sem task_events se houver erro
+        
         return ApiResponse.success(data=resultado)
         
     except Exception as e:

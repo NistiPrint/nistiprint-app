@@ -1,11 +1,11 @@
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -33,6 +33,7 @@ const ControleProducaoPage = ({tipo}) => {
 
   const [activeTab, setActiveTab] = useState('estoque'); // Adiciona estado para controle das abas
   const [demandSubTab, setDemandSubTab] = useState(tipo === 'miolo' ? 'miolo' : 'capa');
+  const [capaSubTab, setCapaSubTab] = useState('impressas'); // Sub-tab para capas: impressas vs acabadas
 
   // Estados para a visão de demandas
   const [mioloDemandSummary, setMioloDemandSummary] = useState([]);
@@ -78,8 +79,13 @@ const ControleProducaoPage = ({tipo}) => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Simplificado: sempre usa o tipo principal
-      const data = await ProductionService.getControleData(tipo);
+      // Determinar o tipo correto baseado no contexto
+      let tipoParam = tipo;
+      if (tipo === 'capa') {
+        tipoParam = capaSubTab === 'impressas' ? 'capa' : 'capa_acabada';
+      }
+      
+      const data = await ProductionService.getControleData(tipoParam);
       
       if (data.success) {
         setProducts(data.products || []);
@@ -103,7 +109,7 @@ const ControleProducaoPage = ({tipo}) => {
 
   useEffect(() => {
     fetchData();
-  }, [tipo, activeTab]);
+  }, [tipo, activeTab, capaSubTab]);
 
   // Resetar sub-aba de demandas quando o tipo da página mudar
   useEffect(() => {
@@ -138,7 +144,10 @@ const ControleProducaoPage = ({tipo}) => {
       // Determinar o campo de progresso baseado no contexto
       let field = null;
       if (tipo === 'miolo') field = 'miolos_prontos_retirada_qtd';
-      else if (tipo === 'capa') field = 'capas_impressas_qtd'; // Campo principal para capas
+      else if (tipo === 'capa') {
+        // Para capas, usar campo baseado na sub-tab
+        field = capaSubTab === 'impressas' ? 'capas_impressas_qtd' : 'capas_acabadas_qtd';
+      }
 
       // Tela de Controle de Produção: processamento SÍNCRONO (tempo real)
       const result = await ProductionService.registerProduction({
@@ -157,6 +166,7 @@ const ControleProducaoPage = ({tipo}) => {
         }
         setInputs(prev => ({ ...prev, [productId]: '' }));
         updateProductState(productId, result);
+        fetchData(); // Refresh data to show updated stock
       } else {
         toast.error(result.error || 'Erro ao registrar produção.');
       }
@@ -438,6 +448,16 @@ const ControleProducaoPage = ({tipo}) => {
               Demandas
             </ToggleGroupItem>
           </ToggleGroup>
+          {tipo === 'capa' && (
+            <ToggleGroup type="single" value={capaSubTab} onValueChange={setCapaSubTab}>
+              <ToggleGroupItem value="impressas" aria-label="Capas Impressas">
+                Capas Impressas
+              </ToggleGroupItem>
+              <ToggleGroupItem value="acabadas" aria-label="Capas Acabadas">
+                Capas Acabadas
+              </ToggleGroupItem>
+            </ToggleGroup>
+          )}
         </div>
       </div>
 

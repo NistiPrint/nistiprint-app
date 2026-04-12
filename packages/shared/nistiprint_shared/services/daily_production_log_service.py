@@ -64,8 +64,14 @@ class DailyProductionLogService:
                     else: logs[product_id]['quantityRemoved'] += abs(quantity)
         return logs
 
-    def create_log(self, log_date: date, product_id: str, product_name: str, quantity: float, production_order_id: str, component_stock_snapshot: list, user_email: str = None, metadata: dict = None):
-        """Create a new production log entry with a component stock snapshot."""
+    def create_log(self, log_date: date, product_id: str, product_name: str, quantity: float, production_order_id: str, component_stock_snapshot: list, user_email: str = None, metadata: dict = None, item_demanda_id: str = None, demanda_nome: str = None):
+        """
+        Create a new production log entry with a component stock snapshot.
+
+        Args:
+            item_demanda_id: ID do item de demanda (opcional - NULL para produção avulsa)
+            demanda_nome: Nome da demanda (opcional - NULL para produção avulsa)
+        """
         now_local = get_now()
         log_datetime = datetime.combine(log_date, now_local.time())
 
@@ -80,7 +86,9 @@ class DailyProductionLogService:
             'detalhes_producao': metadata, # Usando este campo para metadados/referências
             'created_at': get_now_iso(),
             'user_email': user_email,
-            'deleted': False
+            'deleted': False,
+            'item_demanda_id': item_demanda_id,  # Opcional (NULL para produção avulsa)
+            'demanda_nome': demanda_nome  # Opcional (NULL para produção avulsa)
         }
 
         # Criar registro independente

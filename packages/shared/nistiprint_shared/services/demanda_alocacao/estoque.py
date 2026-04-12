@@ -104,17 +104,88 @@ class DemandaAlocacaoEstoqueService:
                                             qtd_a_produzir_forcada: float = None):
         """
         Processa insumos por BOM recursivo. 
-        Em modo assíncrono, insere na fila para processamento pelo worker.
+        Em modo síncrono, chama o motor de reconciliação diretamente.
         """
-        # Por padrão, se não for solicitado síncrono, usamos a fila
-        # (Este método é frequentemente chamado via fila_processamento_estoque)
         from nistiprint_shared.services.motor_reconciliacao_estoque import motor_reconciliacao_estoque
+        from nistiprint_shared.services.app_config_service import app_config_service
+        from decimal import Decimal
         import asyncio
-        
-        # Para fins de compatibilidade, se chamado diretamente, podemos decidir se roda agora ou agenda
-        # Aqui, como queremos desacoplamento, o ideal é que o chamador já tenha agendado.
-        # Se o motor já estiver rodando no worker, ele chamará a lógica interna.
-        pass
+
+        # Determinar deposito padrão
+        deposito_id = app_config_service.get_config('default_production_deposit_id') or 'principal'
+
+        # Para produção avulsa (sem item de demanda), precisamos processar de forma síncrona
+        # Chamamos o motor de reconciliação para processar a BOM recursivamente
+        try:
+            # Criar evento loop se não existir
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # Determinar demanda_id (None para produção avulsa)
+            demanda_id = item_id_referencia if item_id_referencia else None
+
+            # Chamar o método de explosão de BOM do motor
+            movimentos = loop.run_until_complete(
+                motor_reconciliacao_estoque._explodir_bom_consumo(
+                    produto_id=int(produto_id),
+                    quantidade=Decimal(str(quantidade)),
+                    demanda_id=demanda_id or 0,  # 0 se não tiver demanda
+                    user_id=user_id,
+                    deposito_padrao=deposito_id,
+                    profundidade=0,
+                    max_profundidade=10
+                )
+            )
+
+            # Aplicar os movimentos de estoque
+            print(f"DEBUG: {len(movimentos) if movimentos else 0} movimentos gerados pela BOM")
+            if movimentos:
+                for idx, mov in enumerate(movimentos):
+                    try:
+                        print(f"DEBUG: Aplicando movimento {idx+1}/{len(movimentos)}: produto_id={mov.produto_id}, quantidade={mov.quantidade}, motivo={mov.motivo}, deposito_id={mov.deposito_id}")
+                        # Registrar entrada ou saída de estoque
+                        if mov.quantidade > 0:
+                            # Entrada (produção JIT)
+                            print(f"DEBUG: Registrando ENTRADA para produto {mov.produto_id}")
+                            mov_id = estoque_service.registrar_entrada(
+                                produto_id=mov.produto_id,
+                                deposito_id=mov.deposito_id,
+                                quantidade=float(mov.quantidade),
+                                observacao=mov.motivo,
+                                usuario_id=None,
+                                user_context={'user_id': user_id},
+                                origem_tipo=3,
+                                correlation_id=correlation_id
+                            )
+                            print(f"DEBUG: Entrada registrada com ID {mov_id}")
+                        else:
+                            # Saída (consumo)
+                            print(f"DEBUG: Registrando SAÍDA para produto {mov.produto_id}")
+                            mov_id = estoque_service.registrar_saida(
+                                produto_id=mov.produto_id,
+                                deposito_id=mov.deposito_id,
+                                quantidade=float(abs(mov.quantidade)),
+                                motivo=mov.motivo,
+                                usuario_id=None,
+                                user_context={'user_id': user_id},
+                                origem_tipo=3,
+                                correlation_id=correlation_id
+                            )
+                            print(f"DEBUG: Saída registrada com ID {mov_id}")
+                    except Exception as e:
+                        print(f"AVISO: Erro ao aplicar movimento {mov}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # Continua processando mesmo se houver erro em um movimento
+
+            loop.close()
+            return True
+
+        except Exception as e:
+            print(f"ERRO ao processar insumos por BOM recursivo: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def agendar_processamento_estoque(self, demanda_id, item_id, campo, incremento, user_id='System',
                                       correlation_id=None, created_at=None, produto_id=None, forcar_sincrono=False):

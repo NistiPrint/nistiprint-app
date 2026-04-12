@@ -220,8 +220,8 @@ class OrderService:
             raise e
 
     def register_event(self, pedido_id: int, tipo: str, descricao: str, payload: Dict = None, 
-                       status_de: str = None, status_para: str = None):
-        """Registra um evento na timeline do pedido."""
+                       status_de: str = None, status_para: str = None, correlation_id: str = None):
+        """Registra um evento na timeline do pedido com correlation_id."""
         try:
             event = {
                 'pedido_id': pedido_id,
@@ -230,6 +230,7 @@ class OrderService:
                 'status_de': status_de,
                 'status_para': status_para,
                 'payload_origem': payload,
+                'correlation_id': correlation_id,
                 'created_at': datetime.now(timezone.utc).isoformat()
             }
             self.eventos_table.insert(event).execute()

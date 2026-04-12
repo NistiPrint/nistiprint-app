@@ -6,6 +6,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import logging
 import json
+from task_logger import log_task_execution
 
 logger = logging.getLogger(__name__)
 
@@ -16,10 +17,16 @@ logger = logging.getLogger(__name__)
     max_retries=3,
     default_retry_delay=60
 )
-def process_consolidacao(self, consolidacao_id: int):
+@log_task_execution(task_type='PEDIDO')
+def process_consolidacao(self, consolidacao_id: int, correlation_id=None):
     """
     Task Celery para processar consolidação de pedidos de forma assíncrona.
     """
+    from nistiprint_shared.services.correlation_service import with_correlation
+    
+    # Configurar correlation_id
+    correlation_id = with_correlation(correlation_id)
+    
     try:
         # Busca registro da consolidação
         response = supabase_db.table('consolidacoes_pedido').select('*').eq('id', consolidacao_id).execute()
@@ -313,10 +320,16 @@ def process_consolidacao(self, consolidacao_id: int):
     max_retries=3,
     default_retry_delay=60
 )
-def sync_orders_with_bling(self, order_numbers: list, channel_id: int, platform: str):
+@log_task_execution(task_type='INTEGRACAO')
+def sync_orders_with_bling(self, order_numbers: list, channel_id: int, platform: str, correlation_id=None):
     """
     Busca os números reais dos pedidos no Bling e atualiza o banco de dados.
     """
+    from nistiprint_shared.services.correlation_service import with_correlation
+    
+    # Configurar correlation_id
+    correlation_id = with_correlation(correlation_id)
+    
     if not order_numbers:
         return {'status': 'SKIPPED', 'reason': 'No order numbers provided'}
 

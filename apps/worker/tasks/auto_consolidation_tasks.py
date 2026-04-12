@@ -12,8 +12,15 @@ from __future__ import annotations
 
 import datetime
 from typing import Any, Dict, Optional
+import sys
+import os
 
 from celery_config import celery_app
+from nistiprint_shared.services.correlation_service import with_correlation
+
+# Adicionar diretório do worker ao path para importar task_logger
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from task_logger import log_task_execution
 
 # ============================================================
 # PREFIXO DE LOG — identificável nos logs do container
@@ -37,9 +44,11 @@ def _log(level: str, msg: str, **kw):
     max_retries=3,
     default_retry_delay=30,
 )
+@log_task_execution(task_type='PEDIDO')
 def classificar_e_consolidar_pedido(
     self,
     pedido_id: int,
+    correlation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Classifica um pedido em um grupo de consolidação existente e o consolida.
@@ -51,10 +60,21 @@ def classificar_e_consolidar_pedido(
       4. Se não existe → criar nova demanda RASCUNHO + consolidar
       5. Retornar resultado
     """
+    # Configurar correlation_id
+    correlation_id = with_correlation(correlation_id)
+    
+    # Mapear pedido -> correlation_id
+    try:
+        supabase_db.table('entity_correlation_mapping').insert({
+            'entity_type': 'pedido',
+            'entity_id': pedido_id,
+            'correlation_id': correlation_id
+        }).execute()
+    except Exception as e:
+        _log("WARN", f"Erro ao mapear pedido {pedido_id} -> correlation_id: {e}")
+    
     try:
         _log("INFO", f"Classificando pedido_id={pedido_id}")
-
-        from nistiprint_shared.database.supabase_db_service import supabase_db
 
         # ================================================================
         # 1. BUSCAR DADOS DO PEDIDO

@@ -5,16 +5,15 @@ import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
-    Activity,
-    CheckCircle2,
-    Clock,
-    Database,
-    Eye,
-    FileText,
-    PlayCircle,
-    RefreshCw,
-    Search,
-    TrendingUp
+  Activity,
+  CheckCircle2,
+  Clock,
+  Database,
+  Eye,
+  FileText,
+  PlayCircle,
+  RefreshCw,
+  Search
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -47,7 +46,10 @@ function MonitoramentoEstoquePage() {
     eventos_pendentes: 0,
     eventos_processados: 0,
     fila_pendentes: 0,
-    erros_24h: 0
+    erros_24h: 0,
+    sinais_pendentes: 0, // Sinais intermediários (sem movimentação)
+    liquidacoes_pendentes: 0, // Liquidações (disparam reconciliação)
+    expedicao_sinais: 0 // Sinais de expedição (apenas transferência de setor)
   });
 
   const fetchEventos = async () => {
@@ -56,11 +58,21 @@ function MonitoramentoEstoquePage() {
       const response = await fetch('/api/v2/producao/eventos?limit=100');
       const data = await response.json();
       if (data.success) {
-        setEventos(data.eventos || []);
+        const eventosList = data.eventos || [];
+        setEventos(eventosList);
+        
+        // Calcular estatísticas diferenciadas por tipo de evento
+        const sinaisPendentes = eventosList.filter(e => e.processado === false && e.tipo_evento === 'SINAL').length || 0;
+        const liquidacoesPendentes = eventosList.filter(e => e.processado === false && e.tipo_evento === 'LIQUIDACAO').length || 0;
+        const expedicaoSinais = eventosList.filter(e => e.estagio && e.estagio.includes('expedicao')).length || 0;
+        
         setStats(prev => ({
           ...prev,
-          eventos_pendentes: data.eventos?.filter(e => e.processado === false).length || 0,
-          eventos_processados: data.eventos?.filter(e => e.processado === true).length || 0
+          eventos_pendentes: eventosList.filter(e => e.processado === false).length || 0,
+          eventos_processados: eventosList.filter(e => e.processado === true).length || 0,
+          sinais_pendentes: sinaisPendentes,
+          liquidacoes_pendentes: liquidacoesPendentes,
+          expedicao_sinais: expedicaoSinais
         }));
       }
     } catch (e) {
@@ -230,10 +242,31 @@ function MonitoramentoEstoquePage() {
         <Card className="p-4 border-l-4 border-yellow-400">
           <div className="flex justify-between items-center">
             <div>
-              <p className="text-xs font-bold text-muted-foreground uppercase">Eventos Pendentes</p>
-              <h3 className="text-2xl font-bold">{stats.eventos_pendentes}</h3>
+              <p className="text-xs font-bold text-muted-foreground uppercase">Sinais Pendentes</p>
+              <p className="text-[10px] text-muted-foreground">(Sem movimentação)</p>
+              <h3 className="text-2xl font-bold">{stats.sinais_pendentes}</h3>
             </div>
             <Clock className="h-8 w-8 text-yellow-400 opacity-50" />
+          </div>
+        </Card>
+        <Card className="p-4 border-l-4 border-red-400">
+          <div className="flex justify-between items-center">
+            <div>
+              <p className="text-xs font-bold text-muted-foreground uppercase">Liquidações Pendentes</p>
+              <p className="text-[10px] text-muted-foreground">(Disparam reconciliação)</p>
+              <h3 className="text-2xl font-bold">{stats.liquidacoes_pendentes}</h3>
+            </div>
+            <Activity className="h-8 w-8 text-red-400 opacity-50" />
+          </div>
+        </Card>
+        <Card className="p-4 border-l-4 border-blue-400">
+          <div className="flex justify-between items-center">
+            <div>
+              <p className="text-xs font-bold text-muted-foreground uppercase">Sinais de Expedição</p>
+              <p className="text-[10px] text-muted-foreground">(Apenas transferência)</p>
+              <h3 className="text-2xl font-bold">{stats.expedicao_sinais}</h3>
+            </div>
+            <Database className="h-8 w-8 text-blue-400 opacity-50" />
           </div>
         </Card>
         <Card className="p-4 border-l-4 border-green-400">
@@ -243,24 +276,6 @@ function MonitoramentoEstoquePage() {
               <h3 className="text-2xl font-bold">{stats.eventos_processados}</h3>
             </div>
             <CheckCircle2 className="h-8 w-8 text-green-400 opacity-50" />
-          </div>
-        </Card>
-        <Card className="p-4 border-l-4 border-blue-400">
-          <div className="flex justify-between items-center">
-            <div>
-              <p className="text-xs font-bold text-muted-foreground uppercase">Fila (Legado)</p>
-              <h3 className="text-2xl font-bold">{stats.fila_pendentes}</h3>
-            </div>
-            <Database className="h-8 w-8 text-blue-400 opacity-50" />
-          </div>
-        </Card>
-        <Card className="p-4 border-l-4 border-purple-400">
-          <div className="flex justify-between items-center">
-            <div>
-              <p className="text-xs font-bold text-muted-foreground uppercase">Última Atualização</p>
-              <h3 className="text-sm font-bold">{new Date().toLocaleTimeString('pt-BR')}</h3>
-            </div>
-            <TrendingUp className="h-8 w-8 text-purple-400 opacity-50" />
           </div>
         </Card>
       </div>

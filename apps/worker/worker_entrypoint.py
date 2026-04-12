@@ -27,6 +27,65 @@ except ImportError as e:
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0')
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
 
+def load_task_schedules():
+    """
+    Carrega configurações de tarefas periódicas do banco de dados.
+    
+    Retorna dicionário com configurações para beat_schedule.
+    Se não houver configuração no banco, retorna configuração padrão.
+    """
+    try:
+        from nistiprint_shared.services.app_config_service import app_config_service
+        
+        config = app_config_service.get_config('celery_task_schedules')
+        
+        if not config:
+            print("⚠️ Nenhuma configuração de tarefas encontrada no banco, usando padrão")
+            return get_default_schedules()
+        
+        task_schedules_config = config.get('task_schedules', {})
+        schedules = {}
+        
+        for task_name, task_config in task_schedules_config.items():
+            if task_config.get('enabled', True):
+                schedules[task_name] = {
+                    'task': task_config.get('task_name', task_name),
+                    'schedule': task_config.get('schedule_seconds', 60)
+                }
+                print(f"✓ Tarefa '{task_name}' habilitada (freq: {task_config.get('schedule_seconds')}s)")
+            else:
+                print(f"○ Tarefa '{task_name}' desabilitada")
+        
+        if not schedules:
+            print("⚠️ Nenhuma tarefa habilitada, beat_schedule vazio")
+        
+        return schedules
+        
+    except Exception as e:
+        print(f"⚠️ Erro ao carregar configurações do banco: {e}")
+        print("Usando configurações padrão")
+        return get_default_schedules()
+
+def get_default_schedules():
+    """
+    Retorna configurações padrão de tarefas periódicas.
+    Usado como fallback quando não há configuração no banco.
+    """
+    return {
+        'sync-firestore-tokens': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.sync_firestore_tokens',
+            'schedule': 1800,  # 30 minutos
+        },
+        'consumir-fila-bling': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
+            'schedule': 30,  # 30 segundos
+        },
+        'processar-eventos-producao-periodic': {
+            'task': 'tasks.eventos_tasks.process_eventos_producao',
+            'schedule': 10,  # 10 segundos
+        },
+    }
+
 # Criar aplicação Celery
 celery_app = Celery(
     'nistiprint_worker',
@@ -64,32 +123,8 @@ celery_app.conf.update(
     result_expires=3600,
     
     # Agendamento de tarefas periódicas (Beat)
-    beat_schedule={
-        # Sincronização de tokens Bling do Firestore para Supabase (a cada 30 min)
-        'sync-firestore-tokens': {
-            'task': 'nistiprint_shared.services.redis_queue_tasks.sync_firestore_tokens',
-            'schedule': 1800,  # 30 minutos (em segundos)
-        },
-        # Consumir fila do Bling no Redis (contínuo)
-        'consumir-fila-bling': {
-            'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
-            'schedule': 30,  # A cada 30 segundos
-        },
-        # Processar eventos de produção (Event Sourcing) - ÚNICO processador de estoque
-        'processar-eventos-producao-periodic': {
-            'task': 'tasks.eventos_tasks.process_eventos_producao',
-            'schedule': 10, # A cada 10 segundos
-        },
-        # Nota: NÃO há processamento de lote de rascunhos — cada pedido é
-        # classificado e consolidado imediatamente no momento do webhook.
-        # Nota: Sincronização Shopee NÃO é periódica - ocorre no webhook do Bling (FASE 2)
-        # Quando um pedido Shopee entra em "Em Andamento" (15), o webhook já busca dados da API Shopee
-        #
-        # IMPORTANTE: NÃO há agendamento de processamento IA aqui.
-        # O processamento de IA (personalizados) é executado EXCLUSIVAMENTE sob demanda
-        # via botão na UI (VendasPersonalizadasPage ou FerramentasPage).
-        # Ver: apps/api/routes/personalizados.py -> processar_personalizados()
-    },
+    # Carrega configurações dinâmicas do banco de dados
+    beat_schedule=load_task_schedules(),
 )
 
 # Task de debug
