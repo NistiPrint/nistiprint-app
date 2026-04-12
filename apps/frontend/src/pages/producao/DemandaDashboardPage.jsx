@@ -5,21 +5,21 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
 } from '@/components/ui/table'
 import { useAuth } from '@/contexts/AuthContext'
 import { useLayout } from '@/contexts/LayoutContext'
@@ -28,19 +28,19 @@ import usePermissionsHook from '@/hooks/usePermissions'
 import useDebounce from '@/lib/hooks/useDebounce'
 import { supabase } from '@/lib/supabase'
 import {
-  ArrowLeft,
-  Calendar,
-  CheckCircle,
-  Flame,
-  List,
-  Package,
-  Printer,
-  Save,
-  Search,
-  TrendingUp,
-  Truck,
-  X,
-  History,
+    ArrowLeft,
+    Calendar,
+    CheckCircle,
+    Flame,
+    History,
+    List,
+    Package,
+    Printer,
+    Save,
+    Search,
+    TrendingUp,
+    Truck,
+    X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -175,17 +175,23 @@ function DemandaDashboardPage() {
 
       // Definição mais estrita de cada estado
       // Um item é considerado finalizado se o status for Concluído OU se a quantidade finalizada atingir o total.
+      // Status "Fechando" NÃO é considerado finalizado - itens precisam ser explicitamente finalizados via botão.
       const isFinalizado =
         orig.status_item === 'Concluído' ||
         (orig.finalizados_qtd || 0) >= item.quantidade_total
 
-      // Um item está pronto para fechar se ele já foi produzido (capa e miolo) e NÃO está totalmente finalizado.
-      // Removemos a restrição de finalizados_qtd === 0 para permitir que itens parcialmente finalizados
-      // continuem na aba de 'prontos' se o resto estiver produzido.
+      // Um item está pronto para fechar se:
+      // - Já foi produzido (capa e miolo) E NÃO está totalmente finalizado
+      // - OU está com status "Fechando" (retirado pela expedição mas não finalizado)
       const isProntoParaFechar =
         !isFinalizado &&
-        (orig.capas_prontas_retirada_qtd || 0) >= item.quantidade_total &&
-        (orig.miolos_prontos_retirada_qtd || 0) >= item.quantidade_total
+        (
+          (orig.status_item === 'Fechando') ||
+          (
+            (orig.capas_prontas_retirada_qtd || 0) >= item.quantidade_total &&
+            (orig.miolos_prontos_retirada_qtd || 0) >= item.quantidade_total
+          )
+        )
 
       if (statusFilter === 'finalizados') {
         return isFinalizado

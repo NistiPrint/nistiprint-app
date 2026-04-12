@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { ChevronLeft, ChevronRight, Loader2, Zap } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, ArrowUpRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export default function TabelaPedidos({
@@ -86,7 +86,9 @@ export default function TabelaPedidos({
                     onCheckedChange={onSelecionarTodos}
                   />
                 </TableHead>
-                <TableHead className="w-[50px]">Flex</TableHead>
+                <TableHead className="w-[80px]">
+                  <span className="text-xs">Flags</span>
+                </TableHead>
                 <TableHead>Pedido</TableHead>
                 <TableHead>Enviar Até</TableHead>
                 <TableHead>Data</TableHead>
@@ -105,11 +107,13 @@ export default function TabelaPedidos({
                   canaisProximosIds.includes(pedido.canal_venda_id);
                 
                 // Determinar classe da linha
-                const rowClass = pedido.is_flex 
-                  ? 'bg-orange-50/50 hover:bg-orange-50' 
-                  : isCanalProximo 
-                    ? 'bg-blue-50/30 hover:bg-blue-50' 
-                    : '';
+                const rowClass = pedido.is_flex
+                  ? 'bg-orange-50/30 hover:bg-orange-50'
+                  : pedido.is_personalizado
+                    ? 'bg-purple-50/20 hover:bg-purple-50'
+                    : isCanalProximo
+                      ? 'bg-blue-50/20 hover:bg-blue-50'
+                      : '';
 
                 return (
                 <TableRow key={pedido.id} className={rowClass}>
@@ -120,18 +124,30 @@ export default function TabelaPedidos({
                     />
                   </TableCell>
                   <TableCell>
-                    {pedido.is_flex && (
-                      <Tooltip>
-                        <TooltipTrigger>
-                          <Badge variant="secondary" className="bg-orange-500 text-white h-6 w-6 p-0 flex items-center justify-center">
-                            <Zap className="h-3 w-3" />
-                          </Badge>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <span>Pedido Flex</span>
-                        </TooltipContent>
-                      </Tooltip>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {/* Flex indicator - subtle dot */}
+                      {pedido.is_flex && (
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <div className="h-2 w-2 rounded-full bg-orange-400" />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <span>Entrega Rápida (Flex)</span>
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
+                      {/* Personalizado indicator - subtle dot */}
+                      {pedido.is_personalizado && (
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <div className="h-2 w-2 rounded-full bg-purple-400" />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <span>Pedido personalizado</span>
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-col gap-1">
@@ -175,14 +191,46 @@ export default function TabelaPedidos({
                     />
                   </TableCell>
                   <TableCell className="text-center">
-                    {pedido.tem_demanda ? (
-                      <Badge className="bg-green-600">
-                        ✅ Gerada
-                      </Badge>
+                    {pedido.demanda_id ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs text-green-700 hover:text-green-800 hover:bg-green-50 gap-1"
+                            asChild
+                          >
+                            <Link to={`/producao/demanda/${pedido.demanda_id}/dashboard`}>
+                              <ArrowUpRight className="h-3 w-3" />
+                              {pedido.demanda_numero ? `#${pedido.demanda_numero}` : 'Demanda'}
+                            </Link>
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <span>Ir para demanda {pedido.demanda_numero ? `#${pedido.demanda_numero}` : ''}</span>
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : pedido.tem_demanda ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs text-amber-600 hover:text-amber-700 hover:bg-amber-50 gap-1"
+                            asChild
+                          >
+                            <Link to={`/consolidar/rascunhos?pedido=${pedido.numero_pedido}`}>
+                              <ArrowUpRight className="h-3 w-3" />
+                              Rascunho
+                            </Link>
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <span>Ver rascunhos vinculados</span>
+                        </TooltipContent>
+                      </Tooltip>
                     ) : (
-                      <Badge variant="secondary">
-                        ❌ Pendente
-                      </Badge>
+                      <span className="text-xs text-muted-foreground">—</span>
                     )}
                   </TableCell>
                   <TableCell className="text-right">

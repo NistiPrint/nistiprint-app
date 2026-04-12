@@ -170,7 +170,25 @@ class DemandaItemsService:
                 'correlation_id': correlation_id,
                 'created_at': get_now_iso()
             }
-            supabase_db.table('eventos_producao_v2').insert(evento).execute()
+            try:
+                supabase_db.table('eventos_producao_v2').insert(evento).execute()
+            except Exception as event_error:
+                # Erros do Realtime (ex: StreamIDTooLowError) não devem interromper o fluxo principal
+                # O evento pode não ter sido inserido, mas a atualização visual já foi persistida
+                error_str = str(event_error)
+                if 'StreamID' in error_str or 'Realtime' in error_str:
+                    print(f"AVISO: Erro do Realtime ao inserir evento (não crítico): {event_error}")
+                    system_log_service.log(
+                        category='PRODUCAO',
+                        message=f"Erro do Realtime ao inserir evento (ignorado): {error_str}",
+                        severity='WARNING',
+                        action='atualizar_progresso_item',
+                        reference_id=item_id,
+                        metadata={'item_id': item_id, 'error_type': 'Realtime'}
+                    )
+                else:
+                    # Outros erros devem ser tratados como críticos
+                    raise event_error
 
             # NOTA: O processamento do estoque é feito assincronamente pelo ConsolidadorDeEstoque
             # via Celery (tasks.eventos_tasks.process_eventos_producao)
@@ -239,17 +257,25 @@ class DemandaItemsService:
         try:
             import uuid
             correlation_id = str(uuid.uuid4())
-            supabase_db.table('eventos_producao_v2').insert({
-                'item_demanda_id': item_id,
-                'demanda_id': demanda_id,
-                'estagio': 'finalizados_qtd',
-                'quantidade_reportada': float(total_qty),
-                'tipo_evento': 'LIQUIDACAO',
-                'processado': False,
-                'correlation_id': correlation_id,
-                'usuario_id': user_id if isinstance(user_id, int) else None,
-                'created_at': get_now_iso()
-            }).execute()
+            try:
+                supabase_db.table('eventos_producao_v2').insert({
+                    'item_demanda_id': item_id,
+                    'demanda_id': demanda_id,
+                    'estagio': 'finalizados_qtd',
+                    'quantidade_reportada': float(total_qty),
+                    'tipo_evento': 'LIQUIDACAO',
+                    'processado': False,
+                    'correlation_id': correlation_id,
+                    'usuario_id': user_id if isinstance(user_id, int) else None,
+                    'created_at': get_now_iso()
+                }).execute()
+            except Exception as event_error:
+                # Erros do Realtime não devem interromper o fluxo principal
+                error_str = str(event_error)
+                if 'StreamID' in error_str or 'Realtime' in error_str:
+                    print(f"AVISO: Erro do Realtime ao inserir evento de finalização (não crítico): {event_error}")
+                else:
+                    raise event_error
         except Exception as e:
             print(f"ERRO ao registrar evento de finalização do item {item_id}: {e}")
 
@@ -293,17 +319,25 @@ class DemandaItemsService:
         try:
             import uuid
             correlation_id = str(uuid.uuid4())
-            supabase_db.table('eventos_producao_v2').insert({
-                'item_demanda_id': item_id,
-                'demanda_id': demanda_id,
-                'estagio': 'finalizados_qtd',
-                'quantidade_reportada': float(updates.get('finalizados_qtd', 0)),
-                'tipo_evento': 'LIQUIDACAO',
-                'processado': False,
-                'correlation_id': correlation_id,
-                'usuario_id': user_id if isinstance(user_id, int) else None,
-                'created_at': get_now_iso()
-            }).execute()
+            try:
+                supabase_db.table('eventos_producao_v2').insert({
+                    'item_demanda_id': item_id,
+                    'demanda_id': demanda_id,
+                    'estagio': 'finalizados_qtd',
+                    'quantidade_reportada': float(updates.get('finalizados_qtd', 0)),
+                    'tipo_evento': 'LIQUIDACAO',
+                    'processado': False,
+                    'correlation_id': correlation_id,
+                    'usuario_id': user_id if isinstance(user_id, int) else None,
+                    'created_at': get_now_iso()
+                }).execute()
+            except Exception as event_error:
+                # Erros do Realtime não devem interromper o fluxo principal
+                error_str = str(event_error)
+                if 'StreamID' in error_str or 'Realtime' in error_str:
+                    print(f"AVISO: Erro do Realtime ao inserir evento de finalização parcial (não crítico): {event_error}")
+                else:
+                    raise event_error
         except Exception as e:
             print(f"ERRO ao registrar evento de finalização parcial do item {item_id}: {e}")
 
@@ -414,17 +448,25 @@ class DemandaItemsService:
             try:
                 import uuid
                 correlation_id = str(uuid.uuid4())
-                supabase_db.table('eventos_producao_v2').insert({
-                    'item_demanda_id': item_id,
-                    'demanda_id': item.get('demanda_id'),
-                    'estagio': campo_a_atualizar,
-                    'quantidade_reportada': float(qty),
-                    'tipo_evento': 'SINAL',
-                    'processado': False,
-                    'correlation_id': correlation_id,
-                    'usuario_id': user_id if isinstance(user_id, int) else None,
-                    'created_at': get_now_iso()
-                }).execute()
+                try:
+                    supabase_db.table('eventos_producao_v2').insert({
+                        'item_demanda_id': item_id,
+                        'demanda_id': item.get('demanda_id'),
+                        'estagio': campo_a_atualizar,
+                        'quantidade_reportada': float(qty),
+                        'tipo_evento': 'SINAL',
+                        'processado': False,
+                        'correlation_id': correlation_id,
+                        'usuario_id': user_id if isinstance(user_id, int) else None,
+                        'created_at': get_now_iso()
+                    }).execute()
+                except Exception as event_error:
+                    # Erros do Realtime não devem interromper o fluxo principal
+                    error_str = str(event_error)
+                    if 'StreamID' in error_str or 'Realtime' in error_str:
+                        print(f"AVISO: Erro do Realtime ao inserir evento de saída distribuída (não crítico): {event_error}")
+                    else:
+                        raise event_error
             except Exception as e:
                 print(f"ERRO ao registrar evento de saída distribuída do item {item_id}: {e}")
 
@@ -438,6 +480,130 @@ class DemandaItemsService:
             }, user_id)
 
         return True
+
+    def registrar_retirada_expedicao(self, demanda_id: str, item_id: str, quantidade: int, user_id: str = 'System') -> Dict[str, Any]:
+        """
+        Registra a retirada de capas e miolos na expedição para um item de demanda.
+
+        Atualiza simultaneamente os campos expedicao_capas_retiradas_qtd e expedicao_miolos_retirados_qtd,
+        pois na expedição o produto final (capa + miolo) é retirado junto.
+
+        Args:
+            demanda_id: ID da demanda
+            item_id: ID do item da demanda
+            quantidade: Quantidade a retirar (unidades completas capa+miolo)
+            user_id: ID do usuário
+
+        Returns:
+            Item atualizado com os novos valores de expedição
+
+        Raises:
+            ValueError: Se o item não for encontrado ou quantidade for inválida
+        """
+        # Buscar item
+        response = supabase_db.execute_with_retry(self.itens_table.select("*").eq('id', item_id))
+        if not response.data:
+            raise ValueError(f"Item {item_id} não encontrado")
+
+        item = response.data[0]
+        total_qty = item['quantidade']
+
+        # Validar quantidade
+        if quantidade <= 0:
+            raise ValueError("Quantidade deve ser maior que zero")
+
+        if quantidade > total_qty:
+            raise ValueError(f"Quantidade ({quantidade}) excede a quantidade total do item ({total_qty})")
+
+        # Calcular novos valores
+        exp_capas_atual = float(item.get('expedicao_capas_retiradas_qtd', 0) or 0)
+        exp_miolos_atual = float(item.get('expedicao_miolos_retirados_qtd', 0) or 0)
+
+        nova_exp_capas = min(total_qty, exp_capas_atual + quantidade)
+        nova_exp_miolos = min(total_qty, exp_miolos_atual + quantidade)
+
+        # Atualizar item
+        updates = {
+            'expedicao_capas_retiradas_qtd': nova_exp_capas,
+            'expedicao_miolos_retirados_qtd': nova_exp_miolos,
+            'status_item': 'Em Andamento',
+            'updated_at': get_now_iso()
+        }
+
+        # Se atingiu a quantidade total, marcar como "Fechando" (não mais Concluído)
+        # Itens só serão marcados como Concluído quando explicitamente finalizados via botão no dashboard
+        if nova_exp_capas >= total_qty and nova_exp_miolos >= total_qty:
+            updates['status_item'] = 'Fechando'
+
+        supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
+
+        # DISPARAR EVENTO DE EXPEDIÇÃO (Event Sourcing)
+        # O ConsolidadorDeEstoque processará assincronamente via Celery
+        try:
+            import uuid
+            correlation_id = str(uuid.uuid4())
+            
+            # Registrar evento para expedição de capas
+            try:
+                supabase_db.table('eventos_producao_v2').insert({
+                    'item_demanda_id': item_id,
+                    'demanda_id': demanda_id,
+                    'estagio': 'expedicao_capas_retiradas_qtd',
+                    'quantidade_reportada': float(quantidade),
+                    'tipo_evento': 'SINAL',
+                    'processado': False,
+                    'correlation_id': correlation_id,
+                    'usuario_id': user_id if isinstance(user_id, int) else None,
+                    'created_at': get_now_iso()
+                }).execute()
+            except Exception as event_error:
+                # Erros do Realtime não devem interromper o fluxo principal
+                error_str = str(event_error)
+                if 'StreamID' in error_str or 'Realtime' in error_str:
+                    print(f"AVISO: Erro do Realtime ao inserir evento de expedição de capas (não crítico): {event_error}")
+                else:
+                    raise event_error
+
+            # Registrar evento para expedição de miolos
+            try:
+                supabase_db.table('eventos_producao_v2').insert({
+                    'item_demanda_id': item_id,
+                    'demanda_id': demanda_id,
+                    'estagio': 'expedicao_miolos_retirados_qtd',
+                    'quantidade_reportada': float(quantidade),
+                    'tipo_evento': 'SINAL',
+                    'processado': False,
+                    'correlation_id': correlation_id,
+                    'usuario_id': user_id if isinstance(user_id, int) else None,
+                    'created_at': get_now_iso()
+                }).execute()
+            except Exception as event_error:
+                # Erros do Realtime não devem interromper o fluxo principal
+                error_str = str(event_error)
+                if 'StreamID' in error_str or 'Realtime' in error_str:
+                    print(f"AVISO: Erro do Realtime ao inserir evento de expedição de miolos (não crítico): {event_error}")
+                else:
+                    raise event_error
+        except Exception as e:
+            print(f"ERRO ao registrar evento de expedição do item {item_id}: {e}")
+
+        # Verificar se a demanda deve ser finalizada automaticamente
+        if updates.get('status_item') == 'Concluído':
+            self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
+
+        # Registrar auditoria
+        auditoria_service.log_event('RETIRADA_EXPEDICAO', {
+            'demanda_id': demanda_id,
+            'item_id': item_id,
+            'sku': item.get('sku'),
+            'quantidade': quantidade,
+            'exp_capas_anterior': exp_capas_atual,
+            'exp_capas_novo': nova_exp_capas,
+            'exp_miolos_anterior': exp_miolos_atual,
+            'exp_miolos_novo': nova_exp_miolos
+        }, user_id)
+
+        return self._process_item_dict({**item, **updates})
 
 
 demanda_items_service = DemandaItemsService()

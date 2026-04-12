@@ -186,6 +186,7 @@ class ProductionPlanningService:
     def _calculate_demand_progress(self, demanda: Dict[str, Any]) -> int:
         """
         Calculate progress percentage for a demand.
+        Only 'Concluído' status counts as completed. 'Fechando' is still in progress.
         """
         if 'itens' not in demanda or not demanda['itens']:
             return 0

@@ -1,12 +1,23 @@
 import { Input } from '@/components/ui/input';
 import { Search } from 'lucide-react';
 
+/**
+ * OrderFilters — busca + filtros de status IA para pedidos personalizados.
+ *
+ * Filtros de IA (funcionam em conjunto com a aba ativa):
+ *   - Nome identificado (SUCCESS)
+ *   - Revisar (NEEDS_REVIEW)
+ *   - Sem nome (NO_PERSONALIZATION_FOUND)
+ *   - Com Chat / Sem Chat
+ */
 function OrderFilters({ searchTerm, onSearchChange, statusFilter, onStatusFilterChange, statusCounts }) {
   const filterOptions = [
-    { key: '', label: 'Todos', count: statusCounts.all },
-    { key: 'success', label: 'Nome identificado', count: statusCounts.success },
-    { key: 'needs_review', label: 'Revisar', count: statusCounts.needs_review },
-    { key: 'no_personalization', label: 'Sem nome', count: statusCounts.no_personalization },
+    { key: '', label: 'Todos', count: statusCounts?.all ?? 0 },
+    { key: 'success', label: 'Nome identificado', count: statusCounts?.success ?? 0 },
+    { key: 'needs_review', label: 'Revisar', count: statusCounts?.needs_review ?? 0 },
+    { key: 'no_personalization', label: 'Sem nome', count: statusCounts?.no_personalization ?? 0 },
+    { key: 'with_chat', label: 'Com Chat', count: statusCounts?.with_chat ?? 0 },
+    { key: 'without_chat', label: 'Sem Chat', count: statusCounts?.without_chat ?? 0 },
   ];
 
   return (
@@ -28,7 +39,7 @@ function OrderFilters({ searchTerm, onSearchChange, statusFilter, onStatusFilter
           </div>
         </div>
 
-        {/* Filtros por Status */}
+        {/* Filtros por Status IA + Chat */}
         <div className="lg:col-span-8">
           <div className="flex flex-wrap gap-2">
             {filterOptions.map((option) => (
@@ -45,24 +56,6 @@ function OrderFilters({ searchTerm, onSearchChange, statusFilter, onStatusFilter
               </button>
             ))}
           </div>
-        </div>
-      </div>
-
-      {/* Informações adicionais */}
-      <div className="mt-3 pt-3 border-t border-gray-100">
-        <div className="text-xs text-gray-500 flex flex-wrap gap-4">
-          <span>
-            <strong className="text-blue-600">{statusCounts.success}</strong> nomes identificados
-          </span>
-          <span>
-            <strong className="text-orange-600">{statusCounts.needs_review}</strong> precisam revisão
-          </span>
-          <span>
-            <strong className="text-red-600">{statusCounts.no_personalization}</strong> sem personalização
-          </span>
-          <span>
-            <strong className="text-gray-600">{statusCounts.all}</strong> total de pedidos
-          </span>
         </div>
       </div>
     </div>

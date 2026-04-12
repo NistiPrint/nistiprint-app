@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { personalizadosService } from '@/services/personalizadosService'
 import { format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
-import { Loader2, Search, RefreshCw, ChevronDown, ChevronRight, AlertTriangle, CheckCircle, XCircle } from 'lucide-react'
+import { Loader2, Search, RefreshCw, ChevronDown, ChevronRight, AlertTriangle, CheckCircle, XCircle, Terminal, FileText, Brain } from 'lucide-react'
 import { toast } from 'sonner'
 
 const STATUS_CONFIG = {
@@ -66,6 +66,29 @@ export function AILogsPage() {
       else next.add(logId)
       return next
     })
+  }
+
+  const CollapsibleSection = ({ icon: Icon, title, content, defaultOpen = false }) => {
+    const sectionKey = `${title}-${Math.random()}`
+    const [open, setOpen] = useState(defaultOpen)
+
+    return (
+      <div className="border rounded overflow-hidden">
+        <button
+          onClick={() => setOpen(!open)}
+          className="w-full flex items-center gap-2 px-3 py-2 bg-gray-50 hover:bg-gray-100 transition-colors text-sm font-medium"
+        >
+          {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          <Icon className="h-4 w-4 text-muted-foreground" />
+          {title}
+        </button>
+        {open && content && (
+          <pre className="text-xs bg-white p-3 overflow-x-auto max-h-96 whitespace-pre-wrap border-t">
+            {typeof content === 'string' ? content : JSON.stringify(content, null, 2)}
+          </pre>
+        )}
+      </div>
+    )
   }
 
   const totalPages = Math.ceil(total / limit)
@@ -166,7 +189,7 @@ export function AILogsPage() {
 
                     {/* Detalhes expandidos */}
                     {isExpanded && (
-                      <div className="px-12 pb-4 space-y-3">
+                      <div className="px-4 pb-4 space-y-3">
                         {log.error_message && (
                           <div className="bg-red-50 border border-red-200 rounded p-3">
                             <p className="text-sm font-medium text-red-800">Erro:</p>
@@ -174,42 +197,41 @@ export function AILogsPage() {
                           </div>
                         )}
 
-                        <div className="grid grid-cols-2 gap-4">
-                          {log.model_result && (
-                            <div>
-                              <p className="text-sm font-medium mb-1">Resultado da IA:</p>
-                              <pre className="text-xs bg-gray-50 border rounded p-3 overflow-x-auto max-h-64">
-                                {typeof log.model_result === 'string' ? log.model_result : JSON.stringify(log.model_result, null, 2)}
-                              </pre>
-                            </div>
-                          )}
+                        {/* Prompt Template (Input Data) */}
+                        <CollapsibleSection
+                          icon={Terminal}
+                          title="Prompt enviado à IA"
+                          content={log.input_data}
+                          defaultOpen={false}
+                        />
 
-                          {log.extracted_personalization && (
-                            <div>
-                              <p className="text-sm font-medium mb-1">Personalizações extraídas:</p>
-                              <pre className="text-xs bg-gray-50 border rounded p-3 overflow-x-auto max-h-64">
-                                {typeof log.extracted_personalization === 'string' ? log.extracted_personalization : JSON.stringify(log.extracted_personalization, null, 2)}
-                              </pre>
-                            </div>
-                          )}
-                        </div>
+                        {/* Resultado da IA */}
+                        {log.model_result && (
+                          <CollapsibleSection
+                            icon={Brain}
+                            title="Resposta da IA (JSON)"
+                            content={log.model_result}
+                            defaultOpen={false}
+                          />
+                        )}
 
-                        {log.chat_context && (
-                          <div>
-                            <p className="text-sm font-medium mb-1">Contexto do chat:</p>
-                            <pre className="text-xs bg-gray-50 border rounded p-3 overflow-x-auto max-h-48">
-                              {typeof log.chat_context === 'string' ? log.chat_context : JSON.stringify(log.chat_context, null, 2)}
-                            </pre>
-                          </div>
+                        {/* Personalizações extraídas */}
+                        {log.extracted_personalization && (
+                          <CollapsibleSection
+                            icon={FileText}
+                            title="Personalizações extraídas"
+                            content={log.extracted_personalization}
+                            defaultOpen={false}
+                          />
                         )}
 
                         {log.metadata && (
-                          <div>
-                            <p className="text-sm font-medium mb-1">Metadata:</p>
-                            <pre className="text-xs bg-gray-50 border rounded p-3 overflow-x-auto">
-                              {typeof log.metadata === 'string' ? log.metadata : JSON.stringify(log.metadata, null, 2)}
-                            </pre>
-                          </div>
+                          <CollapsibleSection
+                            icon={Terminal}
+                            title="Metadata"
+                            content={log.metadata}
+                            defaultOpen={false}
+                          />
                         )}
                       </div>
                     )}

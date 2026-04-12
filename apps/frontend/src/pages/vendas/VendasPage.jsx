@@ -1,6 +1,6 @@
 import { useLayout } from '@/contexts/LayoutContext';
 import { cn } from '@/lib/utils';
-import { ShoppingBag, Users, FileText, Brain, Globe, PackageCheck, ClipboardList } from 'lucide-react';
+import { ShoppingBag, Users, FileText, Globe, PackageCheck, ClipboardList } from 'lucide-react';
 import { useEffect } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
@@ -16,12 +16,6 @@ const vendasMenu = [
     href: '/vendas/personalizadas',
     icon: Users,
     description: 'Vendas de produtos personalizados'
-  },
-  {
-    name: 'Identificação IA',
-    href: '/vendas/identificacao-ia',
-    icon: Brain,
-    description: 'Extração automática de nomes via IA'
   },
   {
     name: 'Consolidar',

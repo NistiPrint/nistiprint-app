@@ -6,11 +6,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { CheckCircle2, ClipboardList, Copy, Database, FileSpreadsheet, Filter, Loader2, Upload } from 'lucide-react';
+import { CheckCircle2, ClipboardList, Copy, Database, Filter, Loader2, Upload } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import ConsolidarBaseTab from './ConsolidarBaseTab';
 
 function ConsolidarPage() {
   const [file, setFile] = useState(null);
@@ -24,7 +22,6 @@ function ConsolidarPage() {
   const [isFlex, setIsFlex] = useState(false);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
-  const [activeTab, setActiveTab] = useState('spreadsheet');
 
   // Operational Mode State
   const [opMode, setOpMode] = useState('v2');
@@ -77,31 +74,6 @@ function ConsolidarPage() {
     fetchProducts();
     fetchMode();
   }, []);
-
-  const handleDatabaseAnalysis = (analysisData) => {
-    const transformedResults = {
-      'SISTEMA': {
-        total_pedidos_plataforma: analysisData.total_pedidos,
-        total_capas: analysisData.itens_consolidados.length,
-        capas_miolos_data: analysisData.itens_consolidados.map(item => ({
-          'Nome do Produto': item.produto_nome,
-          'SKU': item.sku,
-          'Variação': '',
-          'Miolo': '',
-          'Total': item.quantidade,
-          internal_product_id: item.produto_id,
-          internal_product_name: item.produto_nome,
-          internal_product_sku: item.sku,
-          mapping_status: item.produto_id ? 'Mapeado' : 'Não Mapeado',
-          pedidos_origem: item.pedidos
-        })),
-        bling_orders_data: []
-      }
-    };
-    setResults(transformedResults);
-    setDemandName(`Demanda Base - ${new Date().toLocaleDateString('pt-BR')}`);
-    toast.success('Análise concluída!');
-  };
 
   const toggleOpMode = async () => {
     const newMode = opMode === 'v2' ? 'legacy' : 'v2';
@@ -182,7 +154,7 @@ function ConsolidarPage() {
         }));
 
         let channelObj = channels.find(c => c.id.toString() === selectedChannel || (c.slug || c.nome) === selectedChannel);
-        if (!channelObj && activeTab === 'database') channelObj = channels[0];
+        if (!channelObj) channelObj = channels[0];
 
         const payload = {
             nome: demandName,
@@ -403,14 +375,7 @@ function ConsolidarPage() {
               </div>
             )}
 
-            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-              <TabsList className="grid w-full grid-cols-2 h-12 mb-8">
-                <TabsTrigger value="spreadsheet" className="gap-2 text-base"><FileSpreadsheet className="h-4 w-4" /> Planilha ERP/Marketplace</TabsTrigger>
-                <TabsTrigger value="database" className="gap-2 text-base"><Database className="h-4 w-4" /> Pedidos Sincronizados (API)</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="spreadsheet" className="animate-in fade-in-50 duration-300">
-                <form onSubmit={handleSubmit} className="space-y-6 p-4 border rounded-lg bg-muted/30">
+            <form onSubmit={handleSubmit} className="space-y-6 p-4 border rounded-lg bg-muted/30">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="space-y-2">
                           <Label>Arquivo de Pedidos</Label>
@@ -453,12 +418,6 @@ function ConsolidarPage() {
                       </Button>
                     </div>
                 </form>
-              </TabsContent>
-
-              <TabsContent value="database" className="animate-in fade-in-50 duration-300">
-                <ConsolidarBaseTab onAnalyse={handleDatabaseAnalysis} />
-              </TabsContent>
-            </Tabs>
           </CardContent>
         </Card>
       ) : (

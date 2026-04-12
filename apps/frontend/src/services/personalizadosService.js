@@ -3,7 +3,7 @@
  * Centraliza todas as chamadas relacionadas a personalizações.
  */
 
-const BASE = '/api/v2/personalizadas';
+const BASE = '/api/v2/personalizados';
 
 export const personalizadosService = {
   /**
@@ -72,6 +72,39 @@ export const personalizadosService = {
     const qs = new URLSearchParams(params).toString();
     const res = await fetch(`${BASE}/logs?${qs}`, {
       headers: { Accept: 'application/json' },
+    });
+    return res.json();
+  },
+
+  /**
+   * Deleta logs de execução de um pedido específico.
+   * @param {string} orderSn
+   */
+  deleteLogs: async (orderSn) => {
+    const res = await fetch(`${BASE}/logs/${encodeURIComponent(orderSn)}`, {
+      method: 'DELETE',
+    });
+    return res.json();
+  },
+
+  /**
+   * Deleta logs de execução em lote (com filtros).
+   * @param {Object} params - { order_sn?, status?, all? }
+   */
+  deleteLogsBatch: async (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    const res = await fetch(`${BASE}/logs?${qs}`, {
+      method: 'DELETE',
+    });
+    return res.json();
+  },
+
+  /**
+   * Deleta TODOS os logs de execução.
+   */
+  deleteAllLogs: async () => {
+    const res = await fetch(`${BASE}/logs?all=true`, {
+      method: 'DELETE',
     });
     return res.json();
   },

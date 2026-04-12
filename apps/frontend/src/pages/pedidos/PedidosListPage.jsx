@@ -35,6 +35,7 @@ function PedidosListPage() {
     canal_venda_id: null,
     has_demanda: null, // true, false, null
     is_flex: null,     // true, false, null - Filtro para pedidos Flex
+    is_personalizado: null, // true, false, null - Filtro para pedidos personalizados
     delivery_start: '',
     delivery_end: '',
   });
@@ -148,8 +149,10 @@ function PedidosListPage() {
           situacao_pedido_id: order.situacao_pedido_id || order.situacaoPedidoId,
           total_pedido: order.total_pedido || order.totalPedido || order.total,
           tem_demanda: order.tem_demanda || order.temDemanda || order.has_demanda || false,
+          demanda_id: order.demanda_id || order.demandaId || null,  // ID da demanda (se houver)
           // NOVOS CAMPOS - Pedidos Flex
           is_flex: order.is_flex || false,
+          is_personalizado: order.is_personalizado || false,
           data_limite_envio: order.data_limite_envio,
           enviar_ate_formatado: order.enviar_ate_formatado,
           // Status com cores dinâmicas
@@ -205,6 +208,7 @@ function PedidosListPage() {
       canal_venda_id: null,
       has_demanda: null,
       is_flex: null,
+      is_personalizado: null,
       delivery_start: '',
       delivery_end: '',
     });

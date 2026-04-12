@@ -1,13 +1,14 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { 
-  ArrowLeft, 
-  Copy, 
-  ExternalLink, 
-  MoreHorizontal, 
+import {
+  ArrowLeft,
+  Copy,
+  ExternalLink,
+  MoreHorizontal,
   Printer,
-  Share2
+  Share2,
+  Sparkles
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -73,8 +74,8 @@ export default function PedidoHeader({
             <h1 className="text-3xl font-bold tracking-tight">
               Pedido #{pedido.numero_pedido}
             </h1>
-            <Badge 
-              style={{ 
+            <Badge
+              style={{
                 backgroundColor: pedido.status.cor,
                 color: 'white'
               }}
@@ -82,6 +83,12 @@ export default function PedidoHeader({
             >
               {pedido.status.nome}
             </Badge>
+            {(pedido.is_personalizado || pedido.personalizado) && (
+              <Badge variant="outline" className="text-xs px-2 py-0.5 border-purple-300 text-purple-600 bg-purple-50 flex items-center gap-1">
+                <Sparkles className="w-3 h-3" />
+                Personalizado
+              </Badge>
+            )}
           </div>
           
           <div className="flex items-center gap-2 text-muted-foreground">

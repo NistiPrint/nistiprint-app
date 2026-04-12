@@ -5,7 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
-import { X, Zap, Loader2, ChevronDown, ChevronUp, Filter } from 'lucide-react';
+import { X, Zap, Loader2, ChevronDown, ChevronUp, Filter, Sparkles } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import FiltrosContextuais from './FiltrosContextuais';
@@ -51,7 +51,8 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
     filtros.has_demanda !== null ||
     filtros.delivery_start ||
     filtros.delivery_end ||
-    filtros.is_flex;
+    filtros.is_flex ||
+    filtros.is_personalizado;
 
   // Handler para filtros contextuais
   const handleFiltroContextual = (filtroContextual) => {
@@ -250,6 +251,26 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
                 <div>
                   <div className="font-medium">Apenas Entrega Rápida</div>
                   <div className="text-xs text-muted-foreground">Pedidos Flex (prioritários)</div>
+                </div>
+              </Label>
+            </div>
+          </div>
+
+          {/* Filtro Personalizado */}
+          <div className="space-y-2 flex items-end">
+            <div className="flex items-center space-x-3 pb-2">
+              <Switch
+                id="filtro-personalizado"
+                checked={filtros.is_personalizado === true}
+                onCheckedChange={(checked) =>
+                  onFiltroChange({ is_personalizado: checked ? true : null })
+                }
+              />
+              <Label htmlFor="filtro-personalizado" className="flex items-center gap-2 cursor-pointer">
+                <Sparkles className="h-4 w-4 text-purple-500" />
+                <div>
+                  <div className="font-medium">Apenas Personalizados</div>
+                  <div className="text-xs text-muted-foreground">Pedidos com personalização</div>
                 </div>
               </Label>
             </div>

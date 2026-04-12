@@ -325,6 +325,7 @@ class DemandaReportingKanbanService:
                 urgentes_count += 1
 
             for item in itens:
+                # Skip only 'Concluído' items (not 'Fechando')
                 if item.get('status_item') == 'Concluído':
                     continue
 

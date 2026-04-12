@@ -1,21 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { aiService } from '@/services/aiService';
 import { AIStatusBadge } from './AIStatusBadge';
-import { ChatViewer } from './ChatViewer';
+import { ChatSidebar } from '@/components/chat/ChatSidebar';
 import { format } from 'date-fns';
 import { supabase } from '@/lib/supabase';
 
 const AIDashboardPage = () => {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedChat, setSelectedChat] = useState({ isOpen: false, messages: [], title: '' });
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatUser, setChatUser] = useState(null);
   const [processingId, setProcessingId] = useState(null);
 
-  // Carregar pedidos iniciais
   useEffect(() => {
     loadOrders();
-    
-    // Inscrever para atualizações em tempo real
+
     const subscription = supabase
       .channel('public:cache_dashboard_pedidos')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'cache_dashboard_pedidos' }, (payload) => {
@@ -47,39 +46,10 @@ const AIDashboardPage = () => {
     }
   };
 
-  const handleOpenChat = async (order) => {
-    try {
-        // Tenta buscar pelo username se disponível, senão busca vazio (retornará vazio mas não quebra)
-        const username = order.buyer_username; 
-        const messages = await aiService.getOrderChat(username);
-        
-        // Mapear is_sender baseado no username do comprador (assumindo que se from == buyer, não é sender da loja)
-        // Ajuste conforme lógica do backend: Lá 'is_sender' já vinha calculado. 
-        // Aqui estamos pegando raw do banco. Vamos assumir que 'from_user_name' === username => Comprador enviou.
-        // Se a loja enviou, 'from_user_name' seria diferente.
-        // O ChatViewer espera 'is_sender' true para mensagens DA LOJA (azul/direita).
-        // Então se from_user_name !== buyer_username, é a loja.
-        
-        const formattedMessages = messages.map(m => ({
-            ...m,
-            is_sender: m.from_user_name !== username
-        }));
-
-        setSelectedChat({
-            isOpen: true,
-            messages: formattedMessages,
-            title: `Chat - ${order.buyer_username || order.order_sn}`
-        });
-    } catch (error) {
-        console.error("Erro ao abrir chat:", error);
-    }
-  };
-
   const handleProcessAI = async (orderSn) => {
     setProcessingId(orderSn);
     try {
         await aiService.triggerAIProcessing(orderSn);
-        // O realtime deve atualizar o status em breve
     } catch (error) {
         console.error("Erro ao disparar IA:", error);
         alert("Erro ao iniciar processamento");
@@ -95,7 +65,7 @@ const AIDashboardPage = () => {
           <h1 className="text-2xl font-bold text-gray-800">Identificação de Nomes (IA)</h1>
           <p className="text-gray-600">Monitoramento e extração de personalização em tempo real</p>
         </div>
-        <button 
+        <button
             onClick={loadOrders}
             className="px-4 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50"
         >
@@ -143,13 +113,13 @@ const AIDashboardPage = () => {
                     <AIStatusBadge status={order.last_ai_status} />
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                  <button 
-                    onClick={() => handleOpenChat(order)}
+                  <button
+                    onClick={() => { setChatUser(order.buyer_username); setChatOpen(true); }}
                     className="text-indigo-600 hover:text-indigo-900 mr-4"
                   >
                     Chat
                   </button>
-                  <button 
+                  <button
                     onClick={() => handleProcessAI(order.order_sn)}
                     disabled={processingId === order.order_sn}
                     className={`text-green-600 hover:text-green-900 ${processingId === order.order_sn ? 'opacity-50 cursor-wait' : ''}`}
@@ -163,11 +133,11 @@ const AIDashboardPage = () => {
         </table>
       </div>
 
-      <ChatViewer 
-        isOpen={selectedChat.isOpen}
-        messages={selectedChat.messages}
-        title={selectedChat.title}
-        onClose={() => setSelectedChat({ ...selectedChat, isOpen: false })}
+      <ChatSidebar
+        open={chatOpen}
+        onOpenChange={setChatOpen}
+        username={chatUser}
+        orderId=""
       />
     </div>
   );
