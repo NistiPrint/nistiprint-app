@@ -1,11 +1,10 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import ProductionService from '@/services/ProductionService';
-import { CheckCircle2, AlertTriangle, ArrowRight, Package, Loader2 } from 'lucide-react';
-import { useEffect, useState, useMemo } from 'react';
+import { ArrowRight, CheckCircle2, Loader2, Package } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 
 const ExpedicaoDashboardPage = () => {
@@ -34,18 +33,23 @@ const ExpedicaoDashboardPage = () => {
     fetchData();
   }, []);
 
-  const { matches, pending } = useMemo(() => {
+  const { matches, pending, closing } = useMemo(() => {
     let currentItems = items;
     if (filterTrilha !== 'ALL') {
       currentItems = items.filter(item => item.trilha === filterTrilha);
     }
-    
+
     const matches = [];
     const pending = [];
+    const closing = [];
 
     currentItems.forEach(item => {
+      const hasExpedicao = (item.expedicao_capas_retiradas_qtd > 0 || item.expedicao_miolos_retirados_qtd > 0);
+      
       if (item.match_disponivel > 0) {
         matches.push(item);
+      } else if (hasExpedicao) {
+        closing.push(item);
       } else {
         pending.push(item);
       }
@@ -59,7 +63,7 @@ const ExpedicaoDashboardPage = () => {
         return 0;
     });
 
-    return { matches, pending };
+    return { matches, pending, closing };
   }, [items, filterTrilha]);
 
   const handleRetirada = async (demandaId, itemId, maxMatch) => {
@@ -139,7 +143,7 @@ const ExpedicaoDashboardPage = () => {
                 <h4 className="font-bold text-gray-700">{item.item_nome}</h4>
                 <div className="text-xs text-gray-500">{item.demanda_nome}</div>
              </div>
-             
+
              <div className="flex gap-4 text-xs font-medium">
                 <div className={`flex flex-col items-center ${item.capas_prontas >= item.qtd_total ? 'text-green-600' : 'text-amber-600'}`}>
                    <span>Capas</span>
@@ -155,6 +159,54 @@ const ExpedicaoDashboardPage = () => {
        </CardContent>
     </Card>
   );
+
+  const ClosingCard = ({ item }) => {
+    const expedidas = Math.min(item.expedicao_capas_retiradas_qtd || 0, item.expedicao_miolos_retirados_qtd || 0);
+    const progresso = (expedidas / item.qtd_total) * 100;
+    const isCompleto = expedidas >= item.qtd_total;
+
+    // Determine badge style and text based on actual status_item
+    const getStatusBadge = () => {
+      if (item.status_item === 'Concluído') {
+        return { text: 'CONCLUÍDO', className: 'bg-green-600 hover:bg-green-700 text-white border-none' };
+      } else if (item.status_item === 'Fechando') {
+        return { text: 'FECHANDO', className: 'bg-orange-500 hover:bg-orange-600 text-white border-none' };
+      } else {
+        return { text: 'EM FECHAMENTO', className: 'bg-blue-600 hover:bg-blue-700 text-white border-none' };
+      }
+    };
+
+    const statusBadge = getStatusBadge();
+
+    return (
+      <Card className={`border-l-4 ${item.status_item === 'Concluído' ? 'border-l-green-500 bg-green-50/20' : item.status_item === 'Fechando' ? 'border-l-orange-500 bg-orange-50/20' : 'border-l-blue-500 bg-blue-50/20'} opacity-90 hover:opacity-100 transition-opacity`}>
+         <CardContent className="p-4">
+            <div className="flex justify-between items-start gap-4">
+               <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                     <Badge className={statusBadge.className}>
+                        {statusBadge.text}
+                     </Badge>
+                     {item.trilha === 'LATERAL' && <Badge variant="outline" className="text-[10px] text-teal-600 border-teal-200">LATERAL</Badge>}
+                  </div>
+                  <h4 className="font-bold text-gray-700">{item.item_nome}</h4>
+                  <div className="text-xs text-gray-500">{item.demanda_nome}</div>
+               </div>
+
+               <div className="flex flex-col items-center gap-2">
+                  <div className="text-center">
+                     <div className={`text-2xl font-bold ${item.status_item === 'Concluído' ? 'text-green-600' : item.status_item === 'Fechando' ? 'text-orange-600' : 'text-blue-600'}`}>{expedidas}/{item.qtd_total}</div>
+                     <div className="text-[10px] font-medium text-gray-500 uppercase">Expedidas</div>
+                  </div>
+                  {!isCompleto && (
+                     <Progress value={progresso} className="w-16 h-2" />
+                  )}
+               </div>
+            </div>
+         </CardContent>
+      </Card>
+    );
+  };
 
   return (
     <div className="container mx-auto p-4 space-y-8">
@@ -202,6 +254,19 @@ const ExpedicaoDashboardPage = () => {
          )}
       </section>
 
+      {/* CLOSING SECTION */}
+      {closing.length > 0 && (
+         <section>
+            <div className="flex items-center gap-2 mb-4 mt-8">
+               <Package className="h-5 w-5 text-blue-600" />
+               <h2 className="text-lg font-bold text-blue-900">Em Fechamento ({closing.length})</h2>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+               {closing.map(item => <ClosingCard key={item.item_id} item={item} />)}
+            </div>
+         </section>
+      )}
+
       {/* PENDING SECTION */}
       <section>
          <div className="flex items-center gap-2 mb-4 mt-8">
@@ -210,7 +275,7 @@ const ExpedicaoDashboardPage = () => {
          </div>
          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {pending.map(item => <PendingCard key={item.item_id} item={item} />)}
-            {pending.length === 0 && matches.length > 0 && (
+            {pending.length === 0 && matches.length > 0 && closing.length === 0 && (
                <div className="col-span-full text-center text-gray-400 py-8">
                   Tudo o que está na lista já pode ser montado!
                </div>

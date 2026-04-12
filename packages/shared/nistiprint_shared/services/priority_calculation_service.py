@@ -196,7 +196,7 @@ class PriorityCalculationService:
             demanda_with_itens = self.demanda_service.get_demanda_with_itens(demanda['id'])
             if demanda_with_itens and 'itens' in demanda_with_itens:
                 for item in demanda_with_itens['itens']:
-                    # Skip concluded items
+                    # Skip concluded items (only 'Concluído', not 'Fechando')
                     if item.get('status_item') == 'Concluído':
                         continue
 

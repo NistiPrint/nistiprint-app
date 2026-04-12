@@ -72,31 +72,29 @@ class OrderSyncService:
     def sync_shopee_order(self, order_sn: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
         """
         FASE 2: Enriquece pedido com dados da API Shopee.
-
-        Este método:
-        - É OPCIONAL: Dados do Bling já foram persistidos na FASE 1
-        - É INDEPENDENTE: Pode ser chamado em outros pontos do sistema
-        - Adiciona dados específicos da Shopee que o Bling não fornece
-
-        Args:
-            order_sn: Número do pedido (numeroLoja no Bling)
-            instance_id: ID da instância de integração Shopee
-
-        Returns:
-            Dict com resultado do enriquecimento
         """
         try:
-            logger.info("[FASE 2] Enriquecendo pedido Shopee: %s", order_sn)
+            logger.info("=" * 50)
+            logger.info("[FASE 2] INÍCIO: Enriquecendo pedido Shopee: %s", order_sn)
+            logger.info("[FASE 2] Chamando platform_api_service.get_order_detail...")
+
             shopee_data = platform_api_service.get_order_detail([order_sn], instance_id, "shopee")
 
             if "error" in shopee_data and shopee_data["error"]:
-                logger.error(f"Erro Shopee {order_sn}: {shopee_data['error']}")
+                logger.error("[FASE 2] Erro na API Shopee para %s: %s", order_sn, shopee_data['error'])
                 return shopee_data
 
+            logger.info("[FASE 2] Dados Shopee recebidos com sucesso")
+
             raw_order = shopee_data.get("raw", {})
+            buyer_username = raw_order.get('buyer_username', 'N/A')
+            shipping_carrier = raw_order.get('shipping_carrier', 'N/A')
             recipient = raw_order.get('recipient_address', {})
 
-            # Extração Relacional
+            logger.info("[FASE 2] buyer_username: %s", buyer_username)
+            logger.info("[FASE 2] shipping_carrier: %s", shipping_carrier)
+            logger.info("[FASE 2] recipient.name: %s", recipient.get('name'))
+
             cliente_nome = recipient.get('name') or raw_order.get('buyer_username')
             cliente_telefone = recipient.get('phone')
 
@@ -106,30 +104,21 @@ class OrderSyncService:
             data_prevista = clean_date(data_prevista)
 
             # Identificação FLEX (Entrega Rápida)
-            # Shopee o termo: "Entrega Rápida"
             shipping_carrier = raw_order.get('shipping_carrier', '')
             norm_carrier = normalize_text(shipping_carrier)
+            is_flex = any(termo in norm_carrier for termo in ["ENTREGA RÁPIDA"])
 
-            # Verifica múltiplos indicadores de entrega rápida
-            is_flex = any(termo in norm_carrier for termo in [
-                "ENTREGA RÁPIDA",    # Termo principal em português
-            ])
-
-            # Log para depuração
             if is_flex:
                 logger.info("🚀 Pedido FLEX detectado: %s (carrier: %s)", order_sn, shipping_carrier)
 
             # Upsert
-            # Para pedidos Shopee puros (sem Bling), usar order_sn como numero_pedido e codigo_pedido_externo
-            # Se já existir vínculo Bling, o numero_pedido já estará correto (vindo do Bling)
-            # Dados do cliente NÃO são enviados pois o Bling é a fonte prioritária
             order_core_dto = {
-                'numero_pedido': order_sn,  # Será sobrescrito se existir Bling
+                'numero_pedido': order_sn,
                 'codigo_pedido_externo': order_sn,
                 'origem': 'SHOPEE',
                 'is_flex': is_flex,
                 'data_limite_envio': data_prevista,
-                'servico_logistico': shipping_carrier,  # shipping_carrier vai em servico_logistico, NÃO em informacoes_cliente
+                'servico_logistico': shipping_carrier,
                 'data_venda': clean_date(shopee_data.get('date_created')),
                 'total_pedido': safe_float(shopee_data.get('total')),
                 'situacao_pedido_id': self._map_shopee_status(shopee_data.get('status_original')),
@@ -137,7 +126,6 @@ class OrderSyncService:
                 'informacoes_cliente': {
                     'buyer_username': raw_order.get('buyer_username'),
                     'full_address': recipient.get('full_address')
-                    # shipping_carrier NÃO vai mais em informacoes_cliente - é dado logístico, não do cliente
                 }
             }
 
@@ -152,14 +140,13 @@ class OrderSyncService:
                     'subtotal': float(item.get('model_original_price', 0)) * float(item.get('model_quantity_purchased', 1))
                 })
 
-            # Upsert
-            # Resolver channel_id dinamicamente baseado na configuração
-            # Fallback para ID 1 (Shopee) se não houver configuração
-            channel_id = 1  # Default Shopee
-            config = integracao_canal_service.get_canal_by_bling_loja_id(204047801)  # Shopee antiga como referência
+            logger.info("[FASE 2] Fazendo upsert do pedido com %d itens...", len(items_dto))
+
+            channel_id = 1
+            config = integracao_canal_service.get_canal_by_bling_loja_id(204047801)
             if config:
                 channel_id = config['canal_venda_id']
-            
+
             result = order_service.upsert_order(
                 order_data=order_core_dto,
                 platform='SHOPEE',
@@ -168,14 +155,15 @@ class OrderSyncService:
                 items=items_dto,
                 channel_id=channel_id
             )
-            
+
             # Legacy Sync
             self._save_to_shopee_table(order_sn, raw_order, data_prevista)
-            
-            logger.info("[FASE 2] ✓ Enriquecimento Shopee concluído para %s", order_sn)
+
+            logger.info("[FASE 2] ✓ Enriquecimento Shopee concluído para %s (buyer_username=%s)", order_sn, buyer_username)
+            logger.info("=" * 50)
             return result
         except Exception as e:
-            logger.error("[FASE 2] ✗ Erro sync_shopee_order: %s", e)
+            logger.error("[FASE 2] ✗ Erro sync_shopee_order para %s: %s", order_sn, e, exc_info=True)
             return {"error": str(e)}
 
     def sync_bling_order(self, bling_order_data: Dict[str, Any]) -> Dict[str, Any]:

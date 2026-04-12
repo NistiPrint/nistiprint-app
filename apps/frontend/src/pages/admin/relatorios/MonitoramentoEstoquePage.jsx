@@ -1,25 +1,24 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
-  RefreshCw,
-  Clock,
-  CheckCircle2,
-  AlertCircle,
-  PlayCircle,
-  Database,
-  Activity,
-  Search,
-  FileText,
-  TrendingUp,
-  Eye
+    Activity,
+    CheckCircle2,
+    Clock,
+    Database,
+    Eye,
+    FileText,
+    PlayCircle,
+    RefreshCw,
+    Search,
+    TrendingUp
 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Input } from '@/components/ui/input';
 
 /**
  * Página de Monitoramento de Estoque - Arquitetura Event Sourcing
@@ -34,6 +33,7 @@ function MonitoramentoEstoquePage() {
   const [activeTab, setActiveTab] = useState('eventos');
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
 
   // Estados para Eventos
   const [eventos, setEventos] = useState([]);
@@ -105,6 +105,52 @@ function MonitoramentoEstoquePage() {
     }
   };
 
+  const handleReprocessEvents = async () => {
+    setReprocessing(true);
+    try {
+      const response = await fetch('/api/v2/tasks/stock/reprocess-events', {
+        method: 'POST'
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        toast.success(`Eventos reprocessados com sucesso: ${JSON.stringify(data.stats)}`);
+        fetchEventos();
+        fetchFilaEstoque();
+      } else {
+        toast.error(data.error || 'Erro ao reprocessar eventos');
+      }
+    } catch (e) {
+      console.error('Erro ao reprocessar eventos:', e);
+      toast.error('Erro ao reprocessar eventos');
+    } finally {
+      setReprocessing(false);
+    }
+  };
+
+  const handleReprocessFila = async () => {
+    setReprocessing(true);
+    try {
+      const response = await fetch('/api/v2/tasks/stock/reprocess-fila', {
+        method: 'POST'
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        toast.success(`Fila reprocessada com sucesso: ${JSON.stringify(data.stats)}`);
+        fetchEventos();
+        fetchFilaEstoque();
+      } else {
+        toast.error(data.error || 'Erro ao reprocessar fila');
+      }
+    } catch (e) {
+      console.error('Erro ao reprocessar fila:', e);
+      toast.error('Erro ao reprocessar fila');
+    } finally {
+      setReprocessing(false);
+    }
+  };
+
   useEffect(() => {
     fetchEventos();
     fetchFilaEstoque();
@@ -147,9 +193,35 @@ function MonitoramentoEstoquePage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={handleReprocessEvents}
+            disabled={reprocessing}
+          >
+            <Zap className={`h-4 w-4 mr-2 ${reprocessing ? 'animate-pulse' : ''}`} />
+            Reprocessar Eventos
+          </Button>
+          <Button
+            variant="outline"
+            onClick={handleReprocessFila}
+            disabled={reprocessing}
+          >
+            <AlertTriangle className={`h-4 w-4 mr-2 ${reprocessing ? 'animate-pulse' : ''}`} />
+            Reprocessar Fila
+          </Button>
           <Button variant="outline" onClick={() => { fetchEventos(); fetchFilaEstoque(); }}>
             <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} /> Atualizar
           </Button>
+          {activeTab === 'fila' && (
+            <Button
+              onClick={handleProcessFila}
+              disabled={processing || reprocessing}
+              variant="default"
+            >
+              <PlayCircle className={`h-4 w-4 mr-2 ${processing ? 'animate-pulse' : ''}`} />
+              {processing ? 'Processando...' : 'Processar Fila'}
+            </Button>
+          )}
         </div>
       </div>
 

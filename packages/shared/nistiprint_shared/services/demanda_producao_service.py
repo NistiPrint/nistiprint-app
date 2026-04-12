@@ -282,6 +282,24 @@ class DemandaProducaoService:
         """Registra saída de item distribuída."""
         return self._items.registrar_saida_item_distribuida(distributions, product_id, user_id, transaction)
 
+    def registrar_retirada_expedicao(self, demanda_id: str, item_id: str, quantidade: int, user_id: str = 'System') -> Dict[str, Any]:
+        """
+        Registra a retirada de capas e miolos na expedição para um item de demanda.
+
+        Atualiza simultaneamente os campos expedicao_capas_retiradas_qtd e expedicao_miolos_retirados_qtd,
+        pois na expedição o produto final (capa + miolo) é retirado junto.
+
+        Args:
+            demanda_id: ID da demanda
+            item_id: ID do item da demanda
+            quantidade: Quantidade a retirar (unidades completas capa+miolo)
+            user_id: ID do usuário
+
+        Returns:
+            Item atualizado com os novos valores de expedição
+        """
+        return self._items.registrar_retirada_expedicao(demanda_id, item_id, quantidade, user_id)
+
     # ========================================================================
     # MÉTODOS COLLECTIONS (demanda.collections)
     # ========================================================================

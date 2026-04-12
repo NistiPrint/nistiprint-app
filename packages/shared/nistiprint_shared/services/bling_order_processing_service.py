@@ -91,16 +91,27 @@ class BlingOrderProcessingService:
                     # Salva no banco legado (BlingPedidos) para manter compatibilidade
                     self._save_order_to_db(full_order_data)
 
-                    # ✅ NOVO: Consolidação Automática em Rascunho
-                    # Após sincronizar o pedido, chama o service de consolidação
+                    # ✅ NOVO: Classificação e Consolidação Automática via Task Celery
+                    # Após sincronizar o pedido, dispara task que:
+                    #   1. Classifica o pedido em grupo de consolidação existente
+                    #   2. Consolida os itens na demanda
+                    #   3. Vincula pedido → demanda
                     if sync_result and sync_result.get('id'):
                         try:
-                            from nistiprint_shared.services.consolidation_service import consolidation_service
-                            print(f"🔄 [CONSOLIDAÇÃO] Processando pedido {sync_result['id']} para consolidação automática...")
-                            consolidation_service.consolidar_pedido(sync_result['id'])
-                            print(f"✅ [CONSOLIDAÇÃO] Pedido {sync_result['id']} processado com sucesso")
+                            from tasks.auto_consolidation_tasks import classificar_e_consolidar_pedido
+                            print(f"🔄 [WORKER:CONSOLID] Classificando+consolidando pedido {sync_result['id']}...")
+                            classificar_e_consolidar_pedido.delay(sync_result['id'])
+                            print(f"✅ [WORKER:CONSOLID] Task enfileirada para pedido {sync_result['id']}")
+                        except ImportError:
+                            # Fallback síncrono (ex: ambiente sem tasks/)
+                            try:
+                                from nistiprint_shared.services.consolidation_service import consolidation_service
+                                print(f"🔄 [CONSOLIDAÇÃO] Fallback síncrono - pedido {sync_result['id']}...")
+                                consolidation_service.consolidar_pedido(sync_result['id'])
+                            except Exception as e:
+                                print(f"⚠️ [WORKER:CONSOLID] Erro no fallback: {e}")
                         except Exception as e:
-                            print(f"⚠️ [CONSOLIDAÇÃO] Erro ao consolidar pedido {sync_result['id']}: {e}")
+                            print(f"⚠️ [WORKER:CONSOLID] Erro ao enfileirar task: {e}")
 
                     return {"status": "success", "message": f"Order {order_id} processed fully (situação {situacao_id}).", "core_id": sync_result.get('id')}
                 
@@ -332,6 +343,10 @@ class BlingOrderProcessingService:
                 supabase_db.table('itens_pedido_bling').insert(items_to_insert).execute()
 
             # NOVO: Identificar e marcar itens personalizados
+            # ATENÇÃO: Isso APENAS marca itens com personalizado=true baseado em palavras-chave
+            # na descrição (ex: "personaliza"). NÃO executa processamento IA.
+            # O processamento IA (extração de nomes via Gemini) roda EXCLUSIVAMENTE sob
+            # demanda manual do usuário via UI.
             try:
                 from nistiprint_shared.services.personalized_order_identifier import (
                     personalized_order_identifier

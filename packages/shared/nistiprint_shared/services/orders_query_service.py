@@ -49,21 +49,29 @@ class OrdersQueryService:
             # Map view fields back to the format expected by the frontend
             processed_orders = []
             for row in rows:
+                contato = row.get('contato')
+                if isinstance(contato, str):
+                    try:
+                        contato = json.loads(contato)
+                    except Exception:
+                        contato = {}
+
                 processed_orders.append({
                     'id': row['id'],
                     'numero': row['numero_pedido'],
+                    'nome_cliente': row.get('nome_cliente', ''),
                     'numeroLoja': row['numero_loja'],
                     'data': row['data_pedido'],
-                    'contato': json.loads(row['contato']) if isinstance(row['contato'], str) else row['contato'],
+                    'contato': contato,
                     'itens': row['itens'] if row['itens'] else [],
                     'shopee': {
-                        'username': row['buyer_username'] or '',
+                        'username': row.get('buyer_username') or '',
                         'order_sn': row['numero_loja'],
-                        'message': row['shopee_message']
+                        'message': row.get('shopee_message')
                     },
-                    'personalizado': row['personalizado'],
-                    'has_chat_messages': row['has_chat_messages'],
-                    'deletado': row['deletado']
+                    'personalizado': row.get('personalizado', True),
+                    'has_chat_messages': row.get('has_chat_messages', False),
+                    'deletado': row.get('deletado', False)
                 })
 
             return processed_orders

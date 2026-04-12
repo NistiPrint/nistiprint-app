@@ -1,22 +1,42 @@
 """
-Tasks Celery para processamento de pedidos personalizados com IA.
+Celery Task para processamento de pedidos personalizados com IA.
+
+Este módulo é compartilhado entre API e Worker:
+- API: importa para enviar task.delay() ao broker Redis
+- Worker: registra a task via celery_app.autodiscover_tasks
+
+O worker_entrypoint.py inclui este módulo no include[] para registro.
 """
 
 import logging
-from nistiprint_shared.services.celery_app import celery_app
+import os
 
 logger = logging.getLogger("PersonalizadosTasks")
 
+# Celery app para envio de tasks (API) e execução (Worker)
+# Ambos usam o mesmo broker/backend via env vars
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
 
-@celery_app.task(bind=True, max_retries=3, soft_time_limit=600)
+from celery import Celery
+
+celery_app = Celery(
+    'personalizados',
+    broker=CELERY_BROKER_URL,
+    backend=CELERY_RESULT_BACKEND,
+)
+
+
+@celery_app.task(bind=True, name='personalizados.processar_personalizacoes',
+                 max_retries=3, soft_time_limit=600)
 def processar_personalizacoes_task(self, order_sn=None, limit=None):
     """
     Task Celery para processar pedidos personalizados com IA.
-    
+
     Args:
         order_sn: str (processar apenas 1 pedido específico)
         limit: int (limitar quantidade de pedidos)
-    
+
     Returns:
         dict com resultado do processamento
     """

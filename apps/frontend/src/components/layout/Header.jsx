@@ -20,6 +20,7 @@ import {
   Boxes,
   ChevronDown,
   Cog,
+  HardDrive,
   Home,
   LayoutDashboard,
   LogOut,
@@ -60,7 +61,7 @@ const navigation = [
       },
       {
         name: 'Vendas',
-        href: '/pedidos',
+        href: '/vendas/pedidos',
         type: 'link',
         permission: { a: 'vendas', I: 'ler' }
       },
@@ -108,7 +109,16 @@ const navigation = [
         permission: { a: 'configuracoes', I: 'ler' }
       },
       { name: 'Relatórios', href: '/relatorios', icon: ScrollText, type: 'link', permission: { a: 'relatorios', I: 'ler' } },
-      { name: 'Utilitários', href: '/ferramentas', icon: Wrench, type: 'link', adminOnly: true },
+      {
+        name: 'Utilitários',
+        icon: Wrench,
+        type: 'sub-collapsible',
+        adminOnly: true,
+        children: [
+          { name: 'Monitor de Tarefas', href: '/admin/utilitarios/tasks', icon: HardDrive, type: 'link', adminOnly: true },
+          { name: 'Ferramentas', href: '/ferramentas', icon: Wrench, type: 'link', adminOnly: true },
+        ]
+      },
     ]
   },
 ];

@@ -37,6 +37,8 @@ celery_app = Celery(
         'tasks.eventos_tasks',  # Processamento de estoque (Event Sourcing)
         'tasks.pedidos_fetch_tasks',  # Fetch Em Andamento (rede de segurança)
         'tasks.consolidation_tasks',  # Tarefas de consolidação
+        'tasks.auto_consolidation_tasks',  # Auto-consolidação de pedidos
+        'nistiprint_shared.services.personalizados_tasks',  # Processamento de personalização IA (shared)
     ]
 )
 
@@ -78,8 +80,15 @@ celery_app.conf.update(
             'task': 'tasks.eventos_tasks.process_eventos_producao',
             'schedule': 10, # A cada 10 segundos
         },
+        # Nota: NÃO há processamento de lote de rascunhos — cada pedido é
+        # classificado e consolidado imediatamente no momento do webhook.
         # Nota: Sincronização Shopee NÃO é periódica - ocorre no webhook do Bling (FASE 2)
         # Quando um pedido Shopee entra em "Em Andamento" (15), o webhook já busca dados da API Shopee
+        #
+        # IMPORTANTE: NÃO há agendamento de processamento IA aqui.
+        # O processamento de IA (personalizados) é executado EXCLUSIVAMENTE sob demanda
+        # via botão na UI (VendasPersonalizadasPage ou FerramentasPage).
+        # Ver: apps/api/routes/personalizados.py -> processar_personalizados()
     },
 )
 
@@ -95,5 +104,7 @@ def debug_task(self):
 celery_app.autodiscover_tasks([
     'tasks.eventos_tasks',
     'tasks.consolidation_tasks',
+    'tasks.auto_consolidation_tasks',
     'tasks.pedidos_fetch_tasks',
+    'nistiprint_shared.services.personalizados_tasks',
 ])

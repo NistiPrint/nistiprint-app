@@ -80,6 +80,15 @@ def get_unified_orders_advanced():
         else:
             is_flex = None
         
+        # Tratar filtro de personalizado
+        is_personalizado = request.args.get('is_personalizado')
+        if is_personalizado == 'true':
+            is_personalizado = True
+        elif is_personalizado == 'false':
+            is_personalizado = False
+        else:
+            is_personalizado = None
+
         # Calcular offset
         offset = (page - 1) * limit
 
@@ -98,6 +107,7 @@ def get_unified_orders_advanced():
                     'p_canal_venda_id': canal_venda_id,
                     'p_has_demanda': has_demanda,
                     'p_is_flex': is_flex,
+                    'p_is_personalizado': is_personalizado,
                     'p_delivery_start_date': delivery_start,
                     'p_delivery_end_date': delivery_end,
                     'p_search_term': search,

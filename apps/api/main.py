@@ -59,6 +59,7 @@ from routes.relatorios import relatorios_api_bp
 from routes.uom_conversions import uom_conversions_bp, uom_conversions_api_bp
 from routes.demanda_producao_web import demanda_producao_bp
 from routes.demanda_producao_api import demanda_producao_api_bp
+from routes.tasks_api import tasks_api_bp
 from routes.usuarios_setores import usuarios_setores_bp, usuarios_setores_api_bp
 from routes.notifications import notifications_bp
 from routes.orders import orders_api_bp
@@ -198,6 +199,7 @@ def create_app():
     app.register_blueprint(uom_conversions_api_bp, url_prefix='/api/v2/cadastros/uom-conversions')
     app.register_blueprint(demanda_producao_bp)
     app.register_blueprint(demanda_producao_api_bp, url_prefix='/api/v2/demanda_producao')
+    app.register_blueprint(tasks_api_bp)
     app.register_blueprint(usuarios_setores_bp)
     app.register_blueprint(usuarios_setores_api_bp, url_prefix='/api/v2/usuarios-setores')
     app.register_blueprint(notifications_bp)

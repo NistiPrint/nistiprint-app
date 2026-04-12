@@ -707,12 +707,12 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
     # Consolida capas
     capas_data = filtered_data.groupby(CAPAS_GROUP['shopee'])['Quantidade'].sum(
     ).reset_index(name='Total').sort_values(['Total'], ascending=[False]).copy()
-    total_capas = capas_data.sum(numeric_only=True).astype('int64').item()
+    total_capas = int(capas_data['Total'].sum())
 
     # Consolida miolos
     miolos_data = filtered_data.groupby('Miolo')['Quantidade'].sum().reset_index(
         name='Total').sort_values(['Total'], ascending=[False]).copy()
-    total_miolos = miolos_data.sum(numeric_only=True).astype('int64').item()
+    total_miolos = int(miolos_data['Total'].sum())
 
     miolo_order = {miolo: i for i, miolo in enumerate(miolos_data["Miolo"])}
 

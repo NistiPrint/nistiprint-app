@@ -40,15 +40,15 @@ import ConfiguracoesBlingPage from './pages/admin/configuracoes/ConfiguracoesBli
 import ConfiguracoesProducaoPage from './pages/admin/configuracoes/ConfiguracoesProducaoPage'
 import IntegrationRoutingPage from './pages/admin/configuracoes/IntegrationRoutingPage'
 import PermissoesDemandaPage from './pages/admin/configuracoes/PermissoesDemandaPage'
-import FilaEstoquePage from './pages/admin/relatorios/FilaEstoquePage'
-import MonitoramentoEstoquePage from './pages/admin/relatorios/MonitoramentoEstoquePage'
-import MonitoramentoPage from './pages/admin/relatorios/MonitoramentoPage'
 import HistoricoColetasPage from './pages/admin/relatorios/HistoricoColetasPage'
 import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPage'
+import MonitoramentoEstoquePage from './pages/admin/relatorios/MonitoramentoEstoquePage'
 import RelatoriosIndexPage from './pages/admin/relatorios/RelatoriosIndexPage'
-import AIDashboardPage from './pages/ai/AIDashboardPage'
+// AIDashboardPage removido — duplica VendasPersonalizadasPage
+import TasksMonitorPage from './pages/admin/utilitarios/TasksMonitorPage'
 import { AILogsPage } from './pages/ai/AILogsPage'
 import AuditoriaPage from './pages/auditoria/AuditoriaPage'
+import ConfiguracoesIA from './pages/configuracoes/ConfiguracoesIA'
 import ConsolidarPage from './pages/consolidar/ConsolidarPage'
 import ConsolidarReviewPage from './pages/consolidar/ConsolidarReviewPage'
 import RascunhosListPage from './pages/consolidar/RascunhosListPage'
@@ -61,6 +61,8 @@ import EstoqueRelatoriosPage from './pages/estoque/EstoqueRelatoriosPage'
 import EstoqueReservasPage from './pages/estoque/EstoqueReservasPage'
 import MovimentacaoLotePage from './pages/estoque/MovimentacaoLotePage'
 import FilaImpressao from './pages/impressao/FilaImpressao'
+import PedidoDetalhePage from './pages/pedidos/PedidoDetalhePage'
+import PedidosListPage from './pages/pedidos/PedidosListPage'
 import ControleProducaoPage from './pages/producao/ControleProducaoPage'
 import DemandaCalendarPage from './pages/producao/DemandaCalendarPage'
 import DemandaDashboardPage from './pages/producao/DemandaDashboardPage'
@@ -75,11 +77,8 @@ import ProducaoPage from './pages/producao/ProducaoPage'
 import ResumoProducaoPage from './pages/producao/ResumoProducaoPage'
 import ProdutoFormPage from './pages/produtos/ProdutoFormPage'
 import ProdutoListPage from './pages/produtos/ProdutoListPage'
-import PedidoDetalhePage from './pages/pedidos/PedidoDetalhePage'
-import PedidosListPage from './pages/pedidos/PedidosListPage'
 import VendasPage from './pages/vendas/VendasPage'
 import VendasPersonalizadasPage from './pages/vendas/VendasPersonalizadasPage'
-import ConfiguracoesIA from './pages/configuracoes/ConfiguracoesIA'
 function App() {
   return (
     <>
@@ -143,10 +142,13 @@ function App() {
               path='personalizadas'
               element={<VendasPersonalizadasPage />}
             />
-            <Route path='identificacao-ia' element={<AIDashboardPage />} />
             <Route path='pedidos' element={<PedidosListPage />} />
             <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
           </Route>
+
+          {/* Rota orfã Logs IA — acessível via URL direta */}
+          <Route path='ai/logs' element={<AILogsPage />} />
+          <Route path='ai' element={<Navigate to='/vendas/personalizadas' replace />} />
 
           <Route path='pedidos' element={<PedidosListPage />} />
 
@@ -312,6 +314,15 @@ function App() {
             element={
               <ProtectedRoute requireAdmin={true}>
                 <FerramentasPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path='admin/utilitarios/tasks'
+            element={
+              <ProtectedRoute requireAdmin={true}>
+                <TasksMonitorPage />
               </ProtectedRoute>
             }
           />

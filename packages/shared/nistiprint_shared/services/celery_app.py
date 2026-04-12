@@ -18,8 +18,8 @@ celery_app = Celery(
     broker=CELERY_BROKER_URL,
     backend=CELERY_RESULT_BACKEND,
     include=[
-        'services.webhook_tasks',
-        'services.redis_queue_tasks',
+        # Nota: tasks do worker são registradas via worker_entrypoint.py
+        # Este arquivo é usado apenas pelo Flask app (backend) para enviar tasks
     ]
 )
 
@@ -71,9 +71,8 @@ celery_app.conf.update(
 )
 
 # Auto-discovery de tasks em módulos de serviço
-celery_app.autodiscover_tasks(lambda: [
-    'services.webhook_tasks',
-])
+# Nota: tasks reais são registradas no worker_entrypoint.py
+celery_app.autodiscover_tasks(lambda: [])
 
 
 @celery_app.task(bind=True)

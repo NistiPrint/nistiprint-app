@@ -17,7 +17,8 @@ RUN apt-get update && apt-get install -y \
 # Configurar ambiente Python para não gerar .pyc e não usar buffer no log
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_CACHE_DIR=/root/.cache/pip
+    PIP_CACHE_DIR=/root/.cache/pip \
+    TZ=America/Sao_Paulo
 
 # O contexto de build deve ser a raiz do monorepo para acessar packages/shared
 COPY packages/shared /app/packages/shared

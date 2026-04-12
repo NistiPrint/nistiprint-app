@@ -61,11 +61,12 @@ def listar_personalizados():
 def processar_personalizados():
     """
     Dispara processamento de IA sob demanda.
-    
+
     Body (opcional):
     - order_sn: str (processar apenas 1 pedido)
-    - limit: int (limitar quantidade, default 50)
-    
+    - shopee_order_sn: str (alias para order_sn, compatibilidade frontend)
+    - limit: int (limitar quantidade, default 50 ou 1 se order_sn informado)
+
     Retorna:
     - success: bool
     - message: str
@@ -73,12 +74,22 @@ def processar_personalizados():
     """
     try:
         data = request.get_json() or {}
-        order_sn = data.get('order_sn')
-        limit = data.get('limit', 50)
+        order_sn = data.get('order_sn') or data.get('shopee_order_sn')
+        limit = data.get('limit')  # None = todos, 0 = todos, N = limite específico
+
+        # Determinar limite: None/0 = todos, positivo = limite
+        if order_sn:
+            limit = 1  # Se order_sn informado, processa apenas 1
+        elif limit is None or limit == 0:
+            limit = None  # Processa TODOS os pedidos
+        else:
+            limit = int(limit)
+
+        logger.info("Processamento: order_sn=%s, limit=%s (None=todos)", order_sn, limit)
 
         # Tentar processar via Celery (se disponível)
         try:
-            from tasks.personalizados_tasks import processar_personalizacoes_task
+            from nistiprint_shared.services.personalizados_tasks import processar_personalizacoes_task
             task = processar_personalizacoes_task.delay(order_sn=order_sn, limit=limit)
             return ApiResponse.success({
                 'task_id': task.id,
@@ -203,6 +214,49 @@ def get_logs(order_sn):
         return ApiResponse.error(str(e), 500)
 
 
+@personalizados_api_bp.route('/logs/<order_sn>', methods=['DELETE'])
+@login_required
+def delete_logs(order_sn):
+    """Deleta todos os logs de execução de um pedido específico."""
+    try:
+        resp = supabase_db.table('logs_execucao_ia').delete().eq('order_sn', order_sn).execute()
+        return ApiResponse.success({'message': f'{len(resp.data) if resp.data else 0} log(s) deletado(s)'})
+    except Exception as e:
+        logger.error(f"Erro ao deletar logs para {order_sn}: {e}", exc_info=True)
+        return ApiResponse.error(str(e), 500)
+
+
+@personalizados_api_bp.route('/logs', methods=['DELETE'])
+@login_required
+def delete_logs_batch():
+    """Deleta logs de execução com filtros (batch)."""
+    try:
+        order_sn = request.args.get('order_sn')
+        status = request.args.get('status')
+        delete_all = request.args.get('all') == 'true'
+
+        if order_sn:
+            resp = supabase_db.table('logs_execucao_ia').select('id').eq('order_sn', order_sn).execute()
+            count = len(resp.data) if resp.data else 0
+            supabase_db.table('logs_execucao_ia').delete().eq('order_sn', order_sn).execute()
+            return ApiResponse.success({'message': f'{count} log(s) deletado(s)'})
+        elif status:
+            resp = supabase_db.table('logs_execucao_ia').select('id').eq('status', status).execute()
+            count = len(resp.data) if resp.data else 0
+            supabase_db.table('logs_execucao_ia').delete().eq('status', status).execute()
+            return ApiResponse.success({'message': f'{count} log(s) deletado(s)'})
+        elif delete_all:
+            resp = supabase_db.table('logs_execucao_ia').select('id').execute()
+            count = len(resp.data) if resp.data else 0
+            supabase_db.table('logs_execucao_ia').delete().neq('id', '00000000-0000-0000-0000-000000000000').execute()
+            return ApiResponse.success({'message': f'{count} log(s) deletado(s)'})
+        else:
+            return ApiResponse.error('É necessário especificar order_sn, status ou all=true para deletar logs', 400)
+    except Exception as e:
+        logger.error(f"Erro ao deletar logs batch: {e}", exc_info=True)
+        return ApiResponse.error(str(e), 500)
+
+
 # ─────────────────────────────────────────────────────────────
 # FEEDBACK DO USUÁRIO
 # ─────────────────────────────────────────────────────────────
@@ -306,7 +360,7 @@ def get_chat(username):
     """Obtém mensagens de chat de um usuário (comprador Shopee)."""
     try:
         limit = request.args.get('limit', type=int, default=200)
-        
+
         msgs = supabase_db.table('view_mensagens_chat') \
             .select('*') \
             .or_(f"from_user_name.eq.{username},to_user_name.eq.{username}") \
@@ -318,3 +372,76 @@ def get_chat(username):
     except Exception as e:
         logger.error(f"Erro ao buscar chat para {username}: {e}", exc_info=True)
         return ApiResponse.error(str(e), 500)
+
+
+# ─────────────────────────────────────────────────────────────
+# ENRIQUECIMENTO SHOPEE (obter buyer_username, shipping, etc.)
+# ─────────────────────────────────────────────────────────────
+@personalizados_api_bp.route('/enriquecer/<order_sn>', methods=['POST'])
+@login_required
+def enriquecer_pedido(order_sn):
+    """Chama API Shopee para obter dados enriquecidos de um pedido."""
+    try:
+        from nistiprint_shared.services.order_sync_service import order_sync_service
+        logger.info("Enriquecimento manual: %s", order_sn)
+        result = order_sync_service.sync_shopee_order(order_sn)
+        if 'error' in result and result['error']:
+            return ApiResponse.error(f"Erro: {result['error']}", 500)
+        return ApiResponse.success({'message': f'Pedido {order_sn} enriquecido', 'result': result})
+    except Exception as e:
+        logger.error(f"Erro ao enriquecer {order_sn}: {e}", exc_info=True)
+        return ApiResponse.error(str(e), 500)
+
+
+@personalizados_api_bp.route('/enriquecer-em-massa', methods=['POST'])
+@login_required
+def enriquecer_em_massa():
+    """Enriquece múltiplos pedidos com dados Shopee."""
+    try:
+        data = request.get_json() or {}
+        limit = data.get('limit', 50)
+        orders = _find_orders_needing_enrichment(limit=limit)
+        if not orders:
+            return ApiResponse.success({'message': 'Nenhum pedido precisa', 'processed': 0})
+
+        results = {'success': 0, 'failed': 0}
+        for order in orders:
+            order_sn = order.get('codigo_pedido_externo', '')
+            if not order_sn:
+                continue
+            try:
+                from nistiprint_shared.services.order_sync_service import order_sync_service
+                r = order_sync_service.sync_shopee_order(order_sn)
+                if 'error' in r and r['error']:
+                    results['failed'] += 1
+                else:
+                    results['success'] += 1
+            except Exception:
+                results['failed'] += 1
+            import time; time.sleep(0.5)
+
+        return ApiResponse.success({'message': f'{results["success"]} sucesso, {results["failed"]} falhas', 'results': results})
+    except Exception as e:
+        logger.error(f"Erro enriquecimento em massa: {e}", exc_info=True)
+        return ApiResponse.error(str(e), 500)
+
+
+def _find_orders_needing_enrichment(limit=50):
+    """Busca pedidos sem buyer_username no vínculo SHOPEE."""
+    orders = supabase_db.table('pedidos').select('id, numero_pedido, codigo_pedido_externo').limit(200).execute()
+    needing = []
+    for order in (orders.data if orders else []):
+        if len(needing) >= limit:
+            break
+        order_id = order['id']
+        vinc_resp = supabase_db.table('vinculos_integracao_pedido').select('dados_brutos').eq('pedido_id', order_id).eq('plataforma', 'SHOPEE').execute()
+        vinculos = vinc_resp.data if vinc_resp else []
+        has_username = False
+        for v in vinculos:
+            raw = v.get('dados_brutos')
+            if isinstance(raw, dict) and raw.get('buyer_username'):
+                has_username = True
+                break
+        if not has_username and order.get('codigo_pedido_externo'):
+            needing.append(order)
+    return needing

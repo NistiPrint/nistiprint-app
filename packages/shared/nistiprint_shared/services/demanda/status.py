@@ -40,6 +40,7 @@ class DemandaStatusService:
 
             itens_res = supabase_db.execute_with_retry(self.itens_table.select("status_item").eq('demanda_id', demanda_id))
             if itens_res.data:
+                # Only auto-finalize if ALL items are 'Concluído' (not 'Fechando')
                 todos_concluidos = all(i.get('status_item') == 'Concluído' for i in itens_res.data)
                 if todos_concluidos:
                     self.finalizar_demanda_completa(demanda_id, user_id)
