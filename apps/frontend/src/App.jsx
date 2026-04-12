@@ -45,6 +45,7 @@ import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPag
 import MonitoramentoEstoquePage from './pages/admin/relatorios/MonitoramentoEstoquePage'
 import RelatoriosIndexPage from './pages/admin/relatorios/RelatoriosIndexPage'
 // AIDashboardPage removido — duplica VendasPersonalizadasPage
+import IAPage from './pages/admin/IAPage'
 import TasksMonitorPage from './pages/admin/utilitarios/TasksMonitorPage'
 import { AILogsPage } from './pages/ai/AILogsPage'
 import AuditoriaPage from './pages/auditoria/AuditoriaPage'
@@ -314,6 +315,15 @@ function App() {
             element={
               <ProtectedRoute requireAdmin={true}>
                 <FerramentasPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path='ferramentas/ia'
+            element={
+              <ProtectedRoute requireAdmin={true}>
+                <IAPage />
               </ProtectedRoute>
             }
           />

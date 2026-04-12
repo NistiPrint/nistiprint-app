@@ -1,41 +1,50 @@
-import React from 'react';
+import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Badge } from '@/components/ui/badge';
-import { 
-  Clock, 
-  Package, 
-  CheckCircle2, 
-  XCircle,
-  Truck,
-  AlertCircle,
-  Calendar
+import {
+    AlertCircle,
+    Calendar,
+    CheckCircle2,
+    Clock,
+    Package,
+    Truck,
+    XCircle
 } from 'lucide-react';
 
 /**
  * Timeline de eventos do pedido
  */
 export default function PedidoTimeline({ eventos }) {
-  const getEventIcon = (tipoEvento) => {
+  const getEventIcon = (tipoEvento, tipo) => {
     const icons = {
       ORDER_CREATED: <Package className="w-4 h-4" />,
       STATUS_CHANGED: <Clock className="w-4 h-4" />,
       ORDER_CANCELLED: <XCircle className="w-4 h-4" />,
       ORDER_PAID: <CheckCircle2 className="w-4 h-4" />,
       ORDER_SHIPPED: <Truck className="w-4 h-4" />,
-      ORDER_DELIVERED: <CheckCircle2 className="w-4 h-4" />
+      ORDER_DELIVERED: <CheckCircle2 className="w-4 h-4" />,
+      TASK_PROCESSING: <Loader2 className="w-4 h-4 animate-spin" />,
+      TASK_COMPLETED: <CheckCircle2 className="w-4 h-4" />,
+      TASK_FAILED: <XCircle className="w-4 h-4" />,
+      TASK_PENDING: <Clock className="w-4 h-4" />,
+      TASK_CANCELLED: <XCircle className="w-4 h-4" />
     };
     return icons[tipoEvento] || <AlertCircle className="w-4 h-4" />;
   };
 
-  const getEventColor = (tipoEvento) => {
+  const getEventColor = (tipoEvento, tipo) => {
     const colors = {
       ORDER_CREATED: 'text-blue-600',
       STATUS_CHANGED: 'text-amber-600',
       ORDER_CANCELLED: 'text-red-600',
       ORDER_PAID: 'text-green-600',
       ORDER_SHIPPED: 'text-purple-600',
-      ORDER_DELIVERED: 'text-gray-600'
+      ORDER_DELIVERED: 'text-gray-600',
+      TASK_PROCESSING: 'text-blue-600',
+      TASK_COMPLETED: 'text-green-600',
+      TASK_FAILED: 'text-red-600',
+      TASK_PENDING: 'text-yellow-600',
+      TASK_CANCELLED: 'text-red-600'
     };
     return colors[tipoEvento] || 'text-gray-600';
   };
@@ -85,8 +94,8 @@ export default function PedidoTimeline({ eventos }) {
               <div key={evento.id || index} className="flex gap-3">
                 {/* Linha do tempo */}
                 <div className="flex flex-col items-center">
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center border-2 bg-background ${getEventColor(evento.tipo_evento)}`}>
-                    {getEventIcon(evento.tipo_evento)}
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center border-2 bg-background ${getEventColor(evento.tipo_evento, evento.tipo)}`}>
+                    {getEventIcon(evento.tipo_evento, evento.tipo)}
                   </div>
                   {index < eventos.length - 1 && (
                     <div className="w-0.5 h-full bg-border mt-2" />
@@ -119,6 +128,25 @@ export default function PedidoTimeline({ eventos }) {
                         : JSON.stringify(evento.metadata)
                       }
                     </div>
+                  )}
+                  
+                  {evento.tipo === 'task' && evento.metadata && (
+                    <div className="text-xs text-muted-foreground mt-1 space-y-1">
+                      {evento.metadata.task_type && (
+                        <Badge variant="outline" className="text-xs">
+                          {evento.metadata.task_type}
+                        </Badge>
+                      )}
+                      {evento.metadata.error_message && (
+                        <span className="text-red-600">{evento.metadata.error_message}</span>
+                      )}
+                    </div>
+                  )}
+                  
+                  {evento.correlation_id && (
+                    <code className="text-[10px] bg-muted px-1 rounded mt-1 block text-muted-foreground">
+                      Corr: {evento.correlation_id.slice(0, 8)}...
+                    </code>
                   )}
                 </div>
               </div>

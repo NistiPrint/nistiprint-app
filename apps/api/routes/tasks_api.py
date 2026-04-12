@@ -3,7 +3,7 @@ Task Management API Endpoints
 Provides endpoints for monitoring and managing async task execution logs
 """
 from flask import Blueprint, request, jsonify
-from flask_login import login_required
+from routes.auth import login_required, admin_required
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.utils.date_utils import get_now_iso
 
@@ -77,7 +77,7 @@ def get_task_execution_log_details(task_log_id):
 
 
 @tasks_api_bp.route('/execution-logs/<task_log_id>/retry', methods=['POST'])
-@login_required
+@admin_required
 def retry_task(task_log_id):
     """
     Manually retry a failed task.
@@ -120,7 +120,7 @@ def retry_task(task_log_id):
 
 
 @tasks_api_bp.route('/execution-logs/<task_log_id>/cancel', methods=['POST'])
-@login_required
+@admin_required
 def cancel_task(task_log_id):
     """
     Cancel a pending or processing task.
@@ -202,7 +202,7 @@ def get_task_stats():
 # ============================================================================
 
 @tasks_api_bp.route('/stock/reprocess-events', methods=['POST'])
-@login_required
+@admin_required
 def reprocess_events():
     """
     Reprocess unprocessed eventos_producao_v2.
@@ -227,12 +227,12 @@ def reprocess_events():
 
 
 @tasks_api_bp.route('/stock/reprocess-fila', methods=['POST'])
-@login_required
+@admin_required
 def reprocess_fila():
     """
     Reprocess fila_processamento_estoque.
     
-    Triggers the motor de reconciliação to process the stock queue.
+    Triggers the stock reconciliation motor to process the legacy queue.
     """
     try:
         from nistiprint_shared.services.motor_reconciliacao_estoque import motor_reconciliacao_estoque

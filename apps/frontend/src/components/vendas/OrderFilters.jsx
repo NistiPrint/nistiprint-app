@@ -5,7 +5,6 @@ import { Search } from 'lucide-react';
  * OrderFilters — busca + filtros de status IA para pedidos personalizados.
  *
  * Filtros de IA (funcionam em conjunto com a aba ativa):
- *   - Nome identificado (SUCCESS)
  *   - Revisar (NEEDS_REVIEW)
  *   - Sem nome (NO_PERSONALIZATION_FOUND)
  *   - Com Chat / Sem Chat
@@ -13,7 +12,6 @@ import { Search } from 'lucide-react';
 function OrderFilters({ searchTerm, onSearchChange, statusFilter, onStatusFilterChange, statusCounts }) {
   const filterOptions = [
     { key: '', label: 'Todos', count: statusCounts?.all ?? 0 },
-    { key: 'success', label: 'Nome identificado', count: statusCounts?.success ?? 0 },
     { key: 'needs_review', label: 'Revisar', count: statusCounts?.needs_review ?? 0 },
     { key: 'no_personalization', label: 'Sem nome', count: statusCounts?.no_personalization ?? 0 },
     { key: 'with_chat', label: 'Com Chat', count: statusCounts?.with_chat ?? 0 },

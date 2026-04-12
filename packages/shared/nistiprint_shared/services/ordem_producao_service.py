@@ -388,6 +388,20 @@ class OrdemProducaoService:
             from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
             try:
                 print(f"DEBUG: Executando Produção Imediata Síncrona para {produto_id}")
+                
+                # Primeiro, registrar entrada do produto principal
+                correlation_id = estoque_service.registrar_entrada(
+                    produto_id=produto_id,
+                    deposito_id=deposito_id,
+                    quantidade=float(quantidade),
+                    observacao=f"Produção Imediata (Síncrona) - {user_id}",
+                    usuario_id=None,
+                    user_context={'user_id': user_id},
+                    origem_tipo=3,
+                    correlation_id=correlation_id
+                )
+                
+                # Depois, processar insumos por BOM recursivamente
                 success = demanda_producao_service.processar_insumos_por_bom_recursivo(
                     produto_id=int(produto_id),
                     quantidade=float(quantidade),
