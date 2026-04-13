@@ -1,0 +1,26 @@
+# V1 workspace
+# v2*/
+# v3*/
+
+# V2 workspace
+# v1*/
+# v3*/
+
+# V3 workspace
+v1*/
+v2*/
+
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+.venv/
+venv/
+env/
+*.pyc
+
+.gemini/
+.qwen/
+.roo/
+.cline/

@@ -197,7 +197,8 @@ def process_consolidacao(self, consolidacao_id: int, correlation_id=None):
                         raw_payload=order,
                         items=order_items,
                         channel_id=channel_id,
-                        integration_id=account_id
+                        integration_id=account_id,
+                        correlation_id=correlation_id
                     )
                     success_count += 1
                 except Exception as upsert_error:
@@ -396,7 +397,8 @@ def sync_orders_with_bling(self, order_numbers: list, channel_id: int, platform:
                     platform='BLING',
                     platform_order_id=str(mapping['numeroLoja']),
                     raw_payload={'bling_mapping': mapping},
-                    channel_id=channel_id
+                    channel_id=channel_id,
+                    correlation_id=correlation_id
                 )
                 updated_count += 1
             except Exception as e:
@@ -439,7 +441,7 @@ def sync_orders_with_bling(self, order_numbers: list, channel_id: int, platform:
     max_retries=3,
     default_retry_delay=60
 )
-def persist_orders_batch(self, json_file_path: str, platform: str, channel_id: int, account_id: str):
+def persist_orders_batch(self, json_file_path: str, platform: str, channel_id: int, account_id: str, correlation_id=None):
     """
     Task dedicada para persistir pedidos em lote no banco unificado a partir de um JSON temporário.
     Isso alivia o endpoint síncrono.
@@ -447,9 +449,13 @@ def persist_orders_batch(self, json_file_path: str, platform: str, channel_id: i
     import json
     import os
     from nistiprint_shared.services.order_service import order_service
+    from nistiprint_shared.services.correlation_service import with_correlation
     import logging
-    
+
     logger = logging.getLogger(__name__)
+
+    # Configurar correlation_id
+    correlation_id = with_correlation(correlation_id)
 
     print(f"[*] Persist Worker: Iniciando persistência assíncrona para {platform}...")
     

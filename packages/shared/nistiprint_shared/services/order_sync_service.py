@@ -69,7 +69,7 @@ class OrderSyncService:
         
         return None
 
-    def sync_shopee_order(self, order_sn: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
+    def sync_shopee_order(self, order_sn: str, instance_id: Optional[str] = None, correlation_id: Optional[str] = None) -> Dict[str, Any]:
         """
         FASE 2: Enriquece pedido com dados da API Shopee.
         """
@@ -154,7 +154,8 @@ class OrderSyncService:
                 platform_order_id=order_sn,
                 raw_payload=raw_order,
                 items=items_dto,
-                channel_id=channel_id
+                channel_id=channel_id,
+                correlation_id=correlation_id
             )
 
             # Legacy Sync
@@ -167,18 +168,19 @@ class OrderSyncService:
             logger.error("[FASE 2] ✗ Erro sync_shopee_order para %s: %s", order_sn, e, exc_info=True)
             return {"error": str(e)}
 
-    def sync_bling_order(self, bling_order_data: Dict[str, Any]) -> Dict[str, Any]:
+    def sync_bling_order(self, bling_order_data: Dict[str, Any], correlation_id: Optional[str] = None) -> Dict[str, Any]:
         """
         FASE 1: Sincroniza pedido vindo do Bling (Webhook ou Importação).
-        
+
         Este método:
         - Processa pedidos de TODAS as plataformas (Shopee, Amazon, MercadoLivre, Shein, etc.)
         - É a fonte primária de dados para todos os pedidos
         - Deve ser executado ANTES de qualquer enriquecimento com marketplace
-        
+
         Args:
             bling_order_data: Dados completos do pedido no Bling
-            
+            correlation_id: Correlation ID para rastreamento do processamento
+
         Returns:
             Dict com resultado da sincronização (id, external_id, status)
         """
@@ -259,7 +261,8 @@ class OrderSyncService:
                 platform_order_id=bling_id,
                 raw_payload=bling_order_data,
                 items=items_dto,
-                channel_id=canal_id
+                channel_id=canal_id,
+                correlation_id=correlation_id
             )
 
             # NOVO: Detectar e marcar itens personalizados

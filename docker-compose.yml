@@ -20,6 +20,12 @@ services:
       - nistiprint-shared
     environment:
       - VITE_API_URL=/api
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
 
   # ===========================================
   # API (Flask)
@@ -43,6 +49,12 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     command: python main.py
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
 
 networks:
   gateway_net:

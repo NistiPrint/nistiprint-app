@@ -4,7 +4,7 @@
 # Uso: docker-compose -f docker-compose.local.yml up --build -d
 # =======================================================
 
-version: '3.8'
+# version: '3.8'
 
 services:
   # --- INFRA ESTRUTURA ---
@@ -14,9 +14,17 @@ services:
     restart: unless-stopped
     networks:
       - nistiprint-local
+    environment:
+      - TZ=America/Sao_Paulo
     command: redis-server --appendonly yes
     volumes:
       - redis_local_data:/data
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
 
   # --- BACKEND API ---
   api:
@@ -32,11 +40,18 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
+      - TZ=America/Sao_Paulo
     env_file:
       - .env
     depends_on:
       - redis
     command: python main.py
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
 
   # --- WORKER ---
   worker:
@@ -50,11 +65,18 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - REDIS_HOST=redis
       - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
+      - TZ=America/Sao_Paulo
     env_file:
       - .env
     depends_on:
       - redis
     command: celery -A worker_entrypoint worker --loglevel=info --concurrency=2
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
 
   celery-beat:
     image: leandrogbreve/nistiprint-worker:latest
@@ -67,11 +89,18 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - REDIS_HOST=redis
       - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
+      - TZ=America/Sao_Paulo
     env_file:
       - .env
     depends_on:
       - redis
     command: celery -A worker_entrypoint beat --loglevel=info
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
 
   # --- FRONTEND ---
   frontend:
@@ -84,8 +113,15 @@ services:
       - "5173:80"
     environment:
       - VITE_API_URL=/api
+      - TZ=America/Sao_Paulo
     depends_on:
       - api
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
 
 networks:
   nistiprint-local:
