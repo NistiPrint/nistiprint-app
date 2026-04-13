@@ -23,6 +23,7 @@ celery_app = Celery(
         'tasks.consolidation_tasks',
         'tasks.pedidos_fetch_tasks',
         'tasks.personalizados_tasks',
+        'tasks.token_renewal_tasks',
     ]
 )
 
@@ -46,6 +47,11 @@ celery_app.conf.update(
             'task': 'tasks.eventos_tasks.process_eventos_producao',
             'schedule': 10, # A cada 10 segundos
         },
+        # NOVO: Renovação automática de tokens Shopee (a cada 6 horas)
+        'renew-shopee-tokens': {
+            'task': 'tasks.token_renewal_tasks.renew_shopee_tokens',
+            'schedule': 7200,  # 6 horas (em segundos)
+        },
 
     },
 )
@@ -63,6 +69,7 @@ celery_app.autodiscover_tasks(lambda: [
     'tasks.consolidation_tasks',
     'tasks.pedidos_fetch_tasks',
     'tasks.personalizados_tasks',
+    'tasks.token_renewal_tasks',
 ])
 
 

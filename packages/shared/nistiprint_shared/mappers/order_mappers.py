@@ -202,6 +202,11 @@ class ShopeeMapper(BaseOrderMapper):
             "totals": {
                 "total": safe_float(raw.get('total_amount'))
             },
+            # Novas colunas explícitas para dados do marketplace
+            "buyer_username": raw.get('buyer_username'),
+            "marketplace_order_id": raw.get('order_sn'),
+            "shipping_carrier": shipping_carrier,
+            "contact_marketplace_id": None,  # Shopee não fornece ID de contato explícito
             "items": [
                 {
                     "sku": item.get('item_sku') or item.get('model_sku'),

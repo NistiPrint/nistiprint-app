@@ -3,12 +3,11 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import OrderCard from '@/components/vendas/OrderCard';
 import OrderFilters from '@/components/vendas/OrderFilters';
 import { personalizadosService } from '@/services/personalizadosService';
-import { ArrowLeft, Brain, CheckCircle, ChevronDown, ChevronRight, Clock, Database, FileText, Loader2, RefreshCw, Settings, Terminal, ThumbsDown } from 'lucide-react';
+import { ArrowLeft, Brain, ChevronDown, ChevronRight, Database, FileText, Loader2, RefreshCw, Terminal, ThumbsDown } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -25,9 +24,6 @@ function VendasPersonalizadasPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-
-  // Tab navigation (2 abas: Pendentes e Processados)
-  const [activeTab, setActiveTab] = useState('pendentes'); // pendentes | processados
 
   // Pagination/Slicing
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
@@ -144,44 +140,10 @@ function VendasPersonalizadasPage() {
   };
 
   // Memoized filtered orders
-  // Aba + busca textual + statusFilter (IA + chat) — tudo combinado
   const filteredOrders = useMemo(() => {
     let result = orders;
 
-    // 1. Filtro por aba (o principal)
-    if (activeTab === 'pendentes') {
-      result = result.filter(order => {
-        if (!order.itens || order.itens.length === 0) return false;
-        // Pedidos pendentes: itens personalizados SEM nome extraído
-        return order.itens.some(item =>
-          // Itens personalizados sem personalizações registradas (precisam de extração)
-          (item.personalizado && (!item.personalizations || item.personalizations.length === 0)) ||
-          // OU itens com personalizações pendentes (sem nome ou status NEEDS_REVIEW)
-          (item.personalizations &&
-            item.personalizations.length > 0 &&
-            item.personalizations.some(p =>
-              !p.nome ||
-              p.nome === null ||
-              p.nome === '' ||
-              p.status === 'NEEDS_REVIEW'
-            )
-          )
-        );
-      });
-    } else if (activeTab === 'processados') {
-      result = result.filter(order => {
-        if (!order.itens || order.itens.length === 0) return false;
-        // Pedidos processados: itens com nome extraído com sucesso
-        return order.itens.some(item =>
-          item.personalizations &&
-          item.personalizations.length > 0 &&
-          item.personalizations.some(p => p.status === 'SUCCESS' && p.nome)
-        );
-      });
-    }
-    // 'pendentes' = não processados
-
-    // 2. Busca textual
+    // 1. Busca textual
     if (debouncedSearchTerm) {
       const term = debouncedSearchTerm.toLowerCase();
       result = result.filter(order =>
@@ -192,82 +154,49 @@ function VendasPersonalizadasPage() {
       );
     }
 
-    // 3. Filtro por status IA (funciona como refinamento da aba)
-    if (statusFilter === 'needs_review') {
+    // 2. Filtro por status
+    if (statusFilter === 'sem_chat') {
+      result = result.filter(order => order.has_chat_messages !== true);
+    } else if (statusFilter === 'nome_identificado') {
+      result = result.filter(order =>
+        order.itens?.some(item =>
+          item.personalizations?.some(p => p.status === 'SUCCESS' && p.nome)
+        )
+      );
+    } else if (statusFilter === 'a_revisar') {
       result = result.filter(order =>
         order.itens?.some(item =>
           item.personalizations?.some(p => p.status === 'NEEDS_REVIEW')
         )
       );
-    } else if (statusFilter === 'no_personalization') {
-      result = result.filter(order => {
-        const hasAnyPersonalizations = order.itens?.some(item =>
-          item.personalizations && item.personalizations.length > 0
-        );
-        return !hasAnyPersonalizations;
-      });
-    } else if (statusFilter === 'with_chat') {
-      result = result.filter(order => order.has_chat_messages === true);
-    } else if (statusFilter === 'without_chat') {
-      result = result.filter(order => order.has_chat_messages !== true);
     }
 
     return result;
-  }, [orders, activeTab, debouncedSearchTerm, statusFilter]);
+  }, [orders, debouncedSearchTerm, statusFilter]);
 
-  // Memoized status counts (contadores REAIS para filtros e abas)
+  // Memoized status counts
   const statusCounts = useMemo(() => {
     const counts = {
       all: orders.length,
-      pendentes: 0,
-      processados: 0,
-      // IA status counts (para os botões de filtro)
-      needs_review: 0,
-      no_personalization: 0,
-      // Chat counts
-      with_chat: 0,
-      without_chat: 0,
+      sem_chat: 0,
+      nome_identificado: 0,
+      a_revisar: 0,
     };
 
     orders.forEach(order => {
-      let hasPending = false;
-      let hasProcessed = false;
-      let hasNeedsReview = false;
-      let hasNoPersonalization = false;
-      let hasAnyPersonalizations = false;
+      if (order.has_chat_messages !== true) counts.sem_chat++;
 
-      if (order.itens && order.itens.length > 0) {
-        for (const item of order.itens) {
-          // Itens personalizados sem personalizações registradas (precisam de extração)
-          if (item.personalizado && (!item.personalizations || item.personalizations.length === 0)) {
-            hasPending = true;
-            hasNoPersonalization = true;
-          }
-
-          if (item.personalizations && item.personalizations.length > 0) {
-            hasAnyPersonalizations = true;
-
-            if (item.personalizations.some(p => p.status === 'SUCCESS' && p.nome)) {
-              hasProcessed = true;
-            }
-            if (item.personalizations.some(p => p.status === 'NEEDS_REVIEW')) {
-              hasNeedsReview = true;
-              hasPending = true;
-            }
-            if (item.personalizations.some(p => !p.nome || p.nome === null || p.nome === '')) {
-              hasPending = true;
-              hasNoPersonalization = true;
-            }
-          }
-        }
+      if (order.itens?.some(item =>
+        item.personalizations?.some(p => p.status === 'SUCCESS' && p.nome)
+      )) {
+        counts.nome_identificado++;
       }
 
-      if (hasPending) counts.pendentes++;
-      if (hasProcessed) counts.processados++;
-      if (hasNeedsReview) counts.needs_review++;
-      if (hasNoPersonalization) counts.no_personalization++;
-      if (order.has_chat_messages === true) counts.with_chat++;
-      else counts.without_chat++;
+      if (order.itens?.some(item =>
+        item.personalizations?.some(p => p.status === 'NEEDS_REVIEW')
+      )) {
+        counts.a_revisar++;
+      }
     });
 
     return counts;
@@ -303,69 +232,94 @@ function VendasPersonalizadasPage() {
   };
 
   const [isProcessingLote, setIsProcessingLote] = useState(false);
+  const [loteProgress, setLoteProgress] = useState('');
 
   const handleProcessarLote = async () => {
     const confirm = window.confirm(`Processar TODOS os pedidos personalizados com IA? Isso pode demorar alguns minutos.`);
     if (!confirm) return;
 
     setIsProcessingLote(true);
+    setLoteProgress('Iniciando...');
     const toastId = toast.loading('Processando lote com IA...');
-    const lastLogCount = aiLogs.length; // Track if new logs appeared
 
     try {
-      // limit: 0 = todos os pedidos
       const data = await personalizadosService.processar({ limit: 0 });
       if (!data.success) {
         toast.error(data.message || 'Erro ao processar lote', { id: toastId });
         setIsProcessingLote(false);
+        setLoteProgress('');
         return;
       }
 
-      toast.success(data.message || 'Processamento iniciado!', { id: toastId });
+      setLoteProgress('IA processando...');
 
-      // Start polling: check for new logs every 5s, refresh orders when done
+      // Polling com heartbeat detection (3s intervals)
       let pollCount = 0;
-      const maxPolls = 120; // 10 minutes at 5s intervals
+      const HEARTBEAT_TIMEOUT = 30_000; // 30s sem atividade = concluído
+      const MAX_POLL_TIME = 10 * 60 * 1000; // 10 min
 
       if (lotePollRef.current) clearInterval(lotePollRef.current);
 
       lotePollRef.current = setInterval(() => {
         pollCount++;
 
-        // Check if new logs appeared
-        personalizadosService.getAllLogs({ limit: 1 })
+        personalizadosService.getAllLogs({ limit: 5 })
           .then(logData => {
             if (logData.success && logData.data.logs && logData.data.logs.length > 0) {
-              const latest = logData.data.logs[0];
-              const age = Date.now() - new Date(latest.executed_at).getTime();
-              // If latest log is > 15s old, processing likely finished
-              if (age > 15000) {
+              // Pegar o log mais recente
+              const sorted = logData.data.logs.sort((a, b) =>
+                new Date(b.executed_at) - new Date(a.executed_at)
+              );
+              const latest = sorted[0];
+              const logTime = new Date(latest.executed_at).getTime();
+              const timeSinceLastLog = Date.now() - logTime;
+
+              // Atualizar progresso visual
+              const statusCounts = {};
+              logData.data.logs.forEach(log => {
+                statusCounts[log.status] = (statusCounts[log.status] || 0) + 1;
+              });
+              const successCount = statusCounts.success || 0;
+              const errorCount = (statusCounts.error || 0) + (statusCounts.db_error || 0);
+              const totalProcessed = successCount + errorCount;
+              setLoteProgress(`${totalProcessed} processados (${successCount} OK, ${errorCount} erro)`);
+
+              if (timeSinceLastLog > HEARTBEAT_TIMEOUT) {
+                // Sem atividade por 30s = concluído
                 if (lotePollRef.current) clearInterval(lotePollRef.current);
                 setIsProcessingLote(false);
+                setLoteProgress('');
                 fetchOrders();
-                toast.success('Processamento de lote concluído!');
+                if (successCount > 0) {
+                  toast.success(`${successCount} pedido(s) processado(s) com sucesso!`, { id: toastId });
+                } else {
+                  toast.warning('Processamento concluído sem resultados.', { id: toastId });
+                }
               }
-            } else if (pollCount > 6) {
-              // After 30s with no logs at all, assume done
+            } else if (pollCount > 10) {
+              // 30s sem nenhum log = provavelmente nada para processar
               if (lotePollRef.current) clearInterval(lotePollRef.current);
               setIsProcessingLote(false);
+              setLoteProgress('');
               fetchOrders();
             }
           })
           .catch(() => {});
 
-        // Timeout after 10 minutes
-        if (pollCount >= maxPolls) {
+        // Timeout absoluto de 10 minutos
+        if (pollCount * 3000 >= MAX_POLL_TIME) {
           if (lotePollRef.current) clearInterval(lotePollRef.current);
           setIsProcessingLote(false);
+          setLoteProgress('');
           fetchOrders();
-          toast.warning('Processamento pode ainda estar em andamento. Verifique os logs.');
+          toast.warning('Timeout: processamento pode ainda estar em andamento.', { id: toastId });
         }
-      }, 5000);
+      }, 3000); // Poll a cada 3s
 
     } catch (e) {
       toast.error('Erro de rede ao processar lote', { id: toastId });
       setIsProcessingLote(false);
+      setLoteProgress('');
     }
   };
 
@@ -478,7 +432,7 @@ function VendasPersonalizadasPage() {
         </Button>
         <Button variant="outline" onClick={handleProcessarLote} disabled={isProcessingLote}>
           {isProcessingLote ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Brain className="mr-2 h-4 w-4" />}
-          {isProcessingLote ? 'Processando...' : 'Extrair nomes (IA)'}
+          {isProcessingLote ? (loteProgress || 'Processando...') : 'Extrair nomes (IA)'}
         </Button>
         <Button
           variant={opMode === 'legacy' ? 'destructive' : 'outline'}
@@ -497,27 +451,7 @@ function VendasPersonalizadasPage() {
         Pedidos Personalizados
       </h1>
 
-      {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); setVisibleCount(ITEMS_PER_PAGE); }} className="mb-6">
-        <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="pendentes" className="flex items-center gap-2">
-            <Clock className="h-4 w-4" />
-            Pendentes Extração
-            <Badge variant={statusCounts.pendentes > 0 ? "default" : "secondary"} className="ml-1 h-5 min-w-5 flex items-center justify-center text-xs">
-              {statusCounts.pendentes}
-            </Badge>
-          </TabsTrigger>
-          <TabsTrigger value="processados" className="flex items-center gap-2">
-            <CheckCircle className="h-4 w-4" />
-            Processados
-            <Badge variant={statusCounts.processados > 0 ? "default" : "secondary"} className="ml-1 h-5 min-w-5 flex items-center justify-center text-xs">
-              {statusCounts.processados}
-            </Badge>
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
-
-      {/* Tab Content: Orders (pendentes, identificados, historico) */}
+      {/* Orders */}
       <Card className="shadow-sm border-light">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium text-muted-foreground">

@@ -1,4 +1,5 @@
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
@@ -6,15 +7,80 @@ import {
     Calendar,
     CheckCircle2,
     Clock,
+    Loader2,
     Package,
+    RefreshCw,
     Truck,
     XCircle
 } from 'lucide-react';
+import { useState } from 'react';
+import { toast } from 'sonner';
 
 /**
  * Timeline de eventos do pedido
  */
-export default function PedidoTimeline({ eventos }) {
+export default function PedidoTimeline({ eventos, pedidoId, onReprocess, codigoPedidoExterno }) {
+  const [isReprocessing, setIsReprocessing] = useState(false);
+  const [isSyncingShopee, setIsSyncingShopee] = useState(false);
+
+  const handleReprocess = async () => {
+    if (!pedidoId) return;
+
+    setIsReprocessing(true);
+    try {
+      const response = await fetch('/api/admin/orders/reprocess', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({ pedido_id: pedidoId }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        toast.success(`Pedido reprocessado com sucesso. ${data.total_processed} integrações processadas.`);
+        if (onReprocess) onReprocess();
+      } else {
+        toast.error(data.error || 'Erro ao reprocessar pedido');
+      }
+    } catch (error) {
+      toast.error(`Erro: ${error.message}`);
+    } finally {
+      setIsReprocessing(false);
+    }
+  };
+
+  const handleSyncShopee = async () => {
+    if (!codigoPedidoExterno) {
+      toast.warning('Código do pedido externo não encontrado.');
+      return;
+    }
+
+    setIsSyncingShopee(true);
+    try {
+      const response = await fetch('/api/admin/orders/sync-shopee', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({ order_sn: codigoPedidoExterno }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        toast.success('Pedido sincronizado com API Shopee com sucesso.');
+        if (onReprocess) onReprocess();
+      } else {
+        toast.error(data.error || 'Erro ao sincronizar pedido Shopee');
+      }
+    } catch (error) {
+      toast.error(`Erro: ${error.message}`);
+    } finally {
+      setIsSyncingShopee(false);
+    }
+  };
   const getEventIcon = (tipoEvento, tipo) => {
     const icons = {
       ORDER_CREATED: <Package className="w-4 h-4" />,
@@ -82,10 +148,37 @@ export default function PedidoTimeline({ eventos }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg flex items-center gap-2">
-          <Calendar className="w-5 h-5" />
-          Timeline de Eventos
-        </CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Calendar className="w-5 h-5" />
+            Timeline de Eventos
+          </CardTitle>
+          <div className="flex gap-2">
+            {codigoPedidoExterno && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleSyncShopee}
+                disabled={isSyncingShopee}
+              >
+                {isSyncingShopee && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                <RefreshCw className="mr-2 h-4 w-4" />
+                Sync Shopee
+              </Button>
+            )}
+            {pedidoId && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleReprocess}
+                disabled={isReprocessing}
+              >
+                {isReprocessing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Reprocessar
+              </Button>
+            )}
+          </div>
+        </div>
       </CardHeader>
       <CardContent>
         <ScrollArea className="h-[400px] pr-4">

@@ -63,6 +63,12 @@ class OrdersQueryService:
                     except Exception:
                         contato = {}
 
+                # Se contato não tiver nome, usar nome_cliente da view
+                if not contato.get('nome'):
+                    nome_cliente = row.get('nome_cliente', '') or ''
+                    if nome_cliente:
+                        contato['nome'] = nome_cliente
+
                 processed_orders.append({
                     'id': row['id'],
                     'numero': row['numero_pedido'],

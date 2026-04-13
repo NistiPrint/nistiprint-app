@@ -2,6 +2,7 @@ import os
 import json
 import time
 import logging
+import threading
 from datetime import datetime, timedelta
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -645,8 +646,9 @@ def _truncate_json(value, max_len=30000):
 def save_extraction_results(order_data, extraction_result):
     """
     Save the extraction results to the Supabase database.
-    Build-then-insert: inserts new records BEFORE deleting old ones,
-    preventing data loss if inserts fail.
+    Delete-then-insert: deletes old records FIRST, then inserts new ones.
+    Uses batch insert (all items of one order in a single request) to minimize API calls.
+    Truncates fields to stay well under Cloudflare's 100KB request limit.
     """
     try:
         # Parse the JSON response if it's a string
@@ -665,19 +667,23 @@ def save_extraction_results(order_data, extraction_result):
 
         shopee_order_sn = extraction_result['shopee_order_sn']
 
-        # STEP 1: Batch resolve all item_pedido_ids (2 queries instead of 2*N)
+        # STEP 1: Delete old records FIRST (before inserting new ones)
+        delete_extraction_records(order_data)
+        logger.info(f"Deleted old extraction records for order {shopee_order_sn}")
+
+        # STEP 2: Batch resolve all item_pedido_ids (2 queries instead of 2*N)
         personalized_items = extraction_result.get('personalized_items', [])
         item_descriptions = [(item.get('item_description', '') or '')[:1000] for item in personalized_items]
         resolved_ids = _batch_resolve_item_pedido_ids(shopee_order_sn, item_descriptions)
         print(f"[DB] Batch resolve: {len(item_descriptions)} items → {sum(1 for v in resolved_ids.values() if v is not None)} encontrados")
 
-        # STEP 2: Build all records (no DB changes yet)
+        # STEP 3: Build all records (truncated to stay under 100KB)
         records_to_insert = []
+        now_iso = datetime.utcnow().isoformat()
         for idx, item in enumerate(personalized_items):
             item_description = item_descriptions[idx]
             item_pedido_id = resolved_ids.get(item_description)
 
-            # Move extra fields to detalhes_personalizacao JSONB
             detalhes = {
                 'quantity_to_personalize': item.get('quantity_to_personalize', 1),
                 'initial_source_message_id': item.get('initial_source_message_id')
@@ -688,44 +694,64 @@ def save_extraction_results(order_data, extraction_result):
                 'shopee_order_sn': str(shopee_order_sn),
                 'bling_id': str(order_data.get('bling_id') or ''),
                 'status': extraction_result['status'],
-                'reasoning': _truncate(extraction_result.get('reasoning'), 2000),
+                'reasoning': _truncate(extraction_result.get('reasoning'), 1500),
                 'item_id': str(item.get('item_id') or ''),
                 'item_description': item_description,
                 'item_pedido_id': item_pedido_id,
                 'customization_name': _truncate(item.get('customization_name'), 500),
                 'name_source_message_id': str(item.get('name_source_message_id') or '') if item.get('name_source_message_id') else None,
                 'customization_initial': _truncate(item.get('customization_initial'), 100),
-                'dados_cliente': _truncate_json(order_data.get('buyer_info', {}), 2000),
+                'dados_cliente': _truncate_json(order_data.get('buyer_info', {}), 1000),
                 'detalhes_personalizacao': detalhes,
                 'metadata': {
-                    'extraction_timestamp': datetime.utcnow().isoformat(),
+                    'extraction_timestamp': now_iso,
                     'source': model_name,
                     'version': '3.0',
-                    'processed_at': datetime.utcnow().isoformat()
+                    'processed_at': now_iso
                 },
-                'updated_at': datetime.utcnow().isoformat()
+                'updated_at': now_iso
             }
             records_to_insert.append(record)
 
-        # STEP 3: Insert all new records (with retry)
-        items_saved = 0
-        for record in records_to_insert:
-            for attempt in range(3):
-                try:
-                    supabase_db.table('personalizacoes_pedido').insert(record).execute()
-                    items_saved += 1
-                    break
-                except Exception as insert_err:
-                    logger.warning(f"Insert attempt {attempt+1}/3 failed for {shopee_order_sn}: {insert_err}")
-                    if attempt == 2:
-                        raise
-                    import time
-                    time.sleep(1 * (attempt + 1))  # Backoff: 1s, 2s
+        print(f"[DB] Records para inserir: {len(records_to_insert)}")
+        if len(records_to_insert) == 0:
+            print(f"[DB] NENHUM record para inserir!")
+            return False
 
-        # STEP 4: Only delete old records AFTER successful inserts
-        # This prevents data loss: if inserts failed, exception is raised
-        # and we never reach here. Old records remain intact.
-        delete_extraction_records(order_data)
+        # Verificar tamanho total do batch para evitar estouro de 100KB
+        batch_json = json.dumps(records_to_insert, ensure_ascii=False)
+        batch_size = len(batch_json.encode('utf-8'))
+        MAX_BATCH_SIZE = 80_000  # 80KB de margem (limite Cloudflare = 100KB)
+
+        if batch_size > MAX_BATCH_SIZE:
+            logger.warning(
+                "Batch para %s tem %d bytes (> %d), dividindo em sub-batches",
+                shopee_order_sn, batch_size, MAX_BATCH_SIZE
+            )
+            # Dividir em sub-batches
+            sub_batch = []
+            sub_size = 0
+            items_saved = 0
+            for i, record in enumerate(records_to_insert):
+                rec_json = json.dumps(record, ensure_ascii=False)
+                rec_size = len(rec_json.encode('utf-8'))
+                if sub_size + rec_size > MAX_BATCH_SIZE and sub_batch:
+                    # Insert current sub-batch
+                    _insert_batch(sub_batch, shopee_order_sn)
+                    items_saved += len(sub_batch)
+                    sub_batch = []
+                    sub_size = 0
+                sub_batch.append(record)
+                sub_size += rec_size
+            if sub_batch:
+                _insert_batch(sub_batch, shopee_order_sn)
+                items_saved += len(sub_batch)
+        else:
+            # Batch único
+            _insert_batch(records_to_insert, shopee_order_sn)
+            items_saved = len(records_to_insert)
+
+        print(f"[DB] Total inserido: {items_saved}/{len(records_to_insert)}")
 
         logger.info(f"Successfully saved {items_saved} extraction results for order {shopee_order_sn}")
         return True
@@ -733,6 +759,23 @@ def save_extraction_results(order_data, extraction_result):
     except Exception as e:
         logger.error(f"Error in save_extraction_results: {str(e)}", exc_info=True)
         return False
+
+
+def _insert_batch(records, shopee_order_sn):
+    """Insert um batch de registros no DB com retry."""
+    batch_json = json.dumps(records, ensure_ascii=False)
+    batch_size_kb = len(batch_json.encode('utf-8')) / 1024
+    for attempt in range(3):
+        try:
+            result = supabase_db.table('personalizacoes_pedido').insert(records).execute()
+            print(f"[DB] ✓ Batch insert: {len(records)} records, {batch_size_kb:.1f}KB → {shopee_order_sn}")
+            return result
+        except Exception as insert_err:
+            print(f"[DB] ✗ Insert attempt {attempt+1}/3 falhou para {shopee_order_sn}: {insert_err}")
+            logger.warning(f"Batch insert attempt {attempt+1}/3 failed for {shopee_order_sn}: {insert_err}")
+            if attempt == 2:
+                raise
+            time.sleep(1 * (attempt + 1))
 
 
 def log_ai_execution(order_sn, input_data, chat_context, extracted_personalization, model_result, status, error_message=None, user_feedback_id=None):
@@ -808,28 +851,18 @@ def get_logs_by_order_sn(order_sn):
         return []
 
 
-def _process_single_order(app, order, processed_count, total_orders):
+def _run_ia_for_order(app, order, processed_count, total_orders, _ia_counter, _ia_lock):
+    """
+    Fase 1: Chamar IA para um pedido e retornar o resultado (sem tocar no DB).
+    Roda em paralelo com ThreadPoolExecutor.
+    """
     with app.app_context():
-        logger.info("[PROC] >>> INÍCIO _process_single_order [%d/%d]", processed_count, total_orders)
-        logger.info("[PROC] Tipo do order: %s", type(order).__name__)
-
-        if isinstance(order, str):
-            logger.error("[PROC] order é string: %s — pulando", order)
-            return 'error'
-
         order_sn = order.get('shopee_order_sn') or order.get('numeroLoja')
-        print(f"[PROC] >>> [{processed_count}/{total_orders}] Iniciando {order_sn}")
-        logger.info("[PROC] order_sn = %s", order_sn)
-        logger.info("[PROC] order keys = %s", list(order.keys()) if isinstance(order, dict) else 'N/A')
+        print(f"[IA] ▶ [{processed_count}/{total_orders}] Iniciando {order_sn}")
+        logger.info("[IA-%d/%d] Iniciando %s", processed_count, total_orders, order_sn)
 
         chat_context = order.get('chat_messages', [])
-        logger.info("[PROC] chat_messages count = %d", len(chat_context))
-        print(f"[PROC] [{processed_count}/{total_orders}] {order_sn}: {len(chat_context)} msgs chat, {len(order.get('items', []))} itens")
-
-        logger.info("[PROC] Gerando prompt_payload (texto)...")
         prompt_payload = generate_prompt_payload(order)
-        items_in_order = order.get('items') or []
-        logger.info("[PROC] Itens no pedido: %d, prompt_payload tipo=%s, len=%d", len(items_in_order), type(prompt_payload).__name__, len(prompt_payload) if isinstance(prompt_payload, str) else 0)
 
         ai_result = None
         ai_response_text = None
@@ -837,62 +870,106 @@ def _process_single_order(app, order, processed_count, total_orders):
         status = 'success'
 
         try:
-            logger.info("[PROC] Chamando modelo IA...")
             response = run_model(prompt_payload)
             if response and response.text:
                 ai_response_text = response.text
-                logger.info("[PROC] Resposta IA recebida (%d caracteres)", len(ai_response_text))
                 ai_result = ai_response_text.replace("```json", "").replace("```", "")
                 ai_result = json.loads(ai_result)
-                logger.info("[PROC] Resultado parseado: %d itens personalizados", len(ai_result.get('personalized_items', [])))
-                logger.info("[PROC] Salvando resultados no DB...")
-                save_success = save_extraction_results(order, ai_result)
-                if not save_success:
-                    status = 'db_error'
-                    error_message = 'Failed to save extraction results.'
-                    logger.warning("[PROC] Falha ao salvar resultados no DB")
-                else:
-                    logger.info("[PROC] Resultados salvos com sucesso")
+                n_items = len(ai_result.get('personalized_items', []))
+                with _ia_lock:
+                    _ia_counter[0] += 1
+                    done = _ia_counter[0]
+                print(f"[IA] ✓ [{done}/{total_orders}] {order_sn}: {n_items} itens extraídos")
             else:
                 status = 'no_response'
                 error_message = 'No response from AI model.'
-                logger.warning("[PROC] IA não retornou resposta")
+                with _ia_lock:
+                    _ia_counter[0] += 1
+                    done = _ia_counter[0]
+                print(f"[IA] ✗ [{done}/{total_orders}] {order_sn}: sem resposta da IA")
         except Exception as e:
             status = 'error'
             error_message = str(e)
-            logger.error("[PROC] Erro no pedido %s: %s", order_sn, e, exc_info=True)
-        finally:
-            # Save detailed logs
-            if ai_response_text:
-                # Input data para log = APENAS payload (template é muito longo)
-                # Mas garantimos que run_model envia template + payload
-                saved_locations = save_processing_log(
-                    order_sn,
-                    PROMPT_TEMPLATE,
-                    prompt_payload,
-                    ai_response_text
-                )
-                logger.info("[PROC] Logs salvos para %s: %s", order_sn, saved_locations)
+            with _ia_lock:
+                _ia_counter[0] += 1
+                done = _ia_counter[0]
+            print(f"[IA] ✗ [{done}/{total_orders}] {order_sn}: ERRO — {e}")
+            logger.error("[IA-%d/%d] Erro no pedido %s: %s", processed_count, total_orders, order_sn, e, exc_info=True)
 
-            # Save execution summary to database
-            logger.info("[PROC] Salvando log de execução...")
-            log_ai_execution(
-                order_sn=order_sn,
-                input_data=prompt_payload,
-                chat_context=chat_context,
-                extracted_personalization=ai_result.get('personalized_items') if ai_result else None,
-                model_result=ai_result,
-                status=status,
-                error_message=error_message
+        return {
+            'order_sn': order_sn,
+            'order': order,
+            'ai_result': ai_result,
+            'ai_response_text': ai_response_text,
+            'prompt_payload': prompt_payload,
+            'chat_context': chat_context,
+            'status': status,
+            'error_message': error_message,
+        }
+
+
+def _save_ia_result(result, db_semaphore, ia_results, _db_counter, _db_lock, total_orders):
+    """
+    Fase 2: Salvar resultado da IA no DB (com controle de concorrência).
+    Roda com no máximo N threads simultâneas (via semaphore).
+    """
+    order_sn = result['order_sn']
+    order = result['order']
+    ai_result = result['ai_result']
+    status = result['status']
+    error_message = result['error_message']
+    prompt_payload = result['prompt_payload']
+    chat_context = result['chat_context']
+
+    # Adquirir semaphore (limita conexões DB simultâneas)
+    db_semaphore.acquire()
+    try:
+        if status == 'success' and ai_result:
+            save_success = save_extraction_results(order, ai_result)
+            if not save_success:
+                result['status'] = 'db_error'
+                result['error_message'] = 'Failed to save extraction results.'
+                print(f"[DB] ✗ {order_sn}: falha ao salvar no DB")
+            else:
+                print(f"[DB] ✓ {order_sn}: salvo no DB")
+        elif status != 'success':
+            result['status'] = status
+            result['error_message'] = error_message
+            print(f"[DB] ✗ {order_sn}: status={status} — {error_message}")
+
+        # Salvar log de execução
+        if result.get('ai_response_text'):
+            save_processing_log(
+                order_sn,
+                PROMPT_TEMPLATE,
+                prompt_payload,
+                result['ai_response_text']
             )
-            logger.info("[PROC] <<< FIM _process_single_order [%d/%d] status=%s", processed_count, total_orders, status)
-            print(f"[PROC] <<< [{processed_count}/{total_orders}] {order_sn} → status={status}")
-        return status
+
+        log_ai_execution(
+            order_sn=order_sn,
+            input_data=prompt_payload,
+            chat_context=chat_context,
+            extracted_personalization=ai_result.get('personalized_items') if ai_result else None,
+            model_result=ai_result,
+            status=result['status'],
+            error_message=result.get('error_message')
+        )
+
+        with _db_lock:
+            _db_counter[0] += 1
+            done = _db_counter[0]
+        ia_results.append(result)
+        print(f"[DB] ▶ Progresso: {done}/{total_orders} salvos")
+    finally:
+        db_semaphore.release()
 
 
 def process_orders(limit=None, order_sn=None):
     """
-    Main function to process orders and extract personalizations via IA.
+    Main function to process orders with IA em pipeline 2 fases:
+    - Fase 1 (IA paralela): Todos os pedidos chamam Gemini simultaneamente
+    - Fase 2 (DB controlado): Salvamento com semaphore para não estourar pool
 
     REGRAS DE EXECUÇÃO:
     - Executado EXCLUSIVAMENTE sob demanda manual (botão na UI)
@@ -902,7 +979,7 @@ def process_orders(limit=None, order_sn=None):
     """
     print(f"{'=' * 60}")
     print(f">>> INÍCIO: process_orders(limit={limit}, order_sn={order_sn})")
-    print(f">>> IA Processing: execução MANUAL — somente Shopee + personalizados")
+    print(f">>> Pipeline 2 fases: IA paralela → DB com semaphore")
     print(f"{'=' * 60}")
 
     try:
@@ -911,17 +988,11 @@ def process_orders(limit=None, order_sn=None):
         logger.info("=" * 60)
         app = current_app._get_current_object()
 
-        print("[PROC-MAIN] Chamando get_orders_with_chats...")
-        logger.info("[PROC-MAIN] Chamando get_orders_with_chats...")
+        # Buscar pedidos
         orders = get_orders_with_chats(order_sn=order_sn, limit=limit)
         total_orders = len(orders)
         print(f"[PROC-MAIN] Pedidos encontrados: {total_orders}")
         logger.info("[PROC-MAIN] Pedidos encontrados: %d", total_orders)
-        print(f"[PROC-MAIN] Tipos: {[type(o).__name__ for o in orders[:5]]}")
-        logger.info("[PROC-MAIN] Tipos dos primeiros orders: %s", [type(o).__name__ for o in orders[:5]])
-        if orders:
-            print(f"[PROC-MAIN] Primeiros orders: {orders[:3]}")
-            logger.info("[PROC-MAIN] Primeiros orders: %s", orders[:3])
 
         if total_orders == 0:
             logger.warning("Nenhum pedido encontrado. Verifique:")
@@ -931,33 +1002,73 @@ def process_orders(limit=None, order_sn=None):
             logger.warning("  4. Rode: python scripts/backfill_personalizados.py --diagnose")
             return True, "No orders to process. Nenhum pedido encontrado com itens personalizados."
 
-        logger.info("[PROC-MAIN] Submetendo %d orders para ThreadPoolExecutor", total_orders)
-        processed_count = 0
-        # Use 5 workers for sync path to avoid overwhelming DB connections
-        # Celery worker path can use 10 for true parallel processing
-        max_workers = min(5, total_orders)
-        logger.info("[PROC-MAIN] max_workers=%d", max_workers)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            logger.info("[PROC-MAIN] Criando futures...")
-            futures = {executor.submit(_process_single_order, app, order, i + 1, total_orders): order for i, order in enumerate(orders)}
+        # ─────────────────────────────────────────────────────────
+        # FASE 1: IA paralela (5 workers, sem DB)
+        # ─────────────────────────────────────────────────────────
+        print(f"\n{'='*50}")
+        print(f">>> FASE 1: Chamadas IA ({total_orders} pedidos, 5 workers)")
+        print(f"{'='*50}\n")
+        logger.info("[FASE 1] Iniciando %d chamadas IA com 5 workers", total_orders)
 
-            logger.info("[PROC-MAIN] Aguardando resultados...")
+        ia_results = []
+        max_ia_workers = min(5, total_orders)
+        _ia_counter = [0]  # lista mutável para thread-safety
+        _ia_lock = threading.Lock()
+
+        with ThreadPoolExecutor(max_workers=max_ia_workers) as executor:
+            futures = {
+                executor.submit(_run_ia_for_order, app, order, i + 1, total_orders, _ia_counter, _ia_lock): i
+                for i, order in enumerate(orders)
+            }
+
             for future in as_completed(futures):
-                order = futures[future]
+                idx = futures[future]
                 try:
-                    logger.info("[PROC-MAIN] Future completou, obtendo resultado...")
-                    status = future.result()
-                    logger.info("[PROC-MAIN] Resultado: status=%s", status)
-                    if status == 'success':
-                        processed_count += 1
+                    result = future.result()
+                    ia_results.append(result)
                 except Exception as exc:
-                    order_sn_exc = order.get('shopee_order_sn') if isinstance(order, dict) else str(order)
-                    logger.error('[PROC-MAIN] Pedido %s gerou exceção: %s', order_sn_exc, exc, exc_info=True)
+                    order_sn_exc = orders[idx].get('shopee_order_sn') if idx < len(orders) else f'idx={idx}'
+                    logger.error('[FASE 1] Pedido %s gerou exceção: %s', order_sn_exc, exc, exc_info=True)
+                    ia_results.append({
+                        'order_sn': order_sn_exc,
+                        'status': 'error',
+                        'error_message': str(exc),
+                    })
+
+        success_count = sum(1 for r in ia_results if r['status'] == 'success')
+        print(f"\n{'='*50}")
+        print(f">>> FASE 1 concluída: {success_count}/{total_orders} com sucesso")
+        print(f"{'='*50}\n")
+        logger.info("[FASE 1] Concluída: %d/%d com sucesso", success_count, total_orders)
+
+        # ─────────────────────────────────────────────────────────
+        # FASE 2: Salvamento DB com semaphore (3 conexões máx)
+        # ─────────────────────────────────────────────────────────
+        print(f"\n{'='*50}")
+        print(f">>> FASE 2: Salvando no DB (máx 3 conexões simultâneas)")
+        print(f"{'='*50}\n")
+        logger.info("[FASE 2] Iniciando salvamento com semaphore=3")
+
+        db_semaphore = threading.Semaphore(3)  # Máx 3 conexões DB simultâneas
+        saved_results = []
+        _db_counter = [0]
+        _db_lock = threading.Lock()
+        saved_count = 0
+
+        for result in ia_results:
+            _save_ia_result(result, db_semaphore, saved_results, _db_counter, _db_lock, total_orders)
+            if result['status'] == 'success':
+                saved_count += 1
+
+        print(f"\n{'='*50}")
+        print(f">>> FASE 2 concluída: {saved_count}/{total_orders} salvos")
+        print(f"{'='*50}\n")
+        logger.info("[FASE 2] Concluída: %d/%d salvos", saved_count, total_orders)
 
         logger.info("=" * 60)
-        logger.info("<<< FIM: process_orders — %d/%d processados com sucesso", processed_count, total_orders)
+        logger.info("<<< FIM: process_orders — %d/%d processados com sucesso", saved_count, total_orders)
         logger.info("=" * 60)
-        return True, f"Successfully processed {processed_count} of {total_orders} orders."
+        return True, f"Successfully processed {saved_count} of {total_orders} orders."
 
     except Exception as e:
         logger.error("ERRO CRÍTICO em process_orders: %s", e, exc_info=True)
