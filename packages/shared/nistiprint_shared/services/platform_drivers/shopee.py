@@ -58,7 +58,7 @@ def get_order_detail(integration: Dict, order_sn_list: List[str]) -> Dict:
     }
     
     # Optional fields to get more info (like buyer details, items, etc)
-    optional_fields = "buyer_user_id,buyer_username,recipient_address,item_list,pay_time,total_amount,order_status,fulfillment_flag,package_list,shipping_carrier"
+    optional_fields = "buyer_user_id,buyer_username,recipient_address,item_list,pay_time,total_amount,order_status,fulfillment_flag,package_list,shipping_carrier,message_to_seller"
     params["response_optional_fields"] = optional_fields
     
     # print(f"DEBUG: Shopee API URL: {url}")

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.mappers.order_mappers import BlingMapper, ShopeeMapper
+from nistiprint_shared.services.marketplace_enrichment_service import MarketplaceEnrichmentService
 import logging
 
 class OrderService:
@@ -15,6 +16,7 @@ class OrderService:
         self.itens_table = supabase_db.table('itens_pedido')
         self.vinculos_table = supabase_db.table('vinculos_integracao_pedido')
         self.eventos_table = supabase_db.table('eventos_pedido')
+        self.marketplace_enrichment = MarketplaceEnrichmentService()
 
     def _get_mapper(self, platform: str):
         if platform.upper() == 'BLING': return BlingMapper
@@ -60,7 +62,12 @@ class OrderService:
                     'data_limite_envio': order_data.get('data_limite_envio'),
                     'servico_logistico': order_data.get('servico_logistico'),
                     'payload_canonico': canonical_payload,
-                    'updated_at': datetime.now(timezone.utc).isoformat()
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                    # Novas colunas explícitas para dados do marketplace
+                    'buyer_username': order_data.get('buyer_username'),
+                    'marketplace_order_id': order_data.get('marketplace_order_id'),
+                    'shipping_carrier': order_data.get('shipping_carrier'),
+                    'contact_marketplace_id': order_data.get('contact_marketplace_id')
                 }
 
                 # Atualizar numero_pedido e codigo_pedido_externo apenas se vierem do Bling (prioridade)
@@ -100,7 +107,7 @@ class OrderService:
                         # PROTEÇÃO similar para servico_logistico
                         current_servico = existing_order.data[0].get('servico_logistico', '')
                         new_servico = order_data.get('servico_logistico', '')
-                        
+
                         # Se o atual é Entrega Rápida e o novo não é, ignore
                         if 'ENTREGA RÁPIDA' in str(current_servico).upper() and 'ENTREGA RÁPIDA' not in str(new_servico).upper():
                              logging.info(f"Ignorando atualização de servico_logistico no pedido {core_id} para preservar Flex")
@@ -108,22 +115,29 @@ class OrderService:
                                  del update_core['servico_logistico']
                         else:
                             update_core['servico_logistico'] = order_data.get('servico_logistico')
-                    
-                    # CRÍTICO: Atualizar informacoes_cliente com shipping_carrier e outros dados da Shopee
-                    # Isso garante que o trigger SQL possa calcular is_flex automaticamente
-                    if order_data.get('informacoes_cliente'):
-                        # Mesclar com dados existentes para não perder informações
-                        existing = self.pedidos_table.select('informacoes_cliente').eq('id', core_id).single().execute()
-                        if existing.data:
-                            info_existente = existing.data.get('informacoes_cliente', {}) or {}
-                            if isinstance(info_existente, dict):
-                                # Mesclar: dados novos sobrescrevem existentes
-                                info_existente.update(order_data.get('informacoes_cliente'))
-                                update_core['informacoes_cliente'] = info_existente
-                            else:
-                                update_core['informacoes_cliente'] = order_data.get('informacoes_cliente')
+
+                    # PROTEÇÃO para buyer_username e shipping_carrier
+                    if order_data.get('buyer_username'):
+                        current_buyer_username = existing_order.data[0].get('buyer_username', '')
+                        new_buyer_username = order_data.get('buyer_username', '')
+                        # Se já tem buyer_username, não sobrescrever com vazio
+                        if current_buyer_username and not new_buyer_username:
+                            logging.info(f"Ignorando atualização de buyer_username para vazio no pedido {core_id}")
+                            if 'buyer_username' in update_core:
+                                del update_core['buyer_username']
                         else:
-                            update_core['informacoes_cliente'] = order_data.get('informacoes_cliente')
+                            update_core['buyer_username'] = order_data.get('buyer_username')
+
+                    if order_data.get('shipping_carrier'):
+                        current_carrier = existing_order.data[0].get('shipping_carrier', '')
+                        new_carrier = order_data.get('shipping_carrier', '')
+                        # Se já tem shipping_carrier, não sobrescrever com vazio
+                        if current_carrier and not new_carrier:
+                            logging.info(f"Ignorando atualização de shipping_carrier para vazio no pedido {core_id}")
+                            if 'shipping_carrier' in update_core:
+                                del update_core['shipping_carrier']
+                        else:
+                            update_core['shipping_carrier'] = order_data.get('shipping_carrier')
                 
                 update_core = {k: v for k, v in update_core.items() if v is not None}
                 self.pedidos_table.update(update_core).eq('id', core_id).execute()
@@ -147,7 +161,12 @@ class OrderService:
                     'payload_canonico': canonical_payload,
                     'canal_venda_id': channel_id,
                     'created_at': datetime.now(timezone.utc).isoformat(),
-                    'updated_at': datetime.now(timezone.utc).isoformat()
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                    # Novas colunas explícitas para dados do marketplace
+                    'buyer_username': order_data.get('buyer_username'),
+                    'marketplace_order_id': order_data.get('marketplace_order_id'),
+                    'shipping_carrier': order_data.get('shipping_carrier'),
+                    'contact_marketplace_id': order_data.get('contact_marketplace_id')
                 }
                 res = self.pedidos_table.insert(new_core).execute()
                 if not res.data:
@@ -180,6 +199,31 @@ class OrderService:
                 'last_synced_at': datetime.now(timezone.utc).isoformat()
             }
             self.vinculos_table.upsert(vinculo, on_conflict='pedido_id,plataforma').execute()
+
+            # 3.5 Enriquecer com dados do Marketplace (quando houver integration_id configurado)
+            if integration_id:
+                try:
+                    # Extrair bling_loja_id do raw_payload (para plataforma BLING)
+                    bling_loja_id = None
+                    if isinstance(raw_payload, dict):
+                        # Tenta extrair de diferentes caminhos possíveis
+                        bling_loja_id = raw_payload.get('loja', {}).get('id') or \
+                                      raw_payload.get('transporte', {}).get('volumes', [{}])[0].get('contato', {}).get('id') if raw_payload.get('transporte', {}).get('volumes') else None
+
+                    # Para plataforma SHOPEE, usa integration_id diretamente como erp_store_id
+                    erp_store_id = str(bling_loja_id) if bling_loja_id else None
+
+                    if erp_store_id:
+                        # Enriquecer com dados do marketplace usando erp_marketplace_links
+                        self.marketplace_enrichment.enrich_order_from_marketplace(
+                            pedido_id=core_id,
+                            codigo_pedido_externo=external_id,
+                            erp_integration_id=int(integration_id),
+                            erp_store_id=erp_store_id
+                        )
+                except Exception as e:
+                    logging.warning(f"Erro ao enriquecer pedido {core_id} com dados do marketplace: {e}")
+                    # Não falhar o upsert se o enriquecimento falhar
 
             # 4. Processar Itens
             if items:

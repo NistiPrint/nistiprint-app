@@ -17,6 +17,7 @@ import os
 
 from celery_config import celery_app
 from nistiprint_shared.services.correlation_service import with_correlation
+from nistiprint_shared.database.supabase_db_service import supabase_db
 
 # Adicionar diretório do worker ao path para importar task_logger
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

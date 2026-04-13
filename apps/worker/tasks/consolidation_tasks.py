@@ -472,41 +472,34 @@ def persist_orders_batch(self, json_file_path: str, platform: str, channel_id: i
         
         for order in bling_orders_data:
             try:
-                # Normalização básica para o OrderService
+                # Bling é fonte principal de dados - apenas enriquecer pedidos existentes
+                codigo_externo = str(order.get('numeroLoja'))
+                existing_order = supabase_db.table('pedidos').select('id').eq('codigo_pedido_externo', codigo_externo).execute()
+
+                if not existing_order.data:
+                    logger.info(f"Pedido {codigo_externo} não existe na base (Bling é fonte principal). Pulando.")
+                    continue
+
+                # Pedido existe - enriquecer com dados da planilha
                 order_to_upsert = {
-                    'codigo_pedido_externo': str(order.get('numeroLoja')),
-                    'numero_pedido': str(order.get('numero')),
-                    'cliente_nome': order.get('contato', {}).get('nome'),
-                    'cliente_documento': order.get('contato', {}).get('numeroDocumento'),
-                    'status_original': str(order.get('situacao', {}).get('id', 'IMPORTADO')),
-                    'total_pedido': float(order.get('totalProdutos', 0)),
-                    'origem': platform,
+                    'codigo_pedido_externo': codigo_externo,
                     'is_flex': order.get('is_flex'),
                     'servico_logistico': order.get('servico_logistico')
                 }
-                
-                order_items = []
-                for item in order.get('itens', []):
-                    order_items.append({
-                        'sku_externo': item.get('codigo'),
-                        'descricao': item.get('descricao'),
-                        'quantidade': item.get('quantidade'),
-                        'preco_unitario': item.get('valor')
-                    })
 
                 order_service.upsert_order(
                     order_data=order_to_upsert,
                     platform=platform,
-                    platform_order_id=str(order.get('numeroLoja')),
+                    platform_order_id=codigo_externo,
                     raw_payload=order,
-                    items=order_items,
+                    items=None,  # Não atualizar itens de pedidos existentes via planilha
                     channel_id=channel_id,
                     integration_id=account_id
                 )
                 success_count += 1
             except Exception as item_err:
                 error_count += 1
-                logger.error(f"Erro ao persistir pedido individual no worker: {item_err}")
+                logger.error(f"Erro ao enriquecer pedido individual no worker: {item_err}")
 
         print(f"✅ Persist Worker: {success_count} processados, {error_count} falhas. Limpando arquivo.")
         

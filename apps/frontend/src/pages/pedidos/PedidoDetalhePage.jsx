@@ -1,14 +1,14 @@
-import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { toast } from 'sonner';
-import { Loader2 } from 'lucide-react';
-import * as pedidoService from '@/services/pedidoService';
-import PedidoHeader from '@/components/pedidos/PedidoHeader';
-import PedidoResumoCards from '@/components/pedidos/PedidoResumoCards';
-import PedidoItensList from '@/components/pedidos/PedidoItensList';
-import PedidoIntegracoesCard from '@/components/pedidos/PedidoIntegracoesCard';
-import PedidoTimeline from '@/components/pedidos/PedidoTimeline';
 import PedidoDemandaCard from '@/components/pedidos/PedidoDemandaCard';
+import PedidoHeader from '@/components/pedidos/PedidoHeader';
+import PedidoIntegracoesCard from '@/components/pedidos/PedidoIntegracoesCard';
+import PedidoItensList from '@/components/pedidos/PedidoItensList';
+import PedidoResumoCards from '@/components/pedidos/PedidoResumoCards';
+import PedidoTimeline from '@/components/pedidos/PedidoTimeline';
+import * as pedidoService from '@/services/pedidoService';
+import { Loader2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { toast } from 'sonner';
 
 /**
  * Página de Detalhe do Pedido
@@ -144,7 +144,12 @@ export default function PedidoDetalhePage() {
             <PedidoIntegracoesCard integracoes={pedido.integracoes} />
             
             {/* Timeline */}
-            <PedidoTimeline eventos={pedido.timeline} />
+            <PedidoTimeline
+              eventos={pedido.timeline}
+              pedidoId={pedido.id}
+              codigoPedidoExterno={pedido.codigo_pedido_externo}
+              onReprocess={carregarPedido}
+            />
           </div>
         </div>
       </div>

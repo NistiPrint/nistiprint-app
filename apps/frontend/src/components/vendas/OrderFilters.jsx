@@ -2,20 +2,20 @@ import { Input } from '@/components/ui/input';
 import { Search } from 'lucide-react';
 
 /**
- * OrderFilters — busca + filtros de status IA para pedidos personalizados.
+ * OrderFilters — busca + filtros simplificados para pedidos personalizados.
  *
- * Filtros de IA (funcionam em conjunto com a aba ativa):
- *   - Revisar (NEEDS_REVIEW)
- *   - Sem nome (NO_PERSONALIZATION_FOUND)
- *   - Com Chat / Sem Chat
+ * Filtros:
+ *   - Todos
+ *   - Sem Chat
+ *   - Nome Identificado (SUCCESS)
+ *   - A Revisar (NEEDS_REVIEW)
  */
 function OrderFilters({ searchTerm, onSearchChange, statusFilter, onStatusFilterChange, statusCounts }) {
   const filterOptions = [
     { key: '', label: 'Todos', count: statusCounts?.all ?? 0 },
-    { key: 'needs_review', label: 'Revisar', count: statusCounts?.needs_review ?? 0 },
-    { key: 'no_personalization', label: 'Sem nome', count: statusCounts?.no_personalization ?? 0 },
-    { key: 'with_chat', label: 'Com Chat', count: statusCounts?.with_chat ?? 0 },
-    { key: 'without_chat', label: 'Sem Chat', count: statusCounts?.without_chat ?? 0 },
+    { key: 'sem_chat', label: 'Sem Chat', count: statusCounts?.sem_chat ?? 0 },
+    { key: 'nome_identificado', label: 'Nome Identificado', count: statusCounts?.nome_identificado ?? 0 },
+    { key: 'a_revisar', label: 'A Revisar', count: statusCounts?.a_revisar ?? 0 },
   ];
 
   return (
@@ -37,7 +37,7 @@ function OrderFilters({ searchTerm, onSearchChange, statusFilter, onStatusFilter
           </div>
         </div>
 
-        {/* Filtros por Status IA + Chat */}
+        {/* Filtros */}
         <div className="lg:col-span-8">
           <div className="flex flex-wrap gap-2">
             {filterOptions.map((option) => (

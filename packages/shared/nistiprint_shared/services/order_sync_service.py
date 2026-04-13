@@ -89,10 +89,12 @@ class OrderSyncService:
             raw_order = shopee_data.get("raw", {})
             buyer_username = raw_order.get('buyer_username', 'N/A')
             shipping_carrier = raw_order.get('shipping_carrier', 'N/A')
+            message_to_seller = raw_order.get('message_to_seller', '')
             recipient = raw_order.get('recipient_address', {})
 
             logger.info("[FASE 2] buyer_username: %s", buyer_username)
             logger.info("[FASE 2] shipping_carrier: %s", shipping_carrier)
+            logger.info("[FASE 2] message_to_seller: %s", message_to_seller)
             logger.info("[FASE 2] recipient.name: %s", recipient.get('name'))
 
             cliente_nome = recipient.get('name') or raw_order.get('buyer_username')
@@ -123,10 +125,9 @@ class OrderSyncService:
                 'total_pedido': safe_float(shopee_data.get('total')),
                 'situacao_pedido_id': self._map_shopee_status(shopee_data.get('status_original')),
                 'status_original': shopee_data.get('status_original'),
-                'informacoes_cliente': {
-                    'buyer_username': raw_order.get('buyer_username'),
-                    'full_address': recipient.get('full_address')
-                }
+                'buyer_username': raw_order.get('buyer_username'),
+                'shipping_carrier': shipping_carrier,
+                'message_to_seller': message_to_seller
             }
 
             # Itens
@@ -239,13 +240,7 @@ class OrderSyncService:
                 'data_venda': clean_date(bling_order_data.get('data')),
                 'total_pedido': safe_float(bling_order_data.get('total')),
                 'situacao_pedido_id': self._map_bling_status(bling_order_data.get('situacao', {}).get('id')),
-                'status_original': str(bling_order_data.get('situacao', {}).get('id')),
-                'informacoes_cliente': {
-                    'servico_logistico': servico_logistico,
-                    'contato_id': contato.get('id'),
-                    'numero_loja': order_sn,
-                    'bling_loja_id': loja_id
-                }
+                'status_original': str(bling_order_data.get('situacao', {}).get('id'))
             }
 
             items_dto = []

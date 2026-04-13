@@ -87,22 +87,22 @@ def processar_personalizados():
 
         logger.info("Processamento: order_sn=%s, limit=%s (None=todos)", order_sn, limit)
 
-        # Tentar processar via Celery (se disponível)
-        try:
-            from nistiprint_shared.services.personalizados_tasks import processar_personalizacoes_task
-            task = processar_personalizacoes_task.delay(order_sn=order_sn, limit=limit)
+        # Processar síncrono diretamente para garantir execução imediata e logs visíveis
+        logger.info("Iniciando processamento síncrono de IA...")
+        success, message = process_orders(order_sn=order_sn, limit=limit)
+        logger.info("Processamento concluído: success=%s, message=%s", success, message)
+
+        if success:
             return ApiResponse.success({
-                'task_id': task.id,
-                'status': 'queued',
-                'message': 'Processamento iniciado em background'
+                'success': True,
+                'message': f"{message} (modo síncrono)",
+                'mode': 'sync'
             })
-        except ImportError:
-            # Fallback: processar síncrono
-            logger.warning("Celery task não disponível, processando síncrono")
-            success, message = process_orders(order_sn=order_sn, limit=limit)
+        else:
+            # Se houve erro, retorna como error mas com status 200 para não quebrar o frontend
             return ApiResponse.success({
-                'success': success,
-                'message': message,
+                'success': False,
+                'message': f"Erro no processamento: {message}",
                 'mode': 'sync'
             })
 

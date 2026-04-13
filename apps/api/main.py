@@ -81,6 +81,7 @@ from routes.producao_contexto import producao_contexto_bp
 from routes.erp_links import erp_links_bp
 from routes.personalizados import personalizados_api_bp
 from routes.impressao import impressao_api_bp
+from routes.order_reprocess import order_reprocess_bp
 
 # Import Models to ensure they are registered
 from nistiprint_shared.models import *
@@ -223,6 +224,7 @@ def create_app():
     app.register_blueprint(erp_links_bp)
     app.register_blueprint(personalizados_api_bp)
     app.register_blueprint(impressao_api_bp)
+    app.register_blueprint(order_reprocess_bp)
 
     @app.route('/test_route')
     def test_route():
