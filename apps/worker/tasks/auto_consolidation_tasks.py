@@ -17,11 +17,20 @@ import os
 
 from celery_config import celery_app
 from nistiprint_shared.services.correlation_service import with_correlation
-from nistiprint_shared.database.supabase_db_service import supabase_db
 
 # Adicionar diretório do worker ao path para importar task_logger
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from task_logger import log_task_execution
+
+# Importar supabase_db com tratamento de erro explícito
+try:
+    from nistiprint_shared.database.supabase_db_service import supabase_db
+    print(f"[WORKER:CONSOLID] ✓ supabase_db imported successfully")
+except ImportError as e:
+    print(f"[WORKER:CONSOLID] ✗ FAILED to import supabase_db: {e}")
+    print(f"[WORKER:CONSOLID] sys.path: {sys.path}")
+    print(f"[WORKER:CONSOLID] PYTHONPATH: {os.environ.get('PYTHONPATH', 'not set')}")
+    raise
 
 # ============================================================
 # PREFIXO DE LOG — identificável nos logs do container

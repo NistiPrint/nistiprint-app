@@ -23,9 +23,10 @@ class OrderService:
         if platform.upper() == 'SHOPEE': return ShopeeMapper
         return None
 
-    def upsert_order(self, order_data: Dict[str, Any], platform: str, platform_order_id: str, 
+    def upsert_order(self, order_data: Dict[str, Any], platform: str, platform_order_id: str,
                      raw_payload: Dict[str, Any], items: List[Dict[str, Any]] = None,
-                     channel_id: Optional[int] = None, integration_id: Optional[str] = None) -> Dict[str, Any]:
+                     channel_id: Optional[int] = None, integration_id: Optional[str] = None,
+                     correlation_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Realiza o Upsert inteligente de um pedido.
         Garante a unicidade, normaliza os dados e registra na timeline.
@@ -174,18 +175,19 @@ class OrderService:
                 core_id = res.data[0]['id']
                 
                 # Registrar Evento de Criação
-                self.register_event(core_id, 'ORDER_CREATED', f"Pedido criado via {platform}", raw_payload)
+                self.register_event(core_id, 'ORDER_CREATED', f"Pedido criado via {platform}", raw_payload, correlation_id=correlation_id)
 
             # 2. Registrar Mudança de Status na Timeline
             new_status = order_data.get('situacao_pedido_id')
             if old_status and new_status and old_status != new_status:
                 self.register_event(
-                    core_id, 
-                    'STATUS_CHANGED', 
+                    core_id,
+                    'STATUS_CHANGED',
                     f"Status alterado de {old_status} para {new_status}",
                     raw_payload,
                     status_de=str(old_status),
-                    status_para=str(new_status)
+                    status_para=str(new_status),
+                    correlation_id=correlation_id
                 )
 
             # 3. Upsert do Vínculo de Integração
@@ -263,9 +265,9 @@ class OrderService:
             logging.error(f"Erro no upsert_order: {str(e)}")
             raise e
 
-    def register_event(self, pedido_id: int, tipo: str, descricao: str, payload: Dict = None, 
+    def register_event(self, pedido_id: int, tipo: str, descricao: str, payload: Dict = None,
                        status_de: str = None, status_para: str = None, correlation_id: str = None):
-        """Registra um evento na timeline do pedido com correlation_id."""
+        """Registra um evento na timeline do pedido com correlation_id para rastreamento."""
         try:
             event = {
                 'pedido_id': pedido_id,
