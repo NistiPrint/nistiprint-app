@@ -209,8 +209,11 @@ class OrderService:
                     bling_loja_id = None
                     if isinstance(raw_payload, dict):
                         # Tenta extrair de diferentes caminhos possíveis
-                        bling_loja_id = raw_payload.get('loja', {}).get('id') or \
-                                      raw_payload.get('transporte', {}).get('volumes', [{}])[0].get('contato', {}).get('id') if raw_payload.get('transporte', {}).get('volumes') else None
+                        bling_loja_id = raw_payload.get('loja', {}).get('id')
+                        if not bling_loja_id:
+                            volumes = raw_payload.get('transporte', {}).get('volumes') or []
+                            if volumes:
+                                bling_loja_id = volumes[0].get('contato', {}).get('id')
 
                     # Para plataforma SHOPEE, usa integration_id diretamente como erp_store_id
                     erp_store_id = str(bling_loja_id) if bling_loja_id else None
@@ -403,4 +406,3 @@ class OrderService:
             return []
 
 order_service = OrderService()
-

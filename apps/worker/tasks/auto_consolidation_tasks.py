@@ -65,10 +65,13 @@ def classificar_e_consolidar_pedido(
 
     Fluxo:
       1. Buscar dados do pedido (canal, modalidade, coleta)
-      2. Procurar demanda AGUARDANDO/RASCUNHO com mesmas regras de agrupamento
+      2. Procurar demanda RASCUNHO com mesmas regras de agrupamento
       3. Se existe → consolidar itens + vincular pedido
       4. Se não existe → criar nova demanda RASCUNHO + consolidar
       5. Retornar resultado
+    
+    NOTA: Apenas demandas RASCUNHO são alteradas pelo processo automatizado.
+    Demandas ativas (AGUARDANDO, EM_PRODUCAO, etc.) não são modificadas.
     """
     # Configurar correlation_id
     correlation_id = with_correlation(correlation_id)
@@ -131,12 +134,15 @@ def classificar_e_consolidar_pedido(
         # Critérios de agrupamento:
         #   - Mesmo canal_venda_id
         #   - Mesmo is_flex (modalidade logística: STANDARD vs EXPRESS)
-        #   - Status: RASCUNHO ou AGUARDANDO
+        #   - Status: APENAS RASCUNHO (demandas ativas não são alteradas)
         #   - Dentro da janela de coleta (próximas 24h)
 
-        demandas_res = supabase_db.table('demandas_producao').select(
+        query = supabase_db.table('demandas_producao').select(
             'id, demanda_id, descricao, status, canal_venda_id, is_flex, data_entrega'
-        ).eq('canal_venda_id', canal_id).eq('is_flex', is_flex).in_('status', ['RASCUNHO', 'AGUARDANDO']).execute()
+        )
+        if canal_id is not None:
+            query = query.eq('canal_venda_id', canal_id)
+        demandas_res = query.eq('is_flex', is_flex).eq('status', 'RASCUNHO').execute()
 
         demandas_candidatas = demandas_res.data or []
 
@@ -166,7 +172,7 @@ def classificar_e_consolidar_pedido(
                 'classificacao_cliente': 'B2C',
                 'canal_venda_id': canal_id,
                 'is_flex': is_flex,
-                'data_criacao': now.isoformat(),
+                'created_at': now.isoformat(),
                 'rascunho_expira_em': (now + datetime.timedelta(hours=24)).isoformat(),
             }
 
@@ -222,7 +228,6 @@ def classificar_e_consolidar_pedido(
                     'descricao': item_pedido.get('descricao'),
                     'quantidade': qtd,
                     'quantidade_planejada': qtd,
-                    'quantidade_atendida': 0,
                 })
                 _log("DEBUG", f"  Item SKU={sku}: NOVO (qtd={qtd})")
 
@@ -256,20 +261,12 @@ def classificar_e_consolidar_pedido(
             _log("INFO", f"Pedido {pedido_id} já estava vinculado à demanda {demanda_id}")
 
         # ================================================================
-        # 7. ATUALIZAR STATUS SE NECESSÁRIO
+        # 7. DEMANDA PERMANECE RASCUNHO
         # ================================================================
-        # Se a demanda estava em RASCUNHO e agora tem itens + pedidos,
-        # promover para AGUARDANDO
-        if demanda_alvo.get('status') == 'RASCUNHO':
-            # Verificar se há pelo menos 1 pedido e 1 item
-            total_pedidos = supabase_db.table('demandas_pedidos').select('id', count='exact').eq('demanda_id', demanda_id).execute()
-            total_itens = supabase_db.table('itens_demanda').select('id', count='exact').eq('demanda_id', demanda_id).execute()
-
-            if (total_pedidos.count or 0) >= 1 and (total_itens.count or 0) >= 1:
-                supabase_db.table('demandas_producao').update({
-                    'status': 'AGUARDANDO',
-                }).eq('id', demanda_id).execute()
-                _log("INFO", f"Demanda {demanda_id}: RASCUNHO → AGUARDANDO")
+        # A demanda permanece como RASCUNHO até que um usuário a promova manualmente
+        # para AGUARDANDO ou outro status ativo. Isso garante que o processo
+        # automatizado não altere demandas ativas.
+        _log("DEBUG", f"Demanda {demanda_id} permanece como RASCUNHO (aguardando intervenção manual)")
 
         # ================================================================
         # 8. RETORNAR

@@ -42,16 +42,9 @@ def generate_nfe():
                     'INVOICING'
                 )
         
-        # 2. Fallback para comportamento legado (CNPJ) se não encontrou via novo sistema
-        if not bling_instance and platform:
-            from constants import PLATFORM_X_CNPJ
-            cnpj = PLATFORM_X_CNPJ.get(platform.lower())
-            if cnpj:
-                # Criar cliente usando o método legado que busca por CNPJ
-                from nistiprint_shared.services.bling.bling_client_updated import BlingClient as BlingClientLegacy
-                bling_client = BlingClientLegacy.create_client(cnpj=cnpj)
-            else:
-                return jsonify({'error': f'Nenhuma instância de faturamento configurada para: {platform}'}), 400
+        # 2. Se não encontrou via novo sistema, retorna erro
+        if not bling_instance:
+            return jsonify({'error': f'Nenhuma instância de faturamento configurada para: {platform}'}), 400
         elif bling_instance:
             # Criar cliente a partir da instância encontrada
             account_data = bling_instance.to_dict()
@@ -91,6 +84,9 @@ def generate_nfe():
                     response['success'] = False
                     response['error'] = result.get(
                         'error_message', 'Erro desconhecido ao gerar NFe')
+                    # Include full error details if available
+                    if result.get('error_details'):
+                        response['error_details'] = result.get('error_details')
                     print(
                         f"Erro ao gerar NFe para pedido {order.get('id')}: {response['error']}")
 

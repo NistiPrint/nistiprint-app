@@ -2,6 +2,7 @@ from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.product_service import product_service # Importar product_service
 from typing import List, Dict, Any
 from nistiprint_shared.models.bom import BOMItem # Assuming models/bom.py exists and defines BOMItem
+import logging
 
 class BomService:
     """Service for managing Bill of Materials (BOM) in Supabase."""
@@ -10,11 +11,30 @@ class BomService:
         # Using the standardized 'ficha_tecnica' table in Supabase
         self.bom_table = supabase_db.table('ficha_tecnica')
 
+    def _validate_component_can_be_used(self, component_id: int) -> Dict[str, Any]:
+        component = product_service.get_by_id(str(component_id))
+        if not component:
+            raise ValueError(f"Componente com ID '{component_id}' nao encontrado")
+
+        if component.get('tipo_produto') == 'PRODUTO_ACABADO':
+            raise ValueError(
+                f"Produto acabado nao pode ser componente de BOM: "
+                f"{component.get('sku') or component.get('nome') or component_id}"
+            )
+
+        return component
+
     def sync_bom_for_product(self, product_id: int, components_data: List[Dict[str, Any]]) -> None:
         """
         Synchronizes the BOM for a given product.
         This replaces the entire existing BOM with the new data provided.
         """
+        for item in components_data:
+            try:
+                self._validate_component_can_be_used(item['component_id'])
+            except (ValueError, KeyError) as e:
+                raise ValueError(f"Invalid component data format: {item}. Error: {e}")
+
         # First, delete existing BOM entries for this product
         self.bom_table.delete().eq('produto_pai_id', product_id).execute()
 
@@ -229,7 +249,7 @@ class BomService:
         """
         # --- Validation Start ---
         parent_product = product_service.get_by_id(str(parent_product_id))
-        component_product = product_service.get_by_id(str(component_product_id))
+        component_product = self._validate_component_can_be_used(component_product_id)
         
         if parent_product and parent_product.get('categoria_id'):
             from nistiprint_shared.services.category_bom_rule_service import category_bom_rule_service
@@ -314,6 +334,7 @@ class BomService:
         # 3. Copy entries
         new_entries = []
         for item in parent_bom_resp.data:
+            self._validate_component_can_be_used(item['componente_id'])
             new_entries.append({
                 'produto_pai_id': product_id,
                 'componente_id': item['componente_id'],
@@ -388,4 +409,3 @@ class BomService:
 
 # Global instance for use throughout the application
 bom_service = BomService()
-

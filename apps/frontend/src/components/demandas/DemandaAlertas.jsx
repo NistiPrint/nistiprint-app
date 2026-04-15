@@ -1,18 +1,18 @@
-import React, { useEffect, useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { 
-  AlertTriangle, 
-  AlertCircle, 
-  CheckCircle2, 
-  Package, 
-  X,
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
   Clock,
-  TrendingDown
+  Package,
+  TrendingDown,
+  X
 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 
 /**

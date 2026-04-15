@@ -330,15 +330,91 @@ def imprimir_pedido(pedido_id):
         )
 
 
+@pedidos_bp.route('/bulk-update-status', methods=['PUT'])
+@login_required
+def bulk_update_pedido_status():
+    """
+    Atualiza o status de múltiplos pedidos em massa.
+    
+    Payload:
+    {
+        "pedido_ids": [123, 456, 789],
+        "situacao_pedido_id": 2,
+        "observacoes": "Opcional"
+    }
+    """
+    try:
+        data = request.get_json()
+        pedido_ids = data.get('pedido_ids', [])
+        novo_status_id = data.get('situacao_pedido_id')
+        observacoes = data.get('observacoes', '')
+        
+        if not pedido_ids:
+            return ApiResponse.error(
+                message="pedido_ids é obrigatório",
+                status_code=400
+            )
+        
+        if not novo_status_id:
+            return ApiResponse.error(
+                message="situacao_pedido_id é obrigatório",
+                status_code=400
+            )
+        
+        # Verificar se status existe
+        status_response = supabase_db.table('situacoes_pedido').select('id, nome').eq('id', novo_status_id).execute()
+        if not status_response.data:
+            return ApiResponse.error(
+                message=f"Status {novo_status_id} não encontrado",
+                status_code=404
+            )
+        
+        # Atualizar status em massa
+        update_response = supabase_db.table('pedidos').update({
+            'situacao_pedido_id': novo_status_id,
+            'updated_at': 'now()'
+        }).in_('id', pedido_ids).execute()
+        
+        if not update_response.data:
+            return ApiResponse.error(
+                message="Nenhum pedido encontrado para atualizar",
+                status_code=404
+            )
+        
+        # Registrar eventos de mudança de status para cada pedido
+        status_nome = status_response.data[0]['nome']
+        for pedido_id in pedido_ids:
+            if observacoes:
+                order_service.register_event(
+                    pedido_id,
+                    'STATUS_CHANGED',
+                    f"Status alterado para {status_nome}. {observacoes}",
+                    payload={'novo_status_id': novo_status_id}
+                )
+        
+        return ApiResponse.success(
+            data={
+                'pedidos_atualizados': len(update_response.data),
+                'novo_status': status_response.data[0]
+            },
+            message=f"{len(update_response.data)} pedido(s) atualizado(s) com sucesso"
+        )
+        
+    except Exception as e:
+        logger.error(f"Erro ao atualizar status em massa: {e}")
+        return ApiResponse.error(
+            message=f"Erro ao atualizar status: {str(e)}",
+            status_code=500
+        )
+
+
 @pedidos_bp.route('/<int:pedido_id>/demandas', methods=['GET'])
 @login_required
 def get_pedido_demandas(pedido_id):
     """
     Retorna demandas vinculadas a um pedido específico.
     
-    A relação é feita através de:
-    1. Campo direto pedidos.demanda_id (para demandas de pedido único)
-    2. Join via demandas_item_origem → itens_demanda (para demandas consolidadas)
+    A relação é feita através da tabela pivot demandas_pedidos.
     """
     try:
         # Primeiro, buscar o pedido para obter o codigo_pedido_externo
@@ -375,11 +451,7 @@ def get_pedido_demandas(pedido_id):
                     quantidade,
                     descricao,
                     sku,
-                    origens:demandas_item_origem(
-                        pedido_externo_id,
-                        plataforma,
-                        quantidade_atendida
-                    )
+                    finalizados_qtd
                 )
             )
         ''').eq('pedido_id', pedido_id).execute()
@@ -387,6 +459,17 @@ def get_pedido_demandas(pedido_id):
         demandas = []
         if pivot_response.data:
             demandas = [item['demandas_producao'] for item in pivot_response.data if item.get('demandas_producao')]
+
+        total_pedidos_por_demanda = {}
+        demanda_ids = [demanda.get('id') for demanda in demandas if demanda.get('id')]
+        if demanda_ids:
+            vinculos_response = supabase_db.table('demandas_pedidos') \
+                .select('demanda_id, pedido_id') \
+                .in_('demanda_id', demanda_ids) \
+                .execute()
+            for vinculo in vinculos_response.data or []:
+                demanda_id = vinculo.get('demanda_id')
+                total_pedidos_por_demanda[demanda_id] = total_pedidos_por_demanda.get(demanda_id, 0) + 1
         
         # Formatando resposta
         demandas_formatadas = []
@@ -398,13 +481,6 @@ def get_pedido_demandas(pedido_id):
                 for item in demanda.get('itens', [])
             )
             progresso = round((itens_finalizados / total_itens * 100)) if total_itens > 0 else 0
-            
-            # Calcular total de pedidos vinculados
-            pedidos_vinculados = set()
-            for item in demanda.get('itens', []):
-                for origem in item.get('origens', []):
-                    if origem.get('pedido_externo_id'):
-                        pedidos_vinculados.add(origem.get('pedido_externo_id'))
             
             demandas_formatadas.append({
                 'id': demanda.get('id'),  # ID numérico para a rota
@@ -420,7 +496,7 @@ def get_pedido_demandas(pedido_id):
                 'progresso': progresso,
                 'total_itens': total_itens,
                 'itens_finalizados': itens_finalizados,
-                'qtd_pedidos_vinculados': len(pedidos_vinculados)
+                'qtd_pedidos_vinculados': total_pedidos_por_demanda.get(demanda.get('id'), 0)
             })
         
         return ApiResponse.success(data={

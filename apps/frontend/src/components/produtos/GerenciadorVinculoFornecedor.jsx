@@ -1,16 +1,15 @@
 // frontend/src/components/produtos/GerenciadorVinculoFornecedor.jsx
-import React, { useState, useEffect, useCallback } from 'react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import FornecedorInsumoService from '@/services/FornecedorInsumoService';
+import FornecedorService from '@/services/FornecedorService';
+import { Pencil, PlusCircle, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 import { useFormContext } from 'react-hook-form';
 import { toast } from 'sonner';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Trash2, PlusCircle, Pencil } from 'lucide-react';
-import FornecedorService from '@/services/FornecedorService';
-import FornecedorInsumoService from '@/services/FornecedorInsumoService';
 
 // Componente para o modal de cadastro rápido de fornecedor
 function FornecedorQuickAddModal({ isOpen, onClose, onSupplierCreated }) {

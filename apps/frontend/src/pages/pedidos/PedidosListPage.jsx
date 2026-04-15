@@ -2,8 +2,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   CheckCircle2,
-  ClipboardList,
-  Upload
+  ClipboardList
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -11,14 +10,13 @@ import { toast } from 'sonner';
 
 import FiltrosPedidos from '@/components/pedidos/FiltrosPedidos';
 import GerarDemandaModal from '@/components/pedidos/GerarDemandaModal';
-import ImportModal from '@/components/pedidos/ImportModal';
 import TabelaPedidos from '@/components/pedidos/TabelaPedidos';
-import { TooltipProvider } from '@/components/ui/tooltip';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Textarea } from '@/components/ui/textarea';
+import { TooltipProvider } from '@/components/ui/tooltip';
 
 function PedidosListPage() {
   const navigate = useNavigate();
@@ -26,7 +24,6 @@ function PedidosListPage() {
   // Estados principais
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [estatisticas, setEstatisticas] = useState(null);
 
   // Estados de filtro
   const [filtros, setFiltros] = useState({
@@ -49,52 +46,32 @@ function PedidosListPage() {
   // Estados de seleção
   const [pedidosSelecionados, setPedidosSelecionados] = useState([]);
 
-  // Estados de canais próximos (para highlight na tabela)
+  // Estados de canais próximos (para highlight e contexto)
   const [canaisProximosIds, setCanaisProximosIds] = useState([]);
+  const [channels, setChannels] = useState([]);
+  const [canalInfo, setCanalInfo] = useState({ id: null, nome: null, horario_coleta: null });
 
   // Estados de modais
-  const [importModalOpen, setImportModalOpen] = useState(false);
   const [gerarDemandaModalOpen, setGerarDemandaModalOpen] = useState(false);
   const [resultadosModalOpen, setResultadosModalOpen] = useState(false);
+  const [alterarSituacaoModalOpen, setAlterarSituacaoModalOpen] = useState(false);
+  const [statusOpcoes, setStatusOpcoes] = useState([]);
 
-  // Estado de importação
-  const [importando, setImportando] = useState(false);
-  
+  // Carregar canais de venda
+  const carregarCanais = async () => {
+    try {
+      const response = await fetch('/api/v2/cadastros/canal-venda?active_only=true');
+      const data = await response.json();
+      if (data.canais) setChannels(data.canais);
+    } catch (error) {
+      console.error('Erro ao carregar canais:', error);
+    }
+  };
+
   // Estados para resultados da consolidação
   const [resultadosConsolidacao, setResultadosConsolidacao] = useState(null);
   const [demandName, setDemandName] = useState('');
 
-  // Carregar estatísticas com retry
-  const carregarEstatisticas = async () => {
-    try {
-      const maxRetries = 3;
-      let lastError = null;
-      
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          // Normalizar URL (remover barra dupla se existir)
-          const url = '/api/v2/pedidos/estatisticas?dias=30'.replace(/\/+/g, '/');
-          const response = await fetch(url);
-          const data = await response.json();
-          if (data.success) {
-            setEstatisticas(data.data);
-            return;
-          }
-        } catch (error) {
-          lastError = error;
-          if (attempt < maxRetries) {
-            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-          }
-        }
-      }
-      
-      if (lastError) {
-        console.error('Erro ao carregar estatísticas após retries:', lastError);
-      }
-    } catch (error) {
-      console.error('Erro ao carregar estatísticas:', error);
-    }
-  };
 
   // Carregar canais próximos (para highlight e contexto)
   const carregarCanaisProximos = async () => {
@@ -107,6 +84,19 @@ function PedidosListPage() {
       }
     } catch (error) {
       console.error('Erro ao carregar canais próximos:', error);
+    }
+  };
+
+  // Carregar opções de status
+  const carregarStatusOpcoes = async () => {
+    try {
+      const response = await fetch('/api/v2/pedidos/status-opcoes');
+      const data = await response.json();
+      if (data.success) {
+        setStatusOpcoes(data.data.status || []);
+      }
+    } catch (error) {
+      console.error('Erro ao carregar status:', error);
     }
   };
 
@@ -150,6 +140,10 @@ function PedidosListPage() {
           total_pedido: order.total_pedido || order.totalPedido || order.total,
           tem_demanda: order.tem_demanda || order.temDemanda || order.has_demanda || false,
           demanda_id: order.demanda_id || order.demandaId || null,  // ID da demanda (se houver)
+          demanda_numero: order.demanda_numero || null,  // Número da demanda (se houver)
+          demanda_status: order.demanda_status || null,  // Status da demanda (se houver)
+          total_demandas: order.total_demandas || 0,  // Total de demandas vinculadas
+          demandas: order.demandas || [],  // Array de demandas associadas (para rascunhos)
           // NOVOS CAMPOS - Pedidos Flex
           is_flex: order.is_flex || false,
           is_personalizado: order.is_personalizado || false,
@@ -186,8 +180,9 @@ function PedidosListPage() {
 
   // Efeito: carregar dados iniciais
   useEffect(() => {
-    carregarEstatisticas();
     carregarCanaisProximos();
+    carregarStatusOpcoes();
+    carregarCanais();
   }, []);
 
   // Efeito: recarregar pedidos quando filtros mudam
@@ -232,105 +227,55 @@ function PedidosListPage() {
     }
   };
 
-  // Handlers de importação
-  const handleImportarBling = async (config) => {
-    setImportando(true);
-    try {
-      const response = await fetch('/api/v2/pedidos/importar', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...config,
-          config_id: config.config_id === 'all' ? null : config.config_id,
-          async: false, // Síncrono para mostrar resultado na tela
-        }),
-      });
+  // Validar canais dos pedidos selecionados antes de abrir modal
+  const handleOpenGerarDemandaModal = () => {
+    if (pedidosSelecionados.length === 0) {
+      toast.error('Selecione pelo menos um pedido');
+      return;
+    }
 
-      const data = await response.json();
-      
-      if (data.success) {
-        const stats = data.data.result;
-        if (stats && stats.totals) {
-          const { orders_synced, errors, orders_listed } = stats.totals;
-          toast.success(
-            `Importação concluída: ${orders_synced} pedidos sincronizados de ${orders_listed} encontrados. ${errors > 0 ? `(${errors} erros)` : ''}`
-          );
-        } else {
-          toast.success(data.data.message || 'Importação concluída!');
-        }
-        
-        setImportModalOpen(false);
-        carregarPedidos();
-        carregarEstatisticas();
-      } else {
-        toast.error(data.message || 'Erro ao importar pedidos');
+    // Buscar pedidos selecionados
+    const pedidosSelecionadosData = pedidos.filter(p => pedidosSelecionados.includes(p.id));
+    
+    // Verificar se todos os pedidos são do mesmo canal
+    const canaisUnicos = new Set();
+    pedidosSelecionadosData.forEach(pedido => {
+      if (pedido.canal_venda_id) {
+        canaisUnicos.add(pedido.canal_venda_id);
+      } else if (pedido.canal_venda_nome) {
+        // Fallback: usar nome se ID não estiver disponível
+        const canal = channels.find(c => c.nome === pedido.canal_venda_nome);
+        if (canal) canaisUnicos.add(canal.id);
       }
-    } catch (error) {
-      console.error('Erro ao importar:', error);
-      toast.error('Erro ao importar pedidos');
-    } finally {
-      setImportando(false);
+    });
+
+    if (canaisUnicos.size === 0) {
+      toast.error('Os pedidos selecionados não possuem canal de venda definido');
+      return;
     }
+
+    if (canaisUnicos.size > 1) {
+      toast.error('Selecione pedidos de apenas um canal de venda para gerar demanda');
+      return;
+    }
+
+    // Todos os pedidos são do mesmo canal
+    const canalId = Array.from(canaisUnicos)[0];
+    const canal = channels.find(c => c.id === canalId);
+    
+    if (!canal) {
+      toast.error('Canal de venda não encontrado');
+      return;
+    }
+
+    setCanalInfo({
+      id: canal.id,
+      nome: canal.nome,
+      horario_coleta: canal.horario_coleta || ''
+    });
+    setGerarDemandaModalOpen(true);
   };
 
-  const handleUploadPlanilha = async (file, options) => {
-    setImportando(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('channel', options.canal);
-      
-      if (options.startDate) formData.append('start_date', options.startDate);
-      // Usar end_datetime igual à ConsolidarPage
-      if (options.endDate) formData.append('end_datetime', options.endDate);
-      formData.append('print_orders', options.printOrders ? 'true' : 'false');
-      formData.append('is_flex', options.isFlex ? 'true' : 'false');
-
-      const response = await fetch('/api/v2/pedidos/upload-planilha', {
-        method: 'POST',
-        body: formData,
-      });
-
-      const data = await response.json();
-
-      if (response.ok && data) {
-        setImportModalOpen(false);
-        // Processamento SÍNCRONO: resultados já estão disponíveis
-        // O endpoint retorna os dados diretamente (igual /consolidar)
-        const processedResult = processarResultData(data);
-        setResultadosConsolidacao(processedResult);
-        setDemandName(`Demanda - ${new Date().toLocaleDateString('pt-BR')}`);
-        setResultadosModalOpen(true);
-        toast.success('Planilha processada com sucesso!');
-      } else {
-        toast.error(data.message || data.error || 'Erro ao processar planilha');
-      }
-    } catch (error) {
-      console.error('Erro ao upload:', error);
-      toast.error('Erro ao processar planilha');
-    } finally {
-      setImportando(false);
-    }
-  };
-
-  const processarResultData = (result) => {
-    const processed = {};
-    for (const [platform, platformData] of Object.entries(result)) {
-      const capasMiolosData = platformData.capas_miolos_data?.map(item => ({
-        ...item,
-        pedidos_origem: item.pedidos_origem || (item.order_refs?.map(ref => ({
-          codigo_pedido_externo: ref,
-          numero_pedido: null
-        })) || [])
-      })) || [];
-
-      processed[platform] = {
-        ...platformData,
-        capas_miolos_data: capasMiolosData
-      };
-    }
-    return processed;
-  };
 
   // Handlers de demanda
   const handleGerarDemanda = async (dadosDemanda) => {
@@ -352,7 +297,6 @@ function PedidosListPage() {
         setPedidosSelecionados([]);
         // Recarregar para atualizar indicadores de demanda
         carregarPedidos();
-        carregarEstatisticas();
         
         // Redirecionar para a demanda criada (usar demanda_id numérico)
         if (data.data.demanda_id) {
@@ -366,6 +310,35 @@ function PedidosListPage() {
     } catch (error) {
       console.error('Erro ao gerar demanda:', error);
       toast.error('Erro ao gerar demanda');
+    }
+  };
+
+  // Handler para alterar situação em massa
+  const handleAlterarSituacao = async (situacaoId, observacoes) => {
+    try {
+      const response = await fetch('/api/v2/pedidos/bulk-update-status', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pedido_ids: pedidosSelecionados,
+          situacao_pedido_id: situacaoId,
+          observacoes,
+        }),
+      });
+
+      const data = await response.json();
+      
+      if (data.success) {
+        toast.success(data.message || 'Situação alterada com sucesso!');
+        setAlterarSituacaoModalOpen(false);
+        setPedidosSelecionados([]);
+        carregarPedidos();
+      } else {
+        toast.error(data.message || 'Erro ao alterar situação');
+      }
+    } catch (error) {
+      console.error('Erro ao alterar situação:', error);
+      toast.error('Erro ao alterar situação');
     }
   };
 
@@ -383,39 +356,11 @@ function PedidosListPage() {
         <div className="flex gap-3">
           <Button
             variant="outline"
-            onClick={() => navigate('/consolidar/rascunhos')}
+            onClick={() => navigate('/producao/demanda/rascunhos')}
             className="gap-2"
           >
             <ClipboardList className="h-4 w-4" />
-            Rascunhos Automáticos
-          </Button>
-
-          {estatisticas && (
-            <Card className="p-3 min-w-[200px]">
-              <div className="flex justify-between items-center">
-                <div className="text-sm">
-                  <div className="text-muted-foreground">Sem Demanda</div>
-                  <div className="text-2xl font-bold text-red-600">
-                    {estatisticas.pedidos_sem_demanda}
-                  </div>
-                </div>
-                <div className="text-sm">
-                  <div className="text-muted-foreground">Com Demanda</div>
-                  <div className="text-2xl font-bold text-green-600">
-                    {estatisticas.pedidos_com_demanda}
-                  </div>
-                </div>
-              </div>
-            </Card>
-          )}
-
-          <Button
-            variant="default"
-            onClick={() => setImportModalOpen(true)}
-            className="gap-2"
-          >
-            <Upload className="h-4 w-4" />
-            Importar
+            ver rascunhos
           </Button>
         </div>
       </div>
@@ -446,8 +391,15 @@ function PedidosListPage() {
                 Limpar seleção
               </Button>
               <Button
+                variant="outline"
                 size="sm"
-                onClick={() => setGerarDemandaModalOpen(true)}
+                onClick={() => setAlterarSituacaoModalOpen(true)}
+              >
+                Alterar Situação
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleOpenGerarDemandaModal}
                 className="bg-green-600 hover:bg-green-700"
               >
                 📊 Gerar Demanda ({pedidosSelecionados.length})
@@ -474,19 +426,22 @@ function PedidosListPage() {
         />
       </TooltipProvider>
 
-      {/* Modais */}
-      <ImportModal
-        open={importModalOpen}
-        onOpenChange={setImportModalOpen}
-        onImportarBling={handleImportarBling}
-        onUploadPlanilha={handleUploadPlanilha}
-        importando={importando}
-      />
 
       <GerarDemandaModal
         open={gerarDemandaModalOpen}
         onOpenChange={setGerarDemandaModalOpen}
         onGerarDemanda={handleGerarDemanda}
+        quantidadePedidos={pedidosSelecionados.length}
+        canalVendaId={canalInfo.id}
+        canalVendaNome={canalInfo.nome}
+        horarioColetaInicial={canalInfo.horario_coleta}
+      />
+
+      <AlterarSituacaoModal
+        open={alterarSituacaoModalOpen}
+        onOpenChange={setAlterarSituacaoModalOpen}
+        statusOpcoes={statusOpcoes}
+        onAlterar={handleAlterarSituacao}
         quantidadePedidos={pedidosSelecionados.length}
       />
 
@@ -517,7 +472,6 @@ function PedidosListPage() {
                 toast.success('Demanda criada com sucesso!');
                 setResultadosModalOpen(false);
                 carregarPedidos();
-                carregarEstatisticas();
               } else {
                 const error = await response.json();
                 throw new Error(error.message);
@@ -719,6 +673,91 @@ function ResultadosConsolidacaoModal({ open, onOpenChange, resultados, demandNam
             className="bg-green-600 hover:bg-green-700"
           >
             {criando ? 'Criando...' : 'Confirmar e Criar Demanda'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Componente Modal de Alteração de Situação em Massa
+function AlterarSituacaoModal({ open, onOpenChange, statusOpcoes, onAlterar, quantidadePedidos }) {
+  const [situacaoSelecionada, setSituacaoSelecionada] = useState('');
+  const [observacoes, setObservacoes] = useState('');
+  const [alterando, setAlterando] = useState(false);
+
+  const handleAlterar = async () => {
+    if (!situacaoSelecionada) {
+      toast.error('Selecione uma situação');
+      return;
+    }
+
+    setAlterando(true);
+    try {
+      await onAlterar(parseInt(situacaoSelecionada), observacoes);
+      setSituacaoSelecionada('');
+      setObservacoes('');
+    } finally {
+      setAlterando(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-background rounded-lg max-w-md w-full">
+        <div className="p-6 border-b">
+          <h2 className="text-2xl font-bold">Alterar Situação em Massa</h2>
+          <p className="text-muted-foreground">
+            {quantidadePedidos} pedido(s) selecionado(s)
+          </p>
+        </div>
+
+        <div className="p-6 space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="situacao">Nova Situação *</Label>
+            <Select value={situacaoSelecionada} onValueChange={setSituacaoSelecionada}>
+              <SelectTrigger id="situacao">
+                <SelectValue placeholder="Selecione a situação" />
+              </SelectTrigger>
+              <SelectContent>
+                {statusOpcoes.map((status) => (
+                  <SelectItem key={status.id} value={String(status.id)}>
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="w-3 h-3 rounded-full"
+                        style={{ backgroundColor: status.cor_status }}
+                      />
+                      {status.nome}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="obs">Observações</Label>
+            <Textarea
+              id="obs"
+              value={observacoes}
+              onChange={(e) => setObservacoes(e.target.value)}
+              placeholder="Observações sobre a alteração..."
+              rows={3}
+            />
+          </div>
+        </div>
+
+        <div className="p-6 border-t flex gap-2 justify-end">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancelar
+          </Button>
+          <Button
+            onClick={handleAlterar}
+            disabled={alterando || !situacaoSelecionada}
+          >
+            {alterando ? 'Alterando...' : 'Confirmar Alteração'}
           </Button>
         </div>
       </div>

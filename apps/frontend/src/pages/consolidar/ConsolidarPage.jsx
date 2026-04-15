@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { CheckCircle2, ClipboardList, Copy, Database, Filter, Loader2, Upload } from 'lucide-react';
+import { CheckCircle2, ClipboardList, Copy, Database, Filter, Loader2, Printer, Upload, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -37,9 +37,17 @@ function ConsolidarPage() {
 
   // Async Processing State
   const [asyncProcessing, setAsyncProcessing] = useState(null); // { consolidacaoId, status }
-  
+
+  // NFE Generation State
+  const [nfeSidebarOpen, setNfeSidebarOpen] = useState(false);
+  const [nfeResults, setNfeResults] = useState([]);
+  const [nfeGenerating, setNfeGenerating] = useState(false);
+  const [blingAccounts, setBlingAccounts] = useState([]);
+  const [selectedBlingAccountId, setSelectedBlingAccountId] = useState('');
+
   // Ref para armazenar o intervalo do polling
   const pollingIntervalRef = useRef(null);
+  const eventSourceRef = useRef(null);
 
   useEffect(() => {
     const fetchChannels = async () => {
@@ -70,9 +78,20 @@ function ConsolidarPage() {
         } catch (e) {}
     };
 
+    const fetchBlingAccounts = async () => {
+      try {
+        const response = await fetch('/api/v2/integracoes/bling/accounts');
+        const data = await response.json();
+        if (data.accounts) setBlingAccounts(data.accounts);
+      } catch (error) {
+        console.error("Erro ao carregar contas Bling:", error);
+      }
+    };
+
     fetchChannels();
     fetchProducts();
     fetchMode();
+    fetchBlingAccounts();
   }, []);
 
   const toggleOpMode = async () => {
@@ -276,6 +295,9 @@ function ConsolidarPage() {
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
       }
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
     };
   }, []);
 
@@ -321,6 +343,206 @@ function ConsolidarPage() {
     toast.success('Copiado!');
   };
 
+  const printBlingData = (platformKey) => {
+    const platformData = results[platformKey];
+    if (!platformData || !platformData.bling_orders_data || platformData.bling_orders_data.length === 0) {
+      toast.error('Nenhum pedido para imprimir.');
+      return;
+    }
+
+    const orders = platformData.bling_orders_data;
+    let ordersHtml = '';
+
+    orders.forEach((order) => {
+      ordersHtml += `
+        <div class="stamp-card" style="border: 1px solid #000; border-radius: 8px; padding: 20px; background-color: #fff; width: 100%; height: 100vh; box-sizing: border-box; page-break-after: always; display: flex; flex-direction: column; position: relative;">
+          <div class="stamp-header" style="font-size: 1.5rem; margin-bottom: 30px; justify-content: space-between; display: flex;">
+            <div>
+              <div style="padding: 15px 0;">Nome: ${order.contato?.nome || 'N/A'}</div>
+              <div style="padding: 15px 0;">CPF: ${order.contato?.numeroDocumento || 'N/A'}</div>
+              ${order.contato?.endereco ? `<div style="padding: 15px 0;">${order.contato.endereco}</div>` : ''}
+            </div>
+            <div></div>
+            <div>
+              <div style="padding: 15px 0;">
+                <img src="/static/img/${platformKey.toLowerCase()}.svg" alt="Platform Icon" height="20" style="margin-right: 10px;" />${platformKey}
+              </div>
+              <div style="padding: 15px 0;">${order.numeroLoja || 'N/A'}</div>
+            </div>
+          </div>
+          <div class="stamp-content" style="font-family: Arial, sans-serif; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between;">
+            <div class="order-info" style="text-align: center; font-size: 2.5rem; margin-bottom: 40px;">
+              <div>Pedido ${order.numero || order.id || 'N/A'}</div>
+            </div>
+            ${order.itens?.map((item) => `
+              <div class="item" style="display: flex; align-items: center; border-top: 1px solid #ddd; padding: 15px 0; margin-bottom: 15px;">
+                <div class="item-details" style="width: 80%; font-size: 1.2rem;">
+                  <div>${item.descricao || 'N/A'}</div>
+                  ${item.variacao && item.variacao !== '' ? `<div style="font-size: 0.8rem; color: #666;">${item.variacao}</div>` : ''}
+                  <div><strong>${item.codigo || 'N/A'}</strong></div>
+                  ${item.original_id && item.original_id !== order.numeroLoja ? `<div style="font-size: 0.8rem; color: #666;">Ref: ${item.original_id}</div>` : ''}
+                  ${item.personalizations && item.personalizations.length > 0 ? `
+                    <div style="margin-top: 5px;">
+                      ${item.personalizations.map((p) => `
+                        ${p.customization_name ? `
+                          <div style="font-size: 1.1rem; color: #d32f2f; font-weight: bold; border: 1px dashed #d32f2f; padding: 2px 5px; margin-top: 5px; display: inline-block;">
+                            ${p.customization_name}
+                            ${p.customization_initial ? `(${p.customization_initial})` : ''}
+                            ${p.quantity_to_personalize > 1 ? `<span style="background-color: #ffc107; color: #000; padding: 2px 5px; border-radius: 3px; margin-left: 5px;">x${p.quantity_to_personalize}</span>` : ''}
+                          </div>
+                        ` : ''}
+                      `).join('')}
+                    </div>
+                  ` : ''}
+                </div>
+                <div class="item-quantity" style="width: 10%; text-align: center; font-size: 1.6rem;">${item.quantidade || 1}</div>
+                <div class="item-price" style="width: 10%; text-align: center; font-size: 0.8rem;">R$ ${(item.valor || 0).toFixed(2)}</div>
+              </div>
+            `).join('') || ''}
+            <div class="item" style="display: flex; align-items: center; border-top: 1px solid #ddd; padding: 15px 0; margin-bottom: 15px;">
+              <div class="item-details" style="width: 80%; font-size: 1.2rem;"></div>
+              <div class="item-quantity" style="width: 10%; text-align: center; font-size: 1.6rem;"></div>
+              <div class="item-price" style="width: 10%; text-align: center; font-size: 0.8rem;">R$ ${(order.totalProdutos || 0).toFixed(2)}</div>
+            </div>
+            <div class="total-items" style="text-align: center; margin-top: auto; margin-bottom: 20px;">
+              <span style="font-size: 2.5rem;">${order.total_items || 0} ${order.total_items > 1 ? 'itens' : 'item'}</span>
+            </div>
+          </div>
+          <div class="stamp-footer" style="display: flex; justify-content: space-between; margin-top: auto; padding-top: 20px;">
+            <div>
+              ${order.hasCustomItem === 1 ? order.itens?.map((item) => item.custom_tag && item.custom_tag !== '' && item.custom_tag !== null ? `<div class="custom-tag" style="font-size: 1.8rem; font-weight: bolder; border: 1px solid #000; padding: 10px 25px;">${item.custom_tag}</div>` : '').join('') || '' : ''}
+            </div>
+            <div>${new Date().toLocaleDateString('pt-BR')}</div>
+          </div>
+        </div>
+      `;
+    });
+
+    const htmlContent = `
+      <html>
+        <head>
+          <style>
+            @media print {
+              .stamp-card {
+                width: 210mm;
+                height: 297mm;
+                margin: 0;
+                padding: 20mm;
+                box-shadow: none;
+                border: none;
+                page-break-after: always;
+              }
+              body {
+                margin: 0;
+                padding: 0;
+              }
+            }
+          </style>
+        </head>
+        <body>${ordersHtml}</body>
+      </html>
+    `;
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'absolute';
+    iframe.style.top = '-9999px';
+    iframe.style.left = '-9999px';
+    document.body.appendChild(iframe);
+
+    iframe.onload = () => {
+      iframe.contentWindow.print();
+      setTimeout(() => iframe.remove(), 1000);
+    };
+
+    iframe.contentDocument.open();
+    iframe.contentDocument.write(htmlContent);
+    iframe.contentDocument.close();
+  };
+
+  const generateNFE = (platformKey) => {
+    const platformData = results[platformKey];
+    if (!platformData || !platformData.bling_orders_id_numero) {
+      toast.error('Nenhum pedido para gerar NF.');
+      return;
+    }
+
+    if (!selectedBlingAccountId) {
+      toast.error('Selecione uma conta Bling para gerar NF.');
+      return;
+    }
+
+    let blingOrders = [];
+    try {
+      if (typeof platformData.bling_orders_id_numero === 'string') {
+        blingOrders = JSON.parse(platformData.bling_orders_id_numero.replace(/'/g, '"'));
+      } else {
+        blingOrders = platformData.bling_orders_id_numero;
+      }
+    } catch (error) {
+      console.error('Error parsing JSON:', error);
+      toast.error('Erro ao processar os pedidos.');
+      return;
+    }
+
+    if (!blingOrders || blingOrders.length === 0) {
+      toast.error('Nenhum pedido para gerar NF.');
+      return;
+    }
+
+    setNfeGenerating(true);
+    setNfeResults([]);
+    setNfeSidebarOpen(true);
+
+    // Close previous EventSource if exists
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    const platformLower = platformKey.toLowerCase();
+    const eventSource = new EventSource(`/api/v2/nfe/generate_nfe?platform=${encodeURIComponent(platformLower)}&bling_orders=${encodeURIComponent(JSON.stringify(blingOrders))}&instance_id=${encodeURIComponent(selectedBlingAccountId)}`);
+    eventSourceRef.current = eventSource;
+
+    eventSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.status === 'complete') {
+        toast.success('Processamento concluído!');
+        setNfeGenerating(false);
+        eventSource.close();
+        return;
+      }
+
+      if (data.status === 'processing') {
+        setNfeResults((prev) => [...prev, data]);
+      } else if (data.status === 'error') {
+        // Extract detailed error message from API response
+        let errorMessage = data.error || 'Erro desconhecido';
+        if (data.error_details) {
+          try {
+            const errorDetails = typeof data.error_details === 'string' 
+              ? JSON.parse(data.error_details) 
+              : data.error_details;
+            if (errorDetails.error?.fields?.[0]?.msg) {
+              errorMessage = errorDetails.error.fields[0].msg;
+            }
+          } catch (e) {
+            console.error('Error parsing error_details:', e);
+          }
+        }
+        const resultWithError = { ...data, error: errorMessage };
+        setNfeResults((prev) => [...prev, resultWithError]);
+        toast.error(`Erro: ${errorMessage}`);
+      }
+    };
+
+    eventSource.onerror = (error) => {
+      console.error('EventSource failed:', error);
+      toast.error('Erro na conexão com o servidor.');
+      setNfeGenerating(false);
+      eventSource.close();
+    };
+  };
+
   return (
     <div className="flex flex-col w-full max-w-7xl mx-auto pb-20">
       <div className="flex justify-between items-center mb-8 bg-white p-4 rounded-lg border shadow-sm">
@@ -329,7 +551,7 @@ function ConsolidarPage() {
             <p className="text-muted-foreground">Agrupe pedidos e gere demandas de fabricação.</p>
         </div>
         <div className="flex gap-2">
-            <Button variant="outline" onClick={() => window.location.href = '/consolidar/rascunhos'} className="gap-2">
+            <Button variant="outline" onClick={() => window.location.href = '/producao/demanda/rascunhos'} className="gap-2">
                 <ClipboardList className="h-4 w-4" /> Rascunhos Automáticos
             </Button>
             <Button variant={opMode === 'legacy' ? 'destructive' : 'outline'} onClick={toggleOpMode} disabled={updatingMode} className="gap-2">
@@ -411,10 +633,7 @@ function ConsolidarPage() {
 
                     <div className="flex gap-3">
                       <Button type="submit" disabled={loading} className="flex-1 h-12 text-lg">
-                          {loading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="mr-2" />} Processar (Síncrono)
-                      </Button>
-                      <Button type="button" onClick={startAsyncProcessing} disabled={loading} variant="outline" className="flex-1 h-12 text-lg border-blue-600 text-blue-600 hover:bg-blue-50">
-                          {loading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="mr-2" />} Processar em Background
+                          {loading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="mr-2" />} Processar
                       </Button>
                     </div>
                 </form>
@@ -426,7 +645,13 @@ function ConsolidarPage() {
             <h2 className="text-xl font-bold flex items-center gap-2"><CheckCircle2 className="h-6 w-6 text-green-600" /> Itens Consolidados</h2>
             <div className="flex gap-3">
               <Button variant="outline" onClick={() => setResults(null)}>Voltar / Novo</Button>
-              <Button className="bg-green-600 hover:bg-green-700" onClick={() => setModalOpen('demand')}>Gerar Demanda</Button>
+              <Button className="bg-green-600 hover:bg-green-700" onClick={() => {
+                const canal = channels.find(c => c.id.toString() === selectedChannel || (c.slug || c.nome) === selectedChannel);
+                if (canal && canal.horario_coleta) {
+                  setDemandHorarioColeta(canal.horario_coleta);
+                }
+                setModalOpen('demand');
+              }}>Gerar Demanda</Button>
             </div>
           </div>
 
@@ -434,7 +659,35 @@ function ConsolidarPage() {
             <Card key={key}>
               <CardHeader className="flex flex-row items-center justify-between border-b bg-muted/20 py-3">
                 <CardTitle className="text-lg">{key} ({data.total_pedidos_plataforma} pedidos)</CardTitle>
-                <Button variant="ghost" size="sm" onClick={() => handleCopyTable(key)}><Copy className="h-4 w-4 mr-2" /> Copiar</Button>
+                <div className="flex gap-2">
+                  {data.options?.print_orders && data.bling_orders_data && data.bling_orders_data.length > 0 && (
+                    <>
+                      <Button variant="outline" size="sm" onClick={() => printBlingData(key)} disabled={nfeGenerating}>
+                        <Printer className="h-4 w-4 mr-2" /> Imprimir {data.bling_orders_data.length} pedidos
+                      </Button>
+                      <Select value={selectedBlingAccountId} onValueChange={setSelectedBlingAccountId}>
+                        <SelectTrigger className="w-[200px]">
+                          <SelectValue placeholder="Conta Bling" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {blingAccounts.length === 0 ? (
+                            <SelectItem value="" disabled>Nenhuma conta</SelectItem>
+                          ) : (
+                            blingAccounts.map((account) => (
+                              <SelectItem key={account.id} value={String(account.id)}>
+                                {account.instance_name || `Conta ${account.id}`}
+                              </SelectItem>
+                            ))
+                          )}
+                        </SelectContent>
+                      </Select>
+                      <Button variant="outline" size="sm" onClick={() => generateNFE(key)} disabled={nfeGenerating}>
+                        <Database className="h-4 w-4 mr-2" /> Gerar NFs
+                      </Button>
+                    </>
+                  )}
+                  <Button variant="ghost" size="sm" onClick={() => handleCopyTable(key)}><Copy className="h-4 w-4 mr-2" /> Copiar</Button>
+                </div>
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
@@ -513,6 +766,55 @@ function ConsolidarPage() {
               </Card>
             </div>
           )}
+
+          {/* NFE Sidebar */}
+          <div className={`fixed inset-y-0 right-0 z-50 w-96 bg-white shadow-2xl transform transition-transform duration-300 ease-in-out ${nfeSidebarOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+            <div className="flex flex-col h-full">
+              <div className="flex items-center justify-between p-4 border-b bg-muted">
+                <h3 className="text-lg font-bold">Notas Fiscais</h3>
+                <Button variant="ghost" size="sm" onClick={() => setNfeSidebarOpen(false)}>
+                  <X className="h-5 w-5" />
+                </Button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {nfeGenerating && nfeResults.length === 0 && (
+                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+                    <Loader2 className="h-8 w-8 animate-spin mb-2" />
+                    <p>Processando pedidos...</p>
+                  </div>
+                )}
+                {nfeResults.length > 0 && (
+                  <ul className="space-y-2">
+                    {nfeResults.map((result, idx) => (
+                      <li key={idx} className={`p-3 rounded-lg border ${result.success ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-medium">
+                            #{result.order?.numero || result.order?.id || 'N/A'}
+                          </span>
+                          <span className={`text-sm ${result.success ? 'text-green-600' : 'text-red-600'}`}>
+                            {result.success ? '✓' : '✗'}
+                          </span>
+                        </div>
+                        {result.success && result.order?.nfe_id && (
+                          <a
+                            href={`https://www.bling.com.br/notas.fiscais.php#edit/${result.order.nfe_id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm text-blue-600 hover:underline"
+                          >
+                            NF-e
+                          </a>
+                        )}
+                        {result.error && (
+                          <p className="text-sm text-red-600 mt-1">{result.error}</p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -38,6 +38,12 @@ class DemandaItemsService:
         """Adiciona aliases e processa campos para o frontend."""
         return self._core._process_item_dict(item)
 
+    def _calcular_progresso_visual(self, valor_atual, delta):
+        """Aplica delta no progresso visual sem permitir resultado final negativo."""
+        valor_atual = float(valor_atual or 0)
+        delta = float(delta or 0)
+        return max(0, valor_atual + delta)
+
     def _verificar_e_finalizar_demanda_automatica(self, demanda_id, user_id='System'):
         """Verifica e finaliza demanda automaticamente."""
         return self._status._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
@@ -77,7 +83,7 @@ class DemandaItemsService:
 
         item = response.data[0]
         valor_atual = float(item.get(campo, 0) or 0)
-        novo_valor = valor_atual + incremento
+        novo_valor = self._calcular_progresso_visual(valor_atual, incremento)
 
         updates = {campo: novo_valor, 'updated_at': get_now_iso()}
         res = supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id_int))
@@ -91,6 +97,7 @@ class DemandaItemsService:
             'campo': campo,
             'valor_anterior': valor_atual,
             'incremento': incremento,
+            'incremento_aplicado': novo_valor - valor_atual,
             'novo_valor': novo_valor
         }
 
@@ -105,7 +112,7 @@ class DemandaItemsService:
 
         item = response.data[0]
         valor_atual = float(item.get(campo, 0) or 0)
-        novo_valor = valor_atual + incremento
+        novo_valor = self._calcular_progresso_visual(valor_atual, incremento)
 
         updates = {campo: novo_valor, 'updated_at': get_now_iso()}
         res = supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
@@ -143,7 +150,7 @@ class DemandaItemsService:
         # 1. Preparar atualizações visuais
         for key, new_value in quantities_to_update.items():
             if key not in item: continue
-            updates[key] = float(new_value)
+            updates[key] = max(0, float(new_value or 0))
 
         # 2. Persistir a Intenção no Banco
         if updates.get('expedicao_capas_retiradas_qtd', 0) > 0 or updates.get('expedicao_miolos_retirados_qtd', 0) > 0:
@@ -294,7 +301,7 @@ class DemandaItemsService:
         # 1. VISIBILIDADE IMEDIATA (Atualização das colunas visuais)
         def get_new_val(field):
             curr = item_original.get(field, 0) or 0
-            return min(total_qty, curr + quantidade_parcial)
+            return max(0, min(total_qty, curr + quantidade_parcial))
 
         updates = {
             'capas_impressas_qtd': get_new_val('capas_impressas_qtd'),
@@ -422,7 +429,7 @@ class DemandaItemsService:
             item = item_res.data[0]
 
             old_val = float(item.get(campo_a_atualizar) or 0)
-            new_val = old_val + qty
+            new_val = max(0, old_val + qty)
             updates = {
                 campo_a_atualizar: new_val,
                 'updated_at': get_now_iso(),
@@ -431,7 +438,10 @@ class DemandaItemsService:
 
             # Se for saída final (Produto acabado ou kit), também sensibiliza a retirada do miolo
             if role == 'OUTRO':
-                updates['expedicao_miolos_retirados_qtd'] = float(item.get('expedicao_miolos_retirados_qtd') or 0) + qty
+                updates['expedicao_miolos_retirados_qtd'] = max(
+                    0,
+                    float(item.get('expedicao_miolos_retirados_qtd') or 0) + qty
+                )
 
             supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
 

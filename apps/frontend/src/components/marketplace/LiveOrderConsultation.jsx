@@ -32,7 +32,7 @@ const LiveOrderConsultation = ({ integrationId, moduleName, moduleId }) => {
     setLoading(true);
     setRawData(null);
     try {
-      const response = await fetch('/api/v2/order/get_order_detail', {
+      const response = await fetch('/api/v2/marketplace/orders/detail', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

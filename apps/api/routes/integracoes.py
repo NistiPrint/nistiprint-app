@@ -175,9 +175,9 @@ def get_bling_lojas():
     try:
         account_id = request.args.get('account_id')
         from nistiprint_shared.services.bling.bling_client import BlingClient
-        
+
         client = None
-        
+
         if account_id:
              # Buscar integração específica
              res = supabase_db.client.table('installed_integrations').select('*').eq('id', account_id).single().execute()
@@ -188,13 +188,30 @@ def get_bling_lojas():
              res = supabase_db.client.table('installed_integrations').select('*').eq('module_id', 'bling').eq('is_active', True).limit(1).execute()
              if res.data:
                  client = BlingClient.create_client_from_integration(res.data[0])
-        
+
         if not client:
              return jsonify({"error": "Nenhuma conta Bling ativa encontrada. Instale o módulo Bling primeiro."}), 404
-             
+
         lojas = client.get_stores()
         return jsonify(lojas)
 
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@integracoes_api_bp.route('/bling/accounts', methods=['GET'])
+def get_bling_accounts():
+    """
+    Lista todas as contas Bling instaladas.
+    """
+    try:
+        response = supabase_db.client.table('installed_integrations') \
+            .select('*') \
+            .eq('module_id', 'bling') \
+            .eq('is_active', True) \
+            .execute()
+
+        return jsonify({"accounts": response.data})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

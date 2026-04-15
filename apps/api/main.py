@@ -178,7 +178,7 @@ def create_app():
     app.register_blueprint(integracoes_bp)
     app.register_blueprint(integracoes_api_bp, url_prefix='/api/v2/integracoes')
     app.register_blueprint(consolidar_bp)
-    app.register_blueprint(nfe_bp)
+    app.register_blueprint(nfe_bp, url_prefix='/api/v2/nfe')
     app.register_blueprint(vendas_bp)
     app.register_blueprint(vendas_api_bp, url_prefix='/api/v2/vendas')
     app.register_blueprint(cadastros_bp)

@@ -1,35 +1,48 @@
 import { Button } from '@/components/ui/button';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Loader2 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export default function GerarDemandaModal({
   open,
   onOpenChange,
   onGerarDemanda,
   quantidadePedidos,
+  canalVendaId = null,
+  canalVendaNome = null,
+  horarioColetaInicial = '',
 }) {
   const [dados, setDados] = useState({
     nome_demanda: '',
     data_entrega: new Date().toISOString().split('T')[0],
-    horario_coleta: '',
+    horario_coleta: horarioColetaInicial,
     observacoes: '',
   });
   const [gerando, setGerando] = useState(false);
 
+  // Update horario_coleta when prop changes
+  useEffect(() => {
+    if (horarioColetaInicial) {
+      setDados(prev => ({ ...prev, horario_coleta: horarioColetaInicial }));
+    }
+  }, [horarioColetaInicial]);
+
   const handleSubmit = async () => {
     setGerando(true);
     try {
-      await onGerarDemanda(dados);
+      await onGerarDemanda({
+        ...dados,
+        canal_venda_id: canalVendaId,
+      });
     } finally {
       setGerando(false);
     }
@@ -67,6 +80,20 @@ export default function GerarDemandaModal({
               placeholder="Ex: Demanda Shopee - Março"
             />
           </div>
+
+          {canalVendaId && (
+            <div className="space-y-2">
+              <Label htmlFor="canal-venda">
+                Canal de Venda
+              </Label>
+              <Input
+                id="canal-venda"
+                value={canalVendaNome || `Canal ID: ${canalVendaId}`}
+                disabled
+                className="bg-muted"
+              />
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="data-entrega">

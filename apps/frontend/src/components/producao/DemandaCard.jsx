@@ -3,28 +3,28 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { usePermissions } from '@/contexts/PermissionsContext';
 import { calculateTimeRemaining, diasRestantes, isUrgente } from '@/lib/demandaUtils';
 import { checkActionRequired } from '@/lib/notificationLogic';
 import {
-  AlertTriangle,
-  ArrowUp,
-  ArrowUpCircle,
-  Bot,
-  CheckCircle,
-  CheckSquare,
-  Edit,
-  MoreVertical,
-  PlayCircle,
-  Printer,
-  ShoppingCart,
-  Trash2,
-  Truck
+    AlertTriangle,
+    ArrowUp,
+    ArrowUpCircle,
+    Bot,
+    CheckCircle,
+    CheckSquare,
+    Edit,
+    MoreVertical,
+    PlayCircle,
+    Printer,
+    ShoppingCart,
+    Trash2,
+    Truck
 } from 'lucide-react';
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -32,8 +32,8 @@ import { useNavigate } from 'react-router-dom';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Progress } from '@/components/ui/progress';
 import {
-  ChevronDown,
-  ChevronUp
+    ChevronDown,
+    ChevronUp
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -55,6 +55,7 @@ const DemandaCard = React.memo(({
   const navigate = useNavigate();
   const { canEditField, canExecuteAction } = usePermissions();
   const [isExpanded, setIsExpanded] = useState(false);
+  const [showPedidosOrigem, setShowPedidosOrigem] = useState(false);
 
   const diasRest = diasRestantes(demanda.data_entrega);
   const urgente = isUrgente(demanda.data_entrega, demanda.horario_coleta);
@@ -359,6 +360,9 @@ const DemandaCard = React.memo(({
                     <div className="h-px bg-gray-200 my-1" />
                   </>
                 )}
+                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setShowPedidosOrigem(true); }}>
+                  <List className="mr-2 h-4 w-4" /> Ver Pedidos Relacionados
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={(e) => { e.stopPropagation(); navigate(`/producao/demanda/${demanda.id}/dashboard`); }}>
                   <PlayCircle className="mr-2 h-4 w-4" /> Abrir Dashboard
                 </DropdownMenuItem>
@@ -437,6 +441,37 @@ const DemandaCard = React.memo(({
           </div>
         )}
       </div>
+
+      {/* Dialog for viewing related orders */}
+      <Dialog open={showPedidosOrigem} onOpenChange={setShowPedidosOrigem}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Pedidos Relacionados - {demanda.nome}</DialogTitle>
+          </DialogHeader>
+          {demanda.pedidos_origem && demanda.pedidos_origem.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Código Pedido Externo</TableHead>
+                  <TableHead>Número Pedido</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {demanda.pedidos_origem.map((pedido, idx) => (
+                  <TableRow key={idx}>
+                    <TableCell>{pedido.codigo_pedido_externo || '-'}</TableCell>
+                    <TableCell>{pedido.numero_pedido || '-'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="text-center py-8 text-gray-500">
+              Nenhum pedido relacionado encontrado.
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 });

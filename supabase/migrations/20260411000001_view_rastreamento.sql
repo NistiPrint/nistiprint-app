@@ -39,6 +39,16 @@ SELECT
         LIMIT 1
     ) AS demanda_numero,
 
+    -- Status da primeira demanda (para exibição)
+    (
+        SELECT dp.status
+        FROM public.demandas_pedidos dpiv
+        JOIN public.demandas_producao dp ON dpiv.demanda_id = dp.id
+        WHERE dpiv.pedido_id = p.id
+        ORDER BY dp.created_at DESC
+        LIMIT 1
+    ) AS demanda_status,
+
     -- Count how many demands this pedido is linked to
     (
         SELECT COUNT(*)
