@@ -73,7 +73,7 @@ def api_list_demandas():
             modalidade = d.get('modalidade_logistica', 'STANDARD')
             is_express = modalidade == 'EXPRESS'
             priority = d.get('manual_priority_score') or 0
-            data_entrega = d.get('data_entrega', '9999-12-31')
+            data_entrega = d.get('data_entrega') or '9999-12-31'
             horario = d.get('deadline_final') or d.get('horario_coleta') or "23:59"
             
             return (not is_express, -int(priority), data_entrega, horario)
@@ -1289,8 +1289,8 @@ def registrar_producao_sincrona(demanda_id, item_id):
             if campo in ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
                         'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd',
                         'finalizados_qtd']:
-                current = item.get(campo, 0) or 0
-                updates[campo] = current + valor
+                current = float(item.get(campo, 0) or 0)
+                updates[campo] = max(0, current + valor)
 
         # 3. Executar atualização direta
         supabase_db.table('itens_demanda').update(updates).eq('id', item_id).execute()
@@ -1394,8 +1394,8 @@ def registrar_producao_sincrona_lote(demanda_id):
                 if campo in ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
                             'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd',
                             'finalizados_qtd']:
-                    current = item.get(campo, 0) or 0
-                    updates_dict[campo] = current + valor
+                    current = float(item.get(campo, 0) or 0)
+                    updates_dict[campo] = max(0, current + valor)
 
             supabase_db.table('itens_demanda').update(updates_dict).eq('id', item_id).execute()
 

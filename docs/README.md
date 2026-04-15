@@ -1,160 +1,94 @@
-# 📚 Nistiprint - Documentação do Projeto
+# Nistiprint — Documentação
 
-**Última atualização:** 2026-04-02
-
-Bem-vindo à central de conhecimento da plataforma **Nistiprint**. A documentação foi consolidada em 4 documentos principais para facilitar a navegação e manutenção.
+**Última atualização:** 2026-04-13
 
 ---
 
-## 📖 Documentação Consolidada (Principal)
+## 📄 Documentos Principais
 
-### Técnicos
-
-| Documento | Descrição | Link |
-|-----------|-----------|------|
-| 📊 **Modelo de Dados** | ER completo, tabelas, colunas, índices, funções SQL | [TECNICO-MODELO-DADOS.md](./TECNICO-MODELO-DADOS.md) |
-| 🏗️ **Arquitetura Técnica** | Componentes, serviços, fluxos, endpoints, workers | [TECNICO-ARQUITETURA.md](./TECNICO-ARQUITETURA.md) |
-
-### Negócio
-
-| Documento | Descrição | Link |
-|-----------|-----------|------|
-| 📋 **Regras de Negócio** | Regras, validações, cálculos, dependências entre entidades | [NEGOCIO-REGRAS.md](./NEGOCIO-REGRAS.md) |
-| 📖 **Manual do Usuário** | Fluxos, interface, operações, atalhos, FAQ | [MANUAL-USUARIO.md](./MANUAL-USUARIO.md) |
+| Documento | Descrição |
+|-----------|-----------|
+| [Regras de Negócio](./negocio/REGRAS.md) | Princípios, ciclos, validações, cálculos e dependências |
+| [Arquitetura Técnica](./tecnico/ARQUITETURA.md) | Componentes, fluxos, serviços, endpoints, workers |
+| [Modelo de Dados](./tecnico/MODELO-DADOS.md) | ER completo, tabelas, colunas, funções SQL, triggers, RLS |
+| [Manual do Usuário](./usuario/MANUAL.md) | Fluxos, interface, operações, atalhos, FAQ |
 
 ---
 
-## 🗂️ Estrutura Completa
+## 📁 Estrutura
 
 ```
 docs/
+├── README.md                     ← Este arquivo
 │
-├── 📄 README.md                         # Este arquivo (índice)
+├── negocio/
+│   └── REGRAS.md                 Regras de negócio consolidadas
 │
-├── ⭐ TECNICO-MODELO-DADOS.md           # Modelo de dados consolidado
-├── ⭐ TECNICO-ARQUITETURA.md            # Arquitetura técnica consolidada
-├── ⭐ NEGOCIO-REGRAS.md                 # Regras de negócio consolidadas
-├── ⭐ MANUAL-USUARIO.md                 # Manual do usuário consolidado
+├── tecnico/
+│   ├── ARQUITETURA.md            Arquitetura técnica
+│   ├── MODELO-DADOS.md           Modelo ER do banco
+│   └── APIs/
+│       ├── bling.md              Referência API Bling V3
+│       └── shopee.md             Referência API Shopee V2
 │
-├── 📌 CONTEXTUALIZACAO-CONSOLIDACAO-DEMANDAS.md  # Contexto histórico
+├── usuario/
+│   └── MANUAL.md                 Manual do usuário
 │
-├── 📁 01-architecture/                  # Arquitetura (legado)
-├── 📁 02-architecture/                  # Arquitetura (legado)
-├── 📁 02-features/                      # Features (legado)
-├── 📁 03-guides/                        # Guias (✅ manter)
-├── 📁 04-operations/                    # Operações (✅ manter)
-├── 📁 05-planning/                      # Planning (legado)
-├── 📁 99-issues/                        # Issues (legado)
-└── 📁 archive/                          # Arquivo morto
+├── guias/
+│   ├── setup-local.md            Setup de desenvolvimento
+│   ├── git-workflow.md           Workflow Git
+│   └── criar-integracao.md       Como criar novo módulo de integração
+│
+├── operacoes/
+│   ├── deploy.md                 Guia de deploy (visão geral + comandos)
+│   ├── deploy-gcp.md             Deploy unificado no GCP
+│   ├── infraestrutura.md         Setup detalhado de infraestrutura
+│   ├── variaveis-ambiente.md     Variáveis de ambiente
+│   └── logging.md                Logging com rotação
+│
+├── estoque/
+│   ├── arquitetura.md            Event Sourcing para estoque
+│   ├── motor-estoque.md          Especificação do Motor de Gerenciamento
+│   ├── ux.md                     UX do monitoramento
+│   └── validacao.md              Guia de validação e debug
+│
+├── executivo/                    Documentos para stakeholders (CTO/PM)
+│   ├── README.md                 Índice executivo
+│   ├── analise-executiva.md      Análise executiva
+│   ├── sumario-executivo.md      Sumário em português
+│   ├── plano-implementacao.md    Plano de implementação
+│   ├── plano-correcao-otimizacao.md Plano técnico
+│   ├── diagrama-fluxos.md        Diagramas visuais
+│   ├── quick-reference.md        Cheat sheet
+│   └── indice-documentacao.md    Mapa por perfil
+│
+└── archive/                      Documentos históricos (consultar se necessário)
+    ├── analise-aderencia.md
+    ├── analise-permissoes.md
+    ├── tarefas-assincronas.md
+    ├── integration-store.md
+    ├── order-enrichment.md
+    ├── business-rules-overview.md
+    ├── microservices.md
+    ├── n8n.md
+    ├── relatorio-final-implementacao.md
+    ├── active-implementation-plan.md
+    ├── maturity-assessment-2026.md
+    ├── processar-fila-eventos-bling.md
+    ├── tasks.md
+    ├── php-to-n8n.md
+    └── v2-to-v3.md
 ```
 
 ---
 
-## 🎯 Como Usar Esta Documentação
+## 🎯 Por Perfil
 
-### Para Desenvolvedores Novos
-
-1. **[Arquitetura Técnica](./TECNICO-ARQUITETURA.md)** - Visão geral do sistema
-2. **[Modelo de Dados](./TECNICO-MODELO-DADOS.md)** - Schema do banco
-3. **[Regras de Negócio](./NEGOCIO-REGRAS.md)** - Lógica de negócio
-4. **[03-guides/setup_local.md](./03-guides/setup_local.md)** - Setup do ambiente
-
-### Para Desenvolvedores Plenos/Senior
-
-1. **[Arquitetura Técnica](./TECNICO-ARQUITETURA.md)** - Seção de serviços e fluxos
-2. **[Modelo de Dados](./TECNICO-MODELO-DADOS.md)** - Tabelas específicas
-3. **[Regras de Negócio](./NEGOCIO-REGRAS.md)** - Regras da feature em questão
-
-### Para Usuários de Negócio
-
-1. **[Manual do Usuário](./MANUAL-USUARIO.md)** - Fluxos e interface
-2. **[Regras de Negócio](./NEGOCIO-REGRAS.md)** - Políticas e validações
-
-### Para Suporte
-
-1. **[Manual do Usuário](./MANUAL-USUARIO.md)** - Seção de Perguntas Frequentes
-2. **[Regras de Negócio](./NEGOCIO-REGRAS.md)** - Validações e restrições
-
----
-
-## 📌 Status da Documentação
-
-| Documento | Status | Data | Prioridade |
-|-----------|--------|------|------------|
-| Modelo de Dados | ✅ Consolidado | 2026-04-02 | ⭐ Principal |
-| Arquitetura Técnica | ✅ Consolidado | 2026-04-02 | ⭐ Principal |
-| Regras de Negócio | ✅ Consolidado | 2026-04-02 | ⭐ Principal |
-| Manual do Usuário | ✅ Consolidado | 2026-04-02 | ⭐ Principal |
-| Contextualização | 📌 Referência | 2026-04-02 | Secundário |
-| Guias (03-guides) | ✅ Ativo | - | ⭐ Manter |
-| Operações (04-operations) | ✅ Ativo | - | ⭐ Manter |
-| Demais pastas | 📦 Legado | - | Arquivo |
-
----
-
-## 🗑️ Plano de Limpeza
-
-### Arquivos para Deletar (Obsoletos)
-
-Estes arquivos documentam implementações pontuais já concluídas:
-
-| Arquivo | Motivo |
-|---------|--------|
-| `02-features/implementacao_semana1.md` | Diário de implementação |
-| `02-features/implementacao_semana2.md` | Diário de implementação |
-| `02-features/debug_frontend.md` | Debug pontual |
-| `02-features/correcao_*.md` | Correções já aplicadas |
-| `SOLUCAO_IS_FLEX.md` | Solução já implementada |
-| `SOLUCAO_IS_FLEX_REVISADA.md` | Solução já implementada |
-| `MELHORIAS_PEDIDOS_FLEX.md` | Melhorias já aplicadas |
-| `GUIDE_FRONTEND_PEDIDOS_FLEX.md` | Guia específico |
-| `DIAGNOSTICO_INTEGRACAO_SHOPEE.md` | Diagnóstico concluído |
-| `CORRECAO_*.md` | Correções aplicadas |
-| `FILTROS_CONTEXTUAIS_PEDIDOS.md` | Feature implementada |
-| `SCRIPT_SYNC_PEDIDOS_STATUS.md` | Script pontual |
-
-### Arquivos para Mover para `archive/`
-
-| Pasta/Arquivo | Motivo |
-|---------------|--------|
-| `01-architecture/` | Arquitetura legada |
-| `02-architecture/` | Arquitetura legada |
-| `05-planning/` | Planning antigo |
-| `99-issues/` | Issues resolvidas |
-| `plano-refatoracao-nistiprint.md` | Plano concluído |
-| `REFACTORING-SUMMARY.md` | Refatoração concluída |
-
-### Arquivos para Manter (Referência)
-
-| Arquivo/Pasta | Motivo |
-|---------------|--------|
-| `CONTEXTUALIZACAO-CONSOLIDACAO-DEMANDAS.md` | Contexto histórico da consolidação |
-| `CONTEXTO_PRODUCAO_UX.md` | Contexto de UX (parcialmente consolidado) |
-| `LEVANTAMENTO-ER-DEMANDAS.md` | ER detalhado (consolidado em TECNICO-MODELO-DADOS) |
-| `ARQUITETURA-SISTEMA.md` | Arquitetura (consolidado em TECNICO-ARQUITETURA) |
-| `02-features/business_rules_overview.md` | Regras (consolidado em NEGOCIO-REGRAS) |
-| `03-guides/` | Guias ativos |
-| `04-operations/` | Operações ativas |
-| `02-features/integrations/` | Documentação de integrações |
-| `02-features/controle-estoque/` | Módulo de estoque |
-
----
-
-## 🛠️ Como Contribuir com a Documentação
-
-1. **Sempre documente** novas funcionalidades antes ou durante a implementação
-2. **Atualize os documentos consolidados** quando houver mudanças significativas
-3. **Mantenha o histórico** movendo arquivos obsoletos para `archive/` em vez de deletar
-4. **Use o padrão** de assessment para avaliar maturidade de novos módulos
-
----
-
-## 📞 Contato e Suporte
-
-- **GitHub Issues:** Para dúvidas e sugestões
-- **Documentação Técnica:** `docs/TECNICO-*.md`
-- **Documentação de Negócio:** `docs/NEGOCIO-*.md`, `docs/MANUAL-USUARIO.md`
-
----
-
-*Documentação consolidada em 2026-04-02*
+| Perfil | Comece por |
+|--------|-----------|
+| Dev novo | `tecnico/ARQUITETURA.md` → `guias/setup-local.md` |
+| Dev backend | `tecnico/MODELO-DADOS.md` → `tecnico/ARQUITETURA.md` |
+| Dev frontend | `usuario/MANUAL.md` → `guias/criar-integracao.md` |
+| Negócio / Suporte | `usuario/MANUAL.md` → `negocio/REGRAS.md` |
+| DevOps | `operacoes/deploy.md` → `operacoes/variaveis-ambiente.md` |
+| CTO / PM | `executivo/README.md` |

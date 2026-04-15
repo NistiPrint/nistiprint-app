@@ -1,6 +1,6 @@
 import Can from '@/components/auth/Can'
 import { Button } from '@/components/ui/button'
-import { AlertCircle, Bot, CalendarRange, ClipboardList, Factory, PlusCircle, TruckIcon } from 'lucide-react'
+import { AlertCircle, Bot, CalendarRange, Factory, PlusCircle, TruckIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 function HeaderSection({ isCollectedDemandsModalOpen, setIsCollectedDemandsModalOpen, setIsDailyTotalsModalOpen, demandasColetadas, demandasAguardandoColeta }) {
@@ -32,7 +32,7 @@ function HeaderSection({ isCollectedDemandsModalOpen, setIsCollectedDemandsModal
           </Button>
         </Link>
         <Link to='/producao/demanda/prioridade'>
-          <Button variant='outline'>
+          <Button variant='outline' disabled>
             <AlertCircle className='h-4 w-4 mr-2' /> Prioridade
           </Button>
         </Link>

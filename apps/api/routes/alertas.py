@@ -62,19 +62,28 @@ def validar_pedidos_para_demanda():
             if not pedido:
                 continue
             
-            # Buscar demandas ativas para este pedido
-            demandas_ativas = supabase_db.table('demandas_producao').select('''
+            # Buscar demandas ativas via pivot atual demandas_pedidos
+            vinculos = supabase_db.table('demandas_pedidos').select('''
                 demanda_id,
-                descricao,
-                status,
-                data_entrega
-            ''').eq('pedido_id', pedido_id).in_('status', [
-                'AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL', 'COLETADO'
-            ]).execute()
-            
-            if demandas_ativas.data and len(demandas_ativas.data) > 0:
-                # Pedido já está em demanda ativa
-                demanda = demandas_ativas.data[0]
+                demanda_producao:demandas_producao!inner(
+                    id,
+                    demanda_id,
+                    descricao,
+                    status,
+                    data_entrega
+                )
+            ''').eq('pedido_id', pedido_id).execute()
+
+            demanda_ativa_encontrada = None
+            if vinculos.data:
+                for vinculo in vinculos.data:
+                    demanda_data = vinculo.get('demanda_producao')
+                    if demanda_data and demanda_data.get('status') in ['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL', 'COLETADO']:
+                        demanda_ativa_encontrada = demanda_data
+                        break
+
+            if demanda_ativa_encontrada:
+                demanda = demanda_ativa_encontrada
                 pedidos_em_demanda.append({
                     'pedido_id': pedido_id,
                     'numero_pedido': pedido.get('numero_pedido'),
@@ -85,40 +94,7 @@ def validar_pedidos_para_demanda():
                     'data_entrega': demanda.get('data_entrega')
                 })
             else:
-                # Verificar via demandas_item_origem (para demandas consolidadas)
-                vinculos = supabase_db.table('demandas_item_origem').select('''
-                    demanda_item_id,
-                    demanda:itens_demanda!inner(
-                        demanda_id,
-                        demanda_producao:demandas_producao!inner(
-                            id,
-                            demanda_id,
-                            descricao,
-                            status
-                        )
-                    )
-                ''').eq('pedido_externo_id', pedido.get('codigo_pedido_externo')).execute()
-                
-                demanda_ativa_encontrada = None
-                if vinculos.data:
-                    for vinculo in vinculos.data:
-                        demanda_data = vinculo.get('demanda', {}).get('demanda_producao')
-                        if demanda_data and demanda_data.get('status') in ['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL', 'COLETADO']:
-                            demanda_ativa_encontrada = demanda_data
-                            break
-                
-                if demanda_ativa_encontrada:
-                    pedidos_em_demanda.append({
-                        'pedido_id': pedido_id,
-                        'numero_pedido': pedido.get('numero_pedido'),
-                        'codigo_externo': pedido.get('codigo_pedido_externo'),
-                        'demanda_id': demanda_ativa_encontrada.get('demanda_id'),
-                        'demanda_descricao': demanda_ativa_encontrada.get('descricao'),
-                        'demanda_status': demanda_ativa_encontrada.get('status'),
-                        'data_entrega': None
-                    })
-                else:
-                    pedidos_livres.append(pedido_id)
+                pedidos_livres.append(pedido_id)
         
         return ApiResponse.success(data={
             'pedido_ids_originais': pedido_ids,

@@ -113,7 +113,7 @@ class ErpMarketplaceLinksService:
         try:
             result = supabase_db.table(self.table_name).select("""
                 *,
-                marketplace:installed_integrations (
+                marketplace:installed_integrations!erp_marketplace_links_marketplace_integration_id_fkey (
                     id,
                     module_id,
                     instance_name,

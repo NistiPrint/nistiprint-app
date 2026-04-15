@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { ChevronLeft, ChevronRight, Loader2, ArrowUpRight } from 'lucide-react';
+import { ArrowUpRight, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export default function TabelaPedidos({
@@ -202,12 +202,22 @@ export default function TabelaPedidos({
                           >
                             <Link to={`/producao/demanda/${pedido.demanda_id}/dashboard`}>
                               <ArrowUpRight className="h-3 w-3" />
-                              {pedido.demanda_numero ? `#${pedido.demanda_numero}` : 'Demanda'}
+                              {pedido.demanda_status && (
+                                <Badge variant="outline" className={`text-xs px-1.5 py-0.5 ${getDemandaStatusColor(pedido.demanda_status)}`}>
+                                  {pedido.demanda_status}
+                                </Badge>
+                              )}
+                              {pedido.total_demandas > 1 && (
+                                <span className="ml-1 text-xs text-muted-foreground">+{pedido.total_demandas - 1}</span>
+                              )}
                             </Link>
                           </Button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          <span>Ir para demanda {pedido.demanda_numero ? `#${pedido.demanda_numero}` : ''}</span>
+                          <span>
+                            Ir para demanda {pedido.demanda_numero ? `#${pedido.demanda_numero}` : ''}
+                            {pedido.total_demandas > 1 && ` (+${pedido.total_demandas - 1} outras)`}
+                          </span>
                         </TooltipContent>
                       </Tooltip>
                     ) : pedido.tem_demanda ? (
@@ -219,14 +229,22 @@ export default function TabelaPedidos({
                             className="h-6 px-2 text-xs text-amber-600 hover:text-amber-700 hover:bg-amber-50 gap-1"
                             asChild
                           >
-                            <Link to={`/consolidar/rascunhos?pedido=${pedido.numero_pedido}`}>
+                            <Link to={`/producao/demanda/rascunhos?pedido=${pedido.numero_pedido}`}>
                               <ArrowUpRight className="h-3 w-3" />
-                              Rascunho
+                              <Badge variant="outline" className={`text-xs px-1.5 py-0.5 ${getDemandaStatusColor(pedido.demanda_status || 'Rascunho')}`}>
+                                {pedido.demanda_status || 'Rascunho'}
+                              </Badge>
+                              {pedido.total_demandas > 1 && (
+                                <span className="ml-1 text-xs text-muted-foreground">+{pedido.total_demandas - 1}</span>
+                              )}
                             </Link>
                           </Button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          <span>Ver rascunhos vinculados</span>
+                          <span>
+                            Ver rascunhos vinculados
+                            {pedido.total_demandas > 1 && ` (${pedido.total_demandas} demandas)`}
+                          </span>
                         </TooltipContent>
                       </Tooltip>
                     ) : (
@@ -346,6 +364,26 @@ function StatusBadge({ statusId, statusNome, statusCor }) {
       {status.label}
     </Badge>
   );
+}
+
+// Função para obter cor baseada no status da demanda
+function getDemandaStatusColor(status) {
+  const statusColors = {
+    'Rascunho': 'bg-amber-100 text-amber-800 border-amber-300',
+    'RASCUNHO': 'bg-amber-100 text-amber-800 border-amber-300',
+    'Ativa': 'bg-green-100 text-green-800 border-green-300',
+    'ATIVA': 'bg-green-100 text-green-800 border-green-300',
+    'Em Andamento': 'bg-blue-100 text-blue-800 border-blue-300',
+    'EM_ANDAMENTO': 'bg-blue-100 text-blue-800 border-blue-300',
+    'Concluída': 'bg-purple-100 text-purple-800 border-purple-300',
+    'CONCLUIDA': 'bg-purple-100 text-purple-800 border-purple-300',
+    'Cancelada': 'bg-red-100 text-red-800 border-red-300',
+    'CANCELADA': 'bg-red-100 text-red-800 border-red-300',
+    'Pausada': 'bg-gray-100 text-gray-800 border-gray-300',
+    'PAUSADA': 'bg-gray-100 text-gray-800 border-gray-300',
+  };
+  
+  return statusColors[status] || 'bg-gray-100 text-gray-800 border-gray-300';
 }
 
 // Componente de Ícone do Canal com fallback para nome

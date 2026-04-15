@@ -661,9 +661,19 @@ class ContextoProducaoService:
 
     def _build_status_pedido(self, pedido: Dict[str, Any]) -> Dict[str, Any]:
         """Constrói snapshot de status para pedido."""
+        # Use canal_venda relationship to determine if order is from integrated platform
+        # Orders from Shopee (canal_venda.slug = 'shopee') or Bling are considered synchronized
+        is_integrated = False
+        canal_slug = pedido.get('canal_venda_slug') or pedido.get('canal_slug')
+        if canal_slug in ['shopee', 'bling']:
+            is_integrated = True
+        elif pedido.get('origem') in ['SHOPEE', 'BLING']:
+            # Fallback to origem for backward compatibility
+            is_integrated = True
+        
         return {
             'producao': 'AGUARDANDO',  # Pedido ainda não virou demanda
-            'sincronizacao': 'SINCRONIZADO' if pedido.get('origem') in ['SHOPEE', 'BLING'] else 'PENDENTE'
+            'sincronizacao': 'SINCRONIZADO' if is_integrated else 'PENDENTE'
         }
 
     def _categorizar_temporal(self, data_entrega: date) -> str:

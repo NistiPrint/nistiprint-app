@@ -100,14 +100,28 @@ def handle_pedido_cancelado():
             if pedido_res.data:
                 codigo_pedido_externo = pedido_res.data['codigo_pedido_externo']
 
-        if codigo_pedido_externo:
-            demandas_ativas = supabase_db.rpc('get_demandas_ativas_com_pedido', {
-                'p_pedido_externo_id': codigo_pedido_externo
-            }).execute()
+        demandas_ativas = []
+        if pedido_id:
+            demandas_response = supabase_db.table('demandas_pedidos').select('''
+                id,
+                demanda_id,
+                demanda:demandas_producao!inner(
+                    id,
+                    demanda_id,
+                    descricao,
+                    status
+                )
+            ''').eq('pedido_id', pedido_id).execute()
+            for vinculo in demandas_response.data or []:
+                demanda = vinculo.get('demanda')
+                if demanda and demanda.get('status') in ['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL', 'COLETADO']:
+                    demanda['vinculo_id'] = vinculo.get('id')
+                    demanda['demanda_internal_id'] = demanda.get('id')
+                    demandas_ativas.append(demanda)
 
-            # 4. Para cada demanda afetada, criar alerta
-            if demandas_ativas.data:
-                for demanda in demandas_ativas.data:
+            # 4. Para cada demanda afetada, criar alerta e marcar revisao
+            if demandas_ativas:
+                for demanda in demandas_ativas:
                     # Calcular impacto nos itens
                     impacto = calcular_impacto_cancelamento(demanda['demanda_internal_id'], pedido_id)
 
@@ -123,13 +137,22 @@ def handle_pedido_cancelado():
                         'created_at': datetime.now(timezone.utc).isoformat()
                     }).execute()
 
+                    supabase_db.table('demandas_producao').update({
+                        'requer_revisao': True,
+                        'updated_at': datetime.now(timezone.utc).isoformat()
+                    }).eq('id', demanda['demanda_internal_id']).execute()
+
+                    supabase_db.table('demandas_pedidos').delete() \
+                        .eq('id', demanda['vinculo_id']) \
+                        .execute()
+
                     logger.info(f"Alerta criado para demanda {demanda['demanda_id']} devido ao cancelamento do pedido {codigo_pedido_externo}")
 
         return ApiResponse.success(data={
             'pedido_id': pedido_id,
             'codigo_pedido_externo': codigo_pedido_externo,
             'status': 'CANCELADO',
-            'demandas_afetadas': len(demandas_ativas.data) if demandas_ativas.data else 0
+            'demandas_afetadas': len(demandas_ativas)
         })
 
     except Exception as e:
@@ -163,49 +186,59 @@ def calcular_impacto_cancelamento(demanda_internal_id: int, pedido_id: int) -> d
     }
     """
     try:
-        # Buscar itens da demanda que têm este pedido como origem
         itens_afetados = []
         total_qtd_reduzida = 0
 
-        # Buscar vínculos do pedido com itens da demanda
-        # Nota: Esta query pode precisar de ajuste dependendo da estrutura exata
-        vinculos = supabase_db.table('demandas_item_origem').select('''
-            demanda_item_id,
-            quantidade_atendida,
-            sku_externo,
-            item:itens_demanda(
-                id,
-                sku,
-                descricao,
-                quantidade
-            )
-        ''').eq('demanda_id', demanda_internal_id).execute()
+        itens_demanda_res = supabase_db.table('itens_demanda').select(
+            'id, produto_id, sku, descricao, quantidade'
+        ).eq('demanda_id', demanda_internal_id).execute()
+        itens_pedido_res = supabase_db.table('itens_pedido').select(
+            'produto_id, sku_externo, descricao, quantidade'
+        ).eq('pedido_id', pedido_id).execute()
 
-        if vinculos.data:
-            # Filtrar manualmente por pedido (a query acima pode precisar de RPC)
-            pedido_externo_ids = set()
-            pedido_res = supabase_db.table('pedidos').select('codigo_pedido_externo').eq('id', pedido_id).single().execute()
-            if pedido_res.data:
-                pedido_externo_ids.add(pedido_res.data['codigo_pedido_externo'])
-            
-            for vinculo in vinculos.data:
-                if vinculo.get('pedido_externo_id') in pedido_externo_ids:
-                    item = vinculo.get('item')
-                    if item:
-                        qtd_original = float(item.get('quantidade', 0))
-                        qtd_pedido = float(vinculo.get('quantidade_atendida', 0))
-                        qtd_nova = qtd_original - qtd_pedido
+        itens_demanda = itens_demanda_res.data or []
+        demanda_por_produto = {
+            str(item.get('produto_id')): item
+            for item in itens_demanda
+            if item.get('produto_id') is not None
+        }
+        demanda_por_sku = {
+            str(item.get('sku') or '').strip(): item
+            for item in itens_demanda
+            if item.get('sku')
+        }
 
-                        itens_afetados.append({
-                            'item_id': item.get('id'),
-                            'sku': item.get('sku') or vinculo.get('sku_externo'),
-                            'descricao': item.get('descricao'),
-                            'qtd_original': qtd_original,
-                            'qtd_pedido_cancelado': qtd_pedido,
-                            'qtd_nova': max(0, qtd_nova)
-                        })
+        for item_pedido in itens_pedido_res.data or []:
+            produto_id = item_pedido.get('produto_id')
+            sku_externo = str(item_pedido.get('sku_externo') or '').strip()
+            item = None
+            match_type = None
 
-                        total_qtd_reduzida += qtd_pedido
+            if produto_id is not None:
+                item = demanda_por_produto.get(str(produto_id))
+                match_type = 'produto_id' if item else None
+            if not item and sku_externo:
+                item = demanda_por_sku.get(sku_externo)
+                match_type = 'sku' if item else None
+
+            if not item:
+                continue
+
+            qtd_original = max(0, float(item.get('quantidade', 0) or 0))
+            qtd_pedido = max(0, float(item_pedido.get('quantidade', 0) or 0))
+            qtd_nova = max(0, qtd_original - qtd_pedido)
+
+            itens_afetados.append({
+                'item_id': item.get('id'),
+                'sku': item.get('sku') or sku_externo,
+                'descricao': item.get('descricao') or item_pedido.get('descricao'),
+                'qtd_original': qtd_original,
+                'qtd_pedido_cancelado': qtd_pedido,
+                'qtd_nova': qtd_nova,
+                'match_type': match_type
+            })
+
+            total_qtd_reduzida += qtd_pedido
 
         return {
             'itens_afetados': itens_afetados,

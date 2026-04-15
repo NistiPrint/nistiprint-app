@@ -11,13 +11,11 @@ import { useLayout } from '@/contexts/LayoutContext'
 import { usePermissions } from '@/contexts/PermissionsContext'
 import useDebounce from '@/lib/hooks/useDebounce'
 import { useRealtimeDemandas } from '@/lib/hooks/useRealtimeDemandas'
-import { supabase } from '@/lib/supabase'
-import { Factory, RefreshCw } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import { CheckSquare, Factory, RefreshCw, Truck, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
 import PartialCollectionModal from '@/components/producao/PartialCollectionModal'
-import { CheckSquare, Truck, X } from 'lucide-react'
 
 function DemandaListPage() {
   const { user } = useAuth()
@@ -148,13 +146,13 @@ function DemandaListPage() {
       if (!matchesSearch) return false
 
       if (statusFilter !== 'all') {
-        if (statusFilter === 'draft' && !['Rascunho', 'AGUARDANDO'].includes(demanda.status)) return false
-        if (statusFilter === 'completed' && !['Finalizado', 'CONCLUIDO', 'Coletado', 'COLETADO'].includes(demanda.status)) return false
-        if (statusFilter === 'production' && !['Em Produção', 'EM_PRODUCAO', 'Em Andamento', 'COLETA_PARCIAL'].includes(demanda.status)) return false
-        if (statusFilter === 'pending' && !['Pendente', 'AGUARDANDO'].includes(demanda.status)) return false
+        if (statusFilter === 'draft' && !['RASCUNHO', 'AGUARDANDO'].includes(demanda.status)) return false
+        if (statusFilter === 'completed' && !['FINALIZADO', 'CONCLUIDO', 'COLETADO'].includes(demanda.status)) return false
+        if (statusFilter === 'production' && !['EM_PRODUCAO', 'EM_ANDAMENTO', 'COLETA_PARCIAL'].includes(demanda.status)) return false
+        if (statusFilter === 'pending' && !['PENDENTE', 'AGUARDANDO'].includes(demanda.status)) return false
       } else {
         // DEFAULT: Show only active demands (excluding Drafts, Finalized and Collected)
-        const excludedStatuses = ['Rascunho', 'AGUARDANDO', 'Finalizado', 'CONCLUIDO', 'Coletado', 'COLETADO']
+        const excludedStatuses = ['RASCUNHO', 'AGUARDANDO', 'FINALIZADO', 'CONCLUIDO', 'COLETADO']
         if (excludedStatuses.includes(demanda.status)) return false
       }
 

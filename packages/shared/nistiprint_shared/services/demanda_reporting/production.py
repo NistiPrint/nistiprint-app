@@ -52,29 +52,31 @@ class DemandaReportingProductionService:
         d['manual_priority_score'] = d.get('prioridade_manual', 0)
 
         if itens is not None:
+            def qtd(item, field):
+                return max(0, float(item.get(field) or 0))
             # Agregações para o DemandaCard
-            d['total_itens'] = sum(i.get('quantidade', 0) for i in itens)
+            d['total_itens'] = sum(qtd(i, 'quantidade') for i in itens)
             d['total_quantidade'] = d['total_itens']
 
             # Itens finalizados (incluindo parcial) para lógica de status textual e progresso real
-            d['itens_finalizados_total'] = sum(float(i.get('finalizados_qtd', 0)) for i in itens)
+            d['itens_finalizados_total'] = sum(qtd(i, 'finalizados_qtd') for i in itens)
             d['itens_finalizados'] = d['itens_finalizados_total']
 
             # Itens prontos (unidades completas: capa + miolo)
-            d['itens_prontos_total'] = sum(min(i.get('capas_prontas_retirada_qtd') or 0, i.get('miolos_prontos_retirada_qtd') or 0) for i in itens)
+            d['itens_prontos_total'] = sum(min(qtd(i, 'capas_prontas_retirada_qtd'), qtd(i, 'miolos_prontos_retirada_qtd')) for i in itens)
             d['itens_concluidos'] = d['itens_prontos_total']
 
-            d['capas_impressas_qtd'] = sum(i.get('capas_impressas_qtd', 0) for i in itens)
-            d['capas_produzidas_qtd'] = sum(i.get('capas_produzidas_qtd', 0) for i in itens)
-            d['capas_prontas_retirada_qtd'] = sum(i.get('capas_prontas_retirada_qtd', 0) for i in itens)
-            d['miolos_produzidos_qtd'] = sum(i.get('miolos_prontos_retirada_qtd', 0) for i in itens)
+            d['capas_impressas_qtd'] = sum(qtd(i, 'capas_impressas_qtd') for i in itens)
+            d['capas_produzidas_qtd'] = sum(qtd(i, 'capas_produzidas_qtd') for i in itens)
+            d['capas_prontas_retirada_qtd'] = sum(qtd(i, 'capas_prontas_retirada_qtd') for i in itens)
+            d['miolos_produzidos_qtd'] = sum(qtd(i, 'miolos_prontos_retirada_qtd') for i in itens)
             d['miolos_prontos_retirada_qtd'] = d['miolos_produzidos_qtd']
 
             d['completed_quantidade'] = d['itens_finalizados_total']
             d['quantidade_coletada_total'] = d.get('quantidade_coletada_total', 0)
 
             d['itens_em_fechamento'] = sum(
-                min(i.get('expedicao_capas_retiradas_qtd') or 0, i.get('expedicao_miolos_retirados_qtd') or 0)
+                min(qtd(i, 'expedicao_capas_retiradas_qtd'), qtd(i, 'expedicao_miolos_retirados_qtd'))
                 for i in itens
             )
 

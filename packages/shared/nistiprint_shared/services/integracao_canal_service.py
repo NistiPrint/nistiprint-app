@@ -23,6 +23,8 @@ logger = logging.getLogger("IntegracaoCanalService")
 class IntegracaoCanalService:
     """Serviço para gestão de vínculos de integração."""
 
+    MARKETPLACE_MODULES = {'shopee', 'amazon', 'mercadolivre', 'shein', 'tiktok', 'tiktokshop'}
+
     def __init__(self):
         # Tabela principal (nova arquitetura)
         self.table_name = "channel_connections"
@@ -30,6 +32,182 @@ class IntegracaoCanalService:
         self.legacy_table_name = "integracao_canais_config"
         self._cache = {}
         self._cache_ttl = 300  # 5 minutos
+
+    def _normalize_module(self, module_id: Optional[str]) -> Optional[str]:
+        return module_id.lower().strip() if module_id else None
+
+    def _safe_int(self, value: Any) -> Optional[int]:
+        if value is None or value == '':
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _get_installed_integration(
+        self,
+        integration_id: Any,
+        expected_module: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        integration_id = self._safe_int(integration_id)
+        if not integration_id:
+            return None
+
+        query = supabase_db.table('installed_integrations').select('*') \
+            .eq('id', integration_id) \
+            .eq('is_active', True)
+
+        if expected_module:
+            query = query.eq('module_id', self._normalize_module(expected_module))
+
+        result = query.execute()
+        if result.data:
+            return result.data[0]
+        return None
+
+    def _get_erp_marketplace_link(
+        self,
+        erp_integration_id: Any,
+        erp_store_id: Any,
+        expected_module: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Busca o vinculo ERP loja -> marketplace instalado."""
+        erp_integration_id = self._safe_int(erp_integration_id)
+        if not erp_integration_id or erp_store_id in (None, ''):
+            return None
+
+        try:
+            result = supabase_db.table('erp_marketplace_links') \
+                .select('*') \
+                .eq('erp_integration_id', erp_integration_id) \
+                .eq('erp_store_id', str(erp_store_id)) \
+                .execute()
+
+            for link in result.data or []:
+                marketplace_id = link.get('marketplace_integration_id')
+                if expected_module and marketplace_id:
+                    integration = self._get_installed_integration(marketplace_id, expected_module)
+                    if not integration:
+                        continue
+                    link['marketplace'] = integration
+                return link
+        except Exception as e:
+            logger.warning(
+                "Erro ao buscar erp_marketplace_links (erp=%s, store=%s): %s",
+                erp_integration_id,
+                erp_store_id,
+                e
+            )
+        return None
+
+    def _enrich_connection_from_erp_link(
+        self,
+        row: Dict[str, Any],
+        expected_module: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Preenche marketplace_integration_id a partir de erp_marketplace_links quando a conexao esta incompleta."""
+        enriched = dict(row)
+        if enriched.get('marketplace_integration_id'):
+            return enriched
+
+        for erp_integration_id in (enriched.get('bling_integration_id'), enriched.get('integration_id')):
+            link = self._get_erp_marketplace_link(
+                erp_integration_id,
+                enriched.get('aggregator_store_id'),
+                expected_module=expected_module
+            )
+            if link:
+                enriched['marketplace_integration_id'] = link.get('marketplace_integration_id')
+                enriched['erp_marketplace_link_id'] = link.get('id')
+                enriched['erp_marketplace_config'] = link.get('config') or {}
+                if not enriched.get('bling_integration_id'):
+                    enriched['bling_integration_id'] = link.get('erp_integration_id')
+                break
+
+        return enriched
+
+    def _build_integration_response(
+        self,
+        row: Dict[str, Any],
+        integration: Dict[str, Any],
+        target_id: int,
+        fallback: Optional[str] = None
+    ) -> Dict[str, Any]:
+        response = {
+            'connection_id': row.get('id'),
+            'integration_id': target_id,
+            'bling_integration_id': row.get('bling_integration_id'),
+            'marketplace_integration_id': row.get('marketplace_integration_id'),
+            'aggregator_store_id': (
+                row.get('aggregator_store_id')
+                or (str(row.get('bling_loja_id')) if row.get('bling_loja_id') else None)
+            ),
+            'plataforma_nome': row.get('plataforma_nome') or self._extract_platform_from_store_name(row.get('aggregator_store_name')),
+            'module_id': integration.get('module_id'),
+            'instance_name': integration.get('instance_name'),
+            'is_active': integration.get('is_active', True),
+            'config': integration.get('config', {}),
+            'credentials': integration.get('credentials', {}),
+            'erp_marketplace_link_id': row.get('erp_marketplace_link_id'),
+            'erp_marketplace_config': row.get('erp_marketplace_config', {}),
+        }
+        if fallback:
+            response['fallback'] = fallback
+        return response
+
+    def _resolve_integration_from_connection(
+        self,
+        row: Dict[str, Any],
+        expected_module: Optional[str] = None,
+        fallback: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        expected_module = self._normalize_module(expected_module)
+        row = self._enrich_connection_from_erp_link(row, expected_module)
+
+        if expected_module == 'bling':
+            candidate_ids = [row.get('bling_integration_id'), row.get('integration_id')]
+        elif expected_module in self.MARKETPLACE_MODULES:
+            candidate_ids = [row.get('marketplace_integration_id'), row.get('integration_id')]
+        elif expected_module:
+            candidate_ids = [row.get('marketplace_integration_id'), row.get('integration_id'), row.get('bling_integration_id')]
+        else:
+            candidate_ids = [row.get('marketplace_integration_id'), row.get('integration_id'), row.get('bling_integration_id')]
+
+        seen = set()
+        for target_id in candidate_ids:
+            target_id = self._safe_int(target_id)
+            if not target_id or target_id in seen:
+                continue
+            seen.add(target_id)
+
+            integration = self._get_installed_integration(target_id, expected_module)
+            if integration:
+                return self._build_integration_response(row, integration, target_id, fallback=fallback)
+
+        return None
+
+    def _sync_erp_marketplace_link(self, row: Dict[str, Any]) -> None:
+        if not row:
+            return
+
+        bling_integration_id = row.get('bling_integration_id')
+        marketplace_integration_id = row.get('marketplace_integration_id')
+        store_id = row.get('aggregator_store_id') or row.get('bling_loja_id')
+
+        if not (bling_integration_id and marketplace_integration_id and store_id):
+            return
+
+        try:
+            supabase_db.table('erp_marketplace_links').upsert({
+                'erp_integration_id': bling_integration_id,
+                'marketplace_integration_id': marketplace_integration_id,
+                'erp_store_id': str(store_id),
+                'store_name': row.get('aggregator_store_name') or str(store_id),
+                'config': row.get('config') or row.get('config_json') or {},
+                'updated_at': datetime.utcnow().isoformat()
+            }, on_conflict='erp_integration_id,erp_store_id').execute()
+        except Exception as link_error:
+            logger.warning("Falha ao sincronizar erp_marketplace_links: %s", link_error)
 
     def get_canal_by_bling_loja_id(self, bling_loja_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -56,6 +234,7 @@ class IntegracaoCanalService:
                 aggregator_store_id,
                 aggregator_store_name,
                 config,
+                sync_status,
                 is_active,
                 canais_venda!inner (
                     id,
@@ -68,7 +247,7 @@ class IntegracaoCanalService:
             """).eq('aggregator_store_id', str(bling_loja_id)).eq('is_active', True).execute()
 
             if result.data:
-                config = result.data[0]
+                config = self._enrich_connection_from_erp_link(result.data[0])
                 canal = config.get('canais_venda')
 
                 response = {
@@ -80,11 +259,14 @@ class IntegracaoCanalService:
                     'bling_loja_id': config['aggregator_store_id'],
                     'aggregator_store_name': config.get('aggregator_store_name'),
                     'plataforma_nome': self._extract_platform_from_store_name(config.get('aggregator_store_name')),
-                    'is_primary': config.get('sync_status') == 'pending',  # Usando sync_status como fallback
+                    'is_primary': str(config.get('sync_status')).lower() in ('true', 'primary'),
                     'canal_nome': canal.get('nome') if canal else None,
                     'canal_slug': canal.get('slug') if canal else None,
                     'canal_ativo': canal.get('ativo', True) if canal else False,
-                    'config': config.get('config', {})
+                    'config': config.get('config', {}),
+                    'erp_marketplace_link_id': config.get('erp_marketplace_link_id'),
+                    'erp_marketplace_config': config.get('erp_marketplace_config', {}),
+                    'resolved_from': 'channel_connections'
                 }
 
                 self._cache[cache_key] = response
@@ -267,7 +449,7 @@ class IntegracaoCanalService:
             ).eq('channel_id', canal_venda_id).eq('is_active', True).order('created_at', desc=True).execute()
 
             if result.data:
-                row = result.data[0]
+                row = self._enrich_connection_from_erp_link(result.data[0], expected_module)
                 
                 # Extrair plataforma do aggregator_store_name
                 plataforma_nome = self._extract_platform_from_store_name(row.get('aggregator_store_name'))
@@ -462,16 +644,16 @@ class IntegracaoCanalService:
             """).order('created_at', desc=False)
 
             if plataforma_nome:
-                query = query.eq('plataforma_nome', plataforma_nome.lower())
+                query = query.ilike('aggregator_store_name', f'%{plataforma_nome}%')
 
             if canal_venda_id:
-                query = query.eq('canal_venda_id', canal_venda_id)
+                query = query.eq('channel_id', canal_venda_id)
 
             if not include_inactive:
                 query = query.eq('is_active', True)
 
             result = query.execute()
-            rows = result.data or []
+            rows = [self._enrich_connection_from_erp_link(row) for row in (result.data or [])]
 
             ii_ids = set()
             for row in rows:
@@ -507,15 +689,16 @@ class IntegracaoCanalService:
 
                 config = {
                     'id': row['id'],
-                    'canal_venda_id': row['canal_venda_id'],
+                    'canal_venda_id': row['channel_id'],
                     'integration_id': row.get('integration_id'),
                     'bling_integration_id': row.get('bling_integration_id'),
                     'marketplace_integration_id': row.get('marketplace_integration_id'),
-                    'bling_loja_id': row['bling_loja_id'],
-                    'plataforma_nome': plataforma_nome,
+                    'bling_loja_id': row.get('aggregator_store_id'),
+                    'aggregator_store_name': row.get('aggregator_store_name'),
+                    'plataforma_nome': plataforma_nome or self._extract_platform_from_store_name(row.get('aggregator_store_name')),
                     'is_active': row.get('is_active', True),
-                    'is_primary': row.get('is_primary', False),
-                    'config_json': row.get('config_json', {}),
+                    'is_primary': str(row.get('sync_status')).lower() in ('true', 'primary'),
+                    'config_json': row.get('config', {}),
                     'created_at': row.get('created_at'),
                     'updated_at': row.get('updated_at'),
                     'canal_nome': canal.get('nome') if canal else None,
@@ -548,31 +731,41 @@ class IntegracaoCanalService:
         """
         try:
             # Verificar se já existe vínculo para este canal + loja
-            existing = supabase_db.table(self.table_name).select('id').eq('canal_venda_id', canal_venda_id).eq('bling_loja_id', bling_loja_id).execute()
+            existing = supabase_db.table(self.table_name).select('id') \
+                .eq('channel_id', canal_venda_id) \
+                .eq('aggregator_store_id', str(bling_loja_id)) \
+                .eq('is_active', True) \
+                .execute()
             if existing.data:
                 logger.warning(f"Vínculo já existe para canal {canal_venda_id} e loja {bling_loja_id}")
                 return None
 
             if is_primary:
-                supabase_db.table(self.table_name).update({'is_primary': False}).eq('canal_venda_id', canal_venda_id).eq('plataforma_nome', plataforma_nome.lower()).eq('is_active', True).execute()
+                supabase_db.table(self.table_name).update({'sync_status': 'active'}) \
+                    .eq('channel_id', canal_venda_id) \
+                    .ilike('aggregator_store_name', f'%{plataforma_nome}%') \
+                    .eq('is_active', True) \
+                    .execute()
 
             legacy_integration_id = integration_id
             if legacy_integration_id is None:
-                legacy_integration_id = marketplace_integration_id or bling_integration_id
+                legacy_integration_id = bling_integration_id or marketplace_integration_id
 
             data = {
-                'canal_venda_id': canal_venda_id,
-                'bling_loja_id': bling_loja_id,
-                'plataforma_nome': plataforma_nome.lower(),
+                'channel_id': canal_venda_id,
                 'integration_id': legacy_integration_id,
                 'bling_integration_id': bling_integration_id,
                 'marketplace_integration_id': marketplace_integration_id,
-                'is_primary': is_primary,
+                'aggregator_store_id': str(bling_loja_id),
+                'aggregator_store_name': f"{plataforma_nome} ({bling_loja_id})",
                 'is_active': True,
-                'config_json': config_json or {}
+                'sync_status': 'primary' if is_primary else 'active',
+                'config': config_json or {}
             }
             
             result = supabase_db.table(self.table_name).insert(data).execute()
+
+            self._sync_erp_marketplace_link(data)
             
             # Limpar cache
             self._cache.clear()
@@ -602,13 +795,35 @@ class IntegracaoCanalService:
             if updates.get('is_primary'):
                 existing = self.get_config_by_id(config_id)
                 if existing:
-                    supabase_db.table(self.table_name).update({'is_primary': False}).eq('canal_venda_id', existing['canal_venda_id']).eq('plataforma_nome', existing['plataforma_nome']).neq('id', config_id).eq('is_active', True).execute()
+                    supabase_db.table(self.table_name).update({'sync_status': 'active'}) \
+                        .eq('channel_id', existing['channel_id']) \
+                        .neq('id', config_id) \
+                        .eq('is_active', True) \
+                        .execute()
+
+            field_map = {
+                'canal_venda_id': 'channel_id',
+                'bling_loja_id': 'aggregator_store_id',
+                'config_json': 'config',
+            }
+            for old_key, new_key in field_map.items():
+                if old_key in updates:
+                    updates[new_key] = updates.pop(old_key)
+            if 'aggregator_store_id' in updates and updates['aggregator_store_id'] is not None:
+                updates['aggregator_store_id'] = str(updates['aggregator_store_id'])
+            if 'plataforma_nome' in updates:
+                plataforma_nome = updates.pop('plataforma_nome')
+                existing = self.get_config_by_id(config_id) or {}
+                store_id = updates.get('aggregator_store_id') or existing.get('aggregator_store_id')
+                updates['aggregator_store_name'] = f"{plataforma_nome} ({store_id})" if store_id else plataforma_nome
+            if 'is_primary' in updates:
+                updates['sync_status'] = 'primary' if updates.pop('is_primary') else 'active'
 
             if 'integration_id' not in updates:
-                if updates.get('marketplace_integration_id') is not None:
-                    updates['integration_id'] = updates['marketplace_integration_id']
-                elif updates.get('bling_integration_id') is not None:
+                if updates.get('bling_integration_id') is not None:
                     updates['integration_id'] = updates['bling_integration_id']
+                elif updates.get('marketplace_integration_id') is not None:
+                    updates['integration_id'] = updates['marketplace_integration_id']
 
             updates['updated_at'] = datetime.utcnow().isoformat()
             
@@ -618,7 +833,9 @@ class IntegracaoCanalService:
             self._cache.clear()
             
             if result.data:
-                return self.get_config_by_id(config_id)
+                updated = self.get_config_by_id(config_id)
+                self._sync_erp_marketplace_link(updated)
+                return updated
             
             return None
             
@@ -673,7 +890,7 @@ class IntegracaoCanalService:
                 'bling_integration_id': config.get('bling_integration_id'),
                 'marketplace_integration_id': config.get('marketplace_integration_id'),
                 'plataforma': config.get('plataforma_nome'),
-                'resolved_from': 'integracao_canais_config',
+                'resolved_from': config.get('resolved_from') or config.get('fallback') or 'channel_connections',
                 'is_primary': config.get('is_primary', False)
             }
         
@@ -711,9 +928,9 @@ class IntegracaoCanalService:
         try:
             res = supabase_db.table(self.table_name).select("*").eq(
                 'bling_integration_id', bling_integration_id
-            ).eq('bling_loja_id', bling_loja_id).eq('is_active', True).execute()
+            ).eq('aggregator_store_id', str(bling_loja_id)).eq('is_active', True).execute()
             if res.data:
-                return res.data[0]
+                return self._enrich_connection_from_erp_link(res.data[0])
             return None
         except Exception as e:
             logger.error(f"resolver_por_bling_integration_e_loja: {e}")

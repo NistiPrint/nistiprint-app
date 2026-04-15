@@ -122,7 +122,12 @@ class ConsolidationService:
         
         # 2. Resolver modalidade
         servico_logistico = pedido.get('servico_logistico', '')
-        modalidade = self.resolver_modalidade(canal_venda_id, servico_logistico)
+        modalidade = self.resolver_modalidade(
+            canal_venda_id,
+            servico_logistico,
+            is_flex=bool(pedido.get('is_flex')),
+            fulfillment=bool(pedido.get('fulfillment'))
+        )
         
         if not modalidade:
             # Pedido não classificado: entrar em fila de atenção
@@ -168,7 +173,9 @@ class ConsolidationService:
     def resolver_modalidade(
         self,
         canal_venda_id: int,
-        servico_logistico: str
+        servico_logistico: str,
+        is_flex: bool = False,
+        fulfillment: bool = False
     ) -> Optional[str]:
         """
         Resolve modalidade logística a partir do servico_logístico.
@@ -199,9 +206,11 @@ class ConsolidationService:
             )
         
         # Fallback: service Python
-        return canal_modalidade_service.derivar_modalidade(
+        return canal_modalidade_service.derivar_modalidade_com_fallback(
             canal_venda_id,
-            servico_logistico
+            servico_logistico,
+            is_flex=is_flex,
+            fulfillment=fulfillment
         )
     
     def resolver_horario(
@@ -226,10 +235,14 @@ class ConsolidationService:
         """
         # Buscar regra logística
         regras = regra_logistica_service.get_by_canal(canal_venda_id)
+        if isinstance(regras, dict):
+            regras_iter = regras.get(modalidade) or []
+        else:
+            regras_iter = regras or []
         
         # Filtrar por modalidade e ordenar por prioridade
         regra_modalidade = None
-        for regra in regras:
+        for regra in regras_iter:
             if regra.get('modalidade') == modalidade:
                 regra_modalidade = regra
                 break
@@ -589,8 +602,16 @@ class ConsolidationService:
     
     def _calcular_quantidade_pedido(self, pedido: Dict[str, Any]) -> int:
         """Calcula quantidade total de itens do pedido."""
-        # Pode buscar de itens_pedido ou usar campo denormalizado
-        return 1  # Default: 1 unidade por pedido
+        try:
+            response = supabase_db.table('itens_pedido') \
+                .select('quantidade') \
+                .eq('pedido_id', pedido.get('id')) \
+                .execute()
+            total = sum(float(item.get('quantidade') or 0) for item in (response.data or []))
+            return int(total) if total > 0 else 1
+        except Exception as e:
+            logger.warning("Falha ao calcular quantidade do pedido %s: %s", pedido.get('id'), e)
+            return 1
     
     def _calcular_categoria_temporal(
         self,

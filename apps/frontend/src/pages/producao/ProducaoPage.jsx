@@ -1,87 +1,93 @@
+import { useAuth } from '@/contexts/AuthContext';
 import { useLayout } from '@/contexts/LayoutContext';
 import { cn } from '@/lib/utils';
 import {
-  BarChart3,
-  ClipboardList,
-  Layers,
-  Package,
-  Printer,
-  Trello,
-  Zap
+    BarChart3,
+    ClipboardList,
+    Layers,
+    Package,
+    Printer,
+    Trello,
+    Zap
 } from 'lucide-react';
 import { useEffect } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
-const producaoMenu = [
-  {
-    name: 'Modo Foco (KDS)',
-    href: '/producao/foco',
-    icon: Zap,
-    description: 'Tela operacional para setores',
-    color: 'text-amber-600',
-    bgColor: 'bg-amber-50'
-  },
-  {
-    name: 'Painel Geral',
-    href: '/producao',
-    icon: Trello,
-    description: 'Kanban de produção por setor',
-    color: 'text-blue-600',
-    bgColor: 'bg-blue-50'
-  },
-  {
-    name: 'Resumo Diário',
-    href: '/producao/resumo',
-    icon: BarChart3,
-    description: 'Visão geral da produção do dia',
-    color: 'text-purple-600',
-    bgColor: 'bg-purple-50'
-  },
-  {
-    name: 'Demandas',
-    href: '/producao/demanda',
-    icon: ClipboardList,
-    description: 'Gerenciar ordens e demandas',
-    color: 'text-green-600',
-    bgColor: 'bg-green-50'
-  },
-  {
-    name: 'Miolos',
-    href: '/producao/miolos',
-    icon: Layers,
-    description: 'Controle de produção de miolos',
-    color: 'text-orange-600',
-    bgColor: 'bg-orange-50'
-  },
-  {
-    name: 'Capas',
-    href: '/producao/capas',
-    icon: Layers,
-    description: 'Controle de produção de capas',
-    color: 'text-pink-600',
-    bgColor: 'bg-pink-50'
-  },
-  {
-    name: 'Expedição',
-    href: '/producao/expedicao',
-    icon: Package,
-    description: 'Sincronia e retirada de itens',
-    color: 'text-indigo-600',
-    bgColor: 'bg-indigo-50'
-  },
-  {
-    name: 'Impressão',
-    href: '/producao/impressao',
-    icon: Printer,
-    description: 'Fila de impressão de artes',
-    color: 'text-cyan-600',
-    bgColor: 'bg-cyan-50'
-  }
-];
-
 function ProducaoPage() {
+  const { user } = useAuth();
   const location = useLocation();
   const { setLeftSidebarContent, setLeftSidebarMenuItems, setIsLeftSidebarOpen } = useLayout();
+
+  const producaoMenu = [
+    // Admin-only items
+    ...(user?.is_admin ? [
+      {
+        name: 'Modo Foco (KDS)',
+        href: '/producao/foco',
+        icon: Zap,
+        description: 'Tela operacional para setores',
+        color: 'text-amber-600',
+        bgColor: 'bg-amber-50'
+      },
+      {
+        name: 'Painel Geral',
+        href: '/producao',
+        icon: Trello,
+        description: 'Kanban de produção por setor',
+        color: 'text-blue-600',
+        bgColor: 'bg-blue-50'
+      },
+      {
+        name: 'Resumo Diário',
+        href: '/producao/resumo',
+        icon: BarChart3,
+        description: 'Visão geral da produção do dia',
+        color: 'text-purple-600',
+        bgColor: 'bg-purple-50'
+      }
+    ] : []),
+    // Always visible items
+    {
+      name: 'Demandas',
+      href: '/producao/demanda',
+      icon: ClipboardList,
+      description: 'Gerenciar ordens e demandas',
+      color: 'text-green-600',
+      bgColor: 'bg-green-50'
+    },
+    {
+      name: 'Miolos',
+      href: '/producao/miolos',
+      icon: Layers,
+      description: 'Controle de produção de miolos',
+      color: 'text-orange-600',
+      bgColor: 'bg-orange-50'
+    },
+    {
+      name: 'Capas',
+      href: '/producao/capas',
+      icon: Layers,
+      description: 'Controle de produção de capas',
+      color: 'text-pink-600',
+      bgColor: 'bg-pink-50'
+    },
+    {
+      name: 'Expedição',
+      href: '/producao/expedicao',
+      icon: Package,
+      description: 'Sincronia e retirada de itens',
+      color: 'text-indigo-600',
+      bgColor: 'bg-indigo-50'
+    },
+    {
+      name: 'Impressão',
+      href: '/producao/impressao',
+      icon: Printer,
+      description: 'Fila de impressão de artes',
+      color: 'text-cyan-600',
+      bgColor: 'bg-cyan-50'
+    }
+  ];
 
   useEffect(() => {
     // Reset sidebar to open state when entering production section

@@ -2,22 +2,22 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import {
-  AlertTriangle,
-  Clock,
-  Edit,
-  Eye,
-  MoreVertical,
-  PlayCircle,
-  ShoppingCart,
-  Trash2,
-  User
+    AlertTriangle,
+    Clock,
+    Edit,
+    Eye,
+    MoreVertical,
+    PlayCircle,
+    ShoppingCart,
+    Trash2,
+    User
 } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -218,7 +218,7 @@ export default function RascunhoCard({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => navigate(`/consolidar/rascunhos/${id}/editar`)}>
+                <DropdownMenuItem onClick={() => navigate(`/producao/demanda/${id}/editar`)}>
                   <Edit className="mr-2 h-4 w-4" /> Editar
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => onVerNovos(id)} disabled={pedidos_apos_edicao_qtd === 0}>

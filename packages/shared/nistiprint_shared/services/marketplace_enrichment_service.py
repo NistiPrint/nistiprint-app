@@ -147,7 +147,8 @@ class MarketplaceEnrichmentService:
         """
         try:
             # Chamar API Shopee diretamente para buscar dados atualizados
-            instance_id = marketplace_integration.get('instance_id')
+            # Use 'id' from installed_integrations as instance_id
+            instance_id = marketplace_integration.get('id')
             if not instance_id:
                 logger.warning(f"Instance ID não encontrado para integração {marketplace_integration_id}")
                 return False

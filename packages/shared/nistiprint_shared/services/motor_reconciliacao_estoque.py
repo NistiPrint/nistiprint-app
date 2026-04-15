@@ -17,7 +17,7 @@ Data: 2026-03-25
 """
 
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 import uuid
 import asyncio
@@ -607,6 +607,12 @@ class MotorReconciliacaoEstoque:
             if not comp_id:
                 continue
 
+            tipo_componente = await self._get_tipo_produto(comp_id)
+            if tipo_componente == 'PRODUTO_ACABADO':
+                raise ValueError(
+                    f"BOM invalida: produto acabado {comp_id} nao pode ser componente de {produto_id}"
+                )
+
             # Obter componentes da BOM do próprio componente (para recursão JIT)
             sub_componentes = await self._get_componentes_bom(comp_id)
             tem_bom = len(sub_componentes) > 0
@@ -867,14 +873,41 @@ class MotorReconciliacaoEstoque:
         """
         Adquire lock baseado no status do item no Supabase.
         Previne concorrência atualizando status para 'PROCESSANDO'.
+        Inclui timeout para locks presos há mais de 5 minutos.
         """
         try:
-            response = supabase_db.table('itens_demanda') \
-                .update({'status_processamento': 'PROCESSANDO'}) \
-                .eq('id', item_id) \
-                .neq('status_processamento', 'PROCESSANDO') \
+            # Primeiro, verifica se está PROCESSANDO há muito tempo (timeout de 5 minutos)
+            response = supabase_db.table('itens_demanda')\
+                .select('id, status_processamento, updated_at')\
+                .eq('id', item_id)\
+                .single()\
                 .execute()
-
+            
+            if response.data:
+                status = response.data.get('status_processamento')
+                updated_at = response.data.get('updated_at')
+                
+                # Se está PROCESSANDO há mais de 5 minutos, assume lock perdido e libera
+                if status == 'PROCESSANDO' and updated_at:
+                    from datetime import datetime, timedelta
+                    try:
+                        updated_dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                        if updated_dt < datetime.now(datetime.timezone.utc) - timedelta(minutes=5):
+                            print(f"[LOCK] Timeout detectado para item {item_id}, liberando lock...")
+                            supabase_db.table('itens_demanda')\
+                                .update({'status_processamento': 'PENDENTE'})\
+                                .eq('id', item_id)\
+                                .execute()
+                    except Exception as e:
+                        print(f"[LOCK] Erro ao verificar timeout: {e}")
+            
+            # Tenta adquirir lock
+            response = supabase_db.table('itens_demanda')\
+                .update({'status_processamento': 'PROCESSANDO'})\
+                .eq('id', item_id)\
+                .neq('status_processamento', 'PROCESSANDO')\
+                .execute()
+            
             return len(response.data) > 0
         except Exception as e:
             print(f"ERRO ao adquirir lock para item {item_id}: {e}")

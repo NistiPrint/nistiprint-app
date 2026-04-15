@@ -52,25 +52,27 @@ class DemandaReportingDashboardService:
         d['manual_priority_score'] = d.get('prioridade_manual', 0)
 
         if itens is not None:
+            def qtd(item, field):
+                return max(0, float(item.get(field) or 0))
             # Agregações básicas para o frontend (DemandaCard e Dashboard)
-            d['total_itens'] = sum(float(i.get('quantidade', 0)) for i in itens)
+            d['total_itens'] = sum(qtd(i, 'quantidade') for i in itens)
             d['total_quantidade'] = d['total_itens']
 
             # Itens finalizados (finalização manual no dashboard)
-            d['itens_finalizados_total'] = sum(float(i.get('finalizados_qtd', 0)) for i in itens)
+            d['itens_finalizados_total'] = sum(qtd(i, 'finalizados_qtd') for i in itens)
             d['itens_finalizados'] = d['itens_finalizados_total']
             
             # completed_quantidade agora representa o progresso de FINALIZAÇÃO MANUAL para o frontend
             d['completed_quantidade'] = d['itens_finalizados_total']
 
             # Itens prontos (unidades completas: capa + miolo)
-            d['capas_impressas_qtd'] = sum(float(i.get('capas_impressas_qtd', 0)) for i in itens)
-            d['capas_produzidas_qtd'] = sum(float(i.get('capas_produzidas_qtd', 0)) for i in itens)
-            d['capas_prontas_retirada_qtd'] = sum(float(i.get('capas_prontas_retirada_qtd', 0)) for i in itens)
-            d['miolos_produzidos_qtd'] = sum(float(i.get('miolos_prontos_retirada_qtd', 0)) for i in itens)
+            d['capas_impressas_qtd'] = sum(qtd(i, 'capas_impressas_qtd') for i in itens)
+            d['capas_produzidas_qtd'] = sum(qtd(i, 'capas_produzidas_qtd') for i in itens)
+            d['capas_prontas_retirada_qtd'] = sum(qtd(i, 'capas_prontas_retirada_qtd') for i in itens)
+            d['miolos_produzidos_qtd'] = sum(qtd(i, 'miolos_prontos_retirada_qtd') for i in itens)
             d['miolos_prontos_retirada_qtd'] = d['miolos_produzidos_qtd']
 
-            d['itens_prontos_total'] = sum(min(float(i.get('capas_prontas_retirada_qtd') or 0), float(i.get('miolos_prontos_retirada_qtd') or 0)) for i in itens)
+            d['itens_prontos_total'] = sum(min(qtd(i, 'capas_prontas_retirada_qtd'), qtd(i, 'miolos_prontos_retirada_qtd')) for i in itens)
             d['itens_concluidos'] = d['itens_prontos_total']
 
             # quantidade_coletada_total mantém o valor da tabela entrega_producao (coleta física/faturamento)
@@ -78,7 +80,7 @@ class DemandaReportingDashboardService:
 
             # Itens em fechamento
             d['itens_em_fechamento'] = sum(
-                min(float(i.get('expedicao_capas_retiradas_qtd') or 0), float(i.get('expedicao_miolos_retirados_qtd') or 0))
+                min(qtd(i, 'expedicao_capas_retiradas_qtd'), qtd(i, 'expedicao_miolos_retirados_qtd'))
                 for i in itens
             )
 

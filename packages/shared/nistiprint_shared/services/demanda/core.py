@@ -166,27 +166,29 @@ class DemandaCoreService:
         d['manual_priority_score'] = d.get('prioridade_manual', 0)
 
         if itens is not None:
+            def qtd(item, field):
+                return max(0, float(item.get(field) or 0))
             # Agregações para o DemandaCard
-            d['total_itens'] = sum(i.get('quantidade', 0) for i in itens)
+            d['total_itens'] = sum(qtd(i, 'quantidade') for i in itens)
             d['total_quantidade'] = d['total_itens']
 
             # Itens finalizados (incluindo parcial) para lógica de status textual e progresso real
             # Este campo representa a finalização manual e explícita no dashboard (real time).
-            d['itens_finalizados_total'] = sum(float(i.get('finalizados_qtd', 0)) for i in itens)
+            d['itens_finalizados_total'] = sum(qtd(i, 'finalizados_qtd') for i in itens)
 
             # Aliase para o frontend (DemandaCard usa itens_fechados ou completed_quantidade para progresso)
             d['itens_finalizados'] = d['itens_finalizados_total']
 
             # Itens prontos (unidades completas: capa + miolo) - suporte para finalização parcial
             # REGRA: Um item está pronto para retirar quando a CAPA ESTÁ PRONTA (casada com pedido) E o MIOLO ESTÁ PRONTO.
-            d['itens_prontos_total'] = sum(min(i.get('capas_prontas_retirada_qtd') or 0, i.get('miolos_prontos_retirada_qtd') or 0) for i in itens)
+            d['itens_prontos_total'] = sum(min(qtd(i, 'capas_prontas_retirada_qtd'), qtd(i, 'miolos_prontos_retirada_qtd')) for i in itens)
             # Aliase para o frontend usar o campo itens_concluidos como "unidades prontas"
             d['itens_concluidos'] = d['itens_prontos_total']
 
-            d['capas_impressas_qtd'] = sum(i.get('capas_impressas_qtd', 0) for i in itens)
-            d['capas_produzidas_qtd'] = sum(i.get('capas_produzidas_qtd', 0) for i in itens)
-            d['capas_prontas_retirada_qtd'] = sum(i.get('capas_prontas_retirada_qtd', 0) for i in itens)
-            d['miolos_produzidos_qtd'] = sum(i.get('miolos_prontos_retirada_qtd', 0) for i in itens)
+            d['capas_impressas_qtd'] = sum(qtd(i, 'capas_impressas_qtd') for i in itens)
+            d['capas_produzidas_qtd'] = sum(qtd(i, 'capas_produzidas_qtd') for i in itens)
+            d['capas_prontas_retirada_qtd'] = sum(qtd(i, 'capas_prontas_retirada_qtd') for i in itens)
+            d['miolos_produzidos_qtd'] = sum(qtd(i, 'miolos_prontos_retirada_qtd') for i in itens)
             d['miolos_prontos_retirada_qtd'] = d['miolos_produzidos_qtd']
 
             # completed_quantidade agora representa o progresso de FINALIZAÇÃO MANUAL para o frontend
@@ -198,7 +200,7 @@ class DemandaCoreService:
             # Itens em fechamento: soma do menor valor entre exp. capas e exp. miolos de cada item
             # Representa itens que a expedição está processando em paralelo (READY TO CLOSE)
             d['itens_em_fechamento'] = sum(
-                min(i.get('expedicao_capas_retiradas_qtd') or 0, i.get('expedicao_miolos_retirados_qtd') or 0)
+                min(qtd(i, 'expedicao_capas_retiradas_qtd'), qtd(i, 'expedicao_miolos_retirados_qtd'))
                 for i in itens
             )
 

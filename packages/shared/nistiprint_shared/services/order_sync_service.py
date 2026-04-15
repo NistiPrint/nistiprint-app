@@ -46,6 +46,47 @@ class OrderSyncService:
     Garante que dados relacionais (nome, telefone, flex, canal) sejam persistidos em colunas próprias.
     """
 
+    def _get_canal_config_by_loja_id(self, loja_id: int) -> Optional[Dict[str, Any]]:
+        if not loja_id:
+            return None
+
+        try:
+            return integracao_canal_service.get_canal_by_bling_loja_id(loja_id)
+        except Exception as e:
+            logger.warning(f"Erro ao resolver config do canal para loja_id {loja_id}: {e}")
+            return None
+
+    def _get_canal_config_by_marketplace_integration_id(self, integration_id: Any) -> Optional[Dict[str, Any]]:
+        if not integration_id:
+            return None
+
+        try:
+            marketplace_id = int(integration_id)
+        except (TypeError, ValueError):
+            return None
+
+        try:
+            result = supabase_db.table('channel_connections').select(
+                'id, channel_id, integration_id, bling_integration_id, marketplace_integration_id, aggregator_store_id, aggregator_store_name'
+            ).eq('marketplace_integration_id', marketplace_id).eq('is_active', True).limit(1).execute()
+
+            if result.data:
+                row = result.data[0]
+                return {
+                    'connection_id': row.get('id'),
+                    'canal_venda_id': row.get('channel_id'),
+                    'integration_id': row.get('integration_id'),
+                    'bling_integration_id': row.get('bling_integration_id'),
+                    'marketplace_integration_id': row.get('marketplace_integration_id'),
+                    'bling_loja_id': row.get('aggregator_store_id'),
+                    'aggregator_store_name': row.get('aggregator_store_name'),
+                    'resolved_from': 'channel_connections.marketplace_integration_id',
+                }
+        except Exception as e:
+            logger.warning(f"Erro ao resolver canal para marketplace_integration_id {integration_id}: {e}")
+
+        return None
+
     def _get_canal_id_by_loja_id(self, loja_id: int) -> Optional[int]:
         """
         Mapeia o loja_id do Bling para o ID do canal_venda interno.
@@ -56,7 +97,7 @@ class OrderSyncService:
         
         try:
             # Usar o novo serviço de configuração dinâmica
-            config = integracao_canal_service.get_canal_by_bling_loja_id(loja_id)
+            config = self._get_canal_config_by_loja_id(loja_id)
             if config:
                 return config['canal_venda_id']
             
@@ -69,7 +110,15 @@ class OrderSyncService:
         
         return None
 
-    def sync_shopee_order(self, order_sn: str, instance_id: Optional[str] = None, correlation_id: Optional[str] = None) -> Dict[str, Any]:
+    def sync_shopee_order(
+        self,
+        order_sn: str,
+        instance_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        channel_id: Optional[int] = None,
+        marketplace_integration_id: Optional[int] = None,
+        bling_loja_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         FASE 2: Enriquece pedido com dados da API Shopee.
         """
@@ -78,7 +127,8 @@ class OrderSyncService:
             logger.info("[FASE 2] INÍCIO: Enriquecendo pedido Shopee: %s", order_sn)
             logger.info("[FASE 2] Chamando platform_api_service.get_order_detail...")
 
-            shopee_data = platform_api_service.get_order_detail([order_sn], instance_id, "shopee")
+            resolved_instance_id = instance_id or (str(marketplace_integration_id) if marketplace_integration_id else None)
+            shopee_data = platform_api_service.get_order_detail([order_sn], resolved_instance_id, "shopee")
 
             if "error" in shopee_data and shopee_data["error"]:
                 logger.error("[FASE 2] Erro na API Shopee para %s: %s", order_sn, shopee_data['error'])
@@ -106,12 +156,15 @@ class OrderSyncService:
             data_prevista = clean_date(data_prevista)
 
             # Identificação FLEX (Entrega Rápida)
+            # Nova regra: se shipping_carrier contém 'entrega rapida' ou 'entrega rápida', é flex
             shipping_carrier = raw_order.get('shipping_carrier', '')
-            norm_carrier = normalize_text(shipping_carrier)
-            is_flex = any(termo in norm_carrier for termo in ["ENTREGA RÁPIDA"])
+            carrier_lower = shipping_carrier.lower()
+            is_flex = 'entrega rapida' in carrier_lower or 'entrega rápida' in carrier_lower
 
             if is_flex:
                 logger.info("🚀 Pedido FLEX detectado: %s (carrier: %s)", order_sn, shipping_carrier)
+            else:
+                logger.debug("Pedido não é FLEX: %s (carrier: %s)", order_sn, shipping_carrier)
 
             # Upsert
             order_core_dto = {
@@ -143,10 +196,15 @@ class OrderSyncService:
 
             logger.info("[FASE 2] Fazendo upsert do pedido com %d itens...", len(items_dto))
 
-            channel_id = 1
-            config = integracao_canal_service.get_canal_by_bling_loja_id(204047801)
-            if config:
+            config = self._get_canal_config_by_loja_id(bling_loja_id) if bling_loja_id else None
+            if not config and (marketplace_integration_id or resolved_instance_id):
+                config = self._get_canal_config_by_marketplace_integration_id(
+                    marketplace_integration_id or resolved_instance_id
+                )
+            if config and not channel_id:
                 channel_id = config['canal_venda_id']
+            if config and not marketplace_integration_id:
+                marketplace_integration_id = config.get('marketplace_integration_id')
 
             result = order_service.upsert_order(
                 order_data=order_core_dto,
@@ -155,6 +213,7 @@ class OrderSyncService:
                 raw_payload=raw_order,
                 items=items_dto,
                 channel_id=channel_id,
+                integration_id=str(marketplace_integration_id) if marketplace_integration_id else resolved_instance_id,
                 correlation_id=correlation_id
             )
 
@@ -168,7 +227,12 @@ class OrderSyncService:
             logger.error("[FASE 2] ✗ Erro sync_shopee_order para %s: %s", order_sn, e, exc_info=True)
             return {"error": str(e)}
 
-    def sync_bling_order(self, bling_order_data: Dict[str, Any], correlation_id: Optional[str] = None) -> Dict[str, Any]:
+    def sync_bling_order(
+        self,
+        bling_order_data: Dict[str, Any],
+        correlation_id: Optional[str] = None,
+        bling_integration_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         FASE 1: Sincroniza pedido vindo do Bling (Webhook ou Importação).
 
@@ -220,7 +284,9 @@ class OrderSyncService:
             if is_flex:
                 logger.info("🚀 Pedido FLEX detectado (Bling): %s (servico: %s)", bling_id, servico_logistico)
 
-            canal_id = self._get_canal_id_by_loja_id(loja_id)
+            canal_config = self._get_canal_config_by_loja_id(loja_id)
+            canal_id = canal_config.get('canal_venda_id') if canal_config else self._get_canal_id_by_loja_id(loja_id)
+            resolved_bling_integration_id = bling_integration_id or (canal_config.get('bling_integration_id') if canal_config else None)
             
             logger.info(
                 "[FASE 1] Pedido %s: canal_id=%s, is_flex=%s",
@@ -262,6 +328,7 @@ class OrderSyncService:
                 raw_payload=bling_order_data,
                 items=items_dto,
                 channel_id=canal_id,
+                integration_id=str(resolved_bling_integration_id) if resolved_bling_integration_id else None,
                 correlation_id=correlation_id
             )
 
@@ -396,6 +463,8 @@ class OrderSyncService:
                 'endereco_entrega': raw_order.get('recipient_address'),
                 'itens_pedido': raw_order.get('item_list'),
                 'informacoes_comprador': {'username': raw_order.get('buyer_username')},
+                'mensagem': raw_order.get('message_to_seller', ''),
+                'shipping_carrier': raw_order.get('shipping_carrier', ''),
                 'updated_at': datetime.utcnow().isoformat()
             }
             res = supabase_db.table('pedidos_shopee').select('id').eq('codigo_pedido', order_sn).execute()

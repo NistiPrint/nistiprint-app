@@ -124,7 +124,7 @@ def list_in_progress_dashboard():
                 total_quantidade = 0
                 completed_quantidade = 0
                 for item in demanda_with_itens['itens']:
-                    quantidade_total_item = item.get('quantidade_total', 0)
+                    quantidade_total_item = max(0, float(item.get('quantidade_total', 0) or 0))
                     total_quantidade += quantidade_total_item
                     if item.get('status_item') == 'Concluído':
                         completed_quantidade += quantidade_total_item

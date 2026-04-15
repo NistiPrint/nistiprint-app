@@ -5,21 +5,21 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuTrigger,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from '@/components/ui/table'
 import { useAuth } from '@/contexts/AuthContext'
 import { useLayout } from '@/contexts/LayoutContext'
@@ -28,19 +28,19 @@ import usePermissionsHook from '@/hooks/usePermissions'
 import useDebounce from '@/lib/hooks/useDebounce'
 import { supabase } from '@/lib/supabase'
 import {
-    ArrowLeft,
-    Calendar,
-    CheckCircle,
-    Flame,
-    History,
-    List,
-    Package,
-    Printer,
-    Save,
-    Search,
-    TrendingUp,
-    Truck,
-    X,
+  ArrowLeft,
+  Calendar,
+  CheckCircle,
+  Flame,
+  History,
+  List,
+  Package,
+  Printer,
+  Save,
+  Search,
+  TrendingUp,
+  Truck,
+  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -77,6 +77,7 @@ function DemandaDashboardPage() {
   const [isPartialCollectionModalOpen, setIsPartialCollectionModalOpen] =
     useState(false)
   const [selectedItemForHistory, setSelectedItemForHistory] = useState(null)
+  const [showPedidosOrigem, setShowPedidosOrigem] = useState(false)
 
   const debouncedSearchQuery = useDebounce(searchQuery, 300)
 
@@ -940,6 +941,9 @@ Deseja imprimir ${quantity} cópias localmente?`,
           </div>
         </div>
         <div className='flex gap-2'>
+          <Button variant='outline' onClick={() => setShowPedidosOrigem(true)} className='gap-2'>
+            <List className='h-4 w-4' /> Ver Pedidos Relacionados
+          </Button>
           <Link to='/producao/impressao'>
             <Button variant='outline' size='icon' title='Fila de Impressão'>
               <List className='h-4 w-4' />
@@ -1148,6 +1152,37 @@ Deseja imprimir ${quantity} cópias localmente?`,
         demandaId={demanda.id}
         onConfirm={handleConfirmCollection}
       />
+
+      {/* Dialog for viewing related orders */}
+      <Dialog open={showPedidosOrigem} onOpenChange={setShowPedidosOrigem}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Pedidos Relacionados - {demanda.nome}</DialogTitle>
+          </DialogHeader>
+          {demanda.pedidos_origem && demanda.pedidos_origem.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Código Pedido Externo</TableHead>
+                  <TableHead>Número Pedido</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {demanda.pedidos_origem.map((pedido, idx) => (
+                  <TableRow key={idx}>
+                    <TableCell>{pedido.codigo_pedido_externo || '-'}</TableCell>
+                    <TableCell>{pedido.numero_pedido || '-'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="text-center py-8 text-gray-500">
+              Nenhum pedido relacionado encontrado.
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
