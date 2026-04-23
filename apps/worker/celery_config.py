@@ -18,8 +18,12 @@ celery_app = Celery(
     broker=CELERY_BROKER_URL,
     backend=CELERY_RESULT_BACKEND,
     include=[
-        'nistiprint_shared.services.webhook_tasks',
         'nistiprint_shared.services.redis_queue_tasks',
+        'tasks.eventos_tasks',
+        'tasks.consolidation_tasks',
+        'tasks.pedidos_fetch_tasks',
+        'tasks.personalizados_tasks',
+        'tasks.token_renewal_tasks',
         'nistiprint_shared.services.bling_status_sync_service',
         'nistiprint_shared.services.ai_personalization_service',
         'tasks.stock_tasks',
@@ -49,23 +53,46 @@ celery_app.conf.update(
     
     # Agendamento de tarefas periódicas
     beat_schedule={
-        # Processamento de webhooks pendentes a cada 5 minutos
-        'process-pending-webhooks': {
-            'task': 'nistiprint_shared.services.webhook_tasks.process_pending_webhooks',
-            'schedule': crontab(minute='*/5'),
+        # Sincronização de tokens Bling do Firestore para Supabase (a cada 30 min)
+        'sync-firestore-tokens': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.sync_firestore_tokens',
+            'schedule': 1800,  # 30 minutos (em segundos)
         },
         # Consumir fila do Bling no Redis (contínuo)
         'consumir-fila-bling': {
             'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
-            'schedule': 30,  # A cada 30 segundos (esvazia até 50 por vez)
+            'schedule': 30,  # A cada 30 segundos
         },
-        # Processar fila de estoque a cada 10 segundos (High Frequency Outbox)
-        'processar-fila-estoque-periodic': {
-            'task': 'tasks.stock_tasks.process_stock_queue',
+        # NOVO: Processar eventos de produção (Event Sourcing) a cada 10 segundos
+        'processar-eventos-producao-periodic': {
+            'task': 'tasks.eventos_tasks.process_eventos_producao',
             'schedule': 10, # A cada 10 segundos
         },
+        # NOVO: Renovação automática de tokens Shopee (a cada 6 horas)
+        'renew-shopee-tokens': {
+            'task': 'tasks.token_renewal_tasks.renew_shopee_tokens',
+            'schedule': 7200,  # 6 horas (em segundos)
+        },
+
     },
 )
+
+# Importa explicitamente as tasks para registro
+try:
+    from tasks import eventos_tasks, consolidation_tasks  # noqa: F401
+except ImportError:
+    pass
+
+# Auto-discovery de tasks em módulos de serviço
+celery_app.autodiscover_tasks(lambda: [
+    'nistiprint_shared.services.redis_queue_tasks',
+    'tasks.eventos_tasks',
+    'tasks.consolidation_tasks',
+    'tasks.pedidos_fetch_tasks',
+    'tasks.personalizados_tasks',
+    'tasks.token_renewal_tasks',
+])
+
 
 @celery_app.task(bind=True)
 def debug_task(self):

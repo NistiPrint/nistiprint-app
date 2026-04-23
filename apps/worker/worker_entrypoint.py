@@ -27,6 +27,65 @@ except ImportError as e:
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0')
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
 
+def load_task_schedules():
+    """
+    Carrega configurações de tarefas periódicas do banco de dados.
+    
+    Retorna dicionário com configurações para beat_schedule.
+    Se não houver configuração no banco, retorna configuração padrão.
+    """
+    try:
+        from nistiprint_shared.services.app_config_service import app_config_service
+        
+        config = app_config_service.get_config('celery_task_schedules')
+        
+        if not config:
+            print("⚠️ Nenhuma configuração de tarefas encontrada no banco, usando padrão")
+            return get_default_schedules()
+        
+        task_schedules_config = config.get('task_schedules', {})
+        schedules = {}
+        
+        for task_name, task_config in task_schedules_config.items():
+            if task_config.get('enabled', True):
+                schedules[task_name] = {
+                    'task': task_config.get('task_name', task_name),
+                    'schedule': task_config.get('schedule_seconds', 60)
+                }
+                print(f"✓ Tarefa '{task_name}' habilitada (freq: {task_config.get('schedule_seconds')}s)")
+            else:
+                print(f"○ Tarefa '{task_name}' desabilitada")
+        
+        if not schedules:
+            print("⚠️ Nenhuma tarefa habilitada, beat_schedule vazio")
+        
+        return schedules
+        
+    except Exception as e:
+        print(f"⚠️ Erro ao carregar configurações do banco: {e}")
+        print("Usando configurações padrão")
+        return get_default_schedules()
+
+def get_default_schedules():
+    """
+    Retorna configurações padrão de tarefas periódicas.
+    Usado como fallback quando não há configuração no banco.
+    """
+    return {
+        'sync-firestore-tokens': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.sync_firestore_tokens',
+            'schedule': 1800,  # 30 minutos
+        },
+        'consumir-fila-bling': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
+            'schedule': 30,  # 30 segundos
+        },
+        'processar-eventos-producao-periodic': {
+            'task': 'tasks.eventos_tasks.process_eventos_producao',
+            'schedule': 10,  # 10 segundos
+        },
+    }
+
 # Criar aplicação Celery
 celery_app = Celery(
     'nistiprint_worker',
@@ -34,8 +93,11 @@ celery_app = Celery(
     backend=CELERY_RESULT_BACKEND,
     include=[
         'nistiprint_shared.services.redis_queue_tasks',
-        'nistiprint_shared.services.webhook_tasks',
-        'tasks.stock_tasks', # Adicionando módulo de tarefas de estoque
+        'tasks.eventos_tasks',  # Processamento de estoque (Event Sourcing)
+        'tasks.pedidos_fetch_tasks',  # Fetch Em Andamento (rede de segurança)
+        'tasks.consolidation_tasks',  # Tarefas de consolidação
+        'tasks.auto_consolidation_tasks',  # Auto-consolidação de pedidos
+        'nistiprint_shared.services.personalizados_tasks',  # Processamento de personalização IA (shared)
     ]
 )
 
@@ -61,23 +123,8 @@ celery_app.conf.update(
     result_expires=3600,
     
     # Agendamento de tarefas periódicas (Beat)
-    beat_schedule={
-        # Processamento de webhooks pendentes a cada 5 minutos
-        'process-pending-webhooks': {
-            'task': 'nistiprint_shared.services.webhook_tasks.process_pending_webhooks',
-            'schedule': crontab(minute='*/5'),
-        },
-        # Consumir fila do Bling no Redis (contínuo)
-        'consumir-fila-bling': {
-            'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
-            'schedule': 30,  # A cada 30 segundos
-        },
-        # Processar fila de estoque a cada 10 segundos
-        'processar-fila-estoque-periodic': {
-            'task': 'tasks.stock_tasks.process_stock_queue',
-            'schedule': 10, # A cada 10 segundos
-        },
-    },
+    # Carrega configurações dinâmicas do banco de dados
+    beat_schedule=load_task_schedules(),
 )
 
 # Task de debug
@@ -86,3 +133,13 @@ def debug_task(self):
     """Task de debug para testar conexão Celery"""
     print(f'Request: {self.request!r}')
     return 'Celery worker is running!'
+
+
+# Auto-discovery de tasks
+celery_app.autodiscover_tasks([
+    'tasks.eventos_tasks',
+    'tasks.consolidation_tasks',
+    'tasks.auto_consolidation_tasks',
+    'tasks.pedidos_fetch_tasks',
+    'nistiprint_shared.services.personalizados_tasks',
+])

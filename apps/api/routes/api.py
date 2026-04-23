@@ -355,25 +355,16 @@ def api_submit_feedback():
         if order_id is None or feedback_val is None:
             return ApiResponse.error(message='Dados incompletos', status_code=400)
 
-        # Import model here to avoid circular imports if necessary
-        from nistiprint_shared.models.order_feedback import OrderFeedback
-        from nistiprint_shared.database.database import db
+        from datetime import datetime
+        from nistiprint_shared.database.supabase_db_service import supabase_db
 
-        new_feedback = OrderFeedback(
-            order_id=str(order_id),
-            feedback=int(feedback_val),
-            feedback_notes=notes
-        )
-        
-        # Check database mode
-        from nistiprint_shared.database.supabase_db_service import get_current_database_mode
-        if get_current_database_mode().name == 'SUPABASE':
-            from nistiprint_shared.database.supabase_db_service import get_db_session
-            with get_db_session() as session:
-                session.add(new_feedback)
-        else:
-            db.session.add(new_feedback)
-            db.session.commit()
+        # Usar Supabase como fonte primária
+        supabase_db.table('feedback_pedido').insert({
+            'codigo_pedido': str(order_id),
+            'avaliacao': int(feedback_val),
+            'texto_feedback': notes,
+            'updated_at': datetime.utcnow().isoformat()
+        }).execute()
 
         return ApiResponse.success(message='Feedback enviado com sucesso')
 

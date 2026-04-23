@@ -17,7 +17,7 @@ class RegraLogisticaService:
     def get_by_canal(self, canal_venda_id: int):
         """Get all logistics rules for a specific channel."""
         try:
-            response = self.table.select("*, pontos_coleta(nome)").eq('canal_venda_id', canal_venda_id).order('prioridade_uso').execute()
+            response = self.table.select("*, pontos_coleta(nome)").eq('canal_venda_id', canal_venda_id).order('prioridade_uso', desc=True).execute()
 
             # Formatar para o frontend (agrupar por modalidade)
             regras_por_modalidade = {}

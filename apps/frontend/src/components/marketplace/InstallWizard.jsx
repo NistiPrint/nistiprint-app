@@ -23,6 +23,8 @@ const InstallWizard = () => {
   const [authUrl, setAuthUrl] = useState(null);
   const [manualMode, setManualMode] = useState(false);
   const [manualRedirectUrl, setManualRedirectUrl] = useState('');
+  const [blingStores, setBlingStores] = useState([]);
+  const [selectedBlingStoreId, setSelectedBlingStoreId] = useState('');
 
   useEffect(() => {
     fetchModuleDetails();
@@ -52,9 +54,9 @@ const InstallWizard = () => {
       if (!validateStep1()) return;
       await createPendingInstallation();
     } else if (currentStep === 2) {
-      // Logic for Step 2 is handled by "Conectar" button or specific flow
-      if (!validateStep2()) return;
-      setCurrentStep(3);
+      setCurrentStep(2.5);
+    } else if (currentStep === 2.5) {
+      await saveBlingLink();
     } else {
       setCurrentStep(prev => prev + 1);
     }
@@ -62,7 +64,9 @@ const InstallWizard = () => {
 
   const prevStep = () => {
     if (currentStep > 1) {
-      setCurrentStep(currentStep - 1);
+      if (currentStep === 3) setCurrentStep(2.5);
+      else if (currentStep === 2.5) setCurrentStep(2);
+      else setCurrentStep(currentStep - 1);
     }
   };
 
@@ -92,7 +96,9 @@ const InstallWizard = () => {
       const installData = {
         module_id: moduleId,
         instance_name: formData.instanceName,
-        user_id: 'default_user', // This should be handled by backend session ideally
+        instance_color: formData.instanceColor || '#64748b',
+        description: formData.description || '',
+        user_id: 'default_user', 
         config: {}
       };
 
@@ -102,11 +108,13 @@ const InstallWizard = () => {
         });
       }
 
-      // Initial create without credentials (pending status)
       const response = await MarketplaceService.installModule(installData);
       setInstanceId(response.instance_id);
       
-      toast.success('Configuração salva. Prossiga para autenticação.');
+      // Fetch stores early for step 2.5
+      await fetchBlingStores();
+      
+      toast.success('Configuração salva. Prossiga para vincular a loja.');
       setCurrentStep(2);
       
     } catch (error) {
@@ -117,10 +125,34 @@ const InstallWizard = () => {
     }
   };
 
-  const validateStep2 = () => {
-    // For OAuth, we just check if they clicked the button (we could add a check if we had a status polling)
-    // For now, we assume if they click Next they believe they are done.
-    return true;
+  const fetchBlingStores = async () => {
+    try {
+      const stores = await MarketplaceService.getBlingStores();
+      setBlingStores(stores);
+    } catch (error) {
+      console.error('Error fetching Bling stores:', error);
+      toast.error("Erro ao carregar lojas do Bling");
+    }
+  };
+
+  const saveBlingLink = async () => {
+    if (!selectedBlingStoreId) {
+      toast.error("Selecione uma loja do Bling");
+      return;
+    }
+    try {
+        setIsProcessing(true);
+        await MarketplaceService.createChannelLink({
+            integration_id: instanceId,
+            bling_loja_id: selectedBlingStoreId,
+        });
+        toast.success("Loja vinculada com sucesso!");
+        setCurrentStep(3);
+    } catch(e) {
+        toast.error("Erro ao vincular loja: " + e.message);
+    } finally {
+        setIsProcessing(false);
+    }
   };
 
   const startOAuth = async () => {
@@ -134,12 +166,8 @@ const InstallWizard = () => {
         });
       }
 
-      // If manual mode is active, we force the PROD redirect URL
-      // This allows the backend to generate a valid signature for Shopee
-      // The user will then be redirected to prod, and copy the URL back here
       let redirectUrl = null;
       if (manualMode) {
-        // Hardcoded prod URL or configurable
         redirectUrl = "https://app.nistiprint.com.br/api/v2/marketplace/auth/callback/shopee";
       }
 
@@ -231,13 +259,13 @@ const InstallWizard = () => {
       <div className="mb-8">
         <div className="flex justify-between items-center relative">
           <div className="absolute left-0 top-1/2 w-full h-0.5 bg-muted -z-10" />
-          {[1, 2, 3].map((step) => (
+          {[1, 2, 2.5, 3].map((step, idx) => (
             <div key={step} className={`flex flex-col items-center gap-2 bg-background px-4 ${currentStep >= step ? 'text-primary' : 'text-muted-foreground'}`}>
               <div className={`h-8 w-8 rounded-full flex items-center justify-center text-sm font-bold border-2 transition-colors ${currentStep >= step ? 'border-primary bg-primary text-primary-foreground' : 'border-muted bg-background'}`}>
-                {currentStep > step ? <Check className="h-4 w-4" /> : step}
+                {currentStep > step ? <Check className="h-4 w-4" /> : idx + 1}
               </div>
               <span className="text-sm font-medium hidden sm:block">
-                {step === 1 ? 'Configuração' : step === 2 ? 'Autenticação' : 'Conclusão'}
+                {step === 1 ? 'Config.' : step === 2 ? 'Auth' : step === 2.5 ? 'Vincular' : 'Fim'}
               </span>
             </div>
           ))}
@@ -248,164 +276,90 @@ const InstallWizard = () => {
         <CardHeader>
           <CardTitle>
             {currentStep === 1 ? 'Configuração Inicial' : 
-             currentStep === 2 ? 'Autenticação' : 'Verificar e Concluir'}
+             currentStep === 2 ? 'Autenticação' : 
+             currentStep === 2.5 ? 'Vincular Loja Bling' : 'Verificar e Concluir'}
           </CardTitle>
-          <CardDescription>
-            {currentStep === 1 ? 'Defina as configurações básicas da integração.' : 
-             currentStep === 2 ? `Conecte sua conta ${module.name}.` : 'Finalize o processo.'}
-          </CardDescription>
         </CardHeader>
         
         <CardContent className="space-y-6">
           {currentStep === 1 && (
             <>
               <div className="space-y-2">
-                <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
-                  Nome da Instância *
-                </label>
+                <Label>Nome da Instância *</Label>
                 <Input
                   placeholder="Ex: Minha Loja Principal"
                   value={formData.instanceName || ''}
                   onChange={(e) => handleInputChange('instanceName', e.target.value)}
                 />
-                <p className="text-[0.8rem] text-muted-foreground">Um nome para identificar esta integração no sistema.</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Cor da Instância</Label>
+                  <div className="flex gap-2 items-center">
+                    <Input type="color" className="w-12 h-10 p-1 cursor-pointer" value={formData.instanceColor || '#64748b'} onChange={(e) => handleInputChange('instanceColor', e.target.value)} />
+                  </div>
+                </div>
+                 <div className="space-y-2">
+                  <Label>Descrição (Opcional)</Label>
+                  <Input placeholder="Ex: Conta usada para Outlet" value={formData.description || ''} onChange={(e) => handleInputChange('description', e.target.value)} />
+                </div>
               </div>
 
               {module.config_schema?.properties && Object.entries(module.config_schema.properties).map(([field_name, field_props]) => (
                 <div key={field_name} className="space-y-2">
-                  <label className="text-sm font-medium leading-none">
-                    {field_props.title}{module.config_schema.required?.includes(field_name) ? ' *' : ''}
-                  </label>
-                  {field_props.type === "textarea" ? (
-                    <Textarea
-                      placeholder={field_props.description}
-                      value={formData[field_name] || ''}
-                      onChange={(e) => handleInputChange(field_name, e.target.value)}
-                    />
-                  ) : field_props.type === "select" ? (
-                    <Select 
-                      value={formData[field_name] || ''} 
-                      onValueChange={(val) => handleInputChange(field_name, val)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Selecione uma opção" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {field_props.enum?.map(option => (
-                          <SelectItem key={option} value={option}>{option}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <Input
-                      type={field_props.type === "password" ? "password" : "text"}
-                      placeholder={field_props.description}
-                      value={formData[field_name] || ''}
-                      onChange={(e) => handleInputChange(field_name, e.target.value)}
-                    />
-                  )}
-                  <p className="text-[0.8rem] text-muted-foreground">{field_props.description}</p>
+                  <Label>{field_props.title}{module.config_schema.required?.includes(field_name) ? ' *' : ''}</Label>
+                  <Input type={field_props.type === "password" ? "password" : "text"} placeholder={field_props.description} value={formData[field_name] || ''} onChange={(e) => handleInputChange(field_name, e.target.value)} />
                 </div>
               ))}
             </>
           )}
 
           {currentStep === 2 && (
-            <>
-              {module.auth_flow === 'oauth2' ? (
-                <div className="space-y-6">
-                  <div className="flex items-center space-x-2 bg-muted/50 p-4 rounded-lg">
-                    <Switch id="manual-mode" checked={manualMode} onCheckedChange={setManualMode} />
-                    <Label htmlFor="manual-mode" className="flex flex-col">
-                      <span>Modo Manual / Desenvolvimento Local</span>
-                      <span className="font-normal text-xs text-muted-foreground">
-                        Ative se você estiver rodando localmente (localhost) e a plataforma exigir uma URL pública.
-                      </span>
-                    </Label>
-                  </div>
+            <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed rounded-lg bg-muted/30">
+                <Button onClick={startOAuth} disabled={isProcessing} size="lg" className="gap-2">
+                  {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
+                  Autorizar com {module.name}
+                </Button>
+            </div>
+          )}
 
-                  <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed rounded-lg bg-muted/30">
-                    <p className="text-center mb-6 text-muted-foreground max-w-md">
-                      {manualMode 
-                        ? "1. Clique abaixo para abrir a Shopee (usando a URL de produção).\n2. Autorize o app.\n3. Quando for redirecionado (mesmo que dê erro), copie a URL completa do navegador."
-                        : `Clique no botão abaixo para abrir a página de login da ${module.name}. Após autorizar, você será redirecionado automaticamente.`
-                      }
-                    </p>
-                    
-                    <Button onClick={startOAuth} disabled={isProcessing} size="lg" className="gap-2">
-                      {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
-                      Autorizar com {module.name}
-                    </Button>
-                  </div>
-
-                  {manualMode && (
-                    <div className="space-y-4 pt-4 border-t">
-                      <div className="space-y-2">
-                        <Label>Cole a URL de redirecionamento final aqui:</Label>
-                        <div className="flex gap-2">
-                          <Input 
-                            placeholder="https://app.nistiprint.com.br/api/v2/marketplace/auth/callback/shopee?code=..." 
-                            value={manualRedirectUrl}
-                            onChange={(e) => setManualRedirectUrl(e.target.value)}
-                          />
-                          <Button onClick={processManualExchange} disabled={isProcessing}>
-                            {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                            Confirmar
-                          </Button>
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          O sistema irá extrair o código de autorização desta URL e completar a instalação localmente.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                 <div className="text-center p-8">
-                    <p>Este módulo usa um método de autenticação simples (API Key ou Usuário/Senha) configurado no passo anterior.</p>
-                 </div>
-              )}
-            </>
+          {currentStep === 2.5 && (
+            <div className="space-y-4">
+              <p className="text-muted-foreground">Vincule esta integração a uma loja do Bling para processamento de pedidos:</p>
+              <Select value={selectedBlingStoreId} onValueChange={setSelectedBlingStoreId}>
+                <SelectTrigger>
+                    <SelectValue placeholder="Selecione uma loja do Bling" />
+                </SelectTrigger>
+                <SelectContent>
+                    {blingStores.map(store => (
+                      <SelectItem key={store.id} value={store.id.toString()}>{store.nome}</SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
           )}
 
           {currentStep === 3 && (
-            <div className="space-y-4 bg-muted/30 p-4 rounded-lg text-center">
-               <div className="flex flex-col items-center justify-center p-6">
-                 <Check className="h-16 w-16 text-green-500 mb-4" />
-                 <h3 className="text-xl font-bold mb-2">Instalação Concluída!</h3>
-                 <p className="text-muted-foreground max-w-md">
-                   A integração foi ativada com sucesso.
-                 </p>
-               </div>
+            <div className="text-center p-6">
+                 <Check className="h-16 w-16 text-green-500 mx-auto mb-4" />
+                 <h3 className="text-xl font-bold">Instalação Concluída!</h3>
             </div>
           )}
         </CardContent>
 
         <CardFooter className="flex justify-between">
-          <Button 
-            variant="outline" 
-            onClick={prevStep} 
-            disabled={currentStep === 1 || isProcessing || currentStep === 3}
-          >
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Voltar
+          <Button variant="outline" onClick={prevStep} disabled={currentStep === 1 || isProcessing || currentStep === 3}>
+            <ArrowLeft className="mr-2 h-4 w-4" /> Voltar
           </Button>
           
           {currentStep < 3 ? (
-             <Button onClick={nextStep} disabled={isProcessing || currentStep === 2}> 
-               {/* Disable Next on Step 2 because user must authorize first, either auto or manual */} 
-               {currentStep === 2 ? 'Aguardando Autorização...' : (
-                <>
-                  Próximo
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </>
-               )}
+             <Button onClick={nextStep} disabled={isProcessing}> 
+               {currentStep === 2 ? 'Próximo' : currentStep === 2.5 ? 'Vincular' : 'Próximo'}
+               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
           ) : (
-            <Button onClick={finishInstallation}>
-              <Check className="mr-2 h-4 w-4" />
-              Concluir e Ver Lista
-            </Button>
+            <Button onClick={finishInstallation}><Check className="mr-2 h-4 w-4" /> Concluir</Button>
           )}
         </CardFooter>
       </Card>

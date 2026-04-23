@@ -1,11 +1,11 @@
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -32,9 +32,8 @@ const ControleProducaoPage = ({tipo}) => {
   const [isReverting, setIsReverting] = useState(false);
 
   const [activeTab, setActiveTab] = useState('estoque'); // Adiciona estado para controle das abas
-  const [capaSubTab, setCapaSubTab] = useState('impressao'); // Nova sub-aba para Capas: 'impressao' ou 'fechamento'
   const [demandSubTab, setDemandSubTab] = useState(tipo === 'miolo' ? 'miolo' : 'capa');
-
+  const [capaSubTab, setCapaSubTab] = useState('impressas'); // Sub-tab para capas: impressas vs acabadas
 
   // Estados para a visão de demandas
   const [mioloDemandSummary, setMioloDemandSummary] = useState([]);
@@ -68,22 +67,25 @@ const ControleProducaoPage = ({tipo}) => {
   // Inputs state for quantities
   const [inputs, setInputs] = useState({});
   
-  // Títulos dinâmicos considerando sub-aba
+  // Títulos dinâmicos simplificados
   const getPageTitle = () => {
     if (tipo === 'miolo') return 'Controle de Produção de Miolos';
-    return capaSubTab === 'impressao' ? 'Impressão de Capas' : 'Fechamento de Capas';
+    return 'Controle de Produção de Capas';
   };
-  
+
   const pageTitle = getPageTitle();
-  const totalLabel = tipo === 'miolo' ? 'Total de Miolos Ativos' : 
-                    capaSubTab === 'impressao' ? 'Total de Capas p/ Imprimir' : 'Total de Capas p/ Fechar';
+  const totalLabel = tipo === 'miolo' ? 'Total de Miolos Ativos' : 'Total de Capas';
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Se for capa e a sub-aba for fechamento, passamos o parâmetro correto para o service
-      const subtipo = (tipo === 'capa' && capaSubTab === 'fechamento') ? 'capa_acabada' : tipo;
-      const data = await ProductionService.getControleData(subtipo);
+      // Determinar o tipo correto baseado no contexto
+      let tipoParam = tipo;
+      if (tipo === 'capa') {
+        tipoParam = capaSubTab === 'impressas' ? 'capa' : 'capa_acabada';
+      }
+      
+      const data = await ProductionService.getControleData(tipoParam);
       
       if (data.success) {
         setProducts(data.products || []);
@@ -107,7 +109,7 @@ const ControleProducaoPage = ({tipo}) => {
 
   useEffect(() => {
     fetchData();
-  }, [tipo, activeTab, capaSubTab]); // Adicionado capaSubTab para recarregar ao trocar de sub-aba
+  }, [tipo, activeTab, capaSubTab]);
 
   // Resetar sub-aba de demandas quando o tipo da página mudar
   useEffect(() => {
@@ -142,14 +144,18 @@ const ControleProducaoPage = ({tipo}) => {
       // Determinar o campo de progresso baseado no contexto
       let field = null;
       if (tipo === 'miolo') field = 'miolos_prontos_retirada_qtd';
-      else if (capaSubTab === 'impressao') field = 'capas_impressas_qtd';
-      else if (capaSubTab === 'fechamento') field = 'capas_produzidas_qtd';
+      else if (tipo === 'capa') {
+        // Para capas, usar campo baseado na sub-tab
+        field = capaSubTab === 'impressas' ? 'capas_impressas_qtd' : 'capas_acabadas_qtd';
+      }
 
+      // Tela de Controle de Produção: processamento SÍNCRONO (tempo real)
       const result = await ProductionService.registerProduction({
         product_id: productId,
         quantity: quantity,
         date: selectedDate,
-        field: field // Enviamos o campo específico para o motor JIT recursivo
+        field: field,
+        sincrono: true // Processamento imediato, sem fila
       });
 
 
@@ -160,6 +166,7 @@ const ControleProducaoPage = ({tipo}) => {
         }
         setInputs(prev => ({ ...prev, [productId]: '' }));
         updateProductState(productId, result);
+        fetchData(); // Refresh data to show updated stock
       } else {
         toast.error(result.error || 'Erro ao registrar produção.');
       }
@@ -223,12 +230,14 @@ const ControleProducaoPage = ({tipo}) => {
 
     setIsDistributing(true);
     try {
+      // Tela de Controle de Produção: processamento SÍNCRONO (tempo real)
       const result = await ProductionService.registerRemoval({
         product_id: selectedProductForDistribution.id,
         quantity: totalDistributed,
         date: selectedDate,
         distributions: distributions,
-        demanda_id: manualDists ? selectedDemandaId : selectedDemandaId // Use stored ID
+        demanda_id: manualDists ? selectedDemandaId : selectedDemandaId,
+        sincrono: true // Processamento imediato, sem fila
       });
 
       if (result.success) {
@@ -439,6 +448,16 @@ const ControleProducaoPage = ({tipo}) => {
               Demandas
             </ToggleGroupItem>
           </ToggleGroup>
+          {tipo === 'capa' && (
+            <ToggleGroup type="single" value={capaSubTab} onValueChange={setCapaSubTab}>
+              <ToggleGroupItem value="impressas" aria-label="Capas Impressas">
+                Capas Impressas
+              </ToggleGroupItem>
+              <ToggleGroupItem value="acabadas" aria-label="Capas Acabadas">
+                Capas Acabadas
+              </ToggleGroupItem>
+            </ToggleGroup>
+          )}
         </div>
       </div>
 
@@ -469,28 +488,6 @@ const ControleProducaoPage = ({tipo}) => {
       {/* Conteúdo baseado na aba selecionada */}
       {activeTab === 'estoque' ? (
         <>
-          {/* Sub-abas para Capas */}
-          {tipo === 'capa' && (
-            <div className="flex gap-2 mb-4 bg-gray-50 p-2 rounded-lg border">
-              <Button
-                variant={capaSubTab === 'impressao' ? 'default' : 'ghost'}
-                size="sm"
-                onClick={() => setCapaSubTab('impressao')}
-                className="flex-1 sm:flex-none"
-              >
-                1. Impressão
-              </Button>
-              <Button
-                variant={capaSubTab === 'fechamento' ? 'default' : 'ghost'}
-                size="sm"
-                onClick={() => setCapaSubTab('fechamento')}
-                className="flex-1 sm:flex-none"
-              >
-                2. Fechamento
-              </Button>
-            </div>
-          )}
-
           {filteredProducts.length === 0 && !loading ? (
             <Card className="border-gray-200 bg-gray-50/50">
               <CardContent className="pt-6">

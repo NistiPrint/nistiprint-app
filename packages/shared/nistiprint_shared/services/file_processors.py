@@ -151,11 +151,11 @@ def enrich_orders_with_personalizations_legacy(bling_orders_data):
             if not personalizations: return bling_orders_data
 
             # 2. Buscar pedidos e itens locais no MySQL para ponte de ID
-            # Fixed table name to 'bling_pedidos' and 'bling_pedido_itens'
+            # Fixed table name to 'bling_pedidos' and 'itens_pedido_bling'
             query_local = text("""
                 SELECT p.numeroLoja, i.id as local_item_id, i.codigo as sku
                 FROM bling_pedidos p
-                JOIN bling_pedido_itens i ON p.id = i.pedido_id
+                JOIN itens_pedido_bling i ON p.id = i.pedido_id
                 WHERE p.numeroLoja IN :sns
             """)
             local_map_result = conn.execute(query_local, {"sns": tuple(order_sns)}).mappings().all()
@@ -476,8 +476,9 @@ def process_mercadolivre(file, period_filter=None, options=None, bling_client=No
     capas_miolos_data['internal_product_name'] = None
     capas_miolos_data['internal_product_sku'] = None
     capas_miolos_data['mapping_status'] = 'Não Mapeado'
-    capas_miolos_data['potential_matches'] = None 
+    capas_miolos_data['potential_matches'] = None
     capas_miolos_data['miolo_name'] = capas_miolos_data['Miolo'] # Populate fallback
+    capas_miolos_data['id_produto_miolo'] = None
 
     for index, row in capas_miolos_data.iterrows():
         external_name = row['Título do anúncio']
@@ -535,6 +536,23 @@ def process_mercadolivre(file, period_filter=None, options=None, bling_client=No
             if len(candidates) >= 1:
                 capas_miolos_data.loc[index, 'mapping_status'] = 'Não Mapeado (Sugestões Disponíveis)'
                 capas_miolos_data.loc[index, 'potential_matches'] = json.dumps([{'id': m['id'], 'name': m['nome'], 'sku': m['sku']} for m in candidates])
+            # Fallback: Use original spreadsheet data if no match and no candidates found
+            capas_miolos_data.loc[index, 'internal_product_name'] = row.get('Título do anúncio', '')
+            capas_miolos_data.loc[index, 'internal_product_sku'] = row.get('SKU', '')
+            capas_miolos_data.loc[index, 'mapping_status'] = 'Não Mapeado'
+            logging.info(f"Mapeamento falhou e sem sugestões. Usando dados originais para SKU externo: '{external_sku}'")
+
+    # Ensure Miolo columns are populated with a fallback value if they are None/empty after all lookups
+    capas_miolos_data['Miolo'] = capas_miolos_data['Miolo'].fillna('-')
+    capas_miolos_data['miolo_name'] = capas_miolos_data['miolo_name'].fillna(capas_miolos_data['Miolo']) # Fallback miolo_name to Miolo value
+    capas_miolos_data['id_produto_miolo'] = capas_miolos_data['id_produto_miolo'].fillna(None) # Ensure it's None if not found
+
+    # Padronizar nomes das colunas para o frontend
+    capas_miolos_data = capas_miolos_data.rename(columns={
+        'Título do anúncio': 'Nome do Produto',
+        'SKU': 'SKU',
+        'Variação': 'Variação',
+    })
 
     ids_pedidos_chunks = generate_ids_chunks(ids_pedidos)
 
@@ -574,7 +592,12 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
     data = pd.read_excel(file)
     data['Data prevista de envio'] = pd.to_datetime(data['Data prevista de envio'], errors='coerce')
 
-    is_flex = "Flex" in options.get('plataforma', '') or "flex" in str(options.get('channel_slug', '')).lower()
+    # Prioriza flag explícita de options, senão tenta inferir pelo nome/slug (legado/auto)
+    is_flex = options.get('is_flex')
+    if is_flex is None:
+        is_flex = "Flex" in options.get('plataforma', '') or "flex" in str(options.get('channel_slug', '')).lower()
+
+    logging.info(f"[SHOPEE] Processando arquivo. Modalidade Flex: {is_flex}")
 
     base_condition = data['Opção de envio'].str.contains("Entrega Rápida") if is_flex else (
         data['Número de rastreamento'].isnull() & \
@@ -596,40 +619,28 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
             message = row['Observação do comprador'] if pd.notna(row['Observação do comprador']) else ''
             buyer_info_json = json.dumps({"username": username})
 
-            existing_orders = session.query_model(ShopeeOrders).filter_by(codigo_pedido=order_sn).all()
-
-            if existing_orders:
-                existing_order = existing_orders[0]
-                existing_order.informacoes_comprador = buyer_info_json
-                existing_order.mensagem = message
-                existing_order.status_pedido = status
-                existing_order.updated_at = datetime.utcnow()
-                from nistiprint_shared.database.supabase_db_service import supabase_db
-                update_data = {
-                    'informacoes_comprador': buyer_info_json,
-                    'mensagem': message,
-                    'status_pedido': status,
-                    'updated_at': datetime.utcnow().isoformat()
-                }
-                supabase_db.update('pedidos_shopee', existing_order.id, update_data)
+            from nistiprint_shared.database.supabase_db_service import supabase_db
+            
+            # Upsert logic: If codigo_pedido exists, update; otherwise, insert.
+            # Using Supabase .upsert() with 'on_conflict' if supported, or manual check
+            order_dict = {
+                'codigo_pedido': order_sn,
+                'status_pedido': status,
+                'informacoes_comprador': buyer_info_json,
+                'mensagem': message,
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            # Check existence to handle created_at
+            existing_orders = supabase_db.table('pedidos_shopee').select("id, created_at").eq('codigo_pedido', order_sn).execute()
+            
+            if existing_orders.data:
+                # Update
+                supabase_db.table('pedidos_shopee').update(order_dict).eq('codigo_pedido', order_sn).execute()
             else:
-                new_order = ShopeeOrders()
-                new_order.codigo_pedido = order_sn
-                new_order.informacoes_comprador = buyer_info_json
-                new_order.mensagem = message
-                new_order.status_pedido = status
-                new_order.created_at = datetime.utcnow()
-                new_order.updated_at = datetime.utcnow()
-                from nistiprint_shared.database.supabase_db_service import supabase_db
-                order_dict = {
-                    'codigo_pedido': new_order.codigo_pedido,
-                    'status_pedido': status,
-                    'informacoes_comprador': new_order.informacoes_comprador,
-                    'mensagem': new_order.mensagem,
-                    'created_at': new_order.created_at.isoformat() if new_order.created_at else None,
-                    'updated_at': new_order.updated_at.isoformat() if new_order.updated_at else None
-                }
-                supabase_db.insert('pedidos_shopee', order_dict)
+                # Insert
+                order_dict['created_at'] = datetime.utcnow().isoformat()
+                supabase_db.table('pedidos_shopee').insert(order_dict).execute()
 
 
     # --- ORDER TRACKING FILTER ---
@@ -696,12 +707,12 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
     # Consolida capas
     capas_data = filtered_data.groupby(CAPAS_GROUP['shopee'])['Quantidade'].sum(
     ).reset_index(name='Total').sort_values(['Total'], ascending=[False]).copy()
-    total_capas = capas_data.sum(numeric_only=True).astype('int64').item()
+    total_capas = int(capas_data['Total'].sum())
 
     # Consolida miolos
     miolos_data = filtered_data.groupby('Miolo')['Quantidade'].sum().reset_index(
         name='Total').sort_values(['Total'], ascending=[False]).copy()
-    total_miolos = miolos_data.sum(numeric_only=True).astype('int64').item()
+    total_miolos = int(miolos_data['Total'].sum())
 
     miolo_order = {miolo: i for i, miolo in enumerate(miolos_data["Miolo"])}
 
@@ -716,7 +727,8 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
     capas_miolos_data["Miolo_Ordem"] = capas_miolos_data["Miolo"].map(miolo_order).astype('Int64')
     capas_miolos_data = capas_miolos_data.sort_values(['Miolo_Ordem', 'Total'], ascending=[True, False]).drop(columns=['Miolo_Ordem'])
 
-    # --- UPDATED MAPPING LOGIC ---
+    # --- OTIMIZADO: BATCH LOADING PARA MAPEAMENTO DE PRODUTOS ---
+    # Coleta todos os SKUs únicos primeiro para batch fetch
     capas_miolos_data['internal_product_id'] = None
     capas_miolos_data['internal_product_name'] = None
     capas_miolos_data['internal_product_sku'] = None
@@ -725,71 +737,123 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
     capas_miolos_data['miolo_name'] = capas_miolos_data['Miolo']
     capas_miolos_data['id_produto_miolo'] = None
 
+    # Extrai todos os SKUs únicos do DataFrame
+    sku_column = 'Número de referência SKU' if 'Número de referência SKU' in capas_miolos_data.columns else 'Nº de referência do SKU principal'
+    all_external_skus = capas_miolos_data[sku_column].unique().tolist()
+    
+    logging.info(f"[OTIMIZAÇÃO] Buscando {len(all_external_skus)} SKUs únicos em batch...")
+    
+    # Batch fetch: busca todos os produtos de uma vez
+    products_map = product_service.resolve_variations_batch(all_external_skus)
+    
+    # Coleta todos os product_ids mapeados para batch fetch de BOM
+    mapped_product_ids = [p['id'] for p in products_map.values() if p is not None]
+    
+    logging.info(f"[OTIMIZAÇÃO] Buscando BOM de {len(mapped_product_ids)} produtos em batch...")
+    
+    # Batch fetch de BOM components
+    bom_map = bom_service.get_bom_for_multiple_products(mapped_product_ids)
+    
+    # Coleta todos os miolos únicos para batch fetch de fallback
+    miolos_fallback_needed = set()
+    for index, row in capas_miolos_data.iterrows():
+        external_sku = row.get(sku_column, '')
+        match = products_map.get(external_sku)
+        
+        if match and external_sku not in miolos_fallback_needed:
+            # Verifica se tem BOM
+            product_id = match['id']
+            miolo_components = bom_map.get(product_id, [])
+            
+            # Filtra componentes da categoria Miolo (categoria_id=6 por padrão)
+            miolo_cat_id = str(app_config_service.get_config('producao_miolos_category_id') or '6')
+            miolo_comp = next((c for c in miolo_components if str(c.componente_id) == miolo_cat_id), None)
+            
+            if not miolo_comp:
+                # Vai precisar de fallback
+                extracted_miolo = row['Miolo']
+                if extracted_miolo:
+                    miolos_fallback_needed.add(extracted_miolo)
+    
+    # Batch fetch de produtos miolo para fallback
+    miolo_products_map = {}
+    if miolos_fallback_needed:
+        logging.info(f"[OTIMIZAÇÃO] Buscando {len(miolos_fallback_needed)} miolos em batch (fallback)...")
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        miolos_list = list(miolos_fallback_needed)
+        
+        # Busca produtos com nome contendo cada miolo
+        for miolo_name in miolos_list:
+            response = supabase_db.table('produtos').select('*').ilike('nome', f'Miolo %{miolo_name}%').limit(1).execute()
+            if response.data:
+                miolo_products_map[miolo_name] = response.data[0]
+    
+    # Agora processa o DataFrame em memória (sem queries)
     for index, row in capas_miolos_data.iterrows():
         external_name = row['Nome do Produto']
-        external_sku = row.get('Número de referência SKU', row.get('Nº de referência do SKU principal', ''))
+        external_sku = row.get(sku_column, '')
         variation_name = row['Nome da variação'] if row['Nome da variação'] != '-' else None
-
-        # Log the mapping attempt
-        import logging
-        logging.info(f"Mapeamento tentativa - SKU externo: '{external_sku}', Nome externo: '{external_name}', Variação: '{variation_name}'")
-
-        match = product_service.resolve_variation(
-            sku_externo=external_sku,
-            plataforma=platform_name,
-            nome_externo=f"{external_name} - {variation_name}" if variation_name else external_name
-        )
-
+        
+        match = products_map.get(external_sku)
+        
         if match:
             capas_miolos_data.loc[index, 'internal_product_id'] = match['id']
             capas_miolos_data.loc[index, 'internal_product_name'] = match['nome']
             capas_miolos_data.loc[index, 'internal_product_sku'] = match['sku']
             capas_miolos_data.loc[index, 'mapping_status'] = 'Mapeado'
-            logging.info(f"Mapeamento bem sucedido - SKU externo: '{external_sku}' -> Produto interno ID: {match['id']}, Nome: '{match['nome']}', SKU: '{match['sku']}'")
+            logging.info(f"Mapeamento bem sucedido - SKU externo: '{external_sku}' -> Produto interno ID: {match['id']}")
+
+            # --- ATUALIZAÇÃO DO MIOLO VIA BOM (em memória) ---
+            product_id = match['id']
+            miolo_components = bom_map.get(product_id, [])
             
-            # --- ATUALIZAÇÃO DO MIOLO VIA BOM ---
-            logging.info(f"[DEBUG MIOLO] Tentando associar miolo para produto: {match['nome']} (ID: {match['id']})")
-            miolo_bom, id_produto_miolo = get_miolo_from_bom(match['id'])
-            if miolo_bom:
-                logging.info(f"[DEBUG MIOLO] Associado miolo via BOM: {miolo_bom} (ID: {id_produto_miolo})")
-                capas_miolos_data.loc[index, 'Miolo'] = miolo_bom
-                capas_miolos_data.loc[index, 'miolo_name'] = miolo_bom
-                capas_miolos_data.loc[index, 'id_produto_miolo'] = id_produto_miolo
-            else:
-                logging.info(f"[DEBUG MIOLO] Nenhum miolo encontrado via BOM para produto {match['nome']} (ID: {match['id']})")
-                # Fallback: tentar encontrar produto de miolo com base no nome extraído
-                try:
-                    # Obter o nome do miolo a partir do campo 'Miolo' do DataFrame
-                    extracted_miolo = row['Miolo']
-                    logging.info(f"[DEBUG MIOLO] Tentando fallback para miolo: {extracted_miolo}")
-
-                    # Buscar produtos com nome contendo "Miolo " + extracted_miolo
-                    from nistiprint_shared.database.supabase_db_service import supabase_db
-                    response = supabase_db.table('produtos').select('*').ilike('nome', f'Miolo %{extracted_miolo}%').execute()
-
-                    if response.data:
-                        miolo_produto = response.data[0]  # Pegar o primeiro resultado
-                        logging.info(f"[DEBUG MIOLO] Produto miolo encontrado via fallback: {miolo_produto['nome']} (ID: {miolo_produto['id']})")
-                        capas_miolos_data.loc[index, 'miolo_name'] = miolo_produto['nome']
-                        capas_miolos_data.loc[index, 'id_produto_miolo'] = miolo_produto['id']
-                    else:
-                        logging.info(f"[DEBUG MIOLO] Nenhum produto miolo encontrado via fallback para: {extracted_miolo}")
-
-                except Exception as e:
-                    logging.error(f"[DEBUG MIOLO] Erro no fallback de associação de miolo: {e}")
-            # ------------------------------------
+            # Busca componente da categoria Miolo
+            miolo_cat_id = str(app_config_service.get_config('producao_miolos_category_id') or '6')
+            
+            # Precisa buscar detalhes do componente para pegar o nome
+            if miolo_components:
+                # Pega o primeiro componente que é miolo
+                for comp in miolo_components:
+                    comp_details = product_service.get_by_id(str(comp.componente_id))
+                    if comp_details:
+                        # Verifica se é da categoria miolo
+                        comp_cat_id = str(comp_details.get('categoria_id', ''))
+                        if comp_cat_id == miolo_cat_id:
+                            miolo_bom = comp_details.get('nome')
+                            id_produto_miolo = comp_details.get('id')
+                            capas_miolos_data.loc[index, 'Miolo'] = miolo_bom
+                            capas_miolos_data.loc[index, 'miolo_name'] = miolo_bom
+                            capas_miolos_data.loc[index, 'id_produto_miolo'] = id_produto_miolo
+                            logging.info(f"[DEBUG MIOLO] Associado miolo via BOM: {miolo_bom}")
+                            break
+            
+            # Fallback: usa miolo pré-buscado
+            if not capas_miolos_data.loc[index, 'id_produto_miolo']:
+                extracted_miolo = row['Miolo']
+                if extracted_miolo in miolo_products_map:
+                    miolo_produto = miolo_products_map[extracted_miolo]
+                    capas_miolos_data.loc[index, 'miolo_name'] = miolo_produto['nome']
+                    capas_miolos_data.loc[index, 'id_produto_miolo'] = miolo_produto['id']
+                    logging.info(f"[DEBUG MIOLO] Associado miolo via fallback: {miolo_produto['nome']}")
         else:
-            logging.info(f"Mapeamento direto falhou para SKU externo: '{external_sku}', buscando candidatos...")
+            logging.info(f"Mapeamento direto falhou para SKU externo: '{external_sku}'")
+            # Busca candidatos (ainda usa query individual, mas só para não mapeados)
             candidates = product_service.find_internal_product(platform_name, external_sku, external_name)
-            logging.info(f"Encontrados {len(candidates)} candidatos para SKU externo: '{external_sku}'")
-
+            
             if len(candidates) >= 1:
                 capas_miolos_data.loc[index, 'mapping_status'] = 'Não Mapeado (Sugestões Disponíveis)'
                 potential_matches_data = [{'id': m['id'], 'name': m['nome'], 'sku': m['sku']} for m in candidates]
                 capas_miolos_data.loc[index, 'potential_matches'] = json.dumps(potential_matches_data)
-            else:
-                logging.info(f"Nenhum candidato encontrado para SKU externo: '{external_sku}'")
-    
+    # -----------------------------------------------------------
+
+    # Padronizar nomes das colunas para o frontend
+    capas_miolos_data = capas_miolos_data.rename(columns={
+        'Nome do Produto': 'Nome do Produto',
+        'Número de referência SKU': 'SKU',
+        'Nº de referência do SKU principal': 'SKU',
+        'Nome da variação': 'Variação',
+    })
+
     ids_pedidos = filtered_data['ID do pedido'].astype(str).unique().tolist()
     ids_pedidos_chunks = generate_ids_chunks(ids_pedidos)
 
@@ -810,6 +874,36 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
 
         bling_orders_data.sort(key=lambda x: (x['hasCustomItem'], x['total_items'], len(x['itens']), len(
             [item for item in x['itens'] if item['custom_tag'] != '']), next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), '')))
+    else:
+        # Build basic bling_orders_data from spreadsheet for later sync
+        sku_column = 'Número de referência SKU' if 'Número de referência SKU' in filtered_data.columns else 'Nº de referência do SKU principal'
+        for oid in ids_pedidos:
+            order_rows = filtered_data[filtered_data['ID do pedido'] == oid]
+            if order_rows.empty: continue
+            first_row = order_rows.iloc[0]
+            
+            basic_order = {
+                "numeroLoja": str(oid),
+                "numero": str(oid), # Fallback until background sync
+                "id": None,
+                "contato": {
+                    "nome": first_row.get('Nome de usuário (comprador)', ''),
+                    "numeroDocumento": None,
+                },
+                "itens": [
+                    {
+                        "codigo": str(row.get(sku_column, '')),
+                        "descricao": str(row.get('Nome do Produto', '')),
+                        "quantidade": int(row.get('Quantidade', 1)),
+                        "valor": float(row.get('Preço acordado', 0)) if 'Preço acordado' in row else 0
+                    } for _, row in order_rows.iterrows()
+                ],
+                "totalProdutos": float(first_row.get('Total pago pelo comprador', 0)) if 'Total pago pelo comprador' in first_row else 0,
+                "situacao": {"id": "IMPORTADO_PLANILHA"},
+                "is_flex": is_flex,
+                "servico_logistico": "Entrega Rápida" if is_flex else first_row.get('Opção de envio')
+            }
+            bling_orders_data.append(basic_order)
 
     total_pedidos_plataforma = len(ids_pedidos)
 
@@ -980,10 +1074,27 @@ def process_amazon(file, period_filter, options=None, bling_client=None):
                     logging.error(f"[DEBUG MIOLO] Erro no fallback de associação de miolo: {e}")
             # ------------------------------------
         else:
+            # Fallback: Try fuzzy search to suggest matches
             candidates = product_service.find_internal_product(platform_name, external_sku, external_name)
             if len(candidates) >= 1:
                 capas_miolos_data.loc[index, 'mapping_status'] = 'Não Mapeado (Sugestões Disponíveis)'
                 capas_miolos_data.loc[index, 'potential_matches'] = json.dumps([{'id': m['id'], 'name': m['nome'], 'sku': m['sku']} for m in candidates])
+            # Fallback: Use original spreadsheet data if no match and no candidates found
+            capas_miolos_data.loc[index, 'internal_product_name'] = row.get('Título', '')
+            capas_miolos_data.loc[index, 'internal_product_sku'] = row.get('SKU', '')
+            capas_miolos_data.loc[index, 'mapping_status'] = 'Não Mapeado'
+            logging.info(f"Mapeamento falhou e sem sugestões. Usando dados originais para SKU externo: '{external_sku}'")
+
+        # Ensure Miolo columns are populated with a fallback value if they are None/empty after all lookups
+        capas_miolos_data['Miolo'] = capas_miolos_data['Miolo'].fillna('-')
+        capas_miolos_data['miolo_name'] = capas_miolos_data['miolo_name'].fillna(capas_miolos_data['Miolo']) # Fallback miolo_name to Miolo value
+        capas_miolos_data['id_produto_miolo'] = capas_miolos_data['id_produto_miolo'].fillna(None) # Ensure it's None if not found
+
+    # Padronizar nomes das colunas para o frontend
+    capas_miolos_data = capas_miolos_data.rename(columns={
+        'Título': 'Nome do Produto',
+        'SKU': 'SKU',
+    })
 
     ids_pedidos = filtered_data['ID do pedido'].astype(str).unique().tolist()
     ids_pedidos_chunks = generate_ids_chunks(ids_pedidos)
@@ -1005,6 +1116,33 @@ def process_amazon(file, period_filter, options=None, bling_client=None):
 
         bling_orders_data.sort(key=lambda x: (x['hasCustomItem'], x['total_items'], len(x['itens']), len(
             [item for item in x['itens'] if item['custom_tag'] != '']), next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), '')))
+    else:
+        # Build basic bling_orders_data from spreadsheet for later sync
+        for oid in ids_pedidos:
+            order_rows = filtered_data[filtered_data['ID do pedido'] == oid]
+            if order_rows.empty: continue
+            first_row = order_rows.iloc[0]
+            
+            basic_order = {
+                "numeroLoja": str(first_row.get('ID do pedido do cliente', oid)),
+                "numero": str(first_row.get('ID do pedido do cliente', oid)), # Fallback
+                "id": None,
+                "contato": {
+                    "nome": first_row.get('Comprador', ''),
+                    "numeroDocumento": None,
+                },
+                "itens": [
+                    {
+                        "codigo": str(row.get('SKU', '')),
+                        "descricao": str(row.get('Título', '')),
+                        "quantidade": int(row.get('Unidades', 1)),
+                        "valor": 0 # Not directly available in standard report
+                    } for _, row in order_rows.iterrows()
+                ],
+                "totalProdutos": 0,
+                "situacao": {"id": "IMPORTADO_PLANILHA"}
+            }
+            bling_orders_data.append(basic_order)
 
     total_pedidos_plataforma = len(ids_pedidos)
 
@@ -1027,7 +1165,7 @@ def process_shein(file, period_filter, options=None, bling_client=None):
             data.rename(columns={column: 'Prazo final de impressão de etiqueta'}, inplace=True)
             break
 
-    data['Prazo final de impressão de etiqueta'].fillna(data['Data e hora requeridas para coleta'], inplace=True)
+    data['Prazo final de impressão de etiqueta'] = data['Prazo final de impressão de etiqueta'].fillna(data['Data e hora requeridas para coleta'])
     data['Prazo final de impressão de etiqueta'] = data['Prazo final de impressão de etiqueta'].apply(replace_month)
     data['Prazo final de impressão de etiqueta'] = pd.to_datetime(data['Prazo final de impressão de etiqueta'], errors='coerce')
 
@@ -1160,10 +1298,27 @@ def process_shein(file, period_filter, options=None, bling_client=None):
                     logging.error(f"[DEBUG MIOLO] Erro no fallback de associação de miolo: {e}")
             # ------------------------------------
         else:
+            # Fallback: Try fuzzy search to suggest matches
             candidates = product_service.find_internal_product(platform_name, external_sku, external_name)
             if len(candidates) >= 1:
                 capas_miolos_data.loc[index, 'mapping_status'] = 'Não Mapeado (Sugestões Disponíveis)'
                 capas_miolos_data.loc[index, 'potential_matches'] = json.dumps([{'id': m['id'], 'name': m['nome'], 'sku': m['sku']} for m in candidates])
+            # Fallback: Use original spreadsheet data if no match and no candidates found
+            capas_miolos_data.loc[index, 'internal_product_name'] = row.get('Nome do produto', '')
+            capas_miolos_data.loc[index, 'internal_product_sku'] = row.get('SKU do vendedor', '')
+            capas_miolos_data.loc[index, 'mapping_status'] = 'Não Mapeado'
+            logging.info(f"Mapeamento falhou e sem sugestões. Usando dados originais para SKU externo: '{external_sku}'")
+
+        # Ensure Miolo columns are populated with a fallback value if they are None/empty after all lookups
+        capas_miolos_data['Miolo'] = capas_miolos_data['Miolo'].fillna('-')
+        capas_miolos_data['miolo_name'] = capas_miolos_data['miolo_name'].fillna(capas_miolos_data['Miolo']) # Fallback miolo_name to Miolo value
+        capas_miolos_data['id_produto_miolo'] = capas_miolos_data['id_produto_miolo'].fillna(None) # Ensure it's None if not found
+
+    # Padronizar nomes das colunas para o frontend
+    capas_miolos_data = capas_miolos_data.rename(columns={
+        'Nome do produto': 'Nome do Produto',
+        'SKU do vendedor': 'SKU',
+    })
 
     ids_pedidos = filtered_data['Número do pedido'].astype(str).unique().tolist()
     ids_pedidos_chunks = generate_ids_chunks(ids_pedidos)
@@ -1185,6 +1340,33 @@ def process_shein(file, period_filter, options=None, bling_client=None):
 
         bling_orders_data.sort(key=lambda x: (x['hasCustomItem'], x['total_items'], len(x['itens']), len(
             [item for item in x['itens'] if item['custom_tag'] != '']), next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), '')))
+    else:
+        # Build basic bling_orders_data from spreadsheet for later sync
+        for oid in ids_pedidos:
+            order_rows = filtered_data[filtered_data['Número do pedido'] == oid]
+            if order_rows.empty: continue
+            first_row = order_rows.iloc[0]
+            
+            basic_order = {
+                "numeroLoja": str(oid),
+                "numero": str(oid), # Fallback
+                "id": None,
+                "contato": {
+                    "nome": first_row.get('Comprador', ''),
+                    "numeroDocumento": None,
+                },
+                "itens": [
+                    {
+                        "codigo": str(row.get('SKU do vendedor', '')),
+                        "descricao": str(row.get('Nome do produto', '')),
+                        "quantidade": 1,
+                        "valor": 0
+                    } for _, row in order_rows.iterrows()
+                ],
+                "totalProdutos": 0,
+                "situacao": {"id": "IMPORTADO_PLANILHA"}
+            }
+            bling_orders_data.append(basic_order)
 
     total_pedidos_plataforma = len(ids_pedidos)
 

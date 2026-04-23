@@ -2721,6 +2721,7 @@ CREATE TABLE IF NOT EXISTS "public"."itens_demanda" (
     "miolos_prontos_retirada_qtd" numeric(15,4) DEFAULT 0,
     "expedicao_capas_retiradas_qtd" numeric(15,4) DEFAULT 0,
     "expedicao_miolos_retirados_qtd" numeric(15,4) DEFAULT 0,
+    "finalizados_qtd" numeric(15,4) DEFAULT 0,
     "status_item" character varying(50) DEFAULT 'Pendente'::character varying,
     "miolo_nome" character varying(255),
     "variacao" character varying(255),

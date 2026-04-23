@@ -1,6 +1,10 @@
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from datetime import datetime
 from nistiprint_shared.services.regra_logistica_service import regra_logistica_service
+from typing import Optional, Dict, Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 class CanalVendaService:
     """Service for managing sales channels (canais de venda) in Supabase."""
@@ -280,6 +284,118 @@ class CanalVendaService:
         """Get total count of sales channels."""
         response = self.table.select("count(*)", count='exact').eq('ativo', True).execute()
         return response.count if response.count is not None else 0
+    
+    def resolve_canal_from_bling_store(self, bling_loja_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Resolve canal de venda a partir de uma loja Bling.
+        
+        FLUXO DE RESOLUÇÃO:
+        1. Buscar em channel_connections.aggregator_store_id = bling_loja_id
+        2. Seguir FK para channel_connections.channel_id → canais_venda.id
+        3. Retornar dados do canal
+        
+        Args:
+            bling_loja_id: ID da loja no Bling (ex: "204047801")
+        
+        Returns:
+            Dados do canal ou None se não encontrado
+        
+        Raises:
+            ValueError: Se múltiplos canais forem encontrados (ambiguidade)
+        """
+        if not bling_loja_id:
+            return None
+        
+        try:
+            # Buscar conexão ERP-Marketplace
+            response = supabase_db.table('channel_connections') \
+                .select('channel_id, aggregator_store_name, is_active') \
+                .eq('aggregator_store_id', bling_loja_id) \
+                .eq('is_active', True) \
+                .execute()
+            
+            if not response.data:
+                logger.warning(
+                    "Nenhum canal encontrado para bling_loja_id=%s",
+                    bling_loja_id
+                )
+                return None
+            
+            if len(response.data) > 1:
+                # Ambiguidade: múltiplos canais para mesma loja Bling
+                canal_ids = [r['channel_id'] for r in response.data]
+                logger.error(
+                    "Ambiguidade: bling_loja_id=%s retorna múltiplos canais: %s. "
+                    "Usando primeiro resultado.",
+                    bling_loja_id,
+                    canal_ids
+                )
+                # Em produção, isso deveria lançar exceção ou exigir resolução manual
+                # Por enquanto, usa o primeiro
+            
+            channel_id = response.data[0]['channel_id']
+            
+            # Buscar dados completos do canal
+            canal = self.get_by_id(str(channel_id))
+            
+            if canal:
+                logger.debug(
+                    "Canal resolvido: bling_loja_id=%s → canal_id=%s (nome=%s)",
+                    bling_loja_id,
+                    channel_id,
+                    canal.get('nome')
+                )
+            
+            return canal
+            
+        except Exception as e:
+            logger.error(
+                "Erro ao resolver canal para bling_loja_id=%s: %s",
+                bling_loja_id,
+                str(e)
+            )
+            return None
+    
+    def resolve_canal_from_integration(
+        self,
+        integration_id: int,
+        aggregator_store_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Resolve canal a partir de uma integração.
+        
+        Args:
+            integration_id: ID da integração em installed_integrations
+            aggregator_store_id: ID da loja no agregador (opcional, para desambiguar)
+        
+        Returns:
+            Dados do canal ou None
+        """
+        try:
+            query = supabase_db.table('channel_connections') \
+                .select('channel_id') \
+                .eq('integration_id', integration_id) \
+                .eq('is_active', True)
+            
+            if aggregator_store_id:
+                query = query.eq('aggregator_store_id', aggregator_store_id)
+            
+            response = query.execute()
+            
+            if not response.data:
+                return None
+            
+            channel_id = response.data[0]['channel_id']
+            return self.get_by_id(str(channel_id))
+            
+        except Exception as e:
+            logger.error(
+                "Erro ao resolver canal para integration_id=%s: %s",
+                integration_id,
+                str(e)
+            )
+            return None
+
 
 # Global instance for use throughout the application
 canal_venda_service = CanalVendaService()

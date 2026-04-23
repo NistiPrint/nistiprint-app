@@ -313,7 +313,7 @@ def get_bling_module_definition():
         id="bling",
         name="Bling ERP",
         description="Integração oficial com Bling ERP (API V3) para sincronização de pedidos, estoque e produtos.",
-        version="1.0.0",
+        version="1.1.0",
         author="NistiPrint Team",
         icon_url="https://app.nistiprint.com.br/assets/img/bling.svg",
         category="ERP",
@@ -326,13 +326,40 @@ def get_bling_module_definition():
             "properties": {
                 "client_id": { "type": "string", "title": "Client ID" },
                 "client_secret": { "type": "password", "title": "Client Secret" },
-                "cnpj": { "type": "string", "title": "CNPJ (opcional)", "description": "Usado para identificar a conta em sistemas legados" }
+                "cnpj": { "type": "string", "title": "CNPJ (opcional)", "description": "Usado para identificar a conta em sistemas legados" },
+                "importacao_pedidos": {
+                    "type": "object",
+                    "title": "Importação de Pedidos",
+                    "properties": {
+                        "situacoes_ids": {
+                            "type": "array",
+                            "title": "IDs das Situações para Importar",
+                            "description": "Lista de IDs de situações (ex: 6, 9) para monitorar e importar pedidos",
+                            "items": { "type": "integer" },
+                            "default": [6, 9]
+                        },
+                        "id_loja_padrao": {
+                            "type": "integer",
+                            "title": "ID da Loja Padrão",
+                            "description": "ID da loja no Bling para filtrar pedidos e gerar NF"
+                        }
+                    }
+                },
+                "mapeamentos": {
+                    "type": "object",
+                    "title": "Mapeamentos Internos",
+                    "description": "Associações entre IDs do Bling e o sistema interno",
+                    "properties": {
+                        "situacoes": { "type": "object", "title": "Mapeamento de Situações" },
+                        "lojas": { "type": "object", "title": "Mapeamento de Lojas" }
+                    }
+                }
             }
         },
         auth_config={
             "oauth_authorization_url": "https://www.bling.com.br/Api/v3/oauth/authorize",
             "oauth_token_url": "https://www.bling.com.br/Api/v3/oauth/token",
-            "scopes": ["propostas", "pedidos", "produtos", "estoques"]
+            "scopes": ["propostas", "pedidos", "produtos", "estoques", "situacoes", "lojas-virtuais"]
         },
         data_mapping_spec={
             "test_endpoint": "/empresas/me/dados-basicos",

@@ -37,11 +37,18 @@ class OrdersQueryService:
         """
         try:
             from nistiprint_shared.database.supabase_db_service import supabase_db
-            
+            from datetime import datetime, timedelta
+
+            # Calculate date 5 days ago
+            five_days_ago = (datetime.now() - timedelta(days=5)).isoformat()
+
             # Use Supabase client to query the NEW view V3
+            # Order by numero_loja (Bling number) descending to match orders screen
+            # Filter orders from last 5 days
             response = supabase_db.table('view_vendas_personalizadas_v3') \
                 .select('*') \
-                .order('data_pedido', desc=True) \
+                .order('numero_loja', desc=True) \
+                .gte('data_pedido', five_days_ago) \
                 .execute()
             
             rows = response.data if response.data else []
@@ -49,21 +56,35 @@ class OrdersQueryService:
             # Map view fields back to the format expected by the frontend
             processed_orders = []
             for row in rows:
+                contato = row.get('contato')
+                if isinstance(contato, str):
+                    try:
+                        contato = json.loads(contato)
+                    except Exception:
+                        contato = {}
+
+                # Se contato não tiver nome, usar nome_cliente da view
+                if not contato.get('nome'):
+                    nome_cliente = row.get('nome_cliente', '') or ''
+                    if nome_cliente:
+                        contato['nome'] = nome_cliente
+
                 processed_orders.append({
                     'id': row['id'],
                     'numero': row['numero_pedido'],
+                    'nome_cliente': row.get('nome_cliente', '') or '',
                     'numeroLoja': row['numero_loja'],
                     'data': row['data_pedido'],
-                    'contato': json.loads(row['contato']) if isinstance(row['contato'], str) else row['contato'],
+                    'contato': contato,
                     'itens': row['itens'] if row['itens'] else [],
                     'shopee': {
-                        'username': row['buyer_username'] or '',
+                        'username': row.get('buyer_username') or '',
                         'order_sn': row['numero_loja'],
-                        'message': row['shopee_message']
+                        'message': row.get('shopee_message')
                     },
-                    'personalizado': row['personalizado'],
-                    'has_chat_messages': row['has_chat_messages'],
-                    'deletado': row['deletado']
+                    'personalizado': row.get('personalizado', True),
+                    'has_chat_messages': row.get('has_chat_messages', False),
+                    'deletado': row.get('deletado', False)
                 })
 
             return processed_orders

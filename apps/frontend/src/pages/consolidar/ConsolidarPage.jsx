@@ -4,12 +4,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { AlertCircle, CheckCircle2, Copy, Database, ExternalLink, Eye, Link2, Link2Off, Loader2, Printer, Upload } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { CheckCircle2, ClipboardList, Copy, Database, Filter, Loader2, Printer, Upload, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 function ConsolidarPage() {
@@ -17,20 +15,16 @@ function ConsolidarPage() {
   const [selectedChannel, setSelectedChannel] = useState('');
   const [selectedPlatform, setSelectedPlatform] = useState('');
   const [channels, setChannels] = useState([]);
-  const [products, setProducts] = useState([]); // List of internal products for association
+  const [products, setProducts] = useState([]);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [printOrders, setPrintOrders] = useState(false);
+  const [isFlex, setIsFlex] = useState(false);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
-  const [periodFilter, setPeriodFilter] = useState(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [nfeResults, setNfeResults] = useState([]);
-  const [modalOpen, setModalOpen] = useState(null); // 'channel' or 'bling' or 'demand' or null
-  const [showForm, setShowForm] = useState(true); // Controla se mostra form ou resultado
 
   // Operational Mode State
-  const [opMode, setOpMode] = useState('v2'); // 'v2' or 'legacy'
+  const [opMode, setOpMode] = useState('v2');
   const [updatingMode, setUpdatingMode] = useState(false);
 
   // Demand Generation State
@@ -39,32 +33,40 @@ function ConsolidarPage() {
   const [demandHorarioColeta, setDemandHorarioColeta] = useState('');
   const [demandObservacoes, setDemandObservacoes] = useState('');
   const [creatingDemand, setCreatingDemand] = useState(false);
+  const [modalOpen, setModalOpen] = useState(null);
+
+  // Async Processing State
+  const [asyncProcessing, setAsyncProcessing] = useState(null); // { consolidacaoId, status }
+
+  // NFE Generation State
+  const [nfeSidebarOpen, setNfeSidebarOpen] = useState(false);
+  const [nfeResults, setNfeResults] = useState([]);
+  const [nfeGenerating, setNfeGenerating] = useState(false);
+  const [blingAccounts, setBlingAccounts] = useState([]);
+  const [selectedBlingAccountId, setSelectedBlingAccountId] = useState('');
+
+  // Ref para armazenar o intervalo do polling
+  const pollingIntervalRef = useRef(null);
+  const eventSourceRef = useRef(null);
 
   useEffect(() => {
     const fetchChannels = async () => {
       try {
         const response = await fetch('/api/v2/cadastros/canal-venda?active_only=true');
         const data = await response.json();
-        if (data.canais) {
-          setChannels(data.canais);
-        }
+        if (data.canais) setChannels(data.canais);
       } catch (error) {
-        console.error("Error fetching channels:", error);
-        toast.error("Erro ao carregar canais de venda.");
+        toast.error("Erro ao carregar canais.");
       }
     };
 
     const fetchProducts = async () => {
       try {
-        // Fetch only marketable products of type 'produto_acabado' optimized at backend
         const response = await fetch('/api/v2/produtos?page=1&per_page=10000&material_type=produto_acabado&only_marketable=true');
         const data = await response.json();
-        if (data.produtos) {
-          setProducts(data.produtos);
-        }
+        if (data.produtos) setProducts(data.produtos);
       } catch (error) {
-        console.error("Error fetching products:", error);
-        toast.error("Erro ao carregar lista de produtos.");
+        toast.error("Erro ao carregar produtos.");
       }
     };
 
@@ -73,12 +75,23 @@ function ConsolidarPage() {
             const response = await fetch('/api/v2/configuracoes/sistema');
             const data = await response.json();
             if (data.success) setOpMode(data.database_operational_mode);
-        } catch (e) { console.error(e); }
+        } catch (e) {}
+    };
+
+    const fetchBlingAccounts = async () => {
+      try {
+        const response = await fetch('/api/v2/integracoes/bling/accounts');
+        const data = await response.json();
+        if (data.accounts) setBlingAccounts(data.accounts);
+      } catch (error) {
+        console.error("Erro ao carregar contas Bling:", error);
+      }
     };
 
     fetchChannels();
     fetchProducts();
     fetchMode();
+    fetchBlingAccounts();
   }, []);
 
   const toggleOpMode = async () => {
@@ -93,9 +106,7 @@ function ConsolidarPage() {
         const data = await response.json();
         if (data.success) {
             setOpMode(newMode);
-            toast.success(`Modo de operação alterado para: ${newMode.toUpperCase()}`);
-        } else {
-            toast.error("Erro ao alterar modo.");
+            toast.success(`Modo: ${newMode.toUpperCase()}`);
         }
     } catch (e) {
         toast.error("Erro de conexão.");
@@ -105,20 +116,14 @@ function ConsolidarPage() {
   };
 
   const handleFileChange = (e) => {
-    if (e.target.files) {
-      setFile(e.target.files[0]);
-    }
+    if (e.target.files) setFile(e.target.files[0]);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!file) {
-      toast.error('Por favor, selecione um arquivo.');
+    if (!file || !selectedChannel) {
+      toast.error('Selecione o arquivo e o canal.');
       return;
-    }
-    if (!selectedChannel) {
-        toast.error('Por favor, selecione um canal de venda.');
-        return;
     }
 
     setLoading(true);
@@ -129,846 +134,688 @@ function ConsolidarPage() {
     if (startDate) formData.append('start_date', startDate);
     if (endDate) formData.append('end_datetime', endDate);
     formData.append('print-orders', printOrders);
+    formData.append('is_flex', isFlex);
     formData.append('mode', opMode);
 
     try {
-      console.log('Iniciando processamento para /api/v2/consolidar');
       const response = await fetch('/api/v2/consolidar', {
         method: 'POST',
-        body: formData,
-        headers: {
-            'Accept': 'application/json'
-        }
+        body: formData
       });
-
-      if (!response.ok) {
-        console.error('Erro na resposta:', response.status, response.statusText);
-        let errorMsg = 'Erro ao processar arquivo.';
-        try {
-          const errorData = await response.json();
-          errorMsg = errorData.error || errorMsg;
-        } catch (jsonError) {
-          console.error('Erro ao fazer parse do JSON de erro:', jsonError);
-          // Tenta ler o texto da resposta para debug
-          const text = await response.text();
-          console.error('Conteúdo da resposta (text):', text.substring(0, 500));
-          throw new Error(`Erro na comunicação com o servidor (Status: ${response.status}). Verifique o console.`);
-        }
-        throw new Error(errorMsg);
-      }
-
+      if (!response.ok) throw new Error('Erro ao processar arquivo.');
       const data = await response.json();
       setResults(data);
-      // Initialize demand name with a default value
-      setDemandName(`Demanda ${selectedPlatform} - ${new Date().toLocaleDateString()}`);
-
-      // Set default horario coleta from channel using the shared formatTime function
-      const channelObj = channels.find(c => (c.slug || c.nome) === selectedChannel);
-      if (channelObj && channelObj.horario_coleta) {
-        const formattedTime = formatTime(channelObj.horario_coleta);
-        if (formattedTime) {
-          setDemandHorarioColeta(formattedTime);
-        } else {
-          // If the time format is invalid, don't set it to prevent the error
-          console.warn(`Invalid time format for channel ${channelObj.nome}: ${channelObj.horario_coleta}`);
-        }
-      }
-
-      setPeriodFilter({
-        start: startDate || new Date(Date.now() - 120 * 24 * 60 * 60 * 1000).toISOString(),
-        end: endDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-      });
-      setShowForm(false); // Mostrar resultado após processamento
-      toast.success('Arquivo processado com sucesso!');
+      setDemandName(`Demanda ${selectedPlatform} - ${new Date().toLocaleDateString('pt-BR')}`);
+      toast.success('Processado com sucesso!');
     } catch (error) {
-      console.error(error);
-      toast.error('Erro ao processar: ' + error.message);
+      toast.error(error.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleGenerateDemand = async (platformKey) => {
+    if (!demandName || !demandDate) {
+        toast.error("Preencha o Nome e a Data.");
+        return;
+    }
+    setCreatingDemand(true);
+    try {
+        const itemsToProcess = results[platformKey].capas_miolos_data;
+        const demandItems = itemsToProcess.map(item => ({
+            produto_id: item.internal_product_id,
+            sku: item.internal_product_sku || item['SKU'] || item['Código'],
+            descricao: item.internal_product_name || item['Nome do Produto'] || item['Título'],
+            quantidade: item.Total || 1,
+            miolo_name: item.miolo_name || item.Miolo || '',
+            variacao: item['Variação'] || '',
+            pedidos_origem: item.pedidos_origem || []
+        }));
+
+        let channelObj = channels.find(c => c.id.toString() === selectedChannel || (c.slug || c.nome) === selectedChannel);
+        if (!channelObj) channelObj = channels[0];
+
+        const payload = {
+            nome: demandName,
+            canal_venda_id: channelObj?.id,
+            data_entrega: demandDate,
+            horario_coleta_especifico: demandHorarioColeta || null,
+            observacoes: demandObservacoes || null,
+            tipo_demanda: 'Standard',
+            itens: demandItems
+        };
+
+        const response = await fetch('/api/v2/demanda_producao/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+            toast.success("Demanda gerada!");
+            setModalOpen(null); // Fecha o modal
+            setTimeout(() => { window.location.href = '/producao/demanda'; }, 1000);
+        } else {
+            throw new Error("Erro ao salvar demanda.");
+        }
+    } catch (error) {
+        toast.error(error.message);
+    } finally {
+        setCreatingDemand(false);
+    }
+  };
+
+  // Async processing functions
+  const startAsyncProcessing = async (e) => {
+    e.preventDefault();
+    if (!file || !selectedChannel) {
+      toast.error('Selecione o arquivo e o canal.');
+      return;
+    }
+
+    setLoading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('channel', selectedChannel);
+    if (startDate) formData.append('start_date', startDate);
+    if (endDate) formData.append('end_datetime', endDate);
+    formData.append('print-orders', printOrders);
+    formData.append('is_flex', isFlex);
+    formData.append('mode', opMode);
+
+    try {
+      const response = await fetch('/api/v2/consolidar-async', {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Erro ao iniciar processamento');
+      }
+      
+      const data = await response.json();
+      setAsyncProcessing({
+        consolidacaoId: data.consolidacao_id,
+        status: data.status,
+        pollingInterval: null
+      });
+      
+      // Inicia polling
+      startPolling(data.consolidacao_id);
+      toast.success('Processamento iniciado em background!');
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const startPolling = (consolidacaoId) => {
+    // Limpa polling anterior se existir
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+    }
+    
+    pollingIntervalRef.current = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/v2/consolidar-async/${consolidacaoId}`);
+        const data = await response.json();
+
+        setAsyncProcessing(prev => ({ ...prev, status: data.status }));
+
+        if (data.status === 'PRONTO') {
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+          }
+          // Processa os dados para adicionar pedidos_origem a partir de order_refs
+          const processedResult = processarResultData(data.result);
+          setResults(processedResult);
+          setAsyncProcessing(null);
+          setDemandName(`Demanda - ${new Date().toLocaleDateString('pt-BR')}`);
+          toast.success('Processamento concluído!');
+        } else if (data.status === 'ERRO') {
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current);
+            pollingIntervalRef.current = null;
+          }
+          setAsyncProcessing(null);
+          toast.error(`Erro no processamento: ${data.error_message}`);
+        }
+      } catch (error) {
+        console.error('Polling error:', error);
+      }
+    }, 3000); // Poll a cada 3 segundos
+  };
+  
+  // Limpa polling ao desmontar componente
+  useEffect(() => {
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
+  }, []);
+
+  const processarResultData = (result) => {
+    // Processa cada plataforma para adicionar pedidos_origem a partir de order_refs
+    const processed = {};
+    for (const [platform, platformData] of Object.entries(result)) {
+      const capasMiolosData = platformData.capas_miolos_data?.map(item => ({
+        ...item,
+        // Se não tiver pedidos_origem, tenta usar order_refs
+        pedidos_origem: item.pedidos_origem || (item.order_refs?.map(ref => ({
+          codigo_pedido_externo: ref,
+          numero_pedido: null // Não tem numero do Bling
+        })) || [])
+      })) || [];
+      
+      processed[platform] = {
+        ...platformData,
+        capas_miolos_data: capasMiolosData
+      };
+    }
+    return processed;
   };
 
   const updateProductAssociation = (platformKey, itemIndex, productId) => {
     const newResults = { ...results };
     const item = newResults[platformKey].capas_miolos_data[itemIndex];
     const selectedProduct = products.find(p => String(p.id) === String(productId));
-
     if (selectedProduct) {
         item.internal_product_id = selectedProduct.id;
         item.internal_product_name = selectedProduct.name;
-        item.internal_product_sku = selectedProduct.sku; // or sku_mestre
-        item.mapping_status = 'Mapeado Manualmente';
+        item.internal_product_sku = selectedProduct.sku;
     } else {
         item.internal_product_id = null;
-        item.internal_product_name = null;
-        item.internal_product_sku = null;
-        item.mapping_status = 'Não Mapeado';
     }
     setResults(newResults);
   };
 
-  // Helper function to validate and format time
-  const formatTime = (timeStr) => {
-    if (!timeStr || timeStr.trim() === '') return null;
-
-    // Check if it's already in the correct format HH:MM
-    const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
-    if (timeRegex.test(timeStr)) {
-      return timeStr;
-    }
-
-    // Try to parse other formats and convert to HH:MM
-    const timeParts = timeStr.split(':');
-    if (timeParts.length >= 2) {
-      const hours = parseInt(timeParts[0]);
-      const minutes = parseInt(timeParts[1]);
-
-      // Validate ranges
-      if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
-        return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-      }
-    }
-
-    // If we can't parse it, return null
-    console.warn(`Could not parse time: ${timeStr}`);
-    return null;
-  };
-
-  const handleGenerateDemand = async (platformKey) => {
-    if (!demandName || !demandDate) {
-        toast.error("Por favor, preencha o Nome da Demanda e a Data de Entrega.");
-        return;
-    }
-
-    // Validação do formato da data
-    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dateRegex.test(demandDate)) {
-        toast.error("Formato de data inválido. Use o formato YYYY-MM-DD.");
-        return;
-    }
-
-    // Validação do formato do horário de coleta, se fornecido
-    if (demandHorarioColeta && demandHorarioColeta.trim() !== '') {
-        const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
-        if (!timeRegex.test(demandHorarioColeta)) {
-            toast.error("Formato de horário inválido. Use o formato HH:MM (24 horas).");
-            return;
-        }
-    }
-
-    // Validação adicional para garantir que os resultados e a plataforma selecionada existam
-    if (!results || !results[platformKey]) {
-        toast.error("Dados insuficientes para gerar a demanda. Por favor, processe novamente o arquivo.");
-        return;
-    }
-
-    // Melhoria na busca do canal de venda para lidar com diferentes formatos
-    let channelObj = channels.find(c => c.id.toString() === selectedChannel);
-    if (!channelObj) {
-        channelObj = channels.find(c => (c.slug || c.nome) === selectedChannel);
-    }
-
-    if (!channelObj) {
-        toast.error("Erro: Canal de venda não identificado.");
-        return;
-    }
-
-    setCreatingDemand(true);
-
-    try {
-        const itemsToProcess = results[platformKey].capas_miolos_data;
-
-        if (!itemsToProcess || itemsToProcess.length === 0) {
-            toast.error("Nenhum item encontrado para gerar a demanda.");
-            return;
-        }
-
-        const demandItems = itemsToProcess.map(item => ({
-            produto_id: item.internal_product_id,
-            sku: item.internal_product_sku || getItemSku(item),
-            descricao: item.internal_product_name || getItemName(item) || 'Item sem nome',
-            quantidade: item.Total || 1, // Garante que tenhamos pelo menos 1 como quantidade
-            miolo_name: item.miolo_name || item.Miolo || '',
-            variacao: getItemVariation(item)
-        }));
-
-        // Formatar a data de entrega para o formato esperado pelo backend (YYYY-MM-DD)
-        const formattedDeliveryDate = new Date(demandDate).toISOString().split('T')[0];
-
-        const formattedCollectionTime = formatTime(demandHorarioColeta);
-
-        const payload = {
-            nome: demandName,
-            canal_venda_id: channelObj.id,
-            data_entrega: formattedDeliveryDate,
-            horario_coleta_especifico: formattedCollectionTime,
-            observacoes: demandObservacoes,
-            tipo_demanda: 'Standard',  // Mudado para 'Standard' para garantir que fique na linha principal
-            itens: demandItems
-        };
-
-        const response = await fetch('/api/v2/demanda_producao/', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.message || errorData.error || `Erro HTTP: ${response.status}`);
-        }
-
-        const data = await response.json();
-        if (data.success) {
-            toast.success("Demanda de produção gerada com sucesso!");
-            
-            // Redireciona para a lista de demandas após sucesso
-            setTimeout(() => {
-                window.location.href = '/frontend/producao/demanda';
-            }, 1500);
-        } else {
-            toast.error("Erro ao gerar demanda: " + (data.message || data.error || "Erro desconhecido"));
-        }
-
-    } catch (error) {
-        console.error("Error creating demand:", error);
-        toast.error("Erro ao gerar demanda: " + error.message);
-    } finally {
-        setCreatingDemand(false);
-    }
-  };
-
-  const getItemName = (item) => {
-      return item['Nome do Produto'] || item['Título do anúncio'] || item['Título'] || item['Nome do produto'] || '';
-  };
-  
-  const getItemSku = (item) => {
-      return item['Número de referência SKU'] || item['Nº de referência do SKU principal'] || item['SKU'] || item['SKU do vendedor'] || '';
-  };
-
-  const getItemVariation = (item) => {
-      const val = item['Nome da variação'] || item['Variation Name'] || item['Variação'] || '';
-      return val === '-' ? '' : val;
-  };
-
-  const copyTable = (htmlContent) => {
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = htmlContent;
-    const text = tempDiv.innerText || tempDiv.textContent;
-    navigator.clipboard.writeText(text);
-    toast.success('Conteúdo copiado!');
-  };
-
   const handleCopyTable = (platformKey) => {
     const data = results[platformKey];
-    if (!data || !data.capas_miolos_data) return;
-
-    let textToCopy = '';
-
-    // Linhas apenas (sem cabeçalho)
-    data.capas_miolos_data.forEach(item => {
-      const row = [
-        getItemName(item),
-        getItemSku(item),
-        getItemVariation(item),
-        item.miolo_name || item.Miolo || '',
-        item.Total || 0
-      ];
-      textToCopy += row.join('\t') + '\n';
-    });
-
-    navigator.clipboard.writeText(textToCopy).then(() => {
-      toast.success('Dados copiados para o clipboard!');
-    }).catch(err => {
-      console.error('Erro ao copiar:', err);
-      toast.error('Falha ao copiar dados.');
-    });
+    let text = data.capas_miolos_data.map(i => `${i['Nome do Produto'] || i['Título']}\t${i['SKU'] || i['Código']}\t${i['Miolo'] || '-'}\t${i.Total}`).join('\n');
+    navigator.clipboard.writeText(text);
+    toast.success('Copiado!');
   };
 
-  const handlePrint = (platformKey) => {
-    const data = results[platformKey];
-    if (!data || !data.bling_orders_data) {
-      toast.error("Dados de pedidos não disponíveis para impressão.");
+  const printBlingData = (platformKey) => {
+    const platformData = results[platformKey];
+    if (!platformData || !platformData.bling_orders_data || platformData.bling_orders_data.length === 0) {
+      toast.error('Nenhum pedido para imprimir.');
       return;
     }
 
-    const ordersHtml = data.bling_orders_data.map(order => {
-      const itemsList = order.itens?.map(item => `
-        <div class="flex items-center border-t border-gray-100 py-1.5">
-          <div class="flex-1 pr-4 min-w-0">
-            <div class="text-base leading-tight font-medium uppercase break-words">${item.descricao || ''}</div>
-            <div class="text-xs font-mono text-gray-500">${item.codigo || ''}</div>
-            ${item.personalization_name ? `<div class="text-2xl font-black text-black mt-1 italic border-l-4 border-black pl-2 bg-yellow-50 py-1">${item.personalization_name}</div>` : ''}
+    const orders = platformData.bling_orders_data;
+    let ordersHtml = '';
+
+    orders.forEach((order) => {
+      ordersHtml += `
+        <div class="stamp-card" style="border: 1px solid #000; border-radius: 8px; padding: 20px; background-color: #fff; width: 100%; height: 100vh; box-sizing: border-box; page-break-after: always; display: flex; flex-direction: column; position: relative;">
+          <div class="stamp-header" style="font-size: 1.5rem; margin-bottom: 30px; justify-content: space-between; display: flex;">
+            <div>
+              <div style="padding: 15px 0;">Nome: ${order.contato?.nome || 'N/A'}</div>
+              <div style="padding: 15px 0;">CPF: ${order.contato?.numeroDocumento || 'N/A'}</div>
+              ${order.contato?.endereco ? `<div style="padding: 15px 0;">${order.contato.endereco}</div>` : ''}
+            </div>
+            <div></div>
+            <div>
+              <div style="padding: 15px 0;">
+                <img src="/static/img/${platformKey.toLowerCase()}.svg" alt="Platform Icon" height="20" style="margin-right: 10px;" />${platformKey}
+              </div>
+              <div style="padding: 15px 0;">${order.numeroLoja || 'N/A'}</div>
+            </div>
           </div>
-          <div class="w-12 text-center text-xl font-bold">${item.quantidade || ''}</div>
-          <div class="w-24 text-right text-sm text-gray-700">R$ ${parseFloat(item.valor || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</div>
-        </div>
-      `).join('') || '';
-
-      const customTags = order.itens?.filter(i => i.custom_tag).map(i => `
-        <div class="border-2 border-black px-3 py-1 text-xl font-bold uppercase bg-gray-50">
-          ${i.custom_tag}
-        </div>
-      `).join('') || '';
-
-      return `
-        <div class="stamp-card-container">
-          <div class="flex flex-col h-full bg-white overflow-hidden">
-            <!-- Header -->
-            <div class="flex justify-between items-start mb-2 border-b pb-1 flex-none">
-              <div class="space-y-0">
-                <div class="text-lg font-semibold">Nome: ${order.contato?.nome || ''}</div>
-                <div class="text-sm text-gray-600">Doc: ${order.contato?.numeroDocumento || ''}</div>
-              </div>
-              <div class="text-right space-y-0">
-                <div class="flex items-center justify-end gap-2 text-xl font-bold">
-                  <img src="/static/img/${platformKey.toLowerCase()}.svg" class="h-5 w-5" onerror="this.style.display='none'"/>
-                  ${platformKey.toUpperCase()}
+          <div class="stamp-content" style="font-family: Arial, sans-serif; flex-grow: 1; display: flex; flex-direction: column; justify-content: space-between;">
+            <div class="order-info" style="text-align: center; font-size: 2.5rem; margin-bottom: 40px;">
+              <div>Pedido ${order.numero || order.id || 'N/A'}</div>
+            </div>
+            ${order.itens?.map((item) => `
+              <div class="item" style="display: flex; align-items: center; border-top: 1px solid #ddd; padding: 15px 0; margin-bottom: 15px;">
+                <div class="item-details" style="width: 80%; font-size: 1.2rem;">
+                  <div>${item.descricao || 'N/A'}</div>
+                  ${item.variacao && item.variacao !== '' ? `<div style="font-size: 0.8rem; color: #666;">${item.variacao}</div>` : ''}
+                  <div><strong>${item.codigo || 'N/A'}</strong></div>
+                  ${item.original_id && item.original_id !== order.numeroLoja ? `<div style="font-size: 0.8rem; color: #666;">Ref: ${item.original_id}</div>` : ''}
+                  ${item.personalizations && item.personalizations.length > 0 ? `
+                    <div style="margin-top: 5px;">
+                      ${item.personalizations.map((p) => `
+                        ${p.customization_name ? `
+                          <div style="font-size: 1.1rem; color: #d32f2f; font-weight: bold; border: 1px dashed #d32f2f; padding: 2px 5px; margin-top: 5px; display: inline-block;">
+                            ${p.customization_name}
+                            ${p.customization_initial ? `(${p.customization_initial})` : ''}
+                            ${p.quantity_to_personalize > 1 ? `<span style="background-color: #ffc107; color: #000; padding: 2px 5px; border-radius: 3px; margin-left: 5px;">x${p.quantity_to_personalize}</span>` : ''}
+                          </div>
+                        ` : ''}
+                      `).join('')}
+                    </div>
+                  ` : ''}
                 </div>
-                <div class="text-sm font-medium text-gray-500">${order.numeroLoja || ''}</div>
+                <div class="item-quantity" style="width: 10%; text-align: center; font-size: 1.6rem;">${item.quantidade || 1}</div>
+                <div class="item-price" style="width: 10%; text-align: center; font-size: 0.8rem;">R$ ${(item.valor || 0).toFixed(2)}</div>
               </div>
+            `).join('') || ''}
+            <div class="item" style="display: flex; align-items: center; border-top: 1px solid #ddd; padding: 15px 0; margin-bottom: 15px;">
+              <div class="item-details" style="width: 80%; font-size: 1.2rem;"></div>
+              <div class="item-quantity" style="width: 10%; text-align: center; font-size: 1.6rem;"></div>
+              <div class="item-price" style="width: 10%; text-align: center; font-size: 0.8rem;">R$ ${(order.totalProdutos || 0).toFixed(2)}</div>
             </div>
-
-            <!-- Main Content (Área Flexível) -->
-            <div class="flex-grow flex flex-col border-2 border-black p-3 rounded-lg min-h-0 mb-2">
-              <div class="text-center py-1 mb-2 border-b-2 border-black flex-none">
-                <div class="text-2xl font-bold tracking-tight uppercase">Pedido ${order.numero || ''}</div>
-              </div>
-
-              <!-- Lista de Itens -->
-              <div class="flex-grow overflow-hidden min-h-0">
-                ${itemsList}
-              </div>
-              
-              <!-- Total Products Row -->
-              <div class="flex items-center border-t-2 border-gray-200 pt-1 mt-1 font-semibold flex-none">
-                <div class="flex-1 text-right pr-6 text-sm uppercase">Total Produtos</div>
-                <div class="w-32 text-right text-base">R$ ${parseFloat(order.totalProdutos || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</div>
-              </div>
-
-              <!-- Total Quantity Indicator -->
-              <div class="text-center py-1 flex-none">
-                <div class="text-3xl font-bold">
-                  ${order.total_items || 0} ${order.total_items > 1 ? 'ITENS' : 'ITEM'}
-                </div>
-              </div>
+            <div class="total-items" style="text-align: center; margin-top: auto; margin-bottom: 20px;">
+              <span style="font-size: 2.5rem;">${order.total_items || 0} ${order.total_items > 1 ? 'itens' : 'item'}</span>
             </div>
-
-            <!-- Personalizações (Em linha com wrap) -->
-            <div class="flex-none flex flex-wrap justify-center gap-1.5 mb-2">
-              ${customTags}
+          </div>
+          <div class="stamp-footer" style="display: flex; justify-content: space-between; margin-top: auto; padding-top: 20px;">
+            <div>
+              ${order.hasCustomItem === 1 ? order.itens?.map((item) => item.custom_tag && item.custom_tag !== '' && item.custom_tag !== null ? `<div class="custom-tag" style="font-size: 1.8rem; font-weight: bolder; border: 1px solid #000; padding: 10px 25px;">${item.custom_tag}</div>` : '').join('') || '' : ''}
             </div>
-
-            <!-- Footer -->
-            <div class="flex justify-between items-end pt-1 border-t border-gray-100 flex-none">
-              <div class="text-lg font-bold uppercase">
-                ${order.transporte?.contato?.id ? '<span class="border border-black px-2 py-0.5 rounded text-xs">[FLEX]</span>' : ''}
-              </div>
-              <div class="text-sm font-medium text-gray-400">
-                ${periodFilter?.start ? new Date(periodFilter.start).toLocaleDateString('pt-BR') : ''}
-              </div>
-            </div>
+            <div>${new Date().toLocaleDateString('pt-BR')}</div>
           </div>
         </div>
       `;
-    }).join('');
+    });
 
     const htmlContent = `
-      <!DOCTYPE html>
       <html>
         <head>
-          <meta charset="UTF-8">
-          <script src="https://cdn.tailwindcss.com"></script>
           <style>
             @media print {
-              @page { size: A4; margin: 0; }
-              body { margin: 0; padding: 0; -webkit-print-color-adjust: exact; }
-              .stamp-card-container { 
-                width: 210mm; 
-                height: 297mm; 
-                padding: 10mm;
-                box-sizing: border-box;
+              .stamp-card {
+                width: 210mm;
+                height: 297mm;
+                margin: 0;
+                padding: 20mm;
+                box-shadow: none;
+                border: none;
                 page-break-after: always;
-                overflow: hidden;
-                display: block;
+              }
+              body {
+                margin: 0;
+                padding: 0;
               }
             }
-            .stamp-card-container { 
-              width: 210mm; 
-              height: 297mm; 
-              padding: 10mm;
-              box-sizing: border-box;
-              margin: 0 auto;
-              background: white;
-            }
-            body { font-family: sans-serif; }
           </style>
         </head>
-        <body class="bg-gray-100 print:bg-white">
-          ${ordersHtml}
-        </body>
+        <body>${ordersHtml}</body>
       </html>
     `;
 
     const iframe = document.createElement('iframe');
     iframe.style.position = 'absolute';
     iframe.style.top = '-9999px';
+    iframe.style.left = '-9999px';
     document.body.appendChild(iframe);
+
+    iframe.onload = () => {
+      iframe.contentWindow.print();
+      setTimeout(() => iframe.remove(), 1000);
+    };
+
     iframe.contentDocument.open();
     iframe.contentDocument.write(htmlContent);
     iframe.contentDocument.close();
-    
-    setTimeout(() => {
-      iframe.contentWindow.print();
-      setTimeout(() => iframe.remove(), 2000);
-    }, 1000);
   };
 
-  const generateNfe = async (platformName, blingOrders) => {
-    toast.info('Funcionalidade de geração de NFs ainda não migrada para API V2 neste componente.');
-  };
+  const generateNFE = (platformKey) => {
+    const platformData = results[platformKey];
+    if (!platformData || !platformData.bling_orders_id_numero) {
+      toast.error('Nenhum pedido para gerar NF.');
+      return;
+    }
 
-  const formatDate = (dateString) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('pt-BR');
-  };
+    if (!selectedBlingAccountId) {
+      toast.error('Selecione uma conta Bling para gerar NF.');
+      return;
+    }
 
-  const openSidebar = () => setSidebarOpen(true);
-  const closeSidebar = () => setSidebarOpen(false);
+    let blingOrders = [];
+    try {
+      if (typeof platformData.bling_orders_id_numero === 'string') {
+        blingOrders = JSON.parse(platformData.bling_orders_id_numero.replace(/'/g, '"'));
+      } else {
+        blingOrders = platformData.bling_orders_id_numero;
+      }
+    } catch (error) {
+      console.error('Error parsing JSON:', error);
+      toast.error('Erro ao processar os pedidos.');
+      return;
+    }
 
-  const handleNewProcessing = () => {
-    // Limpar todos os dados do formulário e resultado
-    setFile(null);
-    setSelectedChannel('');
-    setSelectedPlatform('');
-    setStartDate('');
-    setEndDate('');
-    setPrintOrders(false);
-    setResults(null);
-    setPeriodFilter(null);
-    setDemandName('');
-    setDemandDate('');
-    setDemandHorarioColeta(''); // Resetar para string vazia
-    setDemandObservacoes('');
-    setModalOpen(null);
-    setSidebarOpen(false);
+    if (!blingOrders || blingOrders.length === 0) {
+      toast.error('Nenhum pedido para gerar NF.');
+      return;
+    }
+
+    setNfeGenerating(true);
     setNfeResults([]);
-    setShowForm(true);
+    setNfeSidebarOpen(true);
+
+    // Close previous EventSource if exists
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    const platformLower = platformKey.toLowerCase();
+    const eventSource = new EventSource(`/api/v2/nfe/generate_nfe?platform=${encodeURIComponent(platformLower)}&bling_orders=${encodeURIComponent(JSON.stringify(blingOrders))}&instance_id=${encodeURIComponent(selectedBlingAccountId)}`);
+    eventSourceRef.current = eventSource;
+
+    eventSource.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.status === 'complete') {
+        toast.success('Processamento concluído!');
+        setNfeGenerating(false);
+        eventSource.close();
+        return;
+      }
+
+      if (data.status === 'processing') {
+        setNfeResults((prev) => [...prev, data]);
+      } else if (data.status === 'error') {
+        // Extract detailed error message from API response
+        let errorMessage = data.error || 'Erro desconhecido';
+        if (data.error_details) {
+          try {
+            const errorDetails = typeof data.error_details === 'string' 
+              ? JSON.parse(data.error_details) 
+              : data.error_details;
+            if (errorDetails.error?.fields?.[0]?.msg) {
+              errorMessage = errorDetails.error.fields[0].msg;
+            }
+          } catch (e) {
+            console.error('Error parsing error_details:', e);
+          }
+        }
+        const resultWithError = { ...data, error: errorMessage };
+        setNfeResults((prev) => [...prev, resultWithError]);
+        toast.error(`Erro: ${errorMessage}`);
+      }
+    };
+
+    eventSource.onerror = (error) => {
+      console.error('EventSource failed:', error);
+      toast.error('Erro na conexão com o servidor.');
+      setNfeGenerating(false);
+      eventSource.close();
+    };
   };
 
   return (
-    <div className="container mx-auto py-8">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">Consolidar Produção</h1>
+    <div className="flex flex-col w-full max-w-7xl mx-auto pb-20">
+      <div className="flex justify-between items-center mb-8 bg-white p-4 rounded-lg border shadow-sm">
+        <div>
+            <h1 className="text-2xl font-bold tracking-tight">Consolidar Produção</h1>
+            <p className="text-muted-foreground">Agrupe pedidos e gere demandas de fabricação.</p>
+        </div>
         <div className="flex gap-2">
-            <Button 
-                variant={opMode === 'legacy' ? 'destructive' : 'secondary'}
-                onClick={toggleOpMode}
-                disabled={updatingMode}
-                className="gap-2"
-                title={opMode === 'legacy' ? "Usando MySQL (Legado)" : "Usando Supabase (V2)"}
-            >
-                <Database className={`h-4 w-4 ${updatingMode ? 'animate-pulse' : ''}`} />
-                Modo: {opMode.toUpperCase()}
+            <Button variant="outline" onClick={() => window.location.href = '/producao/demanda/rascunhos'} className="gap-2">
+                <ClipboardList className="h-4 w-4" /> Rascunhos Automáticos
+            </Button>
+            <Button variant={opMode === 'legacy' ? 'destructive' : 'outline'} onClick={toggleOpMode} disabled={updatingMode} className="gap-2">
+                <Database className="h-4 w-4" /> Base: {opMode.toUpperCase()}
             </Button>
         </div>
       </div>
 
-      {showForm ? (
-        <Card className="mb-8">
+      {!results ? (
+        <Card className="shadow-md">
           <CardHeader>
-            <CardTitle>Processar Arquivo</CardTitle>
+            <CardTitle className="flex items-center gap-2"><Filter className="h-5 w-5 text-primary" /> Origem dos Dados</CardTitle>
           </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="file">Arquivo (.xlsx, .csv)</Label>
-                  <Input id="file" type="file" accept=".xlsx, .csv" onChange={handleFileChange} />
-                </div>
+          <CardContent className="pt-6">
+            {/* Status de Processamento em Background */}
+            {asyncProcessing && (
+              <div className="mb-8 p-6 bg-blue-50 border-2 border-blue-200 rounded-xl animate-in slide-in-from-top duration-500 shadow-sm">
+                <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+                  <div className="flex items-center gap-4 w-full md:w-auto">
+                    <div className="p-3 bg-blue-100 rounded-full">
+                      <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold text-blue-900">Processamento em Andamento</h3>
+                      <p className="text-sm text-blue-700 font-medium">
+                        Status atual: <span className="bg-blue-200 px-2 py-0.5 rounded uppercase text-xs">{asyncProcessing.status || 'Enfileirado'}</span>
+                      </p>
+                    </div>
+                  </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="selectedChannel">Canal de Venda</Label>
-                  <Select id="selectedChannel" value={selectedChannel} onValueChange={(selectedValue) => {
-                    setSelectedChannel(selectedValue);
-                    const foundChannel = channels.find(c => (c.slug || c.nome) === selectedValue);
-                    if (foundChannel) {
-                      // Normalize platform name to match template values
-                      const plataforma = foundChannel.plataforma || '';
-                      const normalizedPlataforma = plataforma.replace(/\s+/g, '');
-                      setSelectedPlatform(normalizedPlataforma);
-                    }
-                  }}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecione o canal de venda" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {channels.map((channel) => (
-                        <SelectItem key={channel.id} value={channel.slug || channel.nome}>
-                          {channel.nome}
-                        </SelectItem>
-                      ))}
-                      {channels.length === 0 && (
-                          <SelectItem value="loading" disabled>Carregando canais...</SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="start_date">Data Inicial</Label>
-                  <Input
-                    id="start_date"
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                  />
-                </div>
-
-                 <div className="space-y-2">
-                  <Label htmlFor="end_date">Data Final</Label>
-                  <Input
-                    id="end_date"
-                    type="datetime-local"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                  />
+                  <div className="flex flex-col items-center md:items-end gap-3 w-full md:w-64">
+                    <div className="w-full bg-blue-200 rounded-full h-3 overflow-hidden">
+                      <div
+                        className="bg-blue-600 h-full transition-all duration-1000 ease-in-out"
+                        style={{ width: asyncProcessing.status === 'PROCESSANDO' ? '65%' : '20%' }}
+                      />
+                    </div>
+                    <p className="text-[10px] text-blue-500 font-medium uppercase tracking-wider text-center md:text-right">
+                      Seu arquivo está sendo processado nos servidores. Você pode aguardar nesta tela.
+                    </p>
+                  </div>
                 </div>
               </div>
+            )}
 
-              <div className="flex items-center space-x-2">
-                <Checkbox
-                  id="print_orders"
-                  checked={printOrders}
-                  onCheckedChange={setPrintOrders}
-                />
-                <Label htmlFor="print_orders">Imprimir pedidos e gerar notas</Label>
-              </div>
+            <form onSubmit={handleSubmit} className="space-y-6 p-4 border rounded-lg bg-muted/30">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-2">
+                          <Label>Arquivo de Pedidos</Label>
+                          <Input type="file" accept=".xlsx, .csv" onChange={handleFileChange} className="bg-white" />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Canal de Venda</Label>
+                          <Select value={selectedChannel} onValueChange={setSelectedChannel}>
+                            <SelectTrigger className="bg-white"><SelectValue placeholder="Selecione o canal" /></SelectTrigger>
+                            <SelectContent>{channels.map(c => <SelectItem key={c.id} value={c.slug || c.nome}>{c.nome}</SelectItem>)}</SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Data Envio (Início)</Label>
+                          <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="bg-white" />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Data Envio (Fim - Opcional)</Label>
+                          <Input type="datetime-local" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="bg-white" />
+                        </div>
+                    </div>
 
-              <Button type="submit" disabled={loading} className="w-full md:w-auto">
-                {loading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Processando...</> : <><Upload className="mr-2 h-4 w-4" /> Processar</>}
-              </Button>
-            </form>
+                    <div className="flex flex-wrap gap-6 items-center border-t border-b py-4">
+                        <div className="flex items-center space-x-2">
+                          <Checkbox id="print_orders" checked={printOrders} onCheckedChange={setPrintOrders} />
+                          <Label htmlFor="print_orders" className="cursor-pointer">Imprimir pedidos e gerar notas</Label>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <Checkbox id="is_flex" checked={isFlex} onCheckedChange={setIsFlex} />
+                          <Label htmlFor="is_flex" className="text-blue-600 font-bold cursor-pointer">Apenas Pedidos FLEX</Label>
+                        </div>
+                    </div>
+
+                    <div className="flex gap-3">
+                      <Button type="submit" disabled={loading} className="flex-1 h-12 text-lg">
+                          {loading ? <Loader2 className="animate-spin mr-2" /> : <Upload className="mr-2" />} Processar
+                      </Button>
+                    </div>
+                </form>
           </CardContent>
         </Card>
       ) : (
-        <div>
-          <div className="d-flex justify-content-between align-items-center mb-4">
-            <h2>Resultado da Consolidação</h2>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={handleNewProcessing}>
-                Novo Processamento
-              </Button>
-              <Button variant="default" onClick={() => setModalOpen('demand')} className="bg-green-600 hover:bg-green-700">
-                Gerar Demanda
-              </Button>
-              <Button variant="outline" onClick={openSidebar} disabled={!printOrders}>
-                <Eye className="mr-2 h-4 w-4" /> Resultado NFs
-              </Button>
+        <div className="space-y-6 animate-in zoom-in-95 duration-300">
+          <div className="flex flex-wrap justify-between items-center gap-4 bg-white p-4 rounded-lg border shadow-sm sticky top-0 z-20">
+            <h2 className="text-xl font-bold flex items-center gap-2"><CheckCircle2 className="h-6 w-6 text-green-600" /> Itens Consolidados</h2>
+            <div className="flex gap-3">
+              <Button variant="outline" onClick={() => setResults(null)}>Voltar / Novo</Button>
+              <Button className="bg-green-600 hover:bg-green-700" onClick={() => {
+                const canal = channels.find(c => c.id.toString() === selectedChannel || (c.slug || c.nome) === selectedChannel);
+                if (canal && canal.horario_coleta) {
+                  setDemandHorarioColeta(canal.horario_coleta);
+                }
+                setModalOpen('demand');
+              }}>Gerar Demanda</Button>
             </div>
           </div>
 
-          {periodFilter && (
-            <div className="text-sm text-gray-500 mb-4">
-              Período: {formatDate(periodFilter.start)} a {formatDate(periodFilter.end)}
-            </div>
-          )}
-
-          <Tabs defaultValue={Object.keys(results)[0]}> 
-            <TabsList className="mb-4">
-              {Object.keys(results).map((key) => (
-                <TabsTrigger key={key} value={key}>{key} ({results[key].total_pedidos_plataforma})</TabsTrigger>
-              ))}
-            </TabsList>
-
-            {Object.entries(results).map(([key, data]) => (
-              <TabsContent key={key} value={key} className="space-y-6">
-
-                {/* Alert for Bling Integration Error */}
-                {printOrders && (!data.bling_orders_data || data.bling_orders_data.length === 0) && (
-                  <Card className="border-red-200 bg-red-50">
-                    <CardContent className="pt-4">
-                      <div className="flex items-center space-x-2 text-red-700">
-                        <AlertCircle className="h-5 w-5" />
-                        <div>
-                          <p className="font-medium">Integração com Bling falhou</p>
-                          <p className="text-sm">Não será possível imprimir pedidos ou gerar notas fiscais para este processamento.</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Actions Bar */}
-                <div className="flex flex-wrap gap-2 mb-4">
-                  <Button variant="secondary" onClick={() => setModalOpen(`${key}-channel`)}>
-                    Ver {data.total_pedidos_plataforma} IDs
-                  </Button>
-                  <Button 
-                    variant="secondary" 
-                    onClick={() => handlePrint(key)} 
-                    disabled={!printOrders || (!data.bling_orders_data || data.bling_orders_data.length === 0)}
-                  >
-                    <Printer className="mr-2 h-4 w-4" />
-                    Imprimir {data.bling_orders_data?.length || 0} pedidos
-                  </Button>
+          {Object.entries(results).map(([key, data]) => (
+            <Card key={key}>
+              <CardHeader className="flex flex-row items-center justify-between border-b bg-muted/20 py-3">
+                <CardTitle className="text-lg">{key} ({data.total_pedidos_plataforma} pedidos)</CardTitle>
+                <div className="flex gap-2">
+                  {data.options?.print_orders && data.bling_orders_data && data.bling_orders_data.length > 0 && (
+                    <>
+                      <Button variant="outline" size="sm" onClick={() => printBlingData(key)} disabled={nfeGenerating}>
+                        <Printer className="h-4 w-4 mr-2" /> Imprimir {data.bling_orders_data.length} pedidos
+                      </Button>
+                      <Select value={selectedBlingAccountId} onValueChange={setSelectedBlingAccountId}>
+                        <SelectTrigger className="w-[200px]">
+                          <SelectValue placeholder="Conta Bling" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {blingAccounts.length === 0 ? (
+                            <SelectItem value="" disabled>Nenhuma conta</SelectItem>
+                          ) : (
+                            blingAccounts.map((account) => (
+                              <SelectItem key={account.id} value={String(account.id)}>
+                                {account.instance_name || `Conta ${account.id}`}
+                              </SelectItem>
+                            ))
+                          )}
+                        </SelectContent>
+                      </Select>
+                      <Button variant="outline" size="sm" onClick={() => generateNFE(key)} disabled={nfeGenerating}>
+                        <Database className="h-4 w-4 mr-2" /> Gerar NFs
+                      </Button>
+                    </>
+                  )}
+                  <Button variant="ghost" size="sm" onClick={() => handleCopyTable(key)}><Copy className="h-4 w-4 mr-2" /> Copiar</Button>
                 </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                <Table>
+                    <TableHeader><TableRow><TableHead>Produto</TableHead><TableHead>SKU</TableHead><TableHead>Miolo</TableHead><TableHead className="text-right">Qtd</TableHead><TableHead>Status</TableHead><TableHead>Ação</TableHead></TableRow></TableHeader>
+                    <TableBody>
+                        {data.capas_miolos_data.map((item, idx) => (
+                            <TableRow key={idx}>
+                                <TableCell className="font-medium text-xs">{item['Nome do Produto'] || item['Título']}</TableCell>
+                                <TableCell className="text-xs font-mono">{item['SKU'] || item['Código']}</TableCell>
+                                <TableCell className="text-xs">{item['Miolo'] || '-'}</TableCell>
+                                <TableCell className="text-right font-bold">{item.Total}</TableCell>
+                                <TableCell>{item.internal_product_id ? <Badge className="bg-green-600">Mapeado</Badge> : <Badge variant="destructive">Pendente</Badge>}</TableCell>
+                                <TableCell>
+                                    <Select value={String(item.internal_product_id || 'none')} onValueChange={(val) => updateProductAssociation(key, idx, val === 'none' ? null : val)}>
+                                        <SelectTrigger className="h-8 w-[200px] text-xs"><SelectValue placeholder="Vincular..." /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">-- Selecione --</SelectItem>
+                                            {products.map(p => <SelectItem key={p.id} value={String(p.id)}>{p.sku} - {p.name}</SelectItem>)}
+                                        </SelectContent>
+                                    </Select>
+                                </TableCell>
+                            </TableRow>
+                        ))}
+                    </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          ))}
 
-                {/* Main Consolidation Table */}
-                <Card>
-                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                    <CardTitle className="text-xl font-bold">Itens Consolidados ({data.total_capas})</CardTitle>
-                    <div className="flex gap-1">
-                        <Button variant="ghost" size="sm" onClick={() => handleCopyTable(key)} title="Copiar Tabela">
-                          <Copy className="h-4 w-4" />
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => handlePrint(key)} title="Imprimir Etiquetas">
-                          <Printer className="h-4 w-4" />
-                        </Button>
+          {/* Modal de Processamento Assíncrono */}
+          {asyncProcessing && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+              <Card className="max-w-md w-full shadow-2xl animate-in slide-in-from-bottom-4">
+                <CardHeader className="border-b">
+                  <CardTitle className="flex items-center gap-2">
+                    <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+                    Processando em Background
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4 pt-6">
+                  <div className="text-center space-y-2">
+                    <p className="text-muted-foreground">Seu arquivo está sendo processado...</p>
+                    <div className="flex items-center justify-center gap-2">
+                      <span className="text-sm font-medium">Status:</span>
+                      <span className={`text-sm font-bold px-3 py-1 rounded-full ${
+                        asyncProcessing.status === 'PRONTO' ? 'bg-green-100 text-green-800' :
+                        asyncProcessing.status === 'ERRO' ? 'bg-red-100 text-red-800' :
+                        'bg-blue-100 text-blue-800'
+                      }`}>
+                        {asyncProcessing.status || 'PROCESSANDO'}
+                      </span>
                     </div>
-                  </CardHeader>
-                  <CardContent>
-                    <ScrollArea className="h-[600px] w-full rounded-md border">
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead className="w-[300px]">Produto (Externo)</TableHead>
-                                    <TableHead>SKU (Externo)</TableHead>
-                                    <TableHead className="w-[150px]">Variação</TableHead>
-                                    <TableHead>Miolo</TableHead>
-                                    <TableHead className="text-right">Qtd</TableHead>
-                                    <TableHead>Status</TableHead>
-                                    <TableHead className="w-[300px]">Associar Produto Interno</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {data.capas_miolos_data && data.capas_miolos_data.map((item, index) => (
-                                    <TableRow key={index}>
-                                        <TableCell className="font-medium text-xs">{getItemName(item)}</TableCell>
-                                        <TableCell className="text-xs">{getItemSku(item)}</TableCell>
-                                        <TableCell className="text-xs">{getItemVariation(item)}</TableCell>
-                                        <TableCell className="text-xs">{item.miolo_name || item.Miolo}</TableCell>
-                                        <TableCell className="text-right font-bold">{item.Total}</TableCell>
-                                        <TableCell>
-                                            {item.mapping_status === 'Mapeado' || item.mapping_status === 'Mapeado Manualmente' ? (
-                                                <Badge variant="default" className="bg-green-600"><CheckCircle2 className="w-3 h-3 mr-1"/> Mapeado</Badge>
-                                            ) : item.mapping_status === 'Múltiplas Correspondências' ? (
-                                                <Badge variant="secondary" className="bg-yellow-500 text-black"><AlertCircle className="w-3 h-3 mr-1"/> Múltiplos</Badge>
-                                            ) : (
-                                                <Badge variant="destructive"><AlertCircle className="w-3 h-3 mr-1"/> Pendente</Badge>
-                                            )}
-                                        </TableCell>
-                                        <TableCell>
-                                            <div className="flex items-center gap-2">
-                                                {item.internal_product_id ? (
-                                                    <div className="flex items-center gap-2">
-                                                        <Link2 className="w-4 h-4 text-green-600" title="Mapeado" />
-                                                        <span className="text-xs font-medium truncate max-w-[150px]" title={item.internal_product_name}>
-                                                            {item.internal_product_name}
-                                                        </span>
-                                                        <a 
-                                                            href={`/frontend/produtos/${item.internal_product_id}/editar`} 
-                                                            target="_blank" 
-                                                            rel="noopener noreferrer"
-                                                            className="text-blue-600 hover:text-blue-800"
-                                                        >
-                                                            <ExternalLink className="w-3 h-3" />
-                                                        </a>
-                                                        <Button 
-                                                            variant="ghost" 
-                                                            size="sm" 
-                                                            className="h-6 w-6 p-0 text-gray-400 hover:text-red-600"
-                                                            onClick={() => updateProductAssociation(key, index, null)}
-                                                            title="Remover vínculo"
-                                                        >
-                                                            ×
-                                                        </Button>
-                                                    </div>
-                                                ) : (
-                                                    <div className="flex items-center gap-2 w-full">
-                                                        <Link2Off className="w-4 h-4 text-gray-400" title="Não Mapeado" />
-                                                        <Select
-                                                            value="none"
-                                                            onValueChange={(val) => updateProductAssociation(key, index, val === "none" ? null : val)}
-                                                        >
-                                                            <SelectTrigger className="h-8 w-full min-w-[150px]">
-                                                                <SelectValue placeholder="Vincular produto..." />
-                                                            </SelectTrigger>
-                                                            <SelectContent>
-                                                                <SelectItem value="none">-- Selecione --</SelectItem>
-                                                                {products.map(p => (
-                                                                    <SelectItem key={p.id} value={String(p.id)}>
-                                                                        {p.sku} - {p.name}
-                                                                    </SelectItem>
-                                                                ))}
-                                                            </SelectContent>
-                                                        </Select>
-                                                    </div>
-                                                )}
-                                            </div>
-                                            {item.mapping_status === 'Múltiplas Correspondências' && item.potential_matches && (
-                                                <div className="text-[10px] text-muted-foreground mt-1 bg-yellow-50 p-1 rounded border border-yellow-100">
-                                                    Sugestões: {JSON.parse(item.potential_matches).map(m => m.name || m.nome).join(', ')}
-                                                </div>
-                                            )}
-                                        </TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </ScrollArea>
-                  </CardContent>
-                </Card>
-
-
-
-
-                {/* Modals Logic (Keep existing for Channel IDs and Bling Orders) */}
-                {modalOpen === `${key}-channel` && (
-                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-                    <div className="bg-white rounded-lg p-6 max-w-lg w-full max-h-[80vh] overflow-y-auto">
-                        <div className="flex justify-between items-center mb-4">
-                          <h3 className="text-lg font-bold">IDs no canal de venda</h3>
-                          <button onClick={() => setModalOpen(null)} className="text-gray-500 hover:text-black">×</button>
-                        </div>
-                        <div className="space-y-4">
-                           <h4 className="font-semibold">Todos:</h4>
-                           <div className="bg-gray-100 p-2 rounded text-xs font-mono break-all max-h-40 overflow-y-auto">
-                               {data.ids_pedidos?.join(', ')}
-                           </div>
-                           {data.bling_orders_not_found?.length > 0 && (
-                               <>
-                                   <h4 className="font-semibold text-red-600">Não encontrados no Bling:</h4>
-                                   <div className="bg-red-50 p-2 rounded text-xs font-mono text-red-600">
-                                       {data.bling_orders_not_found.join(', ')}
-                                   </div>
-                               </>
-                           )}
-                        </div>
-                    </div>
+                    <p className="text-xs text-muted-foreground mt-4">
+                      Esta janela será atualizada automaticamente quando o processamento for concluído.
+                    </p>
                   </div>
-                )}
-
-              </TabsContent>
-            ))}
-          </Tabs>
-
-          {/* Styles for printing (hidden in normal view) */}
-          <style>{`
-             @media print {
-               @page { size: auto; margin: 0mm; }
-               body { margin: 10mm; }
-               .no-print { display: none !important; }
-             }
-          `}</style>
-
-          {/* Sidebar for NFE results */}
-          {sidebarOpen && (
-            <div className="fixed top-0 right-0 w-80 h-full bg-white shadow-xl border-l p-4 z-50 transition-transform transform translate-x-0">
-              <div className="flex justify-between items-center mb-4">
-                  <h3 className="font-bold text-lg">Notas fiscais</h3>
-                  <Button variant="ghost" size="sm" onClick={closeSidebar}>×</Button>
-              </div>
-              <ul className="space-y-2">
-                {nfeResults.map((result, index) => (
-                  <li key={index} className="text-sm border-b pb-1">
-                    {result.nfe_id ? (
-                      <a href={`https://www.bling.com.br/notas.fiscais.php#edit/${result.nfe_id}`} target="_blank" className="text-blue-600 hover:underline">
-                        #{result.numero}
-                      </a>
-                    ) : (
-                      <a href={`https://www.bling.com.br/vendas.php#edit/${result.id}`} target="_blank" className="text-blue-600 hover:underline">
-                        #{result.numero}
-                      </a>
-                    )}
-                    : {result.error || 'sucesso'}
-                  </li>
-                ))}
-              </ul>
+                </CardContent>
+              </Card>
             </div>
           )}
 
-          {/* Demand Generation Modal */}
           {modalOpen === 'demand' && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-              <div className="bg-white rounded-lg p-6 max-w-md w-full max-h-[80vh] overflow-y-auto">
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-bold">Gerar Demanda de Produção</h3>
-                  <button onClick={() => setModalOpen(null)} className="text-gray-500 hover:text-black">×</button>
-                </div>
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="demandName">Nome da Demanda</Label>
-                    <Input
-                      id="demandName"
-                      value={demandName}
-                      onChange={(e) => setDemandName(e.target.value)}
-                      placeholder="Ex: Demanda Shopee 10/10"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="demandDate">Data de Entrega</Label>
-                    <Input
-                      id="demandDate"
-                      type="date"
-                      value={demandDate}
-                      onChange={(e) => setDemandDate(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="demandHorarioColeta">Horário de Coleta desta Demanda</Label>
-                    <Input
-                      id="demandHorarioColeta"
-                      type="time"
-                      value={demandHorarioColeta || ''}
-                      onChange={(e) => {
-                        // Validate the time format when user inputs
-                        const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
-                        if (e.target.value === '' || timeRegex.test(e.target.value)) {
-                          setDemandHorarioColeta(e.target.value);
-                        } else {
-                          // Optionally show a warning to the user
-                          toast.warning("Formato de horário inválido. Use o formato HH:MM (24 horas).");
-                        }
-                      }}
-                      placeholder="HH:MM"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="demandObservacoes">Observações (Opcional)</Label>
-                    <Input
-                      id="demandObservacoes"
-                      value={demandObservacoes}
-                      onChange={(e) => setDemandObservacoes(e.target.value)}
-                      placeholder="Ex: Prioridade máxima"
-                    />
-                  </div>
-                  <Button
-                    onClick={() => {
-                      // Usa a primeira plataforma dos resultados como antes
-                      const platformKey = Object.keys(results)[0];
-                      handleGenerateDemand(platformKey);
-                      setModalOpen(null);
-                    }}
-                    disabled={creatingDemand}
-                    className="w-full bg-green-600 hover:bg-green-700 text-white"
-                  >
-                    {creatingDemand ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : null}
-                    Gerar Demanda
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+              <Card className="max-w-md w-full shadow-2xl animate-in slide-in-from-bottom-4">
+                <CardHeader className="border-b"><CardTitle>Gerar Nova Demanda</CardTitle></CardHeader>
+                <CardContent className="space-y-4 pt-6">
+                  <div className="space-y-2"><Label>Nome da Demanda</Label><Input value={demandName} onChange={(e) => setDemandName(e.target.value)} placeholder="Ex: Demanda Shopee - Março" /></div>
+                  <div className="space-y-2"><Label>Data de Entrega</Label><Input type="date" value={demandDate} onChange={(e) => setDemandDate(e.target.value)} /></div>
+                  <div className="space-y-2"><Label>Horário de Coleta (Opcional)</Label><Input type="time" value={demandHorarioColeta} onChange={(e) => setDemandHorarioColeta(e.target.value)} /></div>
+                  <div className="space-y-2"><Label>Observações (Opcional)</Label><Input value={demandObservacoes} onChange={(e) => setDemandObservacoes(e.target.value)} placeholder="Ex: Urgente, entregar na portaria..." /></div>
+                  <Button onClick={() => handleGenerateDemand(Object.keys(results)[0])} disabled={creatingDemand} className="w-full bg-primary h-12 text-lg">
+                    {creatingDemand ? <Loader2 className="animate-spin mr-2" /> : null} Gerar Demanda
                   </Button>
-                </div>
-              </div>
+                  <Button variant="ghost" onClick={() => setModalOpen(null)} className="w-full">Cancelar</Button>
+                </CardContent>
+              </Card>
             </div>
           )}
 
-          {/* Modal backdrop */}
-          {modalOpen && (
-            <div className="fixed inset-0 bg-black/50 z-40" onClick={() => setModalOpen(null)}></div>
-          )}
+          {/* NFE Sidebar */}
+          <div className={`fixed inset-y-0 right-0 z-50 w-96 bg-white shadow-2xl transform transition-transform duration-300 ease-in-out ${nfeSidebarOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+            <div className="flex flex-col h-full">
+              <div className="flex items-center justify-between p-4 border-b bg-muted">
+                <h3 className="text-lg font-bold">Notas Fiscais</h3>
+                <Button variant="ghost" size="sm" onClick={() => setNfeSidebarOpen(false)}>
+                  <X className="h-5 w-5" />
+                </Button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {nfeGenerating && nfeResults.length === 0 && (
+                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+                    <Loader2 className="h-8 w-8 animate-spin mb-2" />
+                    <p>Processando pedidos...</p>
+                  </div>
+                )}
+                {nfeResults.length > 0 && (
+                  <ul className="space-y-2">
+                    {nfeResults.map((result, idx) => (
+                      <li key={idx} className={`p-3 rounded-lg border ${result.success ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-medium">
+                            #{result.order?.numero || result.order?.id || 'N/A'}
+                          </span>
+                          <span className={`text-sm ${result.success ? 'text-green-600' : 'text-red-600'}`}>
+                            {result.success ? '✓' : '✗'}
+                          </span>
+                        </div>
+                        {result.success && result.order?.nfe_id && (
+                          <a
+                            href={`https://www.bling.com.br/notas.fiscais.php#edit/${result.order.nfe_id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm text-blue-600 hover:underline"
+                          >
+                            NF-e
+                          </a>
+                        )}
+                        {result.error && (
+                          <p className="text-sm text-red-600 mt-1">{result.error}</p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
-
       )}
     </div>
   );

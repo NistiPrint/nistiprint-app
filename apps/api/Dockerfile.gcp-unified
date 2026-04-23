@@ -1,0 +1,96 @@
+# ===========================================
+# NISTIPRINT - DOCKERFILE UNIFICADO PARA GOOGLE CLOUD RUN
+# ===========================================
+# Frontend + API no mesmo container
+# nginx faz proxy de /api para localhost:5000 (gunicorn)
+# ===========================================
+
+FROM python:3.12-slim AS api-build
+
+WORKDIR /app
+
+# Instalar dependências do sistema
+RUN apt-get update && apt-get install -y \
+    gcc \
+    default-libmysqlclient-dev \
+    pkg-config \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_CACHE_DIR=/root/.cache/pip
+
+# Copiar packages/shared
+COPY packages/shared /app/packages/shared
+RUN pip install -e /app/packages/shared
+
+# Copiar requirements e instalar
+COPY apps/api/requirements.txt /app/requirements.txt
+RUN pip install -r /app/requirements.txt
+
+# Copiar API
+COPY apps/api/ /app/
+
+# ===========================================
+# FRONTEND BUILD
+# ===========================================
+FROM node:20-alpine AS frontend-build
+
+WORKDIR /app
+
+COPY apps/frontend/package*.json ./
+RUN npm install
+
+COPY apps/frontend/ ./
+
+ARG VITE_API_URL
+ARG VITE_SUPABASE_URL
+ARG VITE_SUPABASE_ANON_KEY
+
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
+ENV VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY
+
+RUN npm run build
+
+# ===========================================
+# PRODUCTION IMAGE
+# ===========================================
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Instalar nginx e supervisor
+RUN apt-get update && apt-get install -y \
+    nginx \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar frontend build
+COPY --from=frontend-build /app/dist /usr/share/nginx/html
+
+# Copiar nginx config
+COPY apps/frontend/nginx.conf.gcp /etc/nginx/nginx.conf
+
+# Copiar supervisord config
+COPY apps/api/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Copiar API do build stage
+COPY --from=api-build /app /app
+
+# Instalar dependências Python
+COPY packages/shared /app/packages/shared
+RUN pip install --break-system-packages -e /app/packages/shared
+
+COPY apps/api/requirements.txt /app/requirements.txt
+RUN pip install --break-system-packages -r /app/requirements.txt
+
+# Criar diretórios de log
+RUN mkdir -p /var/log/nginx /var/log/gunicorn /var/log/supervisor
+
+# Expor porta única (nginx)
+EXPOSE 8080
+
+# Iniciar supervisor (gerencia nginx + gunicorn)
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

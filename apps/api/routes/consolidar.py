@@ -1,15 +1,19 @@
 import os
 from datetime import datetime, timedelta
 import pandas as pd
-from flask import request, render_template, Blueprint, jsonify
+from flask import request, Blueprint, jsonify
 from routes.auth import login_required
-from nistiprint_shared.services.file_processors import process_mercadolivre, process_shopee, process_amazon, process_shein
+# Removido: importação direta dos processadores (agora usamos PlatformProcessorRegistry)
 from constants import PLATFORM_X_CNPJ
 from nistiprint_shared.services.bling.bling_client import BlingClient
 from nistiprint_shared.services.canal_venda_service import canal_venda_service
 from nistiprint_shared.services.conta_bling_service import conta_bling_service
 from utils import prepare_ml_file
-import traceback # Import traceback
+import traceback
+import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 consolidar_bp = Blueprint('consolidar', __name__, url_prefix='/api/v2')
 
@@ -55,19 +59,35 @@ def consolidar():
 
             # A plataforma é derivada do canal encontrado para o roteamento dos processadores
             plataforma = channel.get('plataforma')
+            channel_id = channel.get('id')
             if not plataforma:
                 raise ValueError(f"O canal '{channel['nome']}' não possui uma plataforma configurada.")
             
             # Normalização para comparação de roteamento
             plataforma_normalized = plataforma.replace(' ', '').lower()
 
-            # O Bling Client é selecionado através da plataforma, como no original
-            bling_client = BlingClient.create_client_for_platform(plataforma)
+            # 1. Resolver qual conta Bling usar para esta operação de consolidação/importação
+            from nistiprint_shared.services.integration_routing_service import integration_routing_service
+            account_id = integration_routing_service.get_account_id(
+                function_name='ORDER_IMPORT',
+                module='bling',
+                channel_id=channel_id,
+                platform_name=plataforma
+            )
+
+            # 2. Criar o cliente Bling apontando para a conta correta
+            bling_client = BlingClient.create_client_for_platform(
+                plataforma, 
+                channel_id=channel_id, 
+                function_name='ORDER_IMPORT'
+            )
 
             options = {
                 'plataforma': plataforma,
                 'print_orders': request.form.get('print-orders') == 'true',
+                'is_flex': request.form.get('is_flex') == 'true',
                 'channel_slug': channel.get('slug'),
+                'channel_id': channel_id,
                 'mode': request.form.get('mode')
             }
 
@@ -87,19 +107,29 @@ def consolidar():
             filepath = os.path.join(basedir, _file.filename)
             _file.save(filepath)
 
-            if plataforma_normalized == 'mercadolivre':
-                new_file_path = prepare_ml_file(filepath)
-                result = process_mercadolivre(
-                    new_file_path, period_filter, options, bling_client)
-                os.remove(new_file_path)
-            elif 'shopee' in plataforma_normalized:
-                result = process_shopee(filepath, period_filter, options, bling_client)
-            elif plataforma_normalized == 'amazon':
-                result = process_amazon(filepath, period_filter, options, bling_client)
-            elif plataforma_normalized == 'shein':
-                result = process_shein(filepath, period_filter, options, bling_client)
-            else:
-                raise ValueError(f"Plataforma '{plataforma}' não suportada")
+            # NOVA ARQUITETURA (Fase 7): Usar PlatformProcessorRegistry
+            # Substitui if/else hardcoded por registry lookup
+            from nistiprint_shared.services.platform_processor_registry import PlatformProcessorRegistry
+            
+            try:
+                processor_func = PlatformProcessorRegistry.get_processor(plataforma_normalized)
+                
+                # Caso especial: Mercado Livre requer preparo do arquivo
+                if plataforma_normalized == 'mercadolivre':
+                    new_file_path = prepare_ml_file(filepath)
+                    result = processor_func(
+                        new_file_path, period_filter, options, bling_client)
+                    os.remove(new_file_path)
+                else:
+                    result = processor_func(filepath, period_filter, options, bling_client)
+                    
+            except ValueError as e:
+                # Erro do registry (processador não encontrado)
+                raise ValueError(f"Plataforma '{plataforma}' não suportada. Detalhes: {str(e)}")
+            except Exception as e:
+                # Erro no processamento
+                logger.error(f"Erro ao processar arquivo para plataforma {plataforma}: {e}")
+                raise
 
             capas, total_capas, miolos, total_miolos, capas_miolos, ids_pedidos, total_pedidos_plataforma, bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found, raw_data = result
 
@@ -132,14 +162,61 @@ def consolidar():
             conflicts = order_tracker_service.check_conflicts(all_orders_to_check, plataforma)
             # -------------------------------------------------------------------------
 
+            # --- NOVO: PERSISTÊNCIA DOS PEDIDOS NO BANCO UNIFICADO (ASSÍNCRONO) ---
+            # Para evitar timeout, salvamos os dados em um JSON temporário e enviamos para o worker
+            if bling_orders_data:
+                try:
+                    import json
+                    import uuid
+                    
+                    # Gera nome de arquivo único
+                    temp_filename = f"orders_batch_{uuid.uuid4().hex}.json"
+                    temp_filepath = os.path.join(basedir, temp_filename)
+                    
+                    # Salva payload para o worker
+                    with open(temp_filepath, 'w', encoding='utf-8') as f:
+                        json.dump({'orders': bling_orders_data}, f)
+                        
+                    print(f"💾 Disparando persistência assíncrona de {len(bling_orders_data)} pedidos via arquivo {temp_filename}...")
+                    
+                    from nistiprint_shared.services.celery_app import celery_app
+                    celery_app.send_task(
+                        'tasks.consolidation_tasks.persist_orders_batch',
+                        args=[temp_filepath, plataforma, channel_id, account_id],
+                        kwargs={}
+                    )
+                except Exception as async_persist_err:
+                    print(f"⚠️ Erro ao disparar persistência assíncrona: {async_persist_err}")
+                    # Em caso de erro no disparo, não fazemos nada síncrono para não travar.
+                    # O usuário poderá tentar novamente ou usar a rota async completa.
+            # ---------------------------------------------------------
+
             if plataforma:
+                # Adiciona order_refs como campo separado para exibição no frontend
+                if hasattr(display_capas_miolos, 'copy'):
+                    display_capas_miolos_with_refs = display_capas_miolos.copy()
+                else:
+                    display_capas_miolos_with_refs = display_capas_miolos
+                    
+                # Re-adiciona order_refs se existir no capas_miolos original
+                if hasattr(capas_miolos, 'iterrows') and 'order_refs' in capas_miolos.columns:
+                    # Recria o order_refs a partir do original
+                    order_refs_list = []
+                    for idx, row in capas_miolos.iterrows():
+                        refs = row.get('order_refs', [])
+                        order_refs_list.append(refs if refs else None)
+                    
+                    # Adiciona como nova coluna
+                    display_capas_miolos_with_refs = display_capas_miolos_with_refs.copy()
+                    display_capas_miolos_with_refs['order_refs'] = order_refs_list
+
                 results[plataforma] = {
                     'total_capas': total_capas,
                     'total_miolos': total_miolos,
-                    # JSON serializable data - USANDO display_capas_miolos para manter estrutura original
+                    # JSON serializable data - USANDO display_capas_miolos_with_refs para manter order_refs
                     'capas_data': capas.where(pd.notnull(capas), None).to_dict('records') if hasattr(capas, 'to_dict') else capas,
                     'miolos_data': miolos.where(pd.notnull(miolos), None).to_dict('records') if hasattr(miolos, 'to_dict') else miolos,
-                    'capas_miolos_data': display_capas_miolos.where(pd.notnull(display_capas_miolos), None).to_dict('records') if hasattr(display_capas_miolos, 'to_dict') else display_capas_miolos,
+                    'capas_miolos_data': display_capas_miolos_with_refs.where(pd.notnull(display_capas_miolos_with_refs), None).to_dict('records') if hasattr(display_capas_miolos_with_refs, 'to_dict') else display_capas_miolos_with_refs,
                     'ids_pedidos': ids_pedidos,
                     'total_pedidos_plataforma': total_pedidos_plataforma,
                     'bling_orders_id': bling_orders_id,
@@ -153,20 +230,371 @@ def consolidar():
 
             os.remove(filepath)
 
-            if request.accept_mimetypes.accept_json and not request.accept_mimetypes.accept_html:
-                return jsonify(results)
+            # --- NOVO: DISPARAR SINCRONIZAÇÃO DE NÚMEROS BLING (BACKGROUND) ---
+            if ids_pedidos:
+                try:
+                    from nistiprint_shared.services.celery_app import celery_app
+                    # ids_pedidos pode vir como uma lista de IDs [id1, id2...] ou chunks [id1;id2, id101;id102...]
+                    flat_ids = []
+                    if isinstance(ids_pedidos, list):
+                        for item in ids_pedidos:
+                            if isinstance(item, str) and ';' in item:
+                                flat_ids.extend(item.split(';'))
+                            elif isinstance(item, (str, int)):
+                                flat_ids.append(str(item))
+                    
+                    # Remover duplicatas e filtrar strings vazias
+                    flat_ids = list(set([str(fid) for fid in flat_ids if fid]))
+                    
+                    if flat_ids:
+                        print(f"[*] Consolidar API: Disparando sync de {len(flat_ids)} pedidos individuais com Bling...")
+                        celery_app.send_task(
+                            'tasks.consolidation_tasks.sync_orders_with_bling',
+                            args=[flat_ids, channel_id, plataforma],
+                            kwargs={}
+                        )
+                except Exception as sync_trigger_err:
+                    print(f"⚠️ Erro ao disparar sync com Bling na API: {sync_trigger_err}")
+            # ------------------------------------------------------------------
 
-            return render_template('results.html', results=results, period_filter=period_filter, options=options)
+            # Sempre retorna JSON para API React frontend
+            return jsonify(results)
 
         except Exception as e:
             print(f"Error processing /consolidar: {e}")
             traceback.print_exc() # Print the full traceback
             error_message = str(e)
-            if request.accept_mimetypes.accept_json and not request.accept_mimetypes.accept_html:
-                return jsonify({'error': error_message}), 400
-            return render_template('error.html', message=error_message)
+            # Sempre retorna JSON para API React frontend
+            return jsonify({'error': error_message}), 400
 
-    return render_template('consolidar.html')
+    # GET endpoint - retorna informações básicas da API
+    return jsonify({'message': 'Endpoint de consolidação. Use POST para processar arquivos.'})
+
+
+# ============================================================================
+# ENDPOINTS ASSÍNCRONOS PARA PROCESSAMENTO DE ARQUIVOS GRANDES
+# ============================================================================
+
+@consolidar_bp.route('/consolidar-async', methods=['POST'])
+@login_required
+def consolidar_async():
+    """
+    Inicia processamento assíncrono de consolidação de pedidos.
+    Retorna imediatamente com um ID para polling.
+    """
+    try:
+        _file = request.files.get('file')
+        
+        # Parse form data
+        start_date = request.form.get('start_date')
+        end_datetime = request.form.get('end_datetime')
+        channel_param = request.form.get('channel')
+        print_orders = request.form.get('print-orders') == 'true'
+        is_flex = request.form.get('is_flex') == 'true'
+        mode = request.form.get('mode', 'legacy')
+        
+        if not channel_param:
+            return jsonify({'error': 'O identificador do canal (slug) é obrigatório.'}), 400
+        
+        if not _file or not (_file.filename.endswith('.xlsx') or _file.filename.endswith('.csv')):
+            return jsonify({'error': 'Arquivo inválido. Apenas .xlsx e .csv são aceitos.'}), 400
+        
+        # Busca canal
+        channel_slug = channel_param.lower().strip().replace(' ', '-').replace('_', '-')
+        all_channels = canal_venda_service.get_all()
+        channel = next((c for c in all_channels if c.get('slug') == channel_slug and c.get('ativo', True) != False), None)
+        
+        if not channel:
+            channel = next((c for c in all_channels if c.get('nome') == channel_param and c.get('ativo', True) != False), None)
+        
+        if not channel:
+            return jsonify({'error': f'Canal de venda ativo não encontrado para {channel_param}'}), 404
+        
+        plataforma = channel.get('plataforma')
+        channel_id = channel.get('id')
+        
+        # Salva arquivo temporário
+        basedir = _ensure_temp_dir()
+        filepath = os.path.join(basedir, _file.filename)
+        _file.save(filepath)
+        
+        # Prepara period filter
+        if not start_date:
+            start_date = datetime.now() - timedelta(days=120)
+        if not end_datetime:
+            end_datetime = datetime.now() + timedelta(days=30)
+        
+        # Cria registro na tabela consolidacoes_pedido
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        
+        options = {
+            'plataforma': plataforma,
+            'print_orders': print_orders,
+            'is_flex': is_flex,
+            'channel_slug': channel.get('slug'),
+            'channel_id': channel_id,
+            'mode': mode,
+            'file_path': filepath,
+            'file_name': _file.filename
+        }
+        
+        consolidacao_record = {
+            'status': 'PENDENTE',
+            'platform': plataforma,
+            'channel_id': channel_id,
+            'channel_slug': channel.get('slug'),
+            'file_path': filepath,
+            'file_name': _file.filename,
+            'period_filter_start': pd.to_datetime(start_date).isoformat() if start_date else None,
+            'period_filter_end': pd.to_datetime(end_datetime).isoformat() if end_datetime else None,
+            'options': options
+        }
+        
+        result = supabase_db.table('consolidacoes_pedido').insert(consolidacao_record).execute()
+        
+        if not result.data:
+            return jsonify({'error': 'Falha ao criar registro de consolidação'}), 500
+        
+        consolidacao_id = result.data[0]['id']
+        
+        # Dispara task Celery para processamento
+        try:
+            from nistiprint_shared.services.celery_app import celery_app
+            celery_app.send_task(
+                'tasks.consolidation_tasks.process_consolidacao',
+                args=[consolidacao_id],
+                kwargs={}
+            )
+            print(f"DEBUG: Task Celery disparada para consolidação {consolidacao_id}")
+        except Exception as celery_err:
+            print(f"AVISO: Falha ao disparar task Celery: {celery_err}")
+            # Atualiza status para ERRO
+            supabase_db.table('consolidacoes_pedido').update({
+                'status': 'ERRO',
+                'error_message': f'Falha ao disparar worker: {str(celery_err)}'
+            }).eq('id', consolidacao_id).execute()
+            return jsonify({'error': 'Falha ao iniciar processamento assíncrono'}), 500
+        
+        return jsonify({
+            'consolidacao_id': consolidacao_id,
+            'status': 'PENDENTE',
+            'message': 'Processamento iniciado. Use GET /consolidar-async/:id para acompanhar.'
+        }), 202
+        
+    except Exception as e:
+        print(f"Error in consolidar_async: {e}")
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@consolidar_bp.route('/consolidar-async/<int:consolidacao_id>', methods=['GET'])
+@login_required
+def get_consolidacao_status(consolidacao_id):
+    """
+    Retorna o status e resultado de uma consolidação assíncrona.
+    """
+    try:
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        
+        response = supabase_db.table('consolidacoes_pedido').select('*').eq('id', consolidacao_id).execute()
+        
+        if not response.data:
+            return jsonify({'error': 'Consolidação não encontrada'}), 404
+        
+        consolidacao = response.data[0]
+        
+        return_response = {
+            'id': consolidacao['id'],
+            'status': consolidacao['status'],
+            'platform': consolidacao['platform'],
+            'channel_id': consolidacao['channel_id'],
+            'created_at': consolidacao['created_at'],
+            'updated_at': consolidacao['updated_at'],
+            'processing_started_at': consolidacao.get('processing_started_at'),
+            'processing_completed_at': consolidacao.get('processing_completed_at'),
+            'error_message': consolidacao.get('error_message')
+        }
+        
+        # Se status for PRONTO, inclui o resultado
+        if consolidacao['status'] == 'PRONTO' and consolidacao.get('result_data'):
+            return_response['result'] = consolidacao['result_data']
+        
+        return jsonify(return_response)
+        
+    except Exception as e:
+        print(f"Error getting consolidacao status: {e}")
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@consolidar_bp.route('/consolidar-async/<int:consolidacao_id>/result', methods=['GET'])
+@login_required
+def get_consolidacao_result(consolidacao_id):
+    """
+    Retorna apenas o resultado de uma consolidação (se pronta).
+    """
+    try:
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+
+        response = supabase_db.table('consolidacoes_pedido').select('status, result_data, error_message').eq('id', consolidacao_id).execute()
+
+        if not response.data:
+            return jsonify({'error': 'Consolidação não encontrada'}), 404
+
+        consolidacao = response.data[0]
+
+        if consolidacao['status'] != 'PRONTO':
+            return jsonify({
+                'error': 'Consolidação ainda não está pronta',
+                'status': consolidacao['status']
+            }), 400
+
+        if not consolidacao.get('result_data'):
+            return jsonify({'error': 'Resultado não encontrado'}), 404
+
+        return jsonify(consolidacao['result_data'])
+
+    except Exception as e:
+        print(f"Error getting consolidacao result: {e}")
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# ENDPOINT SÍNCRONO PARA PROCESSAR PEDIDOS SEM DEMANDA (ÚLTIMOS 3 DIAS)
+# ============================================================================
+
+@consolidar_bp.route('/consolidar/rascunhos/processar', methods=['POST'])
+@login_required
+def processar_rascunhos():
+    """
+    Processa pedidos SEM demanda dos últimos 3 dias e cria rascunhos automaticamente.
+    USA A MESMA LÓGICA DO WEBHOOK: consolidation_service.consolidar_pedido()
+    
+    Fluxo:
+    1. Busca pedidos sem demanda (últimos 3 dias)
+    2. Para cada pedido, chama consolidation_service.consolidar_pedido()
+    3. Retorna quantidade processada
+    """
+    try:
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        from nistiprint_shared.services.consolidation_service import consolidation_service
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
+        # Buscar pedidos SEM demanda dos últimos 3 dias
+        print("")
+        print("=" * 80)
+        print("🔍 [CONSOLIDAÇÃO MANUAL] Buscando pedidos sem demanda dos últimos 3 dias...")
+        print("=" * 80)
+        
+        # Usar query direta na tabela pedidos com filter
+        from datetime import datetime, timedelta
+        tres_dias_atras = (datetime.now() - timedelta(days=3)).isoformat()
+        
+        # Buscar todos os pedidos e filtrar manualmente (mais simples)
+        response = supabase_db.table('pedidos').select('*').gte('data_venda', tres_dias_atras).execute()
+        
+        if not response.data:
+            print("ℹ️ [CONSOLIDAÇÃO MANUAL] Nenhum pedido encontrado nos últimos 3 dias.")
+            return jsonify({
+                'success': True,
+                'pedidos_processados': 0,
+                'rascunhos_criados': 0,
+                'message': 'Nenhum pedido pendente encontrado nos últimos 3 dias.'
+            })
+        
+        # Filtrar pedidos que:
+        # 1. situacao_pedido_id == 15 (Em Andamento)
+        # 2. NÃO têm vínculo em demandas_pedidos
+        pedidos = []
+        for pedido in response.data:
+            # Apenas situação 15 (Em Andamento) gera demanda
+            # Situação 6 (Em Aberto) ainda não foi confirmada/paga
+            if pedido.get('situacao_pedido_id') == 15:
+                # Verificar se já tem demanda
+                vinculo = supabase_db.table('demandas_pedidos').select('id').eq('pedido_id', pedido['id']).execute()
+                if not vinculo.data:
+                    pedidos.append(pedido)
+        
+        if not pedidos:
+            print("ℹ️ [CONSOLIDAÇÃO MANUAL] Nenhum pedido sem demanda encontrado.")
+            return jsonify({
+                'success': True,
+                'pedidos_processados': 0,
+                'rascunhos_criados': 0,
+                'message': 'Nenhum pedido pendente encontrado nos últimos 3 dias.'
+            })
+        
+        print(f"📦 [CONSOLIDAÇÃO MANUAL] {len(pedidos)} pedidos encontrados para processar.")
+        print("")
+        
+        # Processar CADA pedido com o MESMO service do webhook
+        rascunhos_criados = 0
+        rascunhos_atualizados = 0
+        erros = []
+        
+        for i, pedido in enumerate(pedidos, 1):
+            try:
+                print(f"{'=' * 80}")
+                print(f"📌 [{i}/{len(pedidos)}] Pedido {pedido['id']} - {pedido.get('numero_pedido', 'N/A')}")
+                print(f"{'=' * 80}")
+                print(f"   ├─ Canal: {pedido.get('canal_venda_id', 'N/A')}")
+                print(f"   ├─ Serviço logístico: {pedido.get('servico_logistico', 'N/A')}")
+                print(f"   ├─ Classificando modalidade...")
+                
+                resultado = consolidation_service.consolidar_pedido(pedido['id'])
+                
+                if resultado:
+                    status = resultado.get('status', 'DESCONHECIDO')
+                    demanda_id = resultado.get('id', '?')
+                    modalidade = resultado.get('modalidade_logistica', '?')
+                    
+                    if status == 'RASCUNHO':
+                        rascunhos_criados += 1
+                        print(f"   └─ ✅ {status} - Demanda {demanda_id} (Modalidade: {modalidade})")
+                    else:
+                        rascunhos_atualizados += 1
+                        print(f"   └─ ✅ {status} - Demanda {demanda_id}")
+                else:
+                    erros.append(f"Pedido {pedido['id']}: retorno None")
+                    print(f"   └─ ⚠️ Retorno None")
+                    
+            except Exception as e:
+                erro_msg = f"Pedido {pedido['id']}: {str(e)}"
+                erros.append(erro_msg)
+                logger.error(f"Erro ao processar pedido {pedido['id']}: {e}")
+                print(f"   └─ ❌ ERRO: {str(e)}")
+                traceback.print_exc()
+        
+        print("")
+        print("=" * 80)
+        print(f"✅ [CONSOLIDAÇÃO MANUAL] CONCLUSÃO")
+        print(f"   ├─ Pedidos processados: {len(pedidos)}")
+        print(f"   ├─ Rascunhos criados: {rascunhos_criados}")
+        print(f"   ├─ Rascunhos atualizados: {rascunhos_atualizados}")
+        if erros:
+            print(f"   └─ Erros: {len(erros)}")
+        print("=" * 80)
+        print("")
+        
+        return jsonify({
+            'success': True,
+            'pedidos_processados': len(pedidos),
+            'rascunhos_criados': rascunhos_criados,
+            'rascunhos_atualizados': rascunhos_atualizados,
+            'erros': erros if erros else None,
+            'message': f'{len(pedidos)} pedidos processados, {rascunhos_criados} rascunhos criados.'
+        })
+        
+    except Exception as e:
+        print(f"❌ [CONSOLIDAÇÃO MANUAL] Erro crítico: {e}")
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 
 

@@ -38,30 +38,50 @@ from routes.consolidar import consolidar_bp
 from routes.auth import auth_bp
 from routes.nfe import nfe_bp
 from routes.vendas import vendas_bp, vendas_api_bp
-from routes.cadastros import cadastros_bp, cadastros_api_bp
+from routes.cadastros_web import cadastros_bp
+from routes.cadastros_api import cadastros_api_bp
+from routes.consolidar_base import consolidar_base_bp
 
 from routes.ordem_compra import ordem_compra_bp
-from routes.estoque import estoque_bp, estoque_api_bp
+from routes.estoque_web import estoque_bp
+from routes.estoque_api import estoque_api_bp
 from routes.auditoria_estoque import auditoria_estoque_bp
-from routes.produtos import produtos_bp, produtos_api_bp
+from routes.produtos_web import produtos_bp
+from routes.produtos_api import produtos_api_bp
 from routes.ferramentas import ferramentas_bp, ferramentas_api_bp
 from routes.ordem_producao import ordem_producao_bp
 from routes.configuracoes import configuracoes_bp
 from routes.configuracoes import configuracoes_api_bp
-from routes.producao import producao_bp
+from routes.producao_web import producao_bp
+from routes.producao_api import producao_api_bp
 from routes.api import api_bp
 from routes.relatorios import relatorios_api_bp
 from routes.uom_conversions import uom_conversions_bp, uom_conversions_api_bp
-from routes.demanda_producao import demanda_producao_bp, demanda_producao_api_bp
+from routes.demanda_producao_web import demanda_producao_bp
+from routes.demanda_producao_api import demanda_producao_api_bp
+from routes.tasks_api import tasks_api_bp
+from routes.task_schedules_api import task_schedules_api_bp
 from routes.usuarios_setores import usuarios_setores_bp, usuarios_setores_api_bp
 from routes.notifications import notifications_bp
 from routes.orders import orders_api_bp
-from routes.marketplace_api import marketplace_api_bp
+from routes.marketplace_api_base import marketplace_api_bp
+from routes.marketplace_api_routes import marketplace_api_bp as marketplace_api_routes_bp
 from routes.marketplace import marketplace_bp
 from routes.printing import printing_bp, printing_api_bp
-from routes.webhooks import webhooks_bp
 from routes.jobs import jobs_bp
 from routes.unified_orders import unified_orders_bp
+from routes.integracao_canais import integracao_canais_bp
+from routes.pedidos import pedidos_bp
+from routes.pedidos_gestao import pedidos_gestao_bp
+from routes.demanda_consolidada import demanda_consolidada_bp
+from routes.demandas import demandas_bp
+from routes.alertas import alertas_bp
+from routes.webhooks import webhooks_bp
+from routes.producao_contexto import producao_contexto_bp
+from routes.erp_links import erp_links_bp
+from routes.personalizados import personalizados_api_bp
+from routes.impressao import impressao_api_bp
+from routes.order_reprocess import order_reprocess_bp
 from routes.pedidos_sync import pedidos_sync_bp
 from routes.personalizados import personalizados_bp
 
@@ -160,11 +180,12 @@ def create_app():
     app.register_blueprint(integracoes_bp)
     app.register_blueprint(integracoes_api_bp, url_prefix='/api/v2/integracoes')
     app.register_blueprint(consolidar_bp)
-    app.register_blueprint(nfe_bp)
+    app.register_blueprint(nfe_bp, url_prefix='/api/v2/nfe')
     app.register_blueprint(vendas_bp)
     app.register_blueprint(vendas_api_bp, url_prefix='/api/v2/vendas')
     app.register_blueprint(cadastros_bp)
     app.register_blueprint(cadastros_api_bp, url_prefix='/api/v2/cadastros')
+    app.register_blueprint(consolidar_base_bp, url_prefix='/api/v2/consolidar-base')
 
     app.register_blueprint(ordem_compra_bp)
     app.register_blueprint(estoque_bp)
@@ -175,23 +196,37 @@ def create_app():
     app.register_blueprint(ordem_producao_bp)
     app.register_blueprint(configuracoes_bp)
     app.register_blueprint(configuracoes_api_bp, url_prefix='/api/v2/configuracoes')
-    app.register_blueprint(producao_bp, url_prefix='/api/v2/producao')
+    app.register_blueprint(producao_bp)
+    app.register_blueprint(producao_api_bp, url_prefix='/api/v2/producao')
     app.register_blueprint(relatorios_api_bp, url_prefix='/api/v2/relatorios')
     app.register_blueprint(uom_conversions_bp)
-    app.register_blueprint(uom_conversions_api_bp, url_prefix='/api/v2/uom_conversions')
+    app.register_blueprint(uom_conversions_api_bp, url_prefix='/api/v2/cadastros/uom-conversions')
     app.register_blueprint(demanda_producao_bp)
     app.register_blueprint(demanda_producao_api_bp, url_prefix='/api/v2/demanda_producao')
+    app.register_blueprint(tasks_api_bp)
+    app.register_blueprint(task_schedules_api_bp)
     app.register_blueprint(usuarios_setores_bp)
     app.register_blueprint(usuarios_setores_api_bp, url_prefix='/api/v2/usuarios-setores')
     app.register_blueprint(notifications_bp)
     app.register_blueprint(orders_api_bp, url_prefix='/api/v2/orders')
     app.register_blueprint(marketplace_api_bp, url_prefix='/api/v2/marketplace')
     app.register_blueprint(marketplace_bp)
-    app.register_blueprint(webhooks_bp)
     app.register_blueprint(printing_bp)
     app.register_blueprint(printing_api_bp, url_prefix='/api/v2/printing')
     app.register_blueprint(jobs_bp)
     app.register_blueprint(unified_orders_bp)
+    app.register_blueprint(integracao_canais_bp)
+    app.register_blueprint(pedidos_bp)
+    app.register_blueprint(pedidos_gestao_bp)
+    app.register_blueprint(demanda_consolidada_bp)
+    app.register_blueprint(demandas_bp)
+    app.register_blueprint(alertas_bp)
+    app.register_blueprint(webhooks_bp)
+    app.register_blueprint(producao_contexto_bp, url_prefix='/api/v2/producao-contexto')
+    app.register_blueprint(erp_links_bp)
+    app.register_blueprint(personalizados_api_bp)
+    app.register_blueprint(impressao_api_bp)
+    app.register_blueprint(order_reprocess_bp)
     app.register_blueprint(pedidos_sync_bp, url_prefix='/api/v2/pedidos')
     app.register_blueprint(personalizados_bp, url_prefix='/api/v2/personalizados')
 

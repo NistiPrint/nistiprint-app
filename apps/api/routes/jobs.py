@@ -40,15 +40,43 @@ def refresh_tokens_job():
 
     # 3. Execution
     try:
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        from nistiprint_shared.utils.date_utils import get_now_iso
+        
+        # Registrar início
+        log_res = supabase_db.table('task_execution_logs').insert({
+            'task_name': 'refresh_tokens',
+            'status': 'PROCESSING',
+            'started_at': get_now_iso()
+        }).execute()
+        task_log_id = log_res.data[0]['id'] if log_res.data else None
+
         logging.info("Starting automatic token refresh job...")
         results = installed_integration_service.check_and_refresh_tokens()
         logging.info(f"Token refresh job finished. Results: {results}")
+        
+        # Finalizar log
+        if task_log_id:
+            supabase_db.table('task_execution_logs').update({
+                'status': 'COMPLETED',
+                'finished_at': get_now_iso(),
+                'metadata': {'results': results}
+            }).eq('id', task_log_id).execute()
+
         return jsonify({
             'status': 'success',
             'results': results
         }), 200
     except Exception as e:
         logging.error(f"Error in token refresh job: {e}")
+        if 'task_log_id' in locals() and task_log_id:
+            try:
+                supabase_db.table('task_execution_logs').update({
+                    'status': 'FAILED',
+                    'finished_at': get_now_iso(),
+                    'error_message': str(e)
+                }).eq('id', task_log_id).execute()
+            except: pass
         return jsonify({
             'status': 'error',
             'message': str(e)

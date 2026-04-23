@@ -2,6 +2,7 @@ from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.product_service import product_service # Importar product_service
 from typing import List, Dict, Any
 from nistiprint_shared.models.bom import BOMItem # Assuming models/bom.py exists and defines BOMItem
+import logging
 
 class BomService:
     """Service for managing Bill of Materials (BOM) in Supabase."""
@@ -10,11 +11,30 @@ class BomService:
         # Using the standardized 'ficha_tecnica' table in Supabase
         self.bom_table = supabase_db.table('ficha_tecnica')
 
+    def _validate_component_can_be_used(self, component_id: int) -> Dict[str, Any]:
+        component = product_service.get_by_id(str(component_id))
+        if not component:
+            raise ValueError(f"Componente com ID '{component_id}' nao encontrado")
+
+        if component.get('tipo_produto') == 'PRODUTO_ACABADO':
+            raise ValueError(
+                f"Produto acabado nao pode ser componente de BOM: "
+                f"{component.get('sku') or component.get('nome') or component_id}"
+            )
+
+        return component
+
     def sync_bom_for_product(self, product_id: int, components_data: List[Dict[str, Any]]) -> None:
         """
         Synchronizes the BOM for a given product.
         This replaces the entire existing BOM with the new data provided.
         """
+        for item in components_data:
+            try:
+                self._validate_component_can_be_used(item['component_id'])
+            except (ValueError, KeyError) as e:
+                raise ValueError(f"Invalid component data format: {item}. Error: {e}")
+
         # First, delete existing BOM entries for this product
         self.bom_table.delete().eq('produto_pai_id', product_id).execute()
 
@@ -84,6 +104,59 @@ class BomService:
                     is_inherited=is_inherited
                 ))
         return components
+
+    def get_bom_for_multiple_products(self, product_ids: List[int]) -> Dict[int, List[BOMItem]]:
+        """
+        Busca BOM de múltiplos produtos em uma única query batch.
+        
+        Args:
+            product_ids: Lista de IDs de produtos
+            
+        Returns:
+            Dicionário {product_id: lista_de_componentes}
+        """
+        if not product_ids:
+            return {}
+        
+        # Remove duplicatas
+        unique_ids = list(set([int(pid) for pid in product_ids if str(pid).isdigit()]))
+        
+        if not unique_ids:
+            return {}
+        
+        result = {pid: [] for pid in unique_ids}
+        
+        try:
+            # Busca todos os componentes de uma vez
+            response = self.bom_table.select("*").in_('produto_pai_id', unique_ids).execute()
+            
+            if response.data:
+                # Agrupa por produto_pai_id
+                for row in response.data:
+                    produto_pai_id = row.get('produto_pai_id')
+                    if produto_pai_id in result:
+                        componente_id = row.get('componente_id')
+                        
+                        # Se não tem componente_id, tenta buscar por SKU
+                        if not componente_id:
+                            sku_componente = row.get('sku_componente')
+                            if sku_componente:
+                                componente = product_service.get_by_sku(sku_componente)
+                                if componente:
+                                    componente_id = componente.get('id')
+                        
+                        if componente_id:
+                            result[produto_pai_id].append(BOMItem(
+                                componente_id=componente_id,
+                                quantidade=row.get('quantidade_necessaria'),
+                                unit=row.get('unidade_medida', 'un'),
+                                is_inherited=False
+                            ))
+                            
+        except Exception as e:
+            logging.error(f"Erro no batch loading de BOM: {e}")
+        
+        return result
 
     def bulk_add_component_to_products(self, component_id: int, associations: List[Dict[str, Any]]) -> bool:
         """
@@ -176,7 +249,7 @@ class BomService:
         """
         # --- Validation Start ---
         parent_product = product_service.get_by_id(str(parent_product_id))
-        component_product = product_service.get_by_id(str(component_product_id))
+        component_product = self._validate_component_can_be_used(component_product_id)
         
         if parent_product and parent_product.get('categoria_id'):
             from nistiprint_shared.services.category_bom_rule_service import category_bom_rule_service
@@ -261,6 +334,7 @@ class BomService:
         # 3. Copy entries
         new_entries = []
         for item in parent_bom_resp.data:
+            self._validate_component_can_be_used(item['componente_id'])
             new_entries.append({
                 'produto_pai_id': product_id,
                 'componente_id': item['componente_id'],
@@ -278,6 +352,60 @@ class BomService:
         
         return True
 
+    def get_full_bom_explosion(self, product_id: int, quantity: float = 1.0, current_depth: int = 0, max_depth: int = 10) -> List[Dict[str, Any]]:
+        """
+        Explode recursivamente a ficha técnica (BOM) de um produto até seus componentes básicos.
+        Retorna uma lista de dicionários com 'componente_id', 'quantidade_total' e 'unidade'.
+        """
+        if current_depth > max_depth:
+            import logging
+            logging.warning(f"BOM recursion limit reached for product {product_id}. Skipping deeper levels.")
+            return []
+
+        from nistiprint_shared.services.product_service import product_service
+        
+        # 1. Obter componentes diretos do produto
+        components = self.get_bom_for_produto(product_id)
+        if not components:
+            return []
+
+        all_leaf_components = []
+
+        # 2. Iterar sobre cada componente
+        for comp in components:
+            comp_id = comp.componente_id
+            qtd_necessaria = comp.quantidade * quantity
+            
+            # Obter o produto do componente para verificar se ele também é uma composição/kit
+            comp_product = product_service.get_by_id(str(comp_id))
+            
+            if comp_product and comp_product.get('formato') in ['composicao', 'kit']:
+                # Recursão: Explodir o sub-componente
+                sub_explosion = self.get_full_bom_explosion(
+                    product_id=comp_id, 
+                    quantity=qtd_necessaria, 
+                    current_depth=current_depth + 1,
+                    max_depth=max_depth
+                )
+                all_leaf_components.extend(sub_explosion)
+            else:
+                # É um componente folha (insumo ou produto simples)
+                all_leaf_components.append({
+                    'componente_id': comp_id,
+                    'quantidade_total': qtd_necessaria,
+                    'unidade': comp.unit or 'un'
+                })
+
+        # 3. Consolidar componentes duplicados (caso o mesmo insumo apareça em múltiplos ramos da árvore)
+        consolidated = {}
+        for item in all_leaf_components:
+            cid = item['componente_id']
+            if cid in consolidated:
+                consolidated[cid]['quantidade_total'] += item['quantidade_total']
+            else:
+                consolidated[cid] = item
+        
+        return list(consolidated.values())
+
 # Global instance for use throughout the application
 bom_service = BomService()
-

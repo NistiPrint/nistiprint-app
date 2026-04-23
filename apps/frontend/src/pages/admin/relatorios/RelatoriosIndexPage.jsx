@@ -97,16 +97,16 @@ function RelatoriosIndexPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Settings className="h-5 w-5 text-primary" /> Manutenção de Estoque
+              <Settings className="h-5 w-5 text-primary" /> Monitoramento de Estoque
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Link to="/relatorios/fila-estoque" className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors">
+            <Link to="/relatorios/monitoramento-estoque" className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors">
               <div className="flex items-center gap-3">
                 <Database className="h-5 w-5 text-purple-500" />
-                <span className="font-medium">Fila de Estoque</span>
+                <span className="font-medium">Monitoramento</span>
               </div>
-              <span className="text-xs text-muted-foreground">Processar baixas</span>
+              <span className="text-xs text-muted-foreground">Eventos e Fila</span>
             </Link>
           </CardContent>
         </Card>

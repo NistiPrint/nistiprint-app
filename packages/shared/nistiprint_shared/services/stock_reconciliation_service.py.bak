@@ -1,0 +1,201 @@
+from typing import Dict, Any, List, Optional
+from datetime import datetime
+import uuid
+from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.estoque_service import estoque_service
+from nistiprint_shared.services.demanda_alocacao.estoque import demanda_alocacao_estoque_service
+from nistiprint_shared.utils.date_utils import get_now_iso
+
+class StockReconciliationService:
+    """
+    Serviço de Reconciliação Determinística de Estoque.
+    Garante que o estoque contábil reflita a realidade lógica da produção,
+    independentemente da ordem de apontamentos visuais.
+    """
+
+    def __init__(self):
+        self.ledger_table = supabase_db.table('demanda_estoque_processado')
+
+    def reconcile_item(self, item_id: int, user_id: str = 'System', correlation_id: str = None) -> Dict[str, Any]:
+        """
+        Orquestra a reconciliação completa de um item.
+        Calcula o estado efetivo vs realizado e processa os deltas.
+        """
+        # Importação lazy para evitar circular import
+        from nistiprint_shared.services.demanda.items import demanda_items_service
+        
+        if not correlation_id:
+            correlation_id = f"REC-{uuid.uuid4().hex[:8]}"
+
+        # 1. Ler Intenção (Estado Visual Atual)
+        item = demanda_items_service.get_item_by_id(item_id)
+        if not item:
+            raise ValueError(f"Item {item_id} não encontrado")
+
+        # 2. Calcular Quantidades Efetivas (Lógica Grok)
+        effective_quantities = self._calculate_effective_quantities(item)
+
+        # 3. Ler Realizado (Ledger)
+        processed_ledger = self._get_processed_ledger(item_id)
+
+        # 4. Calcular e Processar Deltas
+        results = []
+        for stage, effective_qty in effective_quantities.items():
+            processed_qty = processed_ledger.get(stage, 0.0)
+            delta = effective_qty - processed_qty
+
+            if abs(delta) > 0.001: # Tolerância para float
+                print(f"DEBUG: Reconciliando {stage} Item {item_id}: Efetivo={effective_qty}, Processado={processed_qty}, Delta={delta}")
+                
+                # Executar Movimento Físico e Atualizar Ledger
+                result = self._process_stage_delta(
+                    item=item,
+                    stage=stage,
+                    delta=delta,
+                    user_id=user_id,
+                    correlation_id=correlation_id
+                )
+                results.append(result)
+
+        return {
+            'success': True,
+            'item_id': item_id,
+            'correlation_id': correlation_id,
+            'changes': results
+        }
+
+    def _calculate_effective_quantities(self, item: Dict[str, Any]) -> Dict[str, float]:
+        """
+        Calcula as quantidades efetivas baseadas na lógica Waterfall (Top-Down).
+        Nenhuma etapa pode ter menos processado do que a etapa seguinte exige.
+        """
+        demanda_total = float(item.get('quantidade', 0) or 0)
+        
+        # Leitura dos valores visuais (Reportados)
+        # Usa 0 se for None
+        r_finalizado = float(item.get('finalizados_qtd', 0) or 0)
+        
+        r_exp_capa = float(item.get('expedicao_capas_retiradas_qtd', 0) or 0)
+        r_exp_miolo = float(item.get('expedicao_miolos_retirados_qtd', 0) or 0)
+        
+        r_capa_pronta = float(item.get('capas_prontas_retirada_qtd', 0) or 0)
+        r_miolo_pronto = float(item.get('miolos_prontos_retirada_qtd', 0) or 0)
+        
+        r_capa_prod = float(item.get('capas_produzidas_qtd', 0) or 0)
+        r_capa_imp = float(item.get('capas_impressas_qtd', 0) or 0)
+
+        # 1. Finalização (Topo da cadeia)
+        # Não pode ser maior que o total da demanda
+        eff_finalizado = min(r_finalizado, demanda_total)
+        
+        # 2. Expedição (Puxada pelo Finalizado)
+        # Deve cobrir pelo menos o que foi finalizado
+        eff_exp_capa = min(max(r_exp_capa, eff_finalizado), demanda_total)
+        eff_exp_miolo = min(max(r_exp_miolo, eff_finalizado), demanda_total)
+        
+        # 3. Retirada de Prontos (Puxada pela Expedição)
+        eff_capa_pronta = min(max(r_capa_pronta, eff_exp_capa), demanda_total)
+        eff_miolo_pronto = min(max(r_miolo_pronto, eff_exp_miolo), demanda_total)
+        
+        # 4. Produção (Puxada pela Retirada)
+        eff_capa_prod = min(max(r_capa_prod, eff_capa_pronta), demanda_total)
+        
+        # 5. Impressão (Puxada pela Produção)
+        eff_capa_imp = min(max(r_capa_imp, eff_capa_prod), demanda_total)
+
+        return {
+            'finalizados_qtd': eff_finalizado,
+            'expedicao_capas_retiradas_qtd': eff_exp_capa,
+            'expedicao_miolos_retirados_qtd': eff_exp_miolo,
+            'capas_prontas_retirada_qtd': eff_capa_pronta,
+            'miolos_prontos_retirada_qtd': eff_miolo_pronto,
+            'capas_produzidas_qtd': eff_capa_prod,
+            'capas_impressas_qtd': eff_capa_imp
+        }
+
+    def _get_processed_ledger(self, item_id: int) -> Dict[str, float]:
+        """
+        Busca o saldo acumulado de processamento para cada estágio no ledger.
+        """
+        # Busca a última entrada para cada estágio (ou soma tudo, dependendo da estratégia).
+        # Como o saldo_acumulado é armazenado, podemos pegar o registro mais recente de cada estágio.
+        
+        # Query otimizada: buscar todos os registros e agrupar em memória ou usar DISTINCT ON (Postgres)
+        # Vamos usar uma query simples e somar, ou confiar no saldo_acumulado se a gente garantir a ordem.
+        # Mais seguro: Somar 'quantidade' de todas as transações.
+        
+        response = supabase_db.execute_with_retry(
+            self.ledger_table.select('estagio, quantidade').eq('item_id', item_id)
+        )
+        
+        ledger = {}
+        if response.data:
+            for row in response.data:
+                stage = row['estagio']
+                qty = float(row['quantidade'] or 0)
+                ledger[stage] = ledger.get(stage, 0.0) + qty
+                
+        return ledger
+
+    def _process_stage_delta(self, item: Dict[str, Any], stage: str, delta: float, user_id: str, correlation_id: str) -> Dict[str, Any]:
+        """
+        Executa a movimentação física para um estágio específico e registra no ledger.
+        """
+        # 1. Delegar para o serviço de estoque existente a lógica de "O que consumir/produzir"
+        # O método `processar_alocacao_de_demanda` do legacy service já faz a lógica de BOM/Categoria/Realtime.
+        # Vamos reutilizá-lo, mas passando o delta exato que calculamos aqui.
+        
+        # IMPORTANTE: skip_visual_update=True para não gerar loop infinito de updates visuais
+        # origem_tipo=1 (Incremento) ou 2 (Estorno)
+        origem = 1 if delta > 0 else 2
+        
+        try:
+            # Chama o motor legado para movimentar o estoque físico (Recursivo/JIT)
+            stock_result = demanda_alocacao_estoque_service.processar_alocacao_de_demanda(
+                item_id=str(item['id']),
+                campo=stage,
+                incremento=delta,
+                user_id=user_id,
+                skip_visual_update=True,
+                origem_tipo=origem,
+                correlation_id=correlation_id
+            )
+
+            # Log detalhado para depuração
+            print(f"DEBUG [Reconcile Engine]: stock_result for stage '{stage}' (delta: {delta}) -> Status: {getattr(stock_result, 'status', 'N/A')}, Details: {getattr(stock_result, 'details', 'N/A')}")
+            
+            # Se o status for SKIPPED, significa que não houve movimentação (ex: estágio administrativo).
+            # Ainda assim, devemos registrar no ledger para evitar tentar processar de novo?
+            # SIM, se for administrativo, o "processamento" é virtual.
+            # Se for erro, NÃO registramos.
+            
+            if stock_result and getattr(stock_result, 'status', '') == 'ERROR':
+                raise Exception(f"Erro no motor de estoque: {getattr(stock_result, 'details', 'Unknown')}")
+
+            # 2. Registrar no Ledger (Confirmando que processamos)
+            # Calcular novo saldo acumulado (opcional, mas bom para performance de leitura futura)
+            # Por segurança, vamos apenas inserir o delta. A leitura soma tudo.
+            
+            ledger_entry = {
+                'item_id': item['id'],
+                'demanda_id': item['demanda_id'],
+                'estagio': stage,
+                'quantidade': delta,
+                'saldo_acumulado': 0, # TODO: Calcular se necessário, ou deixar 0 por enquanto
+                'correlation_id': correlation_id,
+                'created_at': get_now_iso()
+            }
+            
+            self.ledger_table.insert(ledger_entry).execute()
+            
+            return {
+                'stage': stage,
+                'delta': delta,
+                'stock_result': getattr(stock_result, 'status', 'OK')
+            }
+
+        except Exception as e:
+            print(f"ERRO CRÍTICO na reconciliação do estágio {stage} item {item['id']}: {e}")
+            raise e
+
+stock_reconciliation_service = StockReconciliationService()

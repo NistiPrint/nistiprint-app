@@ -188,7 +188,7 @@ class InstalledIntegrationService:
 
         return installations
 
-    def install_module(self, user_id: str, module_id: str, instance_name: str, config: Dict = None, credentials: Dict = None) -> str:
+    def install_module(self, user_id: str, module_id: str, instance_name: str, config: Dict = None, credentials: Dict = None, instance_color: str = "#64748b", description: str = None) -> str:
         """Install a new instance of an integration module"""
         from nistiprint_shared.services.integration_module_service import integration_module_service
 
@@ -213,7 +213,9 @@ class InstalledIntegrationService:
             credentials=credentials or {},
             installation_date=datetime.utcnow(),
             created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            updated_at=datetime.utcnow(),
+            instance_color=instance_color,
+            description=description
         )
 
         installation_data = installation.to_dict()
@@ -244,6 +246,49 @@ class InstalledIntegrationService:
         except Exception as e:
             print(f"Error uninstalling integration {instance_id}: {e}")
             return False
+
+    def get_routing_for_function(self, marketplace_integration_id: str, function_scope: str = None) -> Optional['InstalledIntegration']:
+        """
+        Finds the integration responsible for a specific function (e.g. 'INVOICING') 
+        related to a marketplace integration.
+        
+        Args:
+            marketplace_integration_id (str): ID of the marketplace/e-commerce integration
+            function_scope (str, optional): The specific function to route (e.g., 'INVOICING', 'ORDER_IMPORT')
+            
+        Returns:
+            InstalledIntegration: The integration instance responsible for the function, or None.
+        """
+        from nistiprint_shared.models.integration_module import InstalledIntegration
+        
+        # 1. Check if the marketplace integration has a direct parent linked
+        marketplace = self.get_installed_by_id(marketplace_integration_id)
+        if marketplace and marketplace.parent_integration_id:
+            parent = self.get_installed_by_id(str(marketplace.parent_integration_id))
+            if parent:
+                # If no scope specified, return the parent. 
+                # If scope specified, check if parent handles it.
+                if not function_scope or function_scope in (parent.functional_scopes or []):
+                    return parent
+        
+        # 2. Fallback: Find the default integration that handles this scope
+        if function_scope:
+            try:
+                response = self.table.select("*").eq('is_active', True).eq('is_default', True).execute()
+                for row in response.data:
+                    scopes = row.get('functional_scopes', []) or []
+                    if function_scope in scopes:
+                        return InstalledIntegration.from_dict(row, str(row['id']))
+            except Exception as e:
+                print(f"Error finding default integration for scope {function_scope}: {e}")
+        
+        # 3. Last fallback: If it's an ERP, it might handle its own functions
+        if marketplace and function_scope:
+            # Check if the marketplace itself has the scope (common for ERPs that are also import sources)
+            if function_scope in (marketplace.functional_scopes or []):
+                return marketplace
+
+        return None
 
     def update_sync_status(self, instance_id: str, status: str, timestamp: datetime = None) -> bool:
         """Update the sync status of an installed integration"""

@@ -50,7 +50,12 @@ Example: If the item description is "Agenda Barbearia" and the buyer writes "Fel
 
 6. Associate and Structure: Associate the extracted names/initials and their source message IDs with the items.
 
-If you extract multiple distinct names for an order with multiple items, create a separate JSON object for each personalization.
+CRITICAL: For multiple names provided for the SAME item (e.g., 15 units of the same planner with 15 different names), create a separate JSON object for EACH name. Each object should have quantity_to_personalize = 1. This allows the system to display each name individually for that item.
+
+Examples:
+- If 2 items with different names: Create 2 objects, each with quantity_to_personalize = 1
+- If 1 item with 15 different names: Create 15 objects, each with quantity_to_personalize = 1
+- If 1 item with 1 name for all 15 units: Create 1 object with quantity_to_personalize = 15
 
 If only one name is provided for an order with multiple items, assume the same name applies to all items and create a single entry with the total quantity_to_personalize.
 
@@ -283,4 +288,162 @@ JSON
   ]
 }
 
-Now, process the following input and generate the JSON output according to the rules and examples provided.
+Example 6: Multiple Names for Same Item (Critical Case)
+
+INPUT:
+>>> ORDER DATA
+Order ID: 55555
+Bling ID: 987654321
+Bling Number: 555555
+Shopee Order SN: 250730XYZ999
+>>> ITEMS
+Item ID: 1
+15x Planner 2026 A5 Capa Dura Personalizado - Rosa
+>>> CHAT MESSAGES
+[msg_a1][2025-07-30 10:00:00] Comprador: Olá, quero personalizar 15 planners com os nomes: Ana, Bruno, Carla, Davi, Elena, Felipe, Gabriela, Hugo, Isabela, João, Karla, Lucas, Maria, Nicolas, Olivia
+
+OUTPUT:
+JSON
+{
+  "order_id": "55555",
+  "shopee_order_sn": "250730XYZ999",
+  "status": "SUCCESS",
+  "reasoning": "Extracted 15 distinct names for the 15 units of the same item, creating a separate entry for each name.",
+  "personalized_items": [
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Ana",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Bruno",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Carla",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Davi",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Elena",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Felipe",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Gabriela",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Hugo",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Isabela",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "João",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Karla",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Lucas",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Maria",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Nicolas",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    },
+    {
+      "item_id": "1",
+      "item_description": "Planner 2026 A5 Capa Dura Personalizado - Rosa",
+      "quantity_to_personalize": 1,
+      "customization_name": "Olivia",
+      "name_source_message_id": "msg_a1",
+      "customization_initial": null,
+      "initial_source_message_id": null
+    }
+  ]
+}

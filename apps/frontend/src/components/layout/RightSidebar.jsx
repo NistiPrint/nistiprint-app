@@ -2,7 +2,7 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useLayout } from '@/contexts/LayoutContext';
 import { cn } from '@/lib/utils';
-import { X, ChevronRight, ChevronLeft, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { X } from 'lucide-react';
 
 const RightSidebar = () => {
   const { isRightSidebarOpen, toggleRightSidebar, rightSidebarContent } = useLayout();

@@ -1,13 +1,14 @@
+import { ChatSidebar } from '@/components/chat/ChatSidebar';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
 import OrderCard from '@/components/vendas/OrderCard';
 import OrderFilters from '@/components/vendas/OrderFilters';
-import { ArrowLeft, Badge, Brain, Loader2, ThumbsDown, Database, ChevronDown } from 'lucide-react';
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { personalizadosService } from '@/services/personalizadosService';
+import { ArrowLeft, Brain, ChevronDown, ChevronRight, Database, FileText, Loader2, RefreshCw, Terminal, ThumbsDown } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -15,7 +16,6 @@ const ITEMS_PER_PAGE = 20;
 
 function VendasPersonalizadasPage() {
   const navigate = useNavigate();
-  const highlightedMessageRef = useRef(null);
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -24,15 +24,13 @@ function VendasPersonalizadasPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  
+
   // Pagination/Slicing
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
 
   // Chat State
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [selectedChatUser, setSelectedChatUser] = useState(null);
-  const [chatMessages, setChatMessages] = useState([]);
-  const [loadingChat, setLoadingChat] = useState(false);
   const [highlightedMessages, setHighlightedMessages] = useState([]);
 
   // AI Logs Modal
@@ -48,15 +46,41 @@ function VendasPersonalizadasPage() {
   const [selectedOrderForFeedback, setSelectedOrderForFeedback] = useState(null);
   
   // Operational Mode State
-  const [opMode, setOpMode] = useState('v2');
+  const [opMode, setOpMode] = useState(null); // null = ainda não carregou
   const [updatingMode, setUpdatingMode] = useState(false);
 
+  // Polling ref for batch processing
+  const lotePollRef = useRef(null);
+
   useEffect(() => {
-    fetchOrders();
     fetchMode();
+    // Cleanup polling on unmount
+    return () => {
+      if (lotePollRef.current) clearInterval(lotePollRef.current);
+    };
   }, []);
 
-  // Debounce search term
+  // Só carrega pedidos DEPOIS de saber o modo correto
+  useEffect(() => {
+    if (opMode !== null) {
+      fetchOrders();
+    }
+  }, [opMode]);
+
+  // Helper seguro para renderizar campos JSONB do banco
+  // Supabase retorna objetos já parseados, mas às vezes vem como string
+  const safeJsonDisplay = (value) => {
+    if (value == null) return '(nulo)';
+    if (typeof value === 'object') return JSON.stringify(value, null, 2);
+    if (typeof value === 'string') {
+      try {
+        return JSON.stringify(JSON.parse(value), null, 2);
+      } catch {
+        return value; // Retorna raw se não for JSON válido
+      }
+    }
+    return String(value);
+  };
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearchTerm(searchTerm);
@@ -86,7 +110,7 @@ function VendasPersonalizadasPage() {
         if (data.success) {
             setOpMode(newMode);
             toast.success(`Modo de operação alterado para: ${newMode.toUpperCase()}`);
-            fetchOrders();
+            // fetchOrders será chamado automaticamente pelo useEffect em opMode
         } else {
             toast.error("Erro ao alterar modo.");
         }
@@ -119,7 +143,7 @@ function VendasPersonalizadasPage() {
   const filteredOrders = useMemo(() => {
     let result = orders;
 
-    // Apply search filter
+    // 1. Busca textual
     if (debouncedSearchTerm) {
       const term = debouncedSearchTerm.toLowerCase();
       result = result.filter(order =>
@@ -130,38 +154,21 @@ function VendasPersonalizadasPage() {
       );
     }
 
-    // Apply status filter
-    if (statusFilter) {
-      result = result.filter(order => {
-        if (statusFilter === 'with_chat') {
-          return order.has_chat_messages === true;
-        } else if (statusFilter === 'without_chat') {
-          return order.has_chat_messages !== true;
-        }
-
-        if (order.itens && order.itens.length > 0) {
-          for (const item of order.itens) {
-            if (item.personalizations && item.personalizations.length > 0) {
-              if (statusFilter === 'success') {
-                return item.personalizations.some(p => p.status === 'SUCCESS');
-              } else if (statusFilter === 'needs_review') {
-                return item.personalizations.some(p => p.status === 'NEEDS_REVIEW');
-              } else if (statusFilter === 'no_personalization') {
-                return item.personalizations.every(p => p.status === 'NO_PERSONALIZATION_FOUND' || !p.status);
-              }
-            }
-          }
-        }
-
-        if (statusFilter === 'no_personalization') {
-          const hasAnyPersonalizations = order.itens && order.itens.some(item =>
-            item.personalizations && item.personalizations.length > 0
-          );
-          return !hasAnyPersonalizations;
-        }
-
-        return false;
-      });
+    // 2. Filtro por status
+    if (statusFilter === 'sem_chat') {
+      result = result.filter(order => order.has_chat_messages !== true);
+    } else if (statusFilter === 'nome_identificado') {
+      result = result.filter(order =>
+        order.itens?.some(item =>
+          item.personalizations?.some(p => p.status === 'SUCCESS' && p.nome)
+        )
+      );
+    } else if (statusFilter === 'a_revisar') {
+      result = result.filter(order =>
+        order.itens?.some(item =>
+          item.personalizations?.some(p => p.status === 'NEEDS_REVIEW')
+        )
+      );
     }
 
     return result;
@@ -171,37 +178,25 @@ function VendasPersonalizadasPage() {
   const statusCounts = useMemo(() => {
     const counts = {
       all: orders.length,
-      success: 0,
-      needs_review: 0,
-      no_personalization: 0
+      sem_chat: 0,
+      nome_identificado: 0,
+      a_revisar: 0,
     };
 
     orders.forEach(order => {
-      let hasSuccess = false;
-      let hasNeedsReview = false;
-      let hasNoPersonalization = true;
-      let hasAnyPersonalizations = false;
+      if (order.has_chat_messages !== true) counts.sem_chat++;
 
-      if (order.itens && order.itens.length > 0) {
-        for (const item of order.itens) {
-          if (item.personalizations && item.personalizations.length > 0) {
-            hasAnyPersonalizations = true;
-            if (item.personalizations.some(p => p.status === 'SUCCESS')) {
-              hasSuccess = true;
-            }
-            if (item.personalizations.some(p => p.status === 'NEEDS_REVIEW')) {
-              hasNeedsReview = true;
-            }
-            if (!item.personalizations.every(p => p.status === 'NO_PERSONALIZATION_FOUND' || !p.status)) {
-              hasNoPersonalization = false;
-            }
-          }
-        }
+      if (order.itens?.some(item =>
+        item.personalizations?.some(p => p.status === 'SUCCESS' && p.nome)
+      )) {
+        counts.nome_identificado++;
       }
 
-      if (hasSuccess) counts.success++;
-      if (hasNeedsReview) counts.needs_review++;
-      if (hasNoPersonalization && hasAnyPersonalizations) counts.no_personalization++;
+      if (order.itens?.some(item =>
+        item.personalizations?.some(p => p.status === 'NEEDS_REVIEW')
+      )) {
+        counts.a_revisar++;
+      }
     });
 
     return counts;
@@ -223,17 +218,8 @@ function VendasPersonalizadasPage() {
     }
     const toastId = toast.loading('Processando com IA...');
     try {
-      const response = await fetch('/api/v2/ferramentas/processar_nomes_ia', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          'shopee_order_sn': orderSn
-        })
-      });
-
-      const data = await response.json();
+      // Backend espera 'order_sn', não 'shopee_order_sn'
+      const data = await personalizadosService.processar({ order_sn: orderSn, limit: 1 });
       if (data.success) {
         toast.success(data.message || 'Pedido processado com sucesso!', { id: toastId });
         fetchOrders();
@@ -245,19 +231,107 @@ function VendasPersonalizadasPage() {
     }
   };
 
+  const [isProcessingLote, setIsProcessingLote] = useState(false);
+  const [loteProgress, setLoteProgress] = useState('');
+
+  const handleProcessarLote = async () => {
+    const confirm = window.confirm(`Processar TODOS os pedidos personalizados com IA? Isso pode demorar alguns minutos.`);
+    if (!confirm) return;
+
+    setIsProcessingLote(true);
+    setLoteProgress('Iniciando...');
+    const toastId = toast.loading('Processando lote com IA...');
+
+    try {
+      const data = await personalizadosService.processar({ limit: 0 });
+      if (!data.success) {
+        toast.error(data.message || 'Erro ao processar lote', { id: toastId });
+        setIsProcessingLote(false);
+        setLoteProgress('');
+        return;
+      }
+
+      setLoteProgress('IA processando...');
+
+      // Polling com heartbeat detection (3s intervals)
+      let pollCount = 0;
+      const HEARTBEAT_TIMEOUT = 30_000; // 30s sem atividade = concluído
+      const MAX_POLL_TIME = 10 * 60 * 1000; // 10 min
+
+      if (lotePollRef.current) clearInterval(lotePollRef.current);
+
+      lotePollRef.current = setInterval(() => {
+        pollCount++;
+
+        personalizadosService.getAllLogs({ limit: 5 })
+          .then(logData => {
+            if (logData.success && logData.data.logs && logData.data.logs.length > 0) {
+              // Pegar o log mais recente
+              const sorted = logData.data.logs.sort((a, b) =>
+                new Date(b.executed_at) - new Date(a.executed_at)
+              );
+              const latest = sorted[0];
+              const logTime = new Date(latest.executed_at).getTime();
+              const timeSinceLastLog = Date.now() - logTime;
+
+              // Atualizar progresso visual
+              const statusCounts = {};
+              logData.data.logs.forEach(log => {
+                statusCounts[log.status] = (statusCounts[log.status] || 0) + 1;
+              });
+              const successCount = statusCounts.success || 0;
+              const errorCount = (statusCounts.error || 0) + (statusCounts.db_error || 0);
+              const totalProcessed = successCount + errorCount;
+              setLoteProgress(`${totalProcessed} processados (${successCount} OK, ${errorCount} erro)`);
+
+              if (timeSinceLastLog > HEARTBEAT_TIMEOUT) {
+                // Sem atividade por 30s = concluído
+                if (lotePollRef.current) clearInterval(lotePollRef.current);
+                setIsProcessingLote(false);
+                setLoteProgress('');
+                fetchOrders();
+                if (successCount > 0) {
+                  toast.success(`${successCount} pedido(s) processado(s) com sucesso!`, { id: toastId });
+                } else {
+                  toast.warning('Processamento concluído sem resultados.', { id: toastId });
+                }
+              }
+            } else if (pollCount > 10) {
+              // 30s sem nenhum log = provavelmente nada para processar
+              if (lotePollRef.current) clearInterval(lotePollRef.current);
+              setIsProcessingLote(false);
+              setLoteProgress('');
+              fetchOrders();
+            }
+          })
+          .catch(() => {});
+
+        // Timeout absoluto de 10 minutos
+        if (pollCount * 3000 >= MAX_POLL_TIME) {
+          if (lotePollRef.current) clearInterval(lotePollRef.current);
+          setIsProcessingLote(false);
+          setLoteProgress('');
+          fetchOrders();
+          toast.warning('Timeout: processamento pode ainda estar em andamento.', { id: toastId });
+        }
+      }, 3000); // Poll a cada 3s
+
+    } catch (e) {
+      toast.error('Erro de rede ao processar lote', { id: toastId });
+      setIsProcessingLote(false);
+      setLoteProgress('');
+    }
+  };
+
   const handleOpenChat = async (username, orderId, orderData) => {
     if (!username) {
         toast.error("Usuário não identificado para este pedido.");
         return;
     }
-    setSelectedChatUser({ username, orderId });
-    setIsChatOpen(true);
-    setLoadingChat(true);
-    setChatMessages([]);
 
-    // Set highlighted messages
+    // Extrair IDs das mensagens que originaram personalizações
     const personalizationMessageIds = [];
-    if (orderData.itens) {
+    if (orderData?.itens) {
       orderData.itens.forEach(item => {
         if (item.personalizations) {
           item.personalizations.forEach(p => {
@@ -268,31 +342,9 @@ function VendasPersonalizadasPage() {
       });
     }
     setHighlightedMessages(personalizationMessageIds);
-
-    try {
-      const response = await fetch(`/api/messages/${encodeURIComponent(username)}?mode=${opMode}`);
-      if (!response.ok) throw new Error('Falha ao carregar mensagens');
-      const data = await response.json();
-      if (data.error) throw new Error(data.error);
-      setChatMessages(Array.isArray(data.data) ? data.data : []);
-    } catch (e) {
-      toast.error(e.message);
-    } finally {
-      setLoadingChat(false);
-    }
+    setSelectedChatUser({ username, orderId });
+    setIsChatOpen(true);
   };
-
-  // Scroll to highlighted message when chat opens or messages load
-  useEffect(() => {
-    if (!loadingChat && chatMessages.length > 0 && highlightedMessageRef.current) {
-      setTimeout(() => {
-        highlightedMessageRef.current.scrollIntoView({ 
-          behavior: 'smooth', 
-          block: 'center' 
-        });
-      }, 300);
-    }
-  }, [loadingChat, chatMessages]);
 
   const handleOpenAiLogs = async (orderSn) => {
     setSelectedOrderForLogs(orderSn);
@@ -301,11 +353,12 @@ function VendasPersonalizadasPage() {
     setAiLogs([]);
 
     try {
-      const response = await fetch(`/api/ai_logs/${orderSn}`);
-      if (!response.ok) throw new Error('Falha ao carregar logs');
-      const data = await response.json();
-      if (data.error) throw new Error(data.error);
-      setAiLogs(Array.isArray(data.data) ? data.data : []);
+      const data = await personalizadosService.getLogs(orderSn);
+      if (data.success) {
+        setAiLogs(Array.isArray(data.data?.logs) ? data.data.logs : []);
+      } else {
+        throw new Error(data.message || 'Falha ao carregar logs');
+      }
     } catch (e) {
       toast.error(e.message);
     } finally {
@@ -327,17 +380,11 @@ function VendasPersonalizadasPage() {
   const submitFeedback = async (orderId, feedbackType, notes = '') => {
     const toastId = toast.loading('Enviando feedback...');
     try {
-      const response = await fetch('/api/submit_feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          order_id: orderId,
-          feedback: feedbackType,
-          feedback_notes: notes
-        })
+      const data = await personalizadosService.salvarFeedback({
+        order_sn: orderId,
+        avaliacao: feedbackType === 1 ? 5 : 1,
+        texto_feedback: notes
       });
-
-      const data = await response.json();
       if (data.success) {
         toast.success(feedbackType === 1 ? 'Obrigado pelo feedback positivo!' : 'Obrigado pelo feedback. Vamos analisar o ocorrido.', { id: toastId });
         setIsFeedbackModalOpen(false);
@@ -352,28 +399,59 @@ function VendasPersonalizadasPage() {
   if (loading) return <div className="flex justify-center p-8"><Loader2 className="h-8 w-8 animate-spin" /></div>;
   if (error) return <div className="text-center py-4 text-red-500">Erro: {error}</div>;
 
+  // Componente colapsável para seções de log
+  const CollapsibleSection = ({ icon: Icon, title, content, defaultOpen = false }) => {
+    const [open, setOpen] = useState(defaultOpen);
+
+    if (!content) return null;
+
+    return (
+      <div className="border rounded overflow-hidden">
+        <button
+          onClick={() => setOpen(!open)}
+          className="w-full flex items-center gap-2 px-3 py-2 bg-gray-50 hover:bg-gray-100 transition-colors text-sm font-medium"
+        >
+          {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          <Icon className="h-4 w-4 text-muted-foreground" />
+          {title}
+        </button>
+        {open && (
+          <pre className="text-xs bg-white p-3 overflow-x-auto max-h-96 whitespace-pre-wrap border-t">
+            {safeJsonDisplay(content)}
+          </pre>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="container mx-auto py-8 px-2">
       <h1 className="text-3xl font-bold mb-6 text-center flex items-center justify-center gap-4">
         <Button variant="outline" onClick={() => navigate('/')}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Voltar
         </Button>
-        <Button variant="outline" onClick={() => navigate('/ferramentas')}>
-          <Brain className="mr-2 h-4 w-4" /> Identificar Nomes IA
+        <Button variant="outline" onClick={handleProcessarLote} disabled={isProcessingLote}>
+          {isProcessingLote ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Brain className="mr-2 h-4 w-4" />}
+          {isProcessingLote ? (loteProgress || 'Processando...') : 'Extrair nomes (IA)'}
         </Button>
-        <Button 
-          variant={opMode === 'legacy' ? 'destructive' : 'outline'} 
-          onClick={toggleOpMode} 
-          disabled={updatingMode}
+        <Button
+          variant={opMode === 'legacy' ? 'destructive' : 'outline'}
+          onClick={toggleOpMode}
+          disabled={updatingMode || opMode === null}
           className="gap-2"
-          title={opMode === 'legacy' ? "Usando MySQL (Legado)" : "Usando Supabase (V2)"}
+          title={`Fonte atual: ${opMode === 'legacy' ? 'MySQL (Legado)' : opMode === 'v2' ? 'Supabase (V2)' : 'Carregando...'} — Clique para alternar`}
         >
           <Database className={`h-4 w-4 ${updatingMode ? 'animate-pulse' : ''}`} />
-          Modo: {opMode.toUpperCase()}
+          {opMode === null ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <>Fonte: {opMode.toUpperCase()}</>
+          )}
         </Button>
         Pedidos Personalizados
       </h1>
 
+      {/* Orders */}
       <Card className="shadow-sm border-light">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -438,66 +516,54 @@ function VendasPersonalizadasPage() {
         </CardContent>
       </Card>
 
-      {/* Chat Sheet */}
-      <Sheet open={isChatOpen} onOpenChange={setIsChatOpen}>
-        <SheetContent className="w-[400px] sm:w-[540px] flex flex-col h-full" side="right">
-          <SheetHeader className="border-b pb-4">
-            <SheetTitle>Chat do Pedido #{selectedChatUser?.orderId}</SheetTitle>
-            <SheetDescription>
-              Conversa com @{selectedChatUser?.username}
-            </SheetDescription>
-          </SheetHeader>
-          
-          <ScrollArea className="flex-1 pr-4 mt-4">
-            {loadingChat ? (
-                <div className="flex justify-center p-8"><Loader2 className="h-8 w-8 animate-spin" /></div>
-            ) : chatMessages.length === 0 ? (
-                <div className="text-center text-muted-foreground py-8">Nenhuma mensagem encontrada.</div>
-            ) : (
-                <div className="space-y-4 pb-4">
-                    {chatMessages.map((msg) => {
-                        const isCustomer = msg.from_user_name === selectedChatUser?.username;
-                        const isHighlighted = highlightedMessages.some(hId => String(hId) === String(msg.id));
-
-                        return (
-                            <div 
-                                key={msg.id} 
-                                ref={isHighlighted ? highlightedMessageRef : null}
-                                className={`flex ${isCustomer ? 'justify-start' : 'justify-end'}`}
-                            >
-                                <div className={`max-w-[80%] rounded-lg p-3 shadow-sm ${
-                                    isHighlighted 
-                                        ? 'bg-yellow-50 border-2 border-yellow-400 ring-2 ring-yellow-400 ring-opacity-20' 
-                                        : isCustomer ? 'bg-gray-100 border border-gray-200' : 'bg-blue-600 text-white'
-                                }`}>
-                                    <div className={`text-sm ${isHighlighted ? 'text-gray-900 font-medium' : ''}`}>
-                                        {msg.display_content}
-                                    </div>
-                                    <div className={`text-[10px] mt-1 text-right ${
-                                        isHighlighted ? 'text-yellow-700' : isCustomer ? 'text-gray-500' : 'text-blue-100'
-                                    }`}>
-                                        {new Date(msg.created_at).toLocaleString()}
-                                    </div>
-                                    {isHighlighted && (
-                                        <div className="text-[10px] mt-1 text-yellow-700 font-bold border-t border-yellow-200 pt-1 flex items-center gap-1">
-                                            <Brain className="h-3 w-3" /> Fonte de identificação IA
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        );
-                    })}
-                </div>
-            )}
-          </ScrollArea>
-        </SheetContent>
-      </Sheet>
+      {/* Chat Sidebar */}
+      <ChatSidebar
+        open={isChatOpen}
+        onOpenChange={setIsChatOpen}
+        username={selectedChatUser?.username}
+        orderId={selectedChatUser?.orderId}
+        highlightedMessageIds={highlightedMessages}
+      />
 
       {/* AI Logs Modal */}
       <Dialog open={isLogsModalOpen} onOpenChange={setIsLogsModalOpen}>
         <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Logs de Execução da IA - Pedido: {selectedOrderForLogs}</DialogTitle>
+            <DialogTitle className="flex items-center justify-between">
+              <span>Logs de Execução da IA - Pedido: {selectedOrderForLogs}</span>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setLoadingLogs(true);
+                    personalizadosService.getLogs(selectedOrderForLogs).then(data => {
+                      setAiLogs(data.logs || []);
+                      setLoadingLogs(false);
+                    }).catch(() => setLoadingLogs(false));
+                  }}
+                  disabled={loadingLogs}
+                >
+                  {loadingLogs ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <RefreshCw className="h-3 w-3 mr-1" />}
+                  Atualizar
+                </Button>
+                {aiLogs.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                    onClick={async () => {
+                      if (!window.confirm('Deletar todos os logs deste pedido?')) return;
+                      const res = await personalizadosService.deleteLogs(selectedOrderForLogs);
+                      toast.success(res.message || 'Logs deletados');
+                      setAiLogs([]);
+                    }}
+                  >
+                    Deletar Logs
+                  </Button>
+                )}
+              </div>
+            </DialogTitle>
           </DialogHeader>
           <div className="mt-4">
             {loadingLogs ? (
@@ -523,37 +589,45 @@ function VendasPersonalizadasPage() {
                         Executado em: {new Date(log.executed_at).toLocaleString('pt-BR')}
                       </div>
                     </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div>
-                        <h6 className="font-semibold mb-2">Input</h6>
-                        <pre className="bg-gray-100 p-3 rounded text-xs overflow-x-auto">
-                          <code>{JSON.stringify(JSON.parse(log.input_data), null, 2)}</code>
-                        </pre>
-                      </div>
-                      <div>
-                        <h6 className="font-semibold mb-2">Chat Context</h6>
-                        <pre className="bg-gray-100 p-3 rounded text-xs overflow-x-auto">
-                          <code>{JSON.stringify(JSON.parse(log.chat_context), null, 2)}</code>
-                        </pre>
-                      </div>
-                      <div>
-                        <h6 className="font-semibold mb-2">Extracted Personalization</h6>
-                        <pre className="bg-gray-100 p-3 rounded text-xs overflow-x-auto">
-                          <code>{JSON.stringify(JSON.parse(log.extracted_personalization), null, 2)}</code>
-                        </pre>
-                      </div>
-                      <div>
-                        <h6 className="font-semibold mb-2">Model Result</h6>
-                        <pre className="bg-gray-100 p-3 rounded text-xs overflow-x-auto">
-                          <code>{JSON.stringify(JSON.parse(log.model_result), null, 2)}</code>
-                        </pre>
-                      </div>
+                    <CardContent className="space-y-3">
+                      {/* Prompt Payload (Input Data) */}
+                      <CollapsibleSection
+                        icon={Terminal}
+                        title={`Prompt enviado à IA (${typeof log.input_data === 'string' ? log.input_data.length + ' chars' : 'ver detalhes'})`}
+                        content={log.input_data}
+                        defaultOpen={false}
+                      />
+
+                      {/* Resposta da IA */}
+                      <CollapsibleSection
+                        icon={Brain}
+                        title="Resposta da IA (JSON)"
+                        content={log.model_result}
+                        defaultOpen={false}
+                      />
+
+                      {/* Personalizações extraídas */}
+                      <CollapsibleSection
+                        icon={FileText}
+                        title="Personalizações extraídas"
+                        content={log.extracted_personalization}
+                        defaultOpen={false}
+                      />
+
+                      {log.metadata && (
+                        <CollapsibleSection
+                          icon={Settings}
+                          title="Metadata"
+                          content={log.metadata}
+                          defaultOpen={false}
+                        />
+                      )}
+
+                      {/* Erro - sempre visível se existir */}
                       {log.error_message && (
-                        <div>
-                          <h6 className="font-semibold mb-2 text-red-600">Error</h6>
-                          <pre className="bg-red-50 p-3 rounded text-xs overflow-x-auto border border-red-200">
-                            <code>{log.error_message}</code>
-                          </pre>
+                        <div className="bg-red-50 border border-red-200 rounded p-3">
+                          <p className="text-sm font-medium text-red-800 mb-1">Erro:</p>
+                          <pre className="text-xs text-red-700 whitespace-pre-wrap">{log.error_message}</pre>
                         </div>
                       )}
                     </CardContent>

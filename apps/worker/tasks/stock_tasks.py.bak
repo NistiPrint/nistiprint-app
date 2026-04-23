@@ -1,0 +1,19 @@
+import os
+from celery_config import celery_app
+from nistiprint_shared.services.motor_reconciliacao_estoque import motor_reconciliacao_estoque
+
+@celery_app.task(name='tasks.stock_tasks.process_stock_queue', bind=True, max_retries=3, default_retry_delay=60)
+def process_stock_queue(self, limit=50):
+    """
+    Tarefa Celery unificada para processar a fila de processamento de estoque usando o novo Motor (MRE).
+    """
+    try:
+        # Chama a lógica unificada do motor que processa o ledger
+        processed_count = motor_reconciliacao_estoque.processar_fila_unificada(limit=limit)
+        if processed_count > 0:
+            print(f"[*] MRE Stock Worker: {processed_count} tarefas processadas com sucesso.")
+        return {'status': 'SUCCESS', 'processed_count': processed_count}
+    except Exception as e:
+        print(f"[*] MRE Stock Worker Error: {e}")
+        self.retry(exc=e)
+        return {'status': 'FAILED', 'error': str(e)}

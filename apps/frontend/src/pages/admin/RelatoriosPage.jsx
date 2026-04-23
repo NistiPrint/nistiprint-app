@@ -1,6 +1,6 @@
 import { useLayout } from '@/contexts/LayoutContext';
 import { cn } from '@/lib/utils';
-import { Database, Factory, Monitor, ScrollText, Truck } from 'lucide-react';
+import { Activity, Database, Factory, Monitor, ScrollText, Truck } from 'lucide-react';
 import { useEffect } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
@@ -24,10 +24,10 @@ const relatoriosMenu = [
     description: 'Histórico de saídas e coletas'
   },
   {
-    name: 'Fila de Estoque',
-    href: '/relatorios/fila-estoque',
-    icon: Database,
-    description: 'Processamento assíncrono de estoque'
+    name: 'Monitoramento',
+    href: '/relatorios/monitoramento',
+    icon: Activity,
+    description: 'Status de processos assíncronos'
   },
   {
     name: 'Auditoria',

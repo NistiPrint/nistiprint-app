@@ -8,17 +8,26 @@ logger = logging.getLogger("PlatformApiService")
 class PlatformApiService:
     """
     Generic service to call platform-specific APIs using drivers.
-    """
     
+    Drivers disponíveis:
+    - shopee: API Shopee (get_order_detail, get_orders_list)
+    - mercadolivre: API Mercado Livre
+    - amazon: API Amazon
+    - shein: API Shein
+    - tiktok: API TikTok
+    
+    Nota: Bling NÃO usa driver, é acessado via BlingClient diretamente.
+    """
+
     def __init__(self):
         # Map module IDs to their respective drivers
+        # Apenas plataformas com drivers em platform_drivers/
         self.drivers = {
-            "shopee": "services.platform_drivers.shopee",
-            "bling": "services.platform_drivers.bling",
-            "mercadolivre": "services.platform_drivers.mercadolivre",
-            "amazon": "services.platform_drivers.amazon",
-            "shein": "services.platform_drivers.shein",
-            "tiktok": "services.platform_drivers.tiktok"
+            "shopee": "nistiprint_shared.services.platform_drivers.shopee",
+            "mercadolivre": "nistiprint_shared.services.platform_drivers.mercadolivre",
+            "amazon": "nistiprint_shared.services.platform_drivers.amazon",
+            "shein": "nistiprint_shared.services.platform_drivers.shein",
+            "tiktok": "nistiprint_shared.services.platform_drivers.tiktok"
         }
 
     def _get_driver(self, module_id: str):
@@ -30,10 +39,13 @@ class PlatformApiService:
                 if key in module_id:
                     driver_path = self.drivers[key]
                     break
-        
+
         if not driver_path:
+            # Mensagem mais clara sobre módulos suportados
+            supported = ', '.join(self.drivers.keys())
+            logger.warning(f"Módulo '{module_id}' não tem driver. Suportados: {supported}")
             return None
-            
+
         try:
             return importlib.import_module(driver_path)
         except ImportError as e:
