@@ -1,0 +1,150 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Ordens de Produção{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">📋 Ordens de Produção</h3>
+                    <div class="card-tools">
+                        <a href="{{ url_for('ordem_producao.create') }}" class="btn btn-primary btn-sm">
+                            <i class="fas fa-plus"></i> Nova Ordem de Produção
+                        </a>
+                    </div>
+                </div>
+
+                <div class="card-body">
+                    <!-- Filtros -->
+                    <div class="row mb-3">
+                        <div class="col-md-3">
+                            <select class="form-control" onchange="filterByStatus(this.value)">
+                                <option value="">Todos os Status</option>
+                                <option value="DRAFT">Rascunho</option>
+                                <option value="PENDING">Pendente</option>
+                                <option value="IN_PROGRESS">Em Andamento</option>
+                                <option value="PAUSED">Pausada</option>
+                                <option value="PARTIALLY_DELIVERED">Parcialmente Entregue</option>
+                                <option value="COMPLETED">Concluída</option>
+                                <option value="CANCELED">Cancelada</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Lista de OPs -->
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>ID da OP</th>
+                                    <th>Produto</th>
+                                    <th>Status</th>
+                                    <th>Progresso</th>
+                                    <th>Data de Criação</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for po in ordens_producao %}
+                                <tr>
+                                    <td><strong>{{ po.id[:8] }}...</strong></td>
+                                    <td>{{ po.productName }} <small class="text-muted">({{ po.productSku }})</small></td>
+                                    <td>
+                                        <span class="badge badge-{{ getStatusBadgeClass(po.status) }}">
+                                            {{ getStatusLabel(po.status) }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div class="progress" style="width: 100px;">
+                                            <div class="progress-bar bg-{{ getProgressBarClass(po.status) }}"
+                                                 role="progressbar"
+                                                 style="width: {{ (po.quantityProduced / po.quantityToProduce * 100) if po.quantityToProduce > 0 else 0 }}%"
+                                                 aria-valuenow="{{ po.quantityProduced }}"
+                                                 aria-valuemin="0"
+                                                 aria-valuemax="{{ po.quantityToProduce }}">
+                                            </div>
+                                        </div>
+                                        <small class="text-muted">{{ po.quantityProduced }} / {{ po.quantityToProduce }}</small>
+                                    </td>
+                                    <td>{{ po.createdAt.strftime('%d/%m/%Y %H:%M') if po.createdAt else 'N/A' }}</td>
+                                    <td>
+                                        <a href="{{ url_for('ordem_producao.detail', po_id=po.id) }}"
+                                           class="btn btn-sm btn-outline-primary">
+                                            <i class="fas fa-eye"></i> Ver
+                                        </a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {% if not ordens_producao %}
+                    <div class="alert alert-info text-center">
+                        <h4><i class="fas fa-info-circle"></i> Nenhuma Ordem de Produção encontrada</h4>
+                        <p>Não há ordens de produção cadastradas.</p>
+                        <a href="{{ url_for('ordem_producao.create') }}" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> Criar primeira OP
+                        </a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function filterByStatus(status) {
+    const url = new URL(window.location);
+    if (status) {
+        url.searchParams.set('status', status);
+    } else {
+        url.searchParams.delete('status');
+    }
+    window.location.href = url.toString();
+}
+
+function getStatusBadgeClass(status) {
+    const classes = {
+        'DRAFT': 'secondary',
+        'PENDING': 'warning',
+        'IN_PROGRESS': 'info',
+        'PAUSED': 'warning',
+        'PARTIALLY_DELIVERED': 'primary',
+        'COMPLETED': 'success',
+        'CANCELED': 'danger'
+    };
+    return classes[status] || 'secondary';
+}
+
+function getStatusLabel(status) {
+    const labels = {
+        'DRAFT': 'Rascunho',
+        'PENDING': 'Pendente',
+        'IN_PROGRESS': 'Em Andamento',
+        'PAUSED': 'Pausada',
+        'PARTIALLY_DELIVERED': 'Parcialmente Entregue',
+        'COMPLETED': 'Concluída',
+        'CANCELED': 'Cancelada'
+    };
+    return labels[status] || status;
+}
+
+function getProgressBarClass(status) {
+    const classes = {
+        'DRAFT': 'secondary',
+        'PENDING': 'warning',
+        'IN_PROGRESS': 'primary',
+        'PAUSED': 'warning',
+        'PARTIALLY_DELIVERED': 'info',
+        'COMPLETED': 'success',
+        'CANCELED': 'danger'
+    };
+    return classes[status] || 'secondary';
+}
+</script>
+
+{% endblock %}

@@ -1,0 +1,82 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}{% if canal %}Editar{% else %}Novo{% endif %} Canal de Venda{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-md-8 offset-md-2">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        {% if canal %}✏️ Editar{% else %}➕ Novo{% endif %} Canal de Venda
+                    </h3>
+                </div>
+
+                <form method="POST">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-group">
+                                    <label for="nome">Nome *</label>
+                                    <input type="text" class="form-control" id="nome" name="nome"
+                                           value="{{ canal.nome if canal else '' }}" required
+                                           placeholder="Ex: Shopee, Mercado Livre">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="plataforma">Plataforma</label>
+                                    <select class="form-control" id="plataforma" name="plataforma">
+                                        <option value="">Selecionar plataforma...</option>
+                                        {% for plataforma in ['SHOPEE', 'MERCADO_LIVRE', 'AMAZON', 'OUTRO'] %}
+                                        <option value="{{ plataforma }}" {% if canal and canal.get('plataforma') == plataforma %}selected{% endif %}>
+                                            {{ plataforma|replace('_', ' ')|title }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="conta_bling_id">Conta Bling *</label>
+                                    <select class="form-control" id="conta_bling_id" name="conta_bling_id" required>
+                                        <option value="">Selecionar conta Bling...</option>
+                                        {% for conta in contas_bling %}
+                                        <option value="{{ conta.id }}" {% if canal and canal.get('conta_bling_id') == conta.id %}selected{% endif %}>
+                                            {{ conta.account_name }} ({{ conta.cnpj }})
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="ativo" name="ativo"
+                                           {% if canal and canal.get('ativo', True) %}checked{% elif not canal %}checked{% endif %}>
+                                    <label class="form-check-label" for="ativo">Ativo</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-footer">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Salvar
+                        </button>
+                        <a href="{{ url_for('cadastros.canal_venda_list') }}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Voltar
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -412,7 +412,16 @@ class DemandaProducaoService:
             print(f"Erro ao buscar histórico global de coletas: {e}")
             return []
 
-    def create_from_order(self, order_data: Dict[str, Any], user_id='System') -> Dict[str, Any]:
+    def create_from_order(self, order_data: Dict[str, Any], user_id='System', **kwargs) -> Dict[str, Any]:
+        """
+        Gera uma demanda de produção a partir de um pedido unificado.
+        Aceita is_flex, modalidade_logistica e canal_venda_id via kwargs.
+        """
+        # 1. Resolver metadados básicos (explícitos ou via DB)
+        is_flex = kwargs.get('is_flex')
+        modalidade = kwargs.get('modalidade_logistica')
+        canal_venda_id = kwargs.get('canal_venda_id')
+
         # Determine Platform and ID based on payload
         # Priority: order_sn (Shopee), order_id (ML), numeroLoja (Bling)
         plataforma = order_data.get('plataforma', 'Bling')
@@ -433,6 +442,20 @@ class DemandaProducaoService:
 
         if not external_id:
             raise ValueError("Pedido sem número identificador (numeroLoja, order_sn, etc)")
+
+        # Se não vieram via kwargs, tenta ler do banco 'pedidos'
+        if is_flex is None or modalidade is None or canal_venda_id is None:
+            try:
+                pedido_db = supabase_db.table('pedidos')\
+                    .select('is_flex, modalidade_logistica, canal_venda_id')\
+                    .eq('codigo_pedido_externo', external_id)\
+                    .maybe_single().execute().data
+                if pedido_db:
+                    if is_flex is None: is_flex = pedido_db.get('is_flex')
+                    if modalidade is None: modalidade = pedido_db.get('modalidade_logistica')
+                    if canal_venda_id is None: canal_venda_id = pedido_db.get('canal_venda_id')
+            except Exception as e:
+                print(f"⚠️ Erro ao buscar metadados do pedido {external_id} no banco: {e}")
 
         # Prepare list for deduplication check
         items_for_check = []

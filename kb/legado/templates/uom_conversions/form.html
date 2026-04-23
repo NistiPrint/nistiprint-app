@@ -1,0 +1,58 @@
+{% extends 'layouts/base.html' %}
+
+{% set title = 'Adicionar Nova Proporção' if not conversion else 'Editar Proporção' %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1 class="mb-4">{{ title }}</h1>
+
+    <div class="card shadow-sm">
+        <div class="card-body">
+            <form method="POST">
+                <div class="form-group">
+                    <label for="product_id">Produto Base</label>
+                    <select name="product_id" id="product_id" class="form-control select2" required {% if conversion %}disabled{% endif %}>
+                        <option value="">Selecione um produto...</option>
+                        {% for product in products %}
+                            <option value="{{ product.id }}" {% if conversion and product.id == conversion.productId %}selected{% endif %}>
+                                {{ product.name }} (SKU: {{ product.sku }})
+                            </option>
+                        {% endfor %}
+                    </select>
+                    {% if conversion %}
+                    <small class="form-text text-muted">O produto base não pode ser alterado na edição.</small>
+                    {% endif %}
+                </div>
+
+                <div class="form-group">
+                    <label for="unit_name">Nome da Proporção</label>
+                    <input type="text" class="form-control" id="unit_name" name="unit_name" value="{{ conversion.unitName if conversion else '' }}" placeholder="Ex: Resma, Caixa, Pacote" required>
+                    <small class="form-text text-muted">O nome que você usará para se referir a esta quantidade. Ex: "Caixa".</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="conversion_factor">Fator de Conversão</label>
+                    <input type="number" step="any" class="form-control" id="conversion_factor" name="conversion_factor" value="{{ conversion.conversionFactor if conversion else '' }}" placeholder="Ex: 500" required>
+                    <small class="form-text text-muted">Quantas unidades da <strong>unidade base</strong> existem nesta proporção. Ex: 1 Resma = 500 Folhas.</small>
+                </div>
+
+                <a href="{{ url_for('uom_conversions_bp.index') }}" class="btn btn-secondary">Cancelar</a>
+                <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Salvar</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+$(document).ready(function() {
+    $('#product_id').select2({
+        placeholder: "Selecione um produto...",
+        theme: 'bootstrap4'
+    });
+});
+</script>
+{% endblock %}

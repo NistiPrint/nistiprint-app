@@ -1,0 +1,57 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Tags{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">🏷️ Tags</h3>
+                    <div class="card-tools">
+                        <a href="{{ url_for('cadastros.tag_new') }}" class="btn btn-primary btn-sm">
+                            <i class="fas fa-plus"></i> Nova Tag
+                        </a>
+                    </div>
+                </div>
+
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Nome</th>
+                                    <th>Status</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for tag in tags %}
+                                <tr>
+                                    <td>{{ tag.name }}</td>
+                                    <td>
+                                        <span class="badge badge-success">Ativo</span>
+                                    </td>
+                                    <td>
+                                        <a href="{{ url_for('cadastros.tag_edit', tag_id=tag.id) }}" class="btn btn-xs btn-info">
+                                            <i class="fas fa-edit"></i> Editar
+                                        </a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {% if not tags %}
+                    <div class="alert alert-info">
+                        Nenhuma tag cadastrada.
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

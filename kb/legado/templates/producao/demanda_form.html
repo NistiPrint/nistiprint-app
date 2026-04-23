@@ -1,0 +1,136 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Gerar Nova Demanda de Produção{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>Gerar Nova Demanda de Produção</h1>
+    <p>Crie uma nova demanda de produção adicionando os itens necessários abaixo.</p>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}" role="alert">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <form method="POST" action="{{ url_for('demanda_producao.create_demanda') }}" id="demanda-form">
+        <div class="card mb-4">
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="form-group">
+                            <label for="nome_demanda"><strong>Nome da Demanda</strong></label>
+                            <input type="text" class="form-control" id="nome_demanda" name="nome_demanda" placeholder="Ex: Produção da Semana 42, Pedidos Shopee até 10/10" required>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-group">
+                            <label for="canal_venda_id"><strong>Plataforma</strong></label>
+                            <select class="form-control" id="canal_venda_id" name="canal_venda_id" required>
+                                <option value="">Selecione uma plataforma</option>
+                                {% for canal in canais_venda %}
+                                <option value="{{ canal.id }}">{{ canal.nome }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="form-group">
+                            <label for="data_entrega"><strong>Data de Entrega Prevista</strong></label>
+                            <input type="date" class="form-control" id="data_entrega" name="data_entrega" value="{{ now.strftime('%Y-%m-%d') }}" min="{{ now.strftime('%Y-%m-%d') }}" required>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Itens da Demanda</h5>
+                <div id="itens-container">
+                    <!-- As linhas de item serão inseridas aqui pelo JavaScript -->
+                </div>
+                <button type="button" id="add-item-btn" class="btn btn-secondary mt-3">
+                    <i class="fas fa-plus"></i> Adicionar Item
+                </button>
+            </div>
+        </div>
+
+        <div class="mt-4">
+            <button type="submit" class="btn btn-primary btn-lg">Gerar Demanda e Iniciar Produção</button>
+            <a href="{{ url_for('demanda_producao.list_demandas') }}" class="btn btn-light">Cancelar</a>
+        </div>
+    </form>
+
+    <!-- Template para a linha de item (escondido) -->
+    <template id="item-template">
+        <div class="row item-row mb-3 border-bottom pb-3">
+            <div class="col-md-9">
+                <div class="form-group">
+                    <label>Produto</label>
+                    <select class="form-control select2-placeholder" name="produto_id" required>
+                        <option value="">Selecione um produto</option>
+                        {% for product in products %}
+                        <option value="{{ product.id }}">{{ product.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <div class="form-group">
+                    <label>Quantidade</label>
+                    <input type="number" class="form-control" name="quantidade" min="1" required>
+                </div>
+            </div>
+            <div class="col-md-1 d-flex align-items-end">
+                <button type="button" class="btn btn-danger remove-item-btn">Remover</button>
+            </div>
+        </div>
+    </template>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+$(document).ready(function() {
+    const container = $('#itens-container');
+    const template = $('#item-template').html();
+    let itemIndex = 0;
+
+    // Função para adicionar uma nova linha de item
+    function addItem() {
+        const newItemRow = $(template).clone();
+        // Atualiza os nomes dos campos para serem únicos
+        newItemRow.find('[name]').each(function() {
+            const name = $(this).attr('name');
+            $(this).attr('name', `itens[${itemIndex}][${name}]`);
+        });
+        container.append(newItemRow);
+        // Inicializa o Select2 no novo elemento
+        newItemRow.find('.select2-placeholder').select2({
+            theme: 'bootstrap4',
+            placeholder: "Selecione um produto"
+        });
+        itemIndex++;
+    }
+
+    // Adiciona a primeira linha ao carregar a página
+    addItem();
+
+    // Evento para o botão de adicionar item
+    $('#add-item-btn').click(addItem);
+
+    // Evento para remover uma linha de item
+    container.on('click', '.remove-item-btn', function() {
+        $(this).closest('.item-row').remove();
+    });
+
+    // Lógica para coletar os dados antes de submeter o form (se necessário)
+    // O Flask consegue lidar com `itens[0][produto_id]` se o backend for ajustado para isso.
+});
+</script>
+{% endblock %}

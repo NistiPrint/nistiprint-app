@@ -1,0 +1,188 @@
+body, html {
+  height: 100%;
+  margin: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px;
+  background-color: #f9f9f9;
+  border-bottom: 1px solid #ccc;
+}
+
+.header button {
+  width: 100px;
+  background-color: #f9f9f9;
+  color: #333;
+  border: 1px solid #ccc;
+  padding: 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.3s ease;
+}
+.header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: #333;
+  display: inline;
+}
+.footer {
+  text-align: center;
+  padding: 10px 0;
+  background-color: #f9f9f9;
+  border-top: 1px solid #ccc;
+}
+.header,
+.footer {
+  flex-shrink: 0; /* Impede que o header e o footer encolham */
+  padding: 10px 20px;
+  background-color: #f9f9f9;
+  border-bottom: 1px solid #ccc;
+  text-align: center;
+}
+.container {
+  flex: 1; /* Permite que a .container ocupe o espaço restante */
+  display: flex;
+  flex-direction: column;
+  max-width: 1000px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 20px;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+.orientation-box {
+  background-color: #e7f3fe;
+  border-left: 6px solid #2196f3;
+  padding: 20px;
+  margin-right: 20px;
+  border-radius: 5px;
+  flex: 0.8; /* Reduz a largura da caixa de orientação */
+  font-size: 0.9rem; /* Reduz o tamanho da fonte */
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 5px;
+  margin-bottom: 5px;
+  background-color: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+th,
+td {
+  padding: 4px 6px;
+  text-align: left;
+  border-bottom: 1px solid #ddd;
+}
+
+th {
+  background-color: #2196f3;
+  color: white;
+  font-weight: bold;
+}
+
+tr:hover {
+  background-color: #f5f5f5;
+}
+
+tr:nth-child(even) {
+  background-color: #f9f9f9;
+}
+form {
+  background-color: #fff;
+  border-radius: 8px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  max-width: 550px; /* Aumenta a largura máxima do formulário */
+  padding: 30px;
+  flex: 2.2; /* Aumenta a largura do formulário */
+  margin-left: 20px;
+}
+
+label {
+  display: block;
+  font-weight: bold;
+  margin: 15px 0 5px 0; /* Adjusted margin for better spacing */
+  color: #333;
+  font-size: 16px;
+}
+
+input[type='file'],
+input[type='date'],
+input[type='datetime-local'] {
+  width: 100%;
+  padding: 12px;
+  margin: 8px 0 15px 0; /* Adjusted margin for better spacing */
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 14px;
+  box-sizing: border-box; /* Ensure padding doesn't affect width */
+}
+
+button {
+  background-color: #28a745;
+  color: white;
+  border: none;
+  padding: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  width: 100%;
+  font-weight: bold;
+  font-size: 16px;
+  margin-top: 15px; /* Added margin to separate from inputs */
+  transition: background-color 0.3s ease; /* Smooth hover transition */
+}
+
+button:hover {
+  background-color: #218838;
+}
+
+/* Ensure date/time inputs are equal in size */
+.datetime-group {
+  display: flex;
+  align-items: center;
+  gap: 10px; /* Space between inputs */
+}
+
+.datetime-group label {
+  margin: 0; /* Remove margin for inline labels */
+  flex: 1; /* Allow labels to take equal space */
+}
+
+.datetime-group input {
+  flex: 1; /* Make inputs take equal space */
+  width: 100%; /* Ensure inputs fill the container */
+}
+button.logout {
+  background-color: #f9f9f9; /* Cor de fundo mais discreta */
+  color: #333; /* Cor do texto mais sutil */
+  border: 1px solid #ccc; /* Adiciona uma borda para definição */
+  padding: 8px; /* Reduz o padding para um botão menor */
+  border-radius: 4px; /* Bordas levemente arredondadas */
+  cursor: pointer;
+  font-size: 14px; /* Reduz o tamanho da fonte */
+  transition: background-color 0.3s ease; /* Transição suave */
+}
+
+button.logout:hover {
+  background-color: #e0e0e0; /* Cor de fundo ao passar o mouse */
+}
+.logo-title {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 20px;
+}
+.logo-title img {
+  width: 100px;
+  height: 100px;
+}

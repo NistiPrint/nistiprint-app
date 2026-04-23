@@ -62,6 +62,8 @@ from routes.printing import printing_bp, printing_api_bp
 from routes.webhooks import webhooks_bp
 from routes.jobs import jobs_bp
 from routes.unified_orders import unified_orders_bp
+from routes.pedidos_sync import pedidos_sync_bp
+from routes.personalizados import personalizados_bp
 
 # Import Models to ensure they are registered
 from nistiprint_shared.models import *
@@ -190,6 +192,8 @@ def create_app():
     app.register_blueprint(printing_api_bp, url_prefix='/api/v2/printing')
     app.register_blueprint(jobs_bp)
     app.register_blueprint(unified_orders_bp)
+    app.register_blueprint(pedidos_sync_bp, url_prefix='/api/v2/pedidos')
+    app.register_blueprint(personalizados_bp, url_prefix='/api/v2/personalizados')
 
     @app.route('/test_route')
     def test_route():

@@ -1,0 +1,66 @@
+{% extends "layouts/base.html" %}
+
+{% set show_back_button = True %}
+{% set back_button_text = 'Voltar' %}
+{% set back_button_url = '/' %}
+
+{% block title %}Erro - GCP Flask{% endblock %}
+
+{% block extra_styles %}
+<style>
+    .error-container {
+        text-align: center;
+        margin-top: 2rem;
+    }
+    .error-card {
+        background-color: white;
+        border-radius: 15px;
+        padding: 40px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        display: inline-block;
+        max-width: 600px;
+        width: 100%;
+    }
+    .error-icon {
+        font-size: 64px;
+        color: #dc3545;
+        margin-bottom: 20px;
+    }
+    .error-card h1 {
+        color: #dc3545;
+        margin-bottom: 20px;
+        font-weight: 700;
+    }
+    .error-message {
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        color: #721c24;
+        padding: 15px;
+        border-radius: 8px;
+        margin: 20px 0;
+        text-align: left;
+    }
+    .error-message strong {
+        font-family: monospace;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="error-container">
+        <div class="error-card">
+            <div class="error-icon">⚠️</div>
+            <h1>Oops! Algo deu errado</h1>
+            <p>Desculpe, ocorreu um erro inesperado na aplicação.</p>
+
+            <div class="error-message">
+                <strong>Erro:</strong><br>
+                Erro interno do servidor
+            </div>
+
+            <p>Por favor, tente novamente ou entre em contato com o administrador.</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

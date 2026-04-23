@@ -1,0 +1,73 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Ferramentas - NistiPrint{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2 class="mb-4">Ferramentas</h2>
+
+    <div class="row">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">Ferramentas Disponíveis</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-4 mb-3">
+                            <div class="card h-100">
+                                <div class="card-body d-flex flex-column">
+                                    <h6 class="card-title">Conversão de IDs de Pedidos</h6>
+                                    <p class="card-text flex-grow-1">
+                                        Converta IDs de pedidos das plataformas para números de pedidos na Bling.
+                                        Coloque os IDs em lote (um por linha) e obtenha os números correspondentes.
+                                    </p>
+                                    <a href="/ferramentas/converter_pedidos" class="btn btn-primary mt-auto">
+                                        Acessar Ferramenta
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <div class="card h-100">
+                                <div class="card-body d-flex flex-column">
+                                    <h6 class="card-title">Identificação de Nomes IA</h6>
+                                    <p class="card-text flex-grow-1">
+                                        Processamento automatizado de pedidos com IA para identificação de nomes e iniciais de personalização.
+                                        Analisa mensagens dos compradores e extrai informações de personalização.
+                                    </p>
+                                    <a href="/ferramentas/identificar_nomes_ia" class="btn btn-primary mt-auto">
+                                        Acessar Ferramenta
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <div class="card h-100">
+                                <div class="card-body d-flex flex-column">
+                                    <h6 class="card-title">Importar Pedido da Bling</h6>
+                                    <p class="card-text flex-grow-1">
+                                        Importa um pedido específico da Bling usando o número do pedido na loja (Shopee Order SN).
+                                    </p>
+                                    <form action="/ferramentas/importar_pedido_bling" method="POST" class="mt-auto">
+                                        <div class="input-group">
+                                            <input type="text" class="form-control" name="numero_loja" placeholder="Número do Pedido" required>
+                                            <button class="btn btn-primary" type="submit">Importar</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// Scripts adicionais se necessário
+</script>
+{% endblock %}

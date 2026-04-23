@@ -1,0 +1,133 @@
+{% extends 'layouts/base.html' %}
+
+{% set show_back_button = True %}
+{% set back_button_text = 'Voltar' %}
+{% set back_button_url = '/' %}
+
+{% block title %}
+  Nisti Print - Consolidar Produção
+{% endblock %}
+
+{% block extra_styles %}
+<style>
+  .form-card {
+    background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%);
+    border-radius: 15px;
+    padding: 30px 25px;
+    color: white;
+    font-size: 1em;
+    font-weight: 500;
+    box-shadow: 0 10px 20px rgba(37, 117, 252, 0.4);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  .form-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 20px 30px rgba(37, 117, 252, 0.6);
+  }
+
+  .form-card h5 {
+    font-weight: 700;
+    margin-bottom: 1.5rem;
+    text-align: center;
+  }
+
+  .form-label, .form-check-label {
+    font-weight: 600;
+  }
+
+  .btn-primary {
+    background: white;
+    color: #2575fc;
+    font-weight: 600;
+    border: none;
+    transition: background 0.3s ease, color 0.3s ease;
+  }
+
+  .btn-primary:hover {
+    background: #f0f0f0;
+    color: #1a5ed9;
+  }
+
+  input[type="file"],
+  input[type="date"],
+  input[type="datetime-local"],
+  select {
+    border-radius: 8px;
+    border: none;
+    padding: 10px;
+  }
+</style>
+{% endblock %}
+
+{% block extra_scripts %}
+<script type="module">
+  window.logout = () => {
+    fetch('/logout', {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    }).then((response) => {
+      response.json().then((data) => {
+        window.location.href = data.redirect
+      })
+    })
+  }
+
+</script>
+{% endblock %}
+
+{% block content %}
+  <h1 class="text-center my-4 font-weight-bold">
+    Consolidar Produção
+  </h1>
+
+  <div class="container my-5">
+    <form action="/consolidar" method="post" enctype="multipart/form-data" class="form-card">
+      <h5>Processar Arquivo</h5>
+
+      <div class="mb-3">
+        <label class="form-label">Arquivo (.xlsx, .csv)</label>
+        <input type="file" name="file" accept=".xlsx, .csv" required class="form-control" />
+      </div>
+
+      <div class="mb-3">
+        <label for="platform" class="form-label">Plataforma</label>
+        <select name="platform" id="platform" required class="form-select">
+          <option value="Shopee">Shopee</option>
+          <option value="ShopeeFlex">Shopee Flex</option>
+          <option value="Shein">Shein</option>
+          <option value="MercadoLivre">Mercado Livre</option>
+          <option value="Amazon">Amazon</option>
+        </select>
+      </div>
+
+      <div class="mb-3">
+        <label for="start_date" class="form-label">Data inicial</label>
+        <input type="date" name="start_date" id="start_date" onchange="setEndDate()" class="form-control" />
+      </div>
+
+      <div class="mb-3">
+        <label for="end_datetime" class="form-label">Data/hora final</label>
+        <input type="datetime-local" name="end_datetime" id="end_datetime" class="form-control" />
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">Funcionalidades</label>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="consolidate" disabled checked />
+          <label class="form-check-label" for="consolidate">Consolidar itens</label>
+        </div>
+        <div class="form-check mt-2">
+          <input type="checkbox" class="form-check-input" id="print-orders" name="print-orders" value="true" />
+          <label class="form-check-label" for="print-orders">Imprimir pedidos e gerar notas</label>
+        </div>
+      </div>
+
+      <button type="submit" class="btn btn-primary w-100 mt-4">Processar</button>
+    </form>
+  </div>
+{% endblock %}

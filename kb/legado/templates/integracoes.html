@@ -1,0 +1,235 @@
+{% extends "layouts/base.html" %}
+
+{% set show_back_button = True %}
+{% set back_button_text = 'Voltar' %}
+{% set back_button_url = '/' %}
+
+{% block title %}Administração - Integrações Bling{% endblock %}
+
+{% block extra_styles %}
+<style>
+    .header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 30px;
+        text-align: center;
+    }
+    .integration-card {
+        background-color: white;
+        border-radius: 10px;
+        padding: 20px;
+        margin: 20px 0;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        border-left: 5px solid #28a745;
+    }
+    .integration-card.error {
+        border-left-color: #dc3545;
+    }
+    .integration-card.warning {
+        border-left-color: #ffc107;
+    }
+    .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 15px;
+    }
+    .card-title {
+        margin: 0;
+        font-size: 1.2em;
+        font-weight: bold;
+    }
+    .status-badge {
+        padding: 5px 12px;
+        border-radius: 20px;
+        font-size: 0.8em;
+        font-weight: bold;
+        text-transform: uppercase;
+    }
+    .status-healthy { background-color: #d4edda; color: #155724; }
+    .status-error { background-color: #f8d7da; color: #721c24; }
+    .status-warning { background-color: #fff3cd; color: #856404; }
+    .status-expired { background-color: #f8d7da; color: #721c24; }
+    .card-content {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 15px;
+        margin-bottom: 15px;
+    }
+    .info-item {
+        display: flex;
+        flex-direction: column;
+    }
+    .info-label {
+        font-weight: bold;
+        color: #666;
+        font-size: 0.9em;
+        margin-bottom: 5px;
+    }
+    .info-value {
+        color: #333;
+        word-break: break-all;
+    }
+    .actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+    .btn {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 0.9em;
+        transition: all 0.3s ease;
+    }
+    .btn-primary { background-color: #007bff; color: white; }
+    .btn-success { background-color: #28a745; color: white; }
+    .btn-warning { background-color: #ffc107; color: black; }
+    .btn-info { background-color: #17a2b8; color: white; }
+    .btn:hover { opacity: 0.8; transform: translateY(-1px); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .loading { display: inline-block; width: 16px; height: 16px; border: 2px solid #f3f3f3; border-top: 2px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .no-integrations {
+        text-align: center;
+        padding: 50px;
+        color: #666;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+    <div class="container">
+        <div class="header">
+            <h1>🔧 Administração - Integrações Bling</h1>
+            <p>Gerencie e monitore o status das suas integrações com o Bling</p>
+        </div>
+
+        <!-- Add New Account Button -->
+        <div style="margin-bottom: 30px; text-align: right;">
+            <a href="{{ url_for('integracoes.new_integration') }}" class="btn btn-primary" style="font-size: 16px; padding: 12px 24px;">➕ Nova Conta Bling</a>
+        </div>
+
+        {% if accounts %}
+        {% for account in accounts %}
+        <div class="integration-card" id="card-{{ account.id }}">
+            <div class="card-header">
+                <h3 class="card-title">Conta: {{ account.account_name or 'Nome não informado' }}</h3>
+                <span class="status-badge" id="status-{{ account.id }}">Carregando...</span>
+            </div>
+
+            <div class="card-content">
+                <div class="info-item">
+                    <div class="info-label">CNPJ</div>
+                    <div class="info-value">{{ account.cnpj or 'Não informado' }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Access Token</div>
+                    <div class="info-value">{{ 'Presente' if account.access_token else 'Ausente' }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Refresh Token</div>
+                    <div class="info-value">{{ 'Presente' if account.refresh_token else 'Ausente' }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Expires In</div>
+                    <div class="info-value">{{ account.expires_in or 'Não informado' }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Última Atualização</div>
+                    <div class="info-value">{{ account.updated_at or 'Nunca' }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Client ID</div>
+                    <div class="info-value">{{ account.client_id[:20] + '...' if account.client_id else 'Não informado' }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Client Secret</div>
+                    <div class="info-value">{{ account.client_secret[:20] + '...' if account.client_secret else 'Não informado' }}</div>
+                </div>
+            </div>
+
+            <div class="actions">
+                <button class="btn btn-primary" onclick="checkStatus('{{ account.id }}')">Verificar Token</button>
+                <a href="{{ url_for('integracoes.edit_integration', account_id=account.id) }}" class="btn btn-warning">Editar</a>
+                <form action="{{ url_for('integracoes.delete_integration', account_id=account.id) }}" method="POST" style="display: inline;" onsubmit="return confirm('Tem certeza que deseja excluir esta conta?')">
+                    <button type="submit" class="btn" style="background-color: #dc3545; color: white;">Excluir</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="no-integrations">
+            <h3>Nenhuma conta encontrada</h3>
+            <p>As contas Bling precisam ser migradas primeiro usando o script de migração.</p>
+        </div>
+    {% endif %}
+
+    <!-- Modal para detalhes -->
+    <div id="details-modal" class="modal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
+        <div class="modal-content" style="background-color: white; margin: 5% auto; padding: 20px; border-radius: 10px; width: 80%; max-width: 600px; max-height: 80vh; overflow-y: auto;">
+            <span class="close" style="float: right; font-size: 28px; font-weight: bold; cursor: pointer;" onclick="closeModal()">&times;</span>
+            <h2 id="modal-title">Detalhes da Integração</h2>
+            <div id="modal-content" class="json-output" style="background-color: #f8f9fa; border-radius: 5px; padding: 10px; font-family: monospace; white-space: pre-wrap; max-height: 400px; overflow-y: auto;">Carregando...</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    // Verificar status de todas as integrações ao carregar a página
+    document.addEventListener('DOMContentLoaded', function() {
+        {% for account in accounts %}
+            checkStatus('{{ account.id }}');
+        {% endfor %}
+    });
+
+    async function checkStatus(accountId) {
+        const statusBadge = document.getElementById(`status-${accountId}`);
+        statusBadge.textContent = 'Verificando...';
+        statusBadge.className = 'status-badge';
+
+        try {
+            const response = await fetch(`/api/integracoes/status/${accountId}`);
+            const data = await response.json();
+
+            let statusText = 'TOKEN INVÁLIDO';
+            let statusClass = 'status-error';
+
+            if (data.status === 'VALID') {
+                statusText = 'TOKEN VÁLIDO';
+                statusClass = 'status-healthy';
+            } else if (data.status === 'NO_TOKEN') {
+                statusText = 'SEM TOKEN';
+                statusClass = 'status-error';
+            }
+
+            statusBadge.textContent = statusText;
+            statusBadge.classList.add(statusClass);
+
+            // Atualizar cor da borda do card
+            const card = document.getElementById(`card-${accountId}`);
+            if (data.status === 'VALID') {
+                card.className = 'integration-card';
+            } else {
+                card.classList.add('error');
+            }
+
+        } catch (error) {
+            statusBadge.textContent = 'ERRO';
+            statusBadge.classList.add('status-error');
+        }
+    }
+
+
+
+    // Função para fechar modal (se usada no futuro)
+    function closeModal() {
+        document.getElementById('details-modal').style.display = 'none';
+    }
+</script>
+{% endblock %}
