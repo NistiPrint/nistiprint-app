@@ -1,0 +1,57 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Unidades de Medida{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">📏 Unidades de Medida</h3>
+                <div class="card-tools">
+                    <a href="{{ url_for('cadastros.unidade_medida_new') }}" class="btn btn-primary btn-sm">
+                        <i class="fas fa-plus"></i> Nova Unidade
+                    </a>
+                </div>
+            </div>
+
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Nome</th>
+                                <th>Símbolo</th>
+                                <th>Status</th>
+                                <th>Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for unidade in unidades %}
+                            <tr>
+                                <td>{{ unidade.name }}</td>
+                                <td><code>{{ unidade.symbol }}</code></td>
+                                <td>
+                                    <span class="badge badge-success">Ativo</span>
+                                </td>
+                                <td>
+                                    <a href="{{ url_for('cadastros.unidade_medida_edit', unidade_id=unidade.id) }}" class="btn btn-xs btn-info">
+                                        <i class="fas fa-edit"></i> Editar
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                {% if not unidades %}
+                <div class="alert alert-info">
+                    Nenhuma unidade de medida cadastrada.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

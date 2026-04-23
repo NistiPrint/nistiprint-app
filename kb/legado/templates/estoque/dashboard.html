@@ -1,0 +1,174 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Dashboard de Estoque{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <!-- Stat Cards -->
+    <div class="row mb-4">
+        <div class="col-lg-4 col-md-6 mb-3">
+            <div class="card text-white bg-primary h-100">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="fas fa-dollar-sign"></i> Valor Total em Estoque</h5>
+                    <p class="card-text display-4">R$ {{ "%.2f"|format(deposito_summary | sum(attribute='valor_total')) }}</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4 col-md-6 mb-3">
+            <div class="card text-white bg-warning h-100">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="fas fa-exclamation-triangle"></i> SKUs com Estoque Baixo</h5>
+                    <p class="card-text display-4">{{ alertas | length }}</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4 col-md-6 mb-3">
+            <div class="card text-white bg-info h-100">
+                <div class="card-body">
+                    <h5 class="card-title"><i class="fas fa-boxes"></i> Total de Itens Físicos</h5>
+                    <p class="card-text display-4">{{ "%.0f"|format(posicao_estoque | sum(attribute='quantidade')) }}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Gráfico e Alertas -->
+    <div class="row mb-4">
+        <div class="col-lg-8">
+            <div class="card h-100">
+                <div class="card-header">
+                    <h4 class="card-title"><i class="fas fa-chart-line"></i> Movimentações na Semana</h4>
+                </div>
+                <div class="card-body">
+                    <canvas id="movimentacoesChart"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card h-100">
+                <div class="card-header">
+                    <h4 class="card-title"><i class="fas fa-bell"></i> Alertas de Estoque</h4>
+                </div>
+                <div class="card-body p-0" style="max-height: 400px; overflow-y: auto;">
+                    <ul class="list-group list-group-flush">
+                        {% for alerta in alertas %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <div>
+                                <strong>{{ alerta.produto_nome }}</strong><br>
+                                <small class="text-muted">Mínimo: {{ "%.0f"|format(alerta.estoque_minimo) }} | Atual: {{ "%.0f"|format(alerta.estoque_atual) }}</small>
+                            </div>
+                            <span class="badge badge-danger badge-pill">{{ "%.0f"|format(alerta.diferenca) }} abaixo</span>
+                        </li>
+                        {% else %}
+                        <li class="list-group-item text-center text-muted">Nenhum alerta de estoque.</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Últimas Movimentações -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h4 class="card-title"><i class="fas fa-history"></i> Últimas Movimentações</h4>
+                    <div class="card-tools">
+                        <a href="{{ url_for('estoque.historico') }}" class="btn btn-tool btn-sm">
+                            <i class="fas fa-external-link-alt"></i> Ver Histórico Completo
+                        </a>
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-striped m-0">
+                            <thead>
+                                <tr>
+                                    <th>Data</th>
+                                    <th>Produto</th>
+                                    <th>Tipo</th>
+                                    <th>Depósito</th>
+                                    <th class="text-right">Qtd</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for mov in movimentacoes[:10] %}
+                                <tr>
+                                    <td>{{ mov.data_hora.strftime('%d/%m %H:%M') if mov.data_hora else 'N/A' }}</td>
+                                    <td>
+                                        {% set produto = prefetched_products.get(mov.produto_id, {}) %}
+                                        {{ produto.get('name') or produto.get('nome') or mov.produto_id or 'N/A' }}
+                                    </td>
+                                    <td><span class="badge badge-{{ 'success' if mov.tipo_movimento in ['ENTRADA', 'TRANSFERENCIA_ENTRADA'] else 'danger' if mov.tipo_movimento in ['SAIDA', 'SAIDA_RESERVA'] else 'info' }}">{{ mov.tipo_movimento }}</span></td>
+                                    <td>
+                                        {% if mov.tipo_movimento in ['TRANSFERENCIA_SAIDA', 'TRANSFERENCIA_ENTRADA'] %}
+                                            <small>De: {{ prefetched_depositos.get(mov.deposito_origem_id, {}).get('nome', 'N/A') }}<br>Para: {{ prefetched_depositos.get(mov.deposito_destino_id, {}).get('nome', 'N/A') }}</small>
+                                        {% else %}
+                                            {{ prefetched_depositos.get(mov.deposito_id, {}).get('nome', 'N/A') }}
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-right font-weight-bold">{{ "%.0f"|format(mov.quantidade) }}</td>
+                                </tr>
+                                {% else %}
+                                <tr>
+                                    <td colspan="5" class="text-center text-muted">Nenhuma movimentação recente encontrada.</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const ctx = document.getElementById('movimentacoesChart').getContext('2d');
+        
+        // Dummy data for now
+        const labels = ['D-6', 'D-5', 'D-4', 'D-3', 'D-2', 'Ontem', 'Hoje'];
+        const entradasData = [12, 19, 3, 5, 2, 3, 9];
+        const saidasData = [7, 11, 5, 8, 3, 7, 2];
+
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Entradas',
+                        data: entradasData,
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        fill: true,
+                        tension: 0.3
+                    },
+                    {
+                        label: 'Saídas',
+                        data: saidasData,
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                        fill: true,
+                        tension: 0.3
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+    });
+</script>
+{% endblock %}

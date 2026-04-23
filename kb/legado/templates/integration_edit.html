@@ -1,0 +1,153 @@
+{% extends "layouts/base.html" %}
+
+{% set show_back_button = True %}
+{% set back_button_text = 'Voltar' %}
+{% set back_button_url = url_for('integracoes.admin_integracoes') %}
+
+{% block title %}Administração - {{ 'Editar' if account else 'Criar' }} Conta Bling{% endblock %}
+
+{% block extra_styles %}
+<style>
+    .form-container {
+        max-width: 800px;
+        margin: 0 auto;
+        background-color: white;
+        border-radius: 10px;
+        padding: 30px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    .form-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 30px;
+        text-align: center;
+    }
+    .form-group {
+        margin-bottom: 20px;
+    }
+    .form-label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: bold;
+        color: #333;
+    }
+    .form-control {
+        width: 100%;
+        padding: 12px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        font-size: 16px;
+        transition: border-color 0.3s ease;
+    }
+    .form-control:focus {
+        outline: none;
+        border-color: #667eea;
+        box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+    }
+    .help-text {
+        font-size: 0.9em;
+        color: #666;
+        margin-top: 3px;
+    }
+    .form-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+    }
+    @media (max-width: 768px) {
+        .form-row {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="form-container">
+        <div class="form-header">
+            <h1>{{ '✏️ Editar' if account else '➕ Criar Nova' }} Conta Bling</h1>
+            <p>Configure as credenciais da integração Bling</p>
+        </div>
+
+        <form action="{{ url_for('integracoes.edit_integration', account_id=account.id) if account else url_for('integracoes.new_integration') }}" method="POST">
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="account_name">Nome da Conta *</label>
+                    <input type="text" class="form-control" id="account_name" name="account_name" value="{{ account.account_name if account else '' }}" required>
+                    <div class="help-text">Nome identificador da sua conta Bling</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="cnpj">CNPJ *</label>
+                    <input type="text" class="form-control" id="cnpj" name="cnpj" value="{{ account.cnpj if account else '' }}" required>
+                    <div class="help-text">CNPJ da empresa na conta Bling</div>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="client_id">Client ID *</label>
+                    <input type="text" class="form-control" id="client_id" name="client_id" value="{{ account.client_id if account else '' }}" required>
+                    <div class="help-text">ID do cliente Bling API</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="client_secret">Client Secret *</label>
+                    <input type="password" class="form-control" id="client_secret" name="client_secret" value="{{ account.client_secret if account else '' }}" {{ 'required' if not account else '' }}>
+                    <div class="help-text">Secret do cliente Bling API</div>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="access_token">Access Token</label>
+                    <input type="text" class="form-control" id="access_token" name="access_token" value="{{ account.access_token if account else '' }}">
+                    <div class="help-text">Token de acesso (gerado automaticamente durante autorização)</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="refresh_token">Refresh Token</label>
+                    <input type="text" class="form-control" id="refresh_token" name="refresh_token" value="{{ account.refresh_token if account else '' }}">
+                    <div class="help-text">Token de renovação (gerado automaticamente)</div>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="expires_in">Expiração do Token (segundos)</label>
+                    <input type="number" class="form-control" id="expires_in" name="expires_in" value="{{ account.expires_in if account else '' }}">
+                    <div class="help-text">Tempo de vida do access token</div>
+                </div>
+            </div>
+
+            <div class="form-group" style="text-align: center; margin-top: 40px;">
+                <button type="submit" class="btn btn-primary" style="font-size: 16px; padding: 12px 40px;">
+                    {{ '💾 Salvar Alterações' if account else '✅ Criar Conta' }}
+                </button>
+                <a href="{{ url_for('integracoes.admin_integracoes') }}" class="btn" style="background-color: #6c757d; color: white; font-size: 16px; padding: 12px 40px; margin-left: 10px;">
+                    ❌ Cancelar
+                </a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    // Formatação automática do CNPJ
+    document.getElementById('cnpj').addEventListener('input', function(e) {
+        let value = e.target.value.replace(/\D/g, '');
+        if (value.length <= 14) {
+            value = value.replace(/(\d{2})(\d)/, '$1.$2');
+            value = value.replace(/(\d{3})(\d)/, '$1.$2');
+            value = value.replace(/(\d{3})(\d)/, '$1/$2');
+            value = value.replace(/(\d{4})(\d{1,2})$/, '$1-$2');
+        }
+        e.target.value = value;
+    });
+</script>
+{% endblock %}

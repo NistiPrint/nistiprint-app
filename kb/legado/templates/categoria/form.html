@@ -1,0 +1,94 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}{% if categoria %}Editar{% else %}Nova{% endif %} Categoria{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-md-8 offset-md-2">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        {% if categoria %}✏️ Editar{% else %}➕ Nova{% endif %} Categoria
+                    </h3>
+                </div>
+
+                <form method="POST">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-group">
+                                    <label for="name">Nome *</label>
+                                    <input type="text" class="form-control" id="name" name="name"
+                                           value="{{ categoria.name if categoria else '' }}" required>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-group">
+                                    <label for="description">Descrição</label>
+                                    <textarea class="form-control" id="description" name="description" rows="3">{{ categoria.get('description', '') if categoria else '' }}</textarea>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="bling_category_id">ID categoria Bling</label>
+                                    <input type="text" class="form-control" id="bling_category_id" name="bling_category_id"
+                                           value="{{ categoria.get('bling_category_id', '') if categoria else '' }}"
+                                           placeholder="ID da categoria no Bling">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="parent_category_id">Categoria Pai</label>
+                                    <select class="form-control" id="parent_category_id" name="parent_category_id">
+                                        <option value="">Selecionar categoria pai...</option>
+                                        {% for parent_cat in categorias %}
+                                        {% if parent_cat.id != (categoria.id if categoria else None) %}
+                                        <option value="{{ parent_cat.id }}" {% if categoria and categoria.get('parent_category_id') == parent_cat.id %}selected{% endif %}>
+                                            {{ parent_cat.name }}
+                                        </option>
+                                        {% endif %}
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-group">
+                                    <label for="composition_template_id">Template de Composição</label>
+                                    <select class="form-control" id="composition_template_id" name="composition_template_id">
+                                        <option value="">Nenhum template selecionado</option>
+                                        {% for template in templates %}
+                                        <option value="{{ template.id }}" {% if categoria and categoria.get('composition_template_id') == template.id %}selected{% endif %}>
+                                            {{ template.name }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                    <small class="form-text text-muted">Selecione um template para associar a esta categoria.</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-footer">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Salvar
+                        </button>
+                        <a href="{{ url_for('cadastros.categoria_list') }}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Voltar
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

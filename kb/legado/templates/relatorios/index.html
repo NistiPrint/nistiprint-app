@@ -1,0 +1,102 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Relatórios Administrativos{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h1 class="h3 mb-4 text-gray-800">Relatórios Administrativos</h1>
+
+    <!-- Sulfite Consumption Report -->
+    <div class="card shadow mb-4">
+        <div class="card-header py-3">
+            <h6 class="m-0 font-weight-bold text-primary">Relatório de Consumo de Folhas Sulfite (Últimos {{ sulfite_report.analysis_period_days }} dias)</h6>
+        </div>
+        <div class="card-body">
+            {% if sulfite_report.error %}
+                <div class="alert alert-warning" role="alert">
+                    <i class="fas fa-exclamation-triangle"></i> <strong>Atenção:</strong> {{ sulfite_report.error }}
+                    <a href="{{ url_for('configuracoes.producao_config') }}" class="alert-link">Por favor, configure agora</a>.
+                </div>
+            {% else %}
+            <div class="row">
+
+                <!-- Average Daily Consumption -->
+                <div class="col-xl-3 col-md-6 mb-4">
+                    <div class="card border-left-primary shadow h-100 py-2">
+                        <div class="card-body">
+                            <div class="row no-gutters align-items-center">
+                                <div class="col mr-2">
+                                    <div class="text-xs font-weight-bold text-primary text-uppercase mb-1">Consumo Médio Diário</div>
+                                    <div class="h5 mb-0 font-weight-bold text-gray-800">{{ sulfite_report.avg_daily_consumption }} folhas</div>
+                                </div>
+                                <div class="col-auto">
+                                    <i class="fas fa-chart-bar fa-2x text-gray-300"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Current Stock -->
+                <div class="col-xl-3 col-md-6 mb-4">
+                    <div class="card border-left-info shadow h-100 py-2">
+                        <div class="card-body">
+                            <div class="row no-gutters align-items-center">
+                                <div class="col mr-2">
+                                    <div class="text-xs font-weight-bold text-info text-uppercase mb-1">Estoque Atual</div>
+                                    <div class="h5 mb-0 font-weight-bold text-gray-800">{{ sulfite_report.current_stock }} folhas</div>
+                                </div>
+                                <div class="col-auto">
+                                    <i class="fas fa-boxes fa-2x text-gray-300"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stock Coverage -->
+                <div class="col-xl-3 col-md-6 mb-4">
+                    <div class="card border-left-success shadow h-100 py-2">
+                        <div class="card-body">
+                            <div class="row no-gutters align-items-center">
+                                <div class="col mr-2">
+                                    <div class="text-xs font-weight-bold text-success text-uppercase mb-1">Cobertura do Estoque</div>
+                                    <div class="h5 mb-0 font-weight-bold text-gray-800">~{{ sulfite_report.days_of_coverage }} dias</div>
+                                </div>
+                                <div class="col-auto">
+                                    <i class="fas fa-calendar-check fa-2x text-gray-300"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Reorder Date -->
+                <div class="col-xl-3 col-md-6 mb-4">
+                    <div class="card border-left-warning shadow h-100 py-2">
+                        <div class="card-body">
+                            <div class="row no-gutters align-items-center">
+                                <div class="col mr-2">
+                                    <div class="text-xs font-weight-bold text-warning text-uppercase mb-1">Previsão de Compra</div>
+                                    <div class="h5 mb-0 font-weight-bold text-gray-800">{{ sulfite_report.reorder_date }}</div>
+                                    <small>(Alerta {{ sulfite_report.safety_days_configured }} dias antes)</small>
+                                </div>
+                                <div class="col-auto">
+                                    <i class="fas fa-shopping-cart fa-2x text-gray-300"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+            {% endif %}
+            <hr>
+            <div class="text-right">
+                <a href="{{ url_for('relatorios_bp.historico_producao') }}">Ver histórico de produção completo &rarr;</a>
+            </div>
+        </div>
+    </div>
+
+</div>
+{% endblock %}

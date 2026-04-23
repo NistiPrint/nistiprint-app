@@ -1,0 +1,100 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Ordens de Compra{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">🛒 Ordens de Compra</h3>
+                    <div class="card-tools">
+                        <a href="{{ url_for('ordem_compra.nova') }}" class="btn btn-primary btn-sm">
+                            <i class="fas fa-plus"></i> Nova OC
+                        </a>
+                    </div>
+                </div>
+
+                <div class="card-body">
+                    <!-- Filtros -->
+                    <form method="GET" class="mb-3">
+                        <div class="row">
+                            <div class="col-md-3">
+                                <select name="fornecedor_id" class="form-control">
+                                    <option value="">Todos fornecedores</option>
+                                    {% for f in fornecedores %}
+                                    <option value="{{ f.id }}" {% if filtro_fornecedor == f.id %}selected{% endif %}>
+                                        {{ f.nome_razao_social }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <select name="status" class="form-control">
+                                    <option value="">Todos status</option>
+                                    <option value="ABERTA" {% if filtro_status == 'ABERTA' %}selected{% endif %}>Aberta</option>
+                                    <option value="RECEBIDA_PARCIAL" {% if filtro_status == 'RECEBIDA_PARCIAL' %}selected{% endif %}>Recebida Parcial</option>
+                                    <option value="FINALIZADA" {% if filtro_status == 'FINALIZADA' %}selected{% endif %}>Finalizada</option>
+                                    <option value="CANCELADA" {% if filtro_status == 'CANCELADA' %}selected{% endif %}>Cancelada</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <button type="submit" class="btn btn-outline-secondary">Filtrar</button>
+                            </div>
+                        </div>
+                    </form>
+
+                    <!-- Lista OCs -->
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Número OC</th>
+                                    <th>Fornecedor</th>
+                                    <th>Data Emissão</th>
+                                    <th>Status</th>
+                                    <th>Valor Total</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for oc in ordens_compra %}
+                                <tr>
+                                    <td>{{ oc.numero_oc }}</td>
+                                    <td>{{ oc.get('fornecedor_nome', 'N/A') }}</td>
+                                    <td>{{ oc.data_emissao.strftime('%d/%m/%Y') if oc.data_emissao else 'N/A' }}</td>
+                                    <td>
+                                        {% if oc.status == 'ABERTA' %}
+                                            <span class="badge badge-warning">Aberta</span>
+                                        {% elif oc.status == 'RECEBIDA_PARCIAL' %}
+                                            <span class="badge badge-info">Recebida Parcial</span>
+                                        {% elif oc.status == 'FINALIZADA' %}
+                                            <span class="badge badge-success">Finalizada</span>
+                                        {% else %}
+                                            <span class="badge badge-danger">Cancelada</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ (oc.valor_total or 0)|br_currency(decimals=2) }}</td>
+                                    <td>
+                                        <a href="{{ url_for('ordem_compra.detalhes', oc_id=oc.id) }}" class="btn btn-xs btn-info">
+                                            <i class="fas fa-eye"></i>
+                                        </a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {% if not ordens_compra %}
+                    <div class="alert alert-info">
+                        Nenhuma ordem de compra encontrada.
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

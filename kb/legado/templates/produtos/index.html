@@ -1,0 +1,171 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Catálogo de Produtos{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">📦 Catálogo de Produtos</h3>
+                    <div class="card-tools">
+                        <form method="POST" action="{{ url_for('produtos.atualizar_custos_compostos') }}" class="d-inline mr-2">
+                            <button type="submit" class="btn btn-warning btn-sm"
+                                    onclick="return confirm('Isso atualizará automaticamente os custos de todos os produtos compostos. Continuar?')">
+                                <i class="fas fa-sync"></i> Atualizar Custos Compostos
+                            </button>
+                        </form>
+                        <a href="{{ url_for('produtos.criar') }}" class="btn btn-primary btn-sm">
+                            <i class="fas fa-plus"></i> Novo Produto
+                        </a>
+                    </div>
+                </div>
+
+                <div class="card-body">
+                    <!-- Busca e Filtros -->
+                    <form method="GET" action="{{ url_for('produtos.index') }}" class="mb-4">
+                        <div class="row g-3 align-items-center">
+                            <div class="col-md-5">
+                                <label for="q" class="visually-hidden">Buscar</label>
+                                <input type="text" class="form-control" id="q" name="q" placeholder="Buscar por SKU ou nome..." value="{{ q or '' }}">
+                            </div>
+                            <div class="col-md-4">
+                                <label for="category_id" class="visually-hidden">Categoria</label>
+                                <select class="form-control" id="category_id" name="category_id">
+                                    <option value="">Todas as categorias</option>
+                                    {% for cat in categorias %}
+                                    <option value="{{ cat.id }}" {% if cat.id == category_id %}selected{% endif %}>
+                                        {{ cat.name }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <label for="status" class="visually-hidden">Status</label>
+                                <select class="form-control" id="status" name="status">
+                                    <option value="">Todos os status</option>
+                                    <option value="ativo" {% if status == 'ativo' %}selected{% endif %}>Ativo</option>
+                                    <option value="rascunho" {% if status == 'rascunho' %}selected{% endif %}>Rascunho</option>
+                                    <option value="inativo" {% if status == 'inativo' %}selected{% endif %}>Inativo</option>
+                                </select>
+                            </div>
+                            <div class="col-md-auto">
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="fas fa-search"></i> Buscar
+                                </button>
+                                <a href="{{ url_for('produtos.index') }}" class="btn btn-outline-secondary ms-2">
+                                    <i class="fas fa-times"></i> Limpar
+                                </a>
+                            </div>
+                        </div>
+                    </form>
+
+                    <!-- Lista de Produtos -->
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Nome do Produto</th>
+                                    <th>Tipo</th>
+                                    <th>Unidade</th>
+                                    <th>Status</th>
+                                    <th style="width: 150px;">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for produto in produtos %}
+                                {% set view_url = url_for('produtos.editar', produto_id=produto.id) %}
+                                <tr style="cursor: pointer;" onclick="if (!event.target.closest('form') && !event.target.closest('button')) window.location.href='{{ view_url }}';">
+                                    <td>{{ produto.get('name', 'N/A') }} <small class="text-muted"> {{ produto.get('sku_mestre', 'N/A') }}</small></td>
+                                    <td>
+                                        {% if produto.get('is_composite') %}
+                                            <span class="badge bg-info">Composto</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary">Simples</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ produto.get('unit_of_measure_symbol', produto.get('unit_of_measure_name', 'N/A')) }}</td>
+                                    <td>
+                                        {% if produto.status == 'ativo' %}
+                                            <span class="badge badge-success">Ativo</span>
+                                        {% elif produto.status == 'rascunho' %}
+                                            <span class="badge badge-warning">Rascunho</span>
+                                        {% elif produto.status == 'inativo' %}
+                                            <span class="badge badge-danger">Inativo</span>
+                                        {% else %}
+                                            <span class="badge badge-secondary">{{ produto.status }}</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <div class="btn-group btn-group-sm" role="group">
+                                            <a href="{{ url_for('produtos.editar', produto_id=produto.id) }}" class="btn btn-sm btn-outline-primary">
+                                                <i class="fas fa-pencil-alt"></i>
+                                            </a>
+                                            <form action="{{ url_for('produtos.deletar', produto_id=produto.id) }}" method="POST" class="d-inline" onsubmit="return confirm('Tem certeza que deseja deletar este produto? Esta ação não pode ser desfeita.');">
+                                                <button type-="submit" class="btn btn-sm btn-outline-danger">
+                                                    <i class="fas fa-trash-alt"></i>
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {% if total_pages and total_pages > 1 %}
+                    <nav aria-label="Page navigation" class="mt-4">
+                        <ul class="pagination justify-content-center">
+                            <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+                                <a class="page-link" href="{{ url_for('produtos.index', page=page-1, q=q, category_id=category_id) }}">Anterior</a>
+                            </li>
+                            
+                            {# Mostra um número limitado de páginas para não poluir a tela #}
+                            {% set start_page = [page - 2, 1] | max %}
+                            {% set end_page = [page + 2, total_pages] | min %}
+
+                            {% if start_page > 1 %}
+                                <li class="page-item"><a class="page-link" href="{{ url_for('produtos.index', page=1, q=q, category_id=category_id) }}">1</a></li>
+                                {% if start_page > 2 %}
+                                <li class="page-item disabled"><span class="page-link">...</span></li>
+                                {% endif %}
+                            {% endif %}
+
+                            {% for p in range(start_page, end_page + 1) %}
+                                <li class="page-item {% if p == page %}active{% endif %}">
+                                    <a class="page-link" href="{{ url_for('produtos.index', page=p, q=q, category_id=category_id) }}">{{ p }}</a>
+                                </li>
+                            {% endfor %}
+
+                            {% if end_page < total_pages %}
+                                {% if end_page < total_pages - 1 %}
+                                <li class="page-item disabled"><span class="page-link">...</span></li>
+                                {% endif %}
+                                <li class="page-item"><a class="page-link" href="{{ url_for('produtos.index', page=total_pages, q=q, category_id=category_id) }}">{{ total_pages }}</a></li>
+                            {% endif %}
+
+                            <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+                                <a class="page-link" href="{{ url_for('produtos.index', page=page+1, q=q, category_id=category_id) }}">Próxima</a>
+                            </li>
+                        </ul>
+                    </nav>
+                    {% endif %}
+
+                    {% if not produtos %}
+                    <div class="alert alert-info text-center">
+                        <h4><i class="fas fa-info-circle"></i> Nenhum produto encontrado</h4>
+                        <p>Não há produtos cadastrados que correspondam aos seus critérios de busca.</p>
+                        <a href="{{ url_for('produtos.criar') }}" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> Criar primeiro produto
+                        </a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

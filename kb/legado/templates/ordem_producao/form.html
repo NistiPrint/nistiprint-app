@@ -1,0 +1,388 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}
+{% if is_create %}
+Nova Ordem de Produção
+{% else %}
+Editar Ordem de Produção
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        {% if is_create %}
+                        📦 Nova Ordem de Produção
+                        {% else %}
+                        ✏️ Editar Ordem de Produção
+                        {% endif %}
+                    </h3>
+                    {% if not is_create and po %}
+                    <div class="card-tools">
+                        <span class="badge badge-secondary">{{ getStatusLabel(po.status) }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+                <div class="card-body">
+                    <form method="POST" id="poForm">
+                        {% if not is_create and po %}
+                        <!-- ID da OP para edição -->
+                        <input type="hidden" name="po_id" value="{{ po.id }}">
+                        {% endif %}
+
+                        {% if not is_create and po %}
+                        <!-- Produto (somente leitura para edição) -->
+                        <div class="form-group">
+                            <label>Produto Final</label>
+                            <input type="text" class="form-control bg-light" value="{{ po.productName }} ({{ po.productSku }})" readonly>
+                        </div>
+                        {% else %}
+                        <!-- Busca de Produto para criação -->
+                        <div class="form-group">
+                            <label for="productSearch">Produto Final *</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="productSearch" placeholder="Buscar produto..." autocomplete="off">
+                                <input type="hidden" name="product_id" id="selectedProductId">
+                                <div class="input-group-append">
+                                    <button class="btn btn-outline-secondary" type="button" onclick="clearProduct()">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <small class="form-text text-muted">Digite para buscar produtos existentes</small>
+                            <div id="productResults" class="mt-2" style="display: none;"></div>
+                        </div>
+                        {% endif %}
+
+                        <!-- Produto Selecionado (apenas para criação) -->
+                        {% if is_create %}
+                        <div id="selectedProductInfo" style="display: none;" class="alert alert-info">
+                            <h5 id="selectedProductName"></h5>
+                            <p id="selectedProductSku"></p>
+                        </div>
+                        {% endif %}
+
+                        <!-- Quantidade e Observações -->
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="quantity">Quantidade a Produzir *</label>
+                                    <input type="number" class="form-control" name="quantity_to_produce" id="quantity"
+                                           value="{% if not is_create and po %}{{ po.quantityToProduce }}{% endif %}"
+                                           min="0.01" step="0.01" required
+                                           onchange="{% if is_create %}updateBomPreview(){% endif %}">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="notes">Observações</label>
+                                    <textarea class="form-control" name="notes" id="notes" rows="3"
+                                              placeholder="{% if not is_create and po %}Atualize as observações...{% endif %}">{% if not is_create and po %}{{ po.notes or '' }}{% else %}{% endif %}</textarea>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Componentes da BOM (apenas para criação) -->
+                        {% if is_create %}
+                        <div id="bomPreview" style="display: none;">
+                            <h5>📋 Previsão de Consumo</h5>
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Componente</th>
+                                            <th>Estoque Atual</th>
+                                            <th>Reservado</th>
+                                            <th>Disponível</th>
+                                            <th>Necessário</th>
+                                            <th>Após Produção</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="bomTableBody">
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div id="bomStatus" class="alert" style="display: none;"></div>
+                        </div>
+                        {% endif %}
+
+                        <!-- Componentes da BOM (apenas para edição) -->
+                        {% if not is_create and components %}
+                        <div class="mt-4">
+                            <h5>📋 Previsão de Consumo dos Componentes</h5>
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Componente</th>
+                                            <th>Estoque Atual</th>
+                                            <th>Reservado</th>
+                                            <th>Disponível</th>
+                                            <th>Necessário</th>
+                                            <th>Após Produção</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for comp in components %}
+                                        <tr>
+                                            <td>{{ comp.componentName }}</td>
+                                            <td>{{ comp.current_stock }}</td>
+                                            <td>{{ comp.reserved_stock }}</td>
+                                            <td>{{ comp.available_stock }}</td>
+                                            <td>{{ comp.quantityRequired }}</td>
+                                            <td class="{% if comp.after_production_stock < 0 %}table-danger{% endif %}">{{ comp.after_production_stock }}</td>
+                                            <td>
+                                                <span class="badge badge-{% if comp.is_available %}success{% else %}danger{% endif %}">
+                                                    {% if comp.is_available %}OK{% else %}Insuficiente{% endif %}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <small class="form-text text-muted">
+                                Estes são os cálculos baseado na quantidade atual. Alterações na quantidade ajustarão estes valores.
+                            </small>
+                        </div>
+                        {% endif %}
+
+                        <!-- Botões de ação -->
+                        <div class="mt-4">
+                            <button type="submit" class="btn {% if not is_create %}btn-success{% else %}btn-success{% endif %}">
+                                <i class="fas fa-save"></i>
+                                {% if is_create %}Salvar Rascunho{% else %}Salvar Alterações{% endif %}
+                            </button>
+                            <button type="button" class="btn btn-primary" id="startBtn"
+                                    style="{% if not is_create %}display: none;{% else %}display: none;{% endif %}">
+                                <i class="fas fa-play"></i> Iniciar Produção
+                            </button>
+                            {% if is_create %}
+                            <a href="{{ url_for('ordem_producao.index') }}" class="btn btn-secondary">
+                                <i class="fas fa-arrow-left"></i> Voltar
+                            </a>
+                            {% else %}
+                            <a href="{{ url_for('ordem_producao.detail', po_id=po.id) }}" class="btn btn-secondary">
+                                <i class="fas fa-arrow-left"></i> Voltar
+                            </a>
+                            {% endif %}
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title">ℹ️ Como Funciona</h5>
+                </div>
+                <div class="card-body">
+                    <ul class="list-unstyled">
+                        {% if is_create %}
+                        <li><i class="fas fa-search text-info"></i> Primeiro, selecione o produto que deseja fabricar</li>
+                        <li><i class="fas fa-calculator text-warning"></i> Informe a quantidade a ser produzida</li>
+                        <li><i class="fas fa-eye text-success"></i> Visualize a previsão de consumo dos componentes</li>
+                        <li><i class="fas fa-save text-secondary"></i> <strong>Salvar Rascunho</strong> - Salvar sem reservar estoque</li>
+                        <li><i class="fas fa-play text-primary"></i> <strong>Iniciar Produção</strong> - Reservar estoque automaticamente</li>
+                        {% else %}
+                        <li><i class="fas fa-exclamation-triangle text-warning"></i> <strong>Apenas rascunhos podem ser editados</strong></li>
+                        <li><i class="fas fa-calculator text-warning"></i> Ajuste a quantidade e observações</li>
+                        <li><i class="fas fa-cogs text-info"></i> Revise os componentes necessários abaixo</li>
+                        <li><i class="fas fa-save text-success"></i> <strong>Salvar Alterações</strong> - Atualiza o rascunho</li>
+                        {% endif %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if is_create %}
+<script>
+let selectedProduct = null;
+const productSearch = document.getElementById('productSearch');
+const productResults = document.getElementById('productResults');
+const selectedProductId = document.getElementById('selectedProductId');
+const selectedProductInfo = document.getElementById('selectedProductInfo');
+const selectedProductName = document.getElementById('selectedProductName');
+const selectedProductSku = document.getElementById('selectedProductSku');
+const bomPreview = document.getElementById('bomPreview');
+const bomTableBody = document.getElementById('bomTableBody');
+const bomStatus = document.getElementById('bomStatus');
+const submitBtn = document.getElementById('submitBtn');
+const startBtn = document.getElementById('startBtn');
+
+let searchTimeout;
+productSearch.addEventListener('input', function() {
+    clearTimeout(searchTimeout);
+    const query = this.value.trim();
+
+    if (query.length < 2) {
+        productResults.style.display = 'none';
+        return;
+    }
+
+    searchTimeout = setTimeout(() => searchProducts(query), 300);
+});
+
+async function searchProducts(query) {
+    try {
+        const response = await fetch(`{{ url_for('ordem_producao.api_search_products') }}?q=${encodeURIComponent(query)}`);
+        const products = await response.json();
+
+        if (products.length > 0) {
+            const html = products.map(product => `
+                <div class="product-item p-2 border-bottom cursor-pointer" onclick="selectProduct('${product.id}', '${product.name.replace(/'/g, "\\'")}', '${product.sku_mestre || ''}')">
+                    <strong>${product.name}</strong>
+                    <small class="text-muted"> (${product.sku_mestre || 'Sem SKU'})</small>
+                </div>
+            `).join('');
+
+            productResults.innerHTML = html;
+            productResults.style.display = 'block';
+        } else {
+            productResults.innerHTML = '<div class="p-2 text-muted">Nenhum produto encontrado</div>';
+            productResults.style.display = 'block';
+        }
+    } catch (error) {
+        console.error('Erro ao buscar produtos:', error);
+        productResults.innerHTML = '<div class="p-2 text-danger">Erro na busca</div>';
+        productResults.style.display = 'block';
+    }
+}
+
+function selectProduct(id, name, sku) {
+    selectedProductId.value = id;
+    selectedProductName.textContent = name;
+    selectedProductSku.textContent = sku;
+    productSearch.value = name;
+    selectedProduct = { id, name, sku };
+    selectedProductInfo.style.display = 'block';
+    productResults.style.display = 'none';
+    updateBomPreview();
+}
+
+function clearProduct() {
+    selectedProductId.value = '';
+    productSearch.value = '';
+    selectedProduct = null;
+    selectedProductInfo.style.display = 'none';
+    bomPreview.style.display = 'none';
+    startBtn.style.display = 'none';
+}
+
+async function updateBomPreview() {
+    const productId = selectedProductId.value;
+    const quantity = document.getElementById('quantity').value;
+
+    if (!productId || !quantity || parseFloat(quantity) <= 0) {
+        bomPreview.style.display = 'none';
+        startBtn.style.display = 'none';
+        return;
+    }
+
+    try {
+        const response = await fetch(`/ordem-producao/api/products/${productId}/bom?quantity=${quantity}`);
+        const data = await response.json();
+
+        if (data.components) {
+            const html = data.components.map(comp => `
+                <tr>
+                    <td>${comp.name}</td>
+                    <td>${comp.current_stock}</td>
+                    <td>${comp.reserved_stock}</td>
+                    <td>${comp.available_stock}</td>
+                    <td>${comp.required}</td>
+                    <td class="${comp.after_production_stock < 0 ? 'table-danger' : ''}">${comp.after_production_stock}</td>
+                    <td>
+                        <span class="badge badge-${comp.is_available ? 'success' : 'danger'}">
+                            ${comp.is_available ? 'Disponível' : 'Indisponível'}
+                        </span>
+                    </td>
+                </tr>
+            `).join('');
+
+            bomTableBody.innerHTML = html;
+            bomPreview.style.display = 'block';
+
+            if (data.total_available) {
+                bomStatus.className = 'alert alert-success';
+                bomStatus.innerHTML = '<i class="fas fa-check"></i> Todos os componentes estão disponíveis para produção.';
+                bomStatus.style.display = 'block';
+                startBtn.style.display = 'inline-block';
+                submitBtn.innerHTML = '<i class="fas fa-save"></i> Salvar Rascunho';
+            } else {
+                bomStatus.className = 'alert alert-warning';
+                bomStatus.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Alguns componentes não têm estoque suficiente. Você pode salvar como rascunho, mas não poderá iniciar a produção até resolver o estoque.';
+                bomStatus.style.display = 'block';
+                startBtn.style.display = 'none';
+                submitBtn.innerHTML = '<i class="fas fa-save"></i> Salvar Rascunho (Estoque Insuficiente)';
+            }
+        }
+    } catch (error) {
+        console.error('Erro ao atualizar preview:', error);
+    }
+}
+
+// Esconder resultados da busca ao clicar fora
+document.addEventListener('click', function(e) {
+    if (!productSearch.contains(e.target) && !productResults.contains(e.target)) {
+        productResults.style.display = 'none';
+    }
+});
+</script>
+{% endif %}
+
+{% if not is_create %}
+<script>
+document.getElementById('quantity').addEventListener('blur', function() {
+    const newQuantity = parseFloat(this.value);
+    if (!isNaN(newQuantity) && newQuantity > 0) {
+        updateComponents(newQuantity);
+    }
+});
+
+async function updateComponents(quantity) {
+    try {
+        // Usar o produto da OP
+        const productId = '{{ po.productId }}';
+        const response = await fetch(`/ordem-producao/api/products/${productId}/bom?quantity=${quantity}`);
+        const data = await response.json();
+
+        if (data.components) {
+            // Atualizar a tabela de componentes
+            const tableBody = document.querySelector('div.mt-4 table tbody');
+            if (tableBody) {
+                const html = data.components.map(comp => `
+                    <tr>
+                        <td>${comp.name}</td>
+                        <td>${comp.current_stock}</td>
+                        <td>${comp.reserved_stock}</td>
+                        <td>${comp.available_stock}</td>
+                        <td>${comp.required}</td>
+                        <td class="${comp.after_production_stock < 0 ? 'table-danger' : ''}">${comp.after_production_stock}</td>
+                        <td>
+                            <span class="badge badge-${comp.is_available ? 'success' : 'danger'}">
+                                ${comp.is_available ? 'OK' : 'Insuficiente'}
+                            </span>
+                        </td>
+                    </tr>
+                `).join('');
+                tableBody.innerHTML = html;
+            }
+        }
+    } catch (error) {
+        console.error('Erro ao atualizar componentes:', error);
+    }
+}
+</script>
+{% endif %}
+
+{% endblock %}

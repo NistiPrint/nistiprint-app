@@ -20,13 +20,33 @@ celery_app = Celery(
     include=[
         'nistiprint_shared.services.webhook_tasks',
         'nistiprint_shared.services.redis_queue_tasks',
+        'nistiprint_shared.services.bling_status_sync_service',
+        'nistiprint_shared.services.ai_personalization_service',
         'tasks.stock_tasks',
     ]
 )
 
+# Part C 3.7: Configuração de filas e roteamento
+celery_app.conf.task_queues = {
+    'default': {'exchange': 'default', 'routing_key': 'default'},
+    'ai_personalization': {'exchange': 'ai', 'routing_key': 'ai.personalization'},
+    'bling_status_sync':  {'exchange': 'bling', 'routing_key': 'bling.status'},
+}
+
+celery_app.conf.task_routes = {
+    'services.ai_personalization.processar_batch': {'queue': 'ai_personalization'},
+    'services.ai_personalization.processar_pedido': {'queue': 'ai_personalization'},
+    'services.bling_status_sync.sync_batch': {'queue': 'bling_status_sync'},
+}
+
 # Configurações otimizadas
 celery_app.conf.update(
-    # ... (manter configurações existentes)
+    task_serializer='json',
+    accept_content=['json'],
+    result_serializer='json',
+    timezone='UTC',
+    enable_utc=True,
+    
     # Agendamento de tarefas periódicas
     beat_schedule={
         # Processamento de webhooks pendentes a cada 5 minutos
@@ -46,14 +66,6 @@ celery_app.conf.update(
         },
     },
 )
-
-# Auto-discovery de tasks em módulos de serviço
-celery_app.autodiscover_tasks(lambda: [
-    'nistiprint_shared.services.webhook_tasks',
-    'nistiprint_shared.services.redis_queue_tasks',
-    'tasks.stock_tasks',
-])
-
 
 @celery_app.task(bind=True)
 def debug_task(self):

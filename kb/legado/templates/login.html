@@ -1,0 +1,174 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Login - Nisti Print{% endblock %}
+
+{% block extra_styles %}
+<style>
+  .login-card {
+    max-width: 400px;
+    margin: 2rem auto;
+    padding: 2rem;
+    box-shadow: 0 0 15px rgba(0,0,0,0.1);
+    border-radius: 8px;
+    background-color: #fff;
+  }
+  .login-logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+  }
+  .login-logo img {
+    height: 50px;
+    margin-right: 10px;
+  }
+  .login-logo h1 {
+    font-weight: 700;
+    font-family: 'Lato', sans-serif;
+    font-size: 1.8rem;
+    margin: 0;
+  }
+  .btn-google {
+    background-color: #db4437;
+    border-color: #db4437;
+  }
+  .btn-google:hover {
+    background-color: #c33d2e;
+    border-color: #c33d2e;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="login-card">
+  <div class="login-logo">
+    <img src="/static/img/logo.png" alt="Logo" />
+    <h1>Nisti Print</h1>
+  </div>
+  <form class="needs-validation" novalidate onsubmit="_login(event)">
+    <div class="form-group">
+      <label for="email">Email</label>
+      <input type="email" name="email" id="email" class="form-control" placeholder="Email" required />
+      <div class="invalid-feedback">Por favor, insira um email válido.</div>
+    </div>
+    <div class="form-group">
+      <label for="password">Senha</label>
+      <input type="password" name="password" id="password" class="form-control" placeholder="Senha" required />
+      <div class="invalid-feedback">Por favor, insira sua senha.</div>
+    </div>
+    <button type="submit" class="btn btn-primary btn-block mb-3">Login</button>
+    <button type="button" class="btn btn-google btn-block" onclick="googleSignIn()">Entrar com Google</button>
+  </form>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script type="module" src="https://www.gstatic.com/firebasejs/11.2.0/firebase-app.js"></script>
+<script type="module" src="https://www.gstatic.com/firebasejs/11.2.0/firebase-auth.js"></script>
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.2.0/firebase-app.js'
+  import { getAuth, signInWithEmailAndPassword, GoogleAuthProvider, signInWithPopup } from 'https://www.gstatic.com/firebasejs/11.2.0/firebase-auth.js'
+
+  const firebaseConfig = {
+    apiKey: 'AIzaSyCpIhjEVWuRDSXQY1TdBeQksY5DU6GiwKk',
+    authDomain: 'neolabs-nistiprint.firebaseapp.com',
+    projectId: 'neolabs-nistiprint',
+    storageBucket: 'neolabs-nistiprint.firebasestorage.app',
+    messagingSenderId: '992903106218',
+    appId: '1:992903106218:web:89852b5eb14d0717fecad3',
+    measurementId: 'G-YFVNLEPLLY'
+  }
+
+  const app = initializeApp(firebaseConfig)
+  const auth = getAuth(app)
+
+  window._login = (event) => {
+    event.preventDefault()
+    const email = document.getElementsByName('email')[0].value
+    const password = document.getElementsByName('password')[0].value
+
+    signInWithEmailAndPassword(auth, email, password)
+      .then((userCredential) => {
+        const user = userCredential.user
+        const { uid, displayName, email, emailVerified, phoneNumber, photoURL, providerId } = user
+        const data = {
+          uid: uid,
+          displayName: displayName,
+          email: email,
+          emailVerified: emailVerified,
+          phoneNumber: phoneNumber,
+          photoURL: photoURL,
+          providerId: providerId
+        }
+        fetch('/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(data)
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            window.location.href = data.redirect
+          })
+          .catch((error) => {
+            console.error('Error:', error)
+          })
+      })
+      .catch((error) => {
+        alert(`Erro: ${error.message}`)
+      })
+  }
+
+  window.googleSignIn = () => {
+    const provider = new GoogleAuthProvider()
+    signInWithPopup(auth, provider)
+      .then((userCredential) => {
+        const user = userCredential.user
+        const { uid, displayName, email, emailVerified, phoneNumber, photoURL, providerId } = user
+        const data = {
+          uid: uid,
+          displayName: displayName,
+          email: email,
+          emailVerified: emailVerified,
+          phoneNumber: phoneNumber,
+          photoURL: photoURL,
+          providerId: providerId
+        }
+        fetch('/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(data)
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            window.location.href = data.redirect
+          })
+          .catch((error) => {
+            console.error('Error:', error)
+          })
+      })
+      .catch((error) => {
+        alert(`Erro: ${error.message}`)
+      })
+  }
+</script>
+<script>
+// Bootstrap form validation
+(() => {
+  'use strict'
+  const forms = document.querySelectorAll('.needs-validation')
+  Array.from(forms).forEach(form => {
+    form.addEventListener('submit', event => {
+      if (!form.checkValidity()) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+      form.classList.add('was-validated')
+    }, false)
+  })
+})()
+</script>
+{% endblock %}

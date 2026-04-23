@@ -1,0 +1,64 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}{% if deposito %}Editar{% else %}Novo{% endif %} Depósito{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-md-8 offset-md-2">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        {% if deposito %}✏️ Editar{% else %}➕ Novo{% endif %} Depósito
+                    </h3>
+                </div>
+
+                <form method="POST">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-group">
+                                    <label for="nome">Nome *</label>
+                                    <input type="text" class="form-control" id="nome" name="nome"
+                                           value="{{ deposito.nome if deposito else '' }}" required>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="tipo">Tipo *</label>
+                                    <select class="form-control" id="tipo" name="tipo" required>
+                                        <option value="MATERIA_PRIMA" {% if deposito and deposito.get('tipo') == 'MATERIA_PRIMA' %}selected{% elif not deposito %}selected{% endif %}>Matéria Prima</option>
+                                        <option value="PRODUTO_ACABADO" {% if deposito and deposito.get('tipo') == 'PRODUTO_ACABADO' %}selected{% endif %}>Produto Acabado</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="ativo" name="ativo"
+                                           {% if deposito and deposito.get('ativo', True) %}checked{% elif not deposito %}checked{% endif %}>
+                                    <label class="form-check-label" for="ativo">Ativo</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-footer">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Salvar
+                        </button>
+                        <a href="{{ url_for('cadastros.deposito_list') }}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Voltar
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
