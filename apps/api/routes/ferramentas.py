@@ -54,10 +54,8 @@ def api_importar_pedido_bling():
 def api_processar_nomes_ia():
     try:
         data = request.get_json() or {}
-        import logging
         logger = logging.getLogger(__name__)
-        logger.info(f"API /processar_nomes_ia called. Payload: {data}") # DEBUG LOG
-        print(f"DEBUG PRINT: API /processar_nomes_ia called. Payload: {data}") # EXTREME DEBUG
+        logger.info("=== INÍCIO: Processamento IA === Payload: %s", data)
 
         limit = data.get('limit')
         shopee_order_sn = data.get('shopee_order_sn')
@@ -68,14 +66,15 @@ def api_processar_nomes_ia():
         else:
             limit = None
 
-        # Robust handling of order_sn:
-        # If it's an empty string or explicitly None in JSON, we treat it as bulk (None)
-        # BUT if the key is missing AND limit is missing, we might want to be careful.
-        # For the Card button, the frontend now ensures it's not empty.
+        # Robust handling of order_sn
         if shopee_order_sn == "":
             shopee_order_sn = None
 
+        logger.info("Parâmetros: limit=%s, order_sn=%s", limit, shopee_order_sn)
+
         success, message = process_orders(limit=limit, order_sn=shopee_order_sn)
+
+        logger.info("=== FIM: Processamento IA === success=%s, message=%s", success, message)
 
         return jsonify({
             'success': success,
@@ -83,6 +82,7 @@ def api_processar_nomes_ia():
         })
 
     except Exception as e:
+        logging.getLogger(__name__).error("ERRO: Processamento IA falhou: %s", e, exc_info=True)
         return jsonify({
             'success': False,
             'message': f'Erro ao processar: {str(e)}'

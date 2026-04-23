@@ -95,6 +95,126 @@ def sync_legacy():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# --- NOVOS ENDPOINTS DE ROTEAMENTO (Multi-Conta) ---
+
+@integracoes_api_bp.route('/routing', methods=['GET'])
+def get_routing():
+    """Retorna as regras de roteamento e dados auxiliares para a UI."""
+    try:
+        # 1. Buscar regras atuais
+        routing = supabase_db.client.table('integration_account_routing').select('*').execute().data
+        
+        # 2. Buscar contas Bling (instaladas)
+        accounts = supabase_db.client.table('installed_integrations') \
+            .select('id, instance_name, config->cnpj') \
+            .eq('module_id', 'bling') \
+            .execute().data
+            
+        # 3. Buscar Canais de Venda
+        channels = supabase_db.client.table('canais_venda').select('id, nome, plataforma_id').execute().data
+        
+        # 4. Buscar Plataformas
+        platforms = supabase_db.client.table('plataformas').select('id, nome').execute().data
+        
+        return jsonify({
+            "routing": routing,
+            "accounts": accounts,
+            "channels": channels,
+            "platforms": platforms,
+            "functions": [
+                {"id": "ORDER_IMPORT", "name": "Importação de Pedidos"},
+                {"id": "NFE_EMISSION", "name": "Emissão de Nota Fiscal (NFe)"},
+                {"id": "STOCK_SYNC", "name": "Sincronização de Estoque"},
+                {"id": "CATALOG_SYNC", "name": "Sincronização de Catálogo"}
+            ]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@integracoes_api_bp.route('/routing', methods=['POST'])
+def save_routing():
+    """Salva ou atualiza uma regra de roteamento."""
+    try:
+        data = request.get_json()
+        from nistiprint_shared.services.integration_routing_service import integration_routing_service
+        
+        success = integration_routing_service.set_routing(
+            function_name=data.get('function_name'),
+            scope_type=data.get('scope_type'),
+            scope_id=data.get('scope_id'),
+            account_id=data.get('account_id'),
+            module=data.get('module', 'bling')
+        )
+        
+        if success:
+            return jsonify({"status": "success", "message": "Regra de roteamento salva!"})
+        else:
+            return jsonify({"status": "error", "message": "Falha ao salvar regra"}), 400
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@integracoes_api_bp.route('/routing/<id>', methods=['DELETE'])
+def delete_routing(id):
+    """Remove uma regra de roteamento."""
+    try:
+        supabase_db.client.table('integration_account_routing').delete().eq('id', id).execute()
+        return jsonify({"status": "success", "message": "Regra removida!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@integracoes_api_bp.route('/bling/lojas', methods=['GET'])
+def get_bling_lojas():
+    """
+    Lista as lojas virtuais cadastradas no Bling.
+    Query params:
+        account_id: ID da conta Bling no installed_integrations (opcional).
+                    Se não informado, tenta pegar a primeira disponível.
+    """
+    try:
+        account_id = request.args.get('account_id')
+        from nistiprint_shared.services.bling.bling_client import BlingClient
+
+        client = None
+
+        if account_id:
+             # Buscar integração específica
+             res = supabase_db.client.table('installed_integrations').select('*').eq('id', account_id).single().execute()
+             if res.data:
+                 client = BlingClient.create_client_from_integration(res.data)
+        else:
+             # Buscar qualquer integração Bling ativa
+             res = supabase_db.client.table('installed_integrations').select('*').eq('module_id', 'bling').eq('is_active', True).limit(1).execute()
+             if res.data:
+                 client = BlingClient.create_client_from_integration(res.data[0])
+
+        if not client:
+             return jsonify({"error": "Nenhuma conta Bling ativa encontrada. Instale o módulo Bling primeiro."}), 404
+
+        lojas = client.get_stores()
+        return jsonify(lojas)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@integracoes_api_bp.route('/bling/accounts', methods=['GET'])
+def get_bling_accounts():
+    """
+    Lista todas as contas Bling instaladas.
+    """
+    try:
+        response = supabase_db.client.table('installed_integrations') \
+            .select('*') \
+            .eq('module_id', 'bling') \
+            .eq('is_active', True) \
+            .execute()
+
+        return jsonify({"accounts": response.data})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 
 

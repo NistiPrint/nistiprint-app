@@ -1,82 +1,133 @@
 # =======================================================
-# NISTIPRINT - DOCKER COMPOSE LOCAL (MONOREPO)
+# NISTIPRINT - DOCKER COMPOSE LOCAL (DESENVOLVIMENTO)
 # =======================================================
-# Uso: docker-compose -f docker-compose.local.yml up -d
-# Sincronizado com a versão estável da raiz.
+# Uso: docker-compose -f docker-compose.local.yml up --build -d
 # =======================================================
 
+# version: '3.8'
+
 services:
-  # --- INFRA ESTRUTURA LOCAL ---
+  # --- INFRA ESTRUTURA ---
   redis:
     image: redis:7-alpine
-    container_name: nistiprint-app-redis-local
+    container_name: local-nistiprint-redis
     restart: unless-stopped
     networks:
-      - app-internal
-    command: redis-server --appendonly yes --maxmemory 256mb
+      - nistiprint-local
+    environment:
+      - TZ=America/Sao_Paulo
+    command: redis-server --appendonly yes
     volumes:
       - redis_local_data:/data
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
 
   # --- BACKEND API ---
   api:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    container_name: nistiprint-app-api-local
+    image: leandrogbreve/nistiprint-api:latest
+    container_name: local-nistiprint-api
     restart: unless-stopped
     networks:
-      - app-internal
+      - nistiprint-local
     ports:
       - "8080:8080"
     environment:
       - FLASK_ENV=development
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - DATABASE_MODE=supabase
+      - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
+      - TZ=America/Sao_Paulo
     env_file:
       - .env
     depends_on:
       - redis
     command: python main.py
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
 
   # --- WORKER ---
   worker:
-    build:
-      context: .
-      dockerfile: apps/worker/Dockerfile
-    container_name: nistiprint-app-worker-local
+    image: leandrogbreve/nistiprint-worker:latest
+    container_name: local-nistiprint-worker
     restart: unless-stopped
     networks:
-      - app-internal
+      - nistiprint-local
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - DATABASE_MODE=supabase
+      - REDIS_HOST=redis
+      - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
+      - TZ=America/Sao_Paulo
     env_file:
       - .env
     depends_on:
       - redis
     command: celery -A worker_entrypoint worker --loglevel=info --concurrency=2
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
+
+  celery-beat:
+    image: leandrogbreve/nistiprint-worker:latest
+    container_name: local-nistiprint-beat
+    restart: unless-stopped
+    networks:
+      - nistiprint-local
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
+      - TZ=America/Sao_Paulo
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    command: celery -A worker_entrypoint beat --loglevel=info
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
 
   # --- FRONTEND ---
   frontend:
-    build:
-      context: ./apps/frontend
-      dockerfile: Dockerfile
-    container_name: nistiprint-app-frontend-local
+    image: leandrogbreve/nistiprint-frontend:latest
+    container_name: local-nistiprint-frontend
     restart: unless-stopped
     networks:
-      - app-internal
+      - nistiprint-local
     ports:
       - "5173:80"
     environment:
       - VITE_API_URL=/api
+      - TZ=America/Sao_Paulo
     depends_on:
       - api
+    logging:
+      driver: "local"
+      options:
+        max-size: "10m"
+        max-file: "10"
+        compress: "true"
 
 networks:
-  app-internal:
+  nistiprint-local:
+    name: local-nistiprint-network
     driver: bridge
 
 volumes:
   redis_local_data:
+    name: local-nistiprint-redis-data

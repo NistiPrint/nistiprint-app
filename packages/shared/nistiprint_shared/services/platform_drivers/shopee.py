@@ -58,17 +58,17 @@ def get_order_detail(integration: Dict, order_sn_list: List[str]) -> Dict:
     }
     
     # Optional fields to get more info (like buyer details, items, etc)
-    optional_fields = "buyer_user_id,buyer_username,recipient_address,item_list,pay_time,total_amount,order_status,fulfillment_flag,package_list,shipping_carrier"
+    optional_fields = "buyer_user_id,buyer_username,recipient_address,item_list,pay_time,total_amount,order_status,fulfillment_flag,package_list,shipping_carrier,message_to_seller"
     params["response_optional_fields"] = optional_fields
     
-    print(f"DEBUG: Shopee API URL: {url}")
-    print(f"DEBUG: Shopee API Params: {params}")
+    # print(f"DEBUG: Shopee API URL: {url}")
+    # print(f"DEBUG: Shopee API Params: {params}")
     
     response = requests.get(url, params=params)
     
     # Log raw response for debugging as requested
-    print(f"DEBUG: Shopee API Raw Response Status: {response.status_code}")
-    print(f"DEBUG: Shopee API Raw Response Body: {response.text}")
+    # print(f"DEBUG: Shopee API Raw Response Status: {response.status_code}")
+    # print(f"DEBUG: Shopee API Raw Response Body: {response.text}")
     
     if response.status_code != 200:
         return {"error": f"Erro na API da Shopee: {response.status_code}", "details": response.text}

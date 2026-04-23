@@ -14,6 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import PageHeader from '@/components/ui/PageHeader';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   Table,
@@ -23,7 +24,7 @@ import {
   TableHeader,
   TableRow
 } from '@/components/ui/table';
-import { Copy, Edit, PlusCircle, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { Copy, Edit, Package, PlusCircle, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -327,163 +328,167 @@ function ProdutoListPage() {
 
 
   return (
-    <Card>
-      <CardHeader className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 pb-6">
-        <div>
-          <CardTitle className="text-2xl font-bold flex items-center gap-2">
-            📦 Catálogo de Produtos
-          </CardTitle>
-          <p className="text-sm text-muted-foreground mt-1">Gerencie seus produtos, composições e integrações.</p>
-        </div>
-        <div className="flex items-center gap-2">
-           {/* Future feature: Update costs */}
-          {/* <Button variant="outline" size="sm" className="hidden md:flex">
-            <RefreshCw className="h-4 w-4 mr-2" /> Atualizar Custos
-          </Button> */}
-          <Link to="/produtos/novo">
-            <Button>
-              <PlusCircle className="h-4 w-4 mr-2" /> Novo Produto
-            </Button>
-          </Link>
-        </div>
-      </CardHeader>
-      <CardContent>
-        {/* Filters Toolbar */}
-        <div className="flex flex-col md:flex-row gap-3 mb-6">
-          <div className="flex-1 flex gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Buscar por SKU ou nome..."
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                className="pl-8"
-              />
+    <div className="container mx-auto py-8 px-4 md:px-6">
+      <PageHeader
+        title="Catálogo de Produtos"
+        icon={Package}
+        description="Gerencie seus produtos, composições e integrações"
+        actions={
+          <div className="flex items-center gap-2">
+            <Link to="/produtos/novo">
+              <Button>
+                <PlusCircle className="h-4 w-4 mr-2" /> Novo Produto
+              </Button>
+            </Link>
+          </div>
+        }
+      />
+
+      <Card className="shadow-sm">
+        <CardContent className="pt-6">
+          {/* Filters Toolbar */}
+          <div className="flex flex-col md:flex-row gap-3 mb-6">
+            <div className="flex-1 flex gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar por SKU ou nome..."
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  className="pl-8"
+                />
+              </div>
+              <Button onClick={handleSearch} variant="secondary">
+                <Search className="h-4 w-4 mr-2" />
+                Pesquisar
+              </Button>
             </div>
-            <Button onClick={handleSearch} variant="secondary">
-              <Search className="h-4 w-4 mr-2" />
-              Pesquisar
-            </Button>
+            <div className="w-full md:w-[180px]">
+              <Select
+                value={categoryFilter}
+                onValueChange={(val) => handleFilterChange('category_id', val)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Categoria" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas as Categorias</SelectItem>
+                  {categorias.map(cat => (
+                    <SelectItem key={cat.id} value={String(cat.id)}>{cat.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-full md:w-[160px]">
+              <Select
+                value={materialTypeFilter}
+                onValueChange={(val) => handleFilterChange('material_type', val)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Nível" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os Níveis</SelectItem>
+                  <SelectItem value="materia_prima">Matéria Prima</SelectItem>
+                  <SelectItem value="intermediario">Intermediário</SelectItem>
+                  <SelectItem value="produto_acabado">Produto Acabado</SelectItem>
+                  <SelectItem value="servico">Serviço</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-full md:w-[140px]">
+              <Select
+                value={statusFilter}
+                onValueChange={(val) => handleFilterChange('status', val)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos Status</SelectItem>
+                  <SelectItem value="ativo">Ativo</SelectItem>
+                  <SelectItem value="rascunho">Rascunho</SelectItem>
+                  <SelectItem value="inativo">Inativo</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-full md:w-[160px]">
+              <Select
+                value={searchParams.get('setor_id') || 'all'}
+                onValueChange={(val) => handleFilterChange('setor_id', val)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Setor" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os Setores</SelectItem>
+                  <SelectItem value="none">Sem Setor</SelectItem>
+                  {setores.map(setor => (
+                    <SelectItem key={setor.id} value={String(setor.id)}>{setor.nome}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          <div className="w-full md:w-[200px]">
-            <Select 
-              value={categoryFilter} 
-              onValueChange={(val) => handleFilterChange('category_id', val)}
-            >
-              <SelectTrigger className="bg-white">
-                <SelectValue placeholder="Categoria" />
-              </SelectTrigger>
-              <SelectContent className="bg-white">
-                <SelectItem value="all">Todas as Categorias</SelectItem>
-                {categorias.map(cat => (
-                  <SelectItem key={cat.id} value={String(cat.id)}>{cat.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="w-full md:w-[200px]">
-            <Select 
-              value={materialTypeFilter} 
-              onValueChange={(val) => handleFilterChange('material_type', val)}
-            >
-              <SelectTrigger className="bg-white">
-                <SelectValue placeholder="Nível do Produto" />
-              </SelectTrigger>
-              <SelectContent className="bg-white">
-                <SelectItem value="all">Todos os Níveis</SelectItem>
-                <SelectItem value="materia_prima">Matéria Prima</SelectItem>
-                <SelectItem value="intermediario">Intermediário</SelectItem>
-                <SelectItem value="produto_acabado">Produto Acabado</SelectItem>
-                <SelectItem value="servico">Serviço</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="w-full md:w-[200px]">
-            <Select
-              value={statusFilter}
-              onValueChange={(val) => handleFilterChange('status', val)}
-            >
-              <SelectTrigger className="bg-white">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent className="bg-white">
-                <SelectItem value="all">Todos Status</SelectItem>
-                <SelectItem value="ativo">Ativo</SelectItem>
-                <SelectItem value="rascunho">Rascunho</SelectItem>
-                <SelectItem value="inativo">Inativo</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="w-full md:w-[200px]">
-            <Select
-              value={searchParams.get('setor_id') || 'all'}
-              onValueChange={(val) => handleFilterChange('setor_id', val)}
-            >
-              <SelectTrigger className="bg-white">
-                <SelectValue placeholder="Setor" />
-              </SelectTrigger>
-              <SelectContent className="bg-white">
-                <SelectItem value="all">Todos os Setores</SelectItem>
-                <SelectItem value="none">Sem Setor</SelectItem>
-                {setores.map(setor => (
-                  <SelectItem key={setor.id} value={String(setor.id)}>{setor.nome}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
 
         {/* Bulk Actions Toolbar */}
         {selectedProductIds.length > 0 && (
-            <div className="flex items-center gap-3 p-3 mb-4 bg-primary/10 rounded-md border border-primary text-primary-foreground">
-                <span className="text-sm font-medium">{selectedProductIds.length} produto(s) selecionado(s)</span>
-                <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setBulkUpdateDialogOpen(true)}
-                    className="bg-white text-primary hover:bg-primary-foreground"
-                >
-                    Alterar Nível do Produto
-                </Button>
-                <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setBulkUpdateCategoryDialogOpen(true)}
-                    className="bg-white text-primary hover:bg-primary-foreground"
-                >
-                    Alterar Categoria
-                </Button>
-                <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setBulkUpdateSetorDialogOpen(true)}
-                    className="bg-white text-primary hover:bg-primary-foreground"
-                >
-                    Alterar Setor
-                </Button>
-                <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setBulkDeleteDialogOpen(true)}
-                    className="bg-red-50 text-red-600 hover:bg-red-100"
-                >
-                    Excluir Selecionados
-                </Button>
+            <div className="flex flex-wrap items-center gap-3 p-4 mb-4 bg-primary/5 rounded-lg border border-primary/20">
+                <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+                    <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold">
+                        {selectedProductIds.length}
+                    </div>
+                    <span className="text-sm font-medium text-primary">produto(s) selecionado(s)</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                    <Button
+                        variant="soft"
+                        size="sm"
+                        onClick={() => setBulkUpdateDialogOpen(true)}
+                    >
+                        Alterar Nível
+                    </Button>
+                    <Button
+                        variant="soft"
+                        size="sm"
+                        onClick={() => setBulkUpdateCategoryDialogOpen(true)}
+                    >
+                        Alterar Categoria
+                    </Button>
+                    <Button
+                        variant="soft"
+                        size="sm"
+                        onClick={() => setBulkUpdateSetorDialogOpen(true)}
+                    >
+                        Alterar Setor
+                    </Button>
+                    <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => setBulkDeleteDialogOpen(true)}
+                    >
+                        Excluir
+                    </Button>
+                </div>
             </div>
         )}
 
         {loading ? (
-          <div className="flex justify-center py-12">
-            <RefreshCw className="h-8 w-8 animate-spin text-primary" />
+          <div className="flex justify-center py-16">
+            <div className="flex flex-col items-center gap-3">
+              <RefreshCw className="h-10 w-10 animate-spin text-primary" />
+              <p className="text-muted-foreground">Carregando produtos...</p>
+            </div>
           </div>
         ) : produtos.length === 0 ? (
-          <div className="text-center py-12 border rounded-md bg-muted/10">
+          <div className="text-center py-16 border rounded-lg bg-muted/30">
+            <Package className="h-12 w-12 mx-auto mb-3 text-muted-foreground/50" />
             <p className="text-lg font-semibold">Nenhum produto encontrado.</p>
-            <p className="text-muted-foreground">Tente ajustar os filtros ou crie um novo produto.</p>
+            <p className="text-muted-foreground mt-1">Tente ajustar os filtros ou crie um novo produto.</p>
           </div>
         ) : (
-          <div className="border rounded-md">
+          <div className="border rounded-lg overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -493,13 +498,13 @@ function ProdutoListPage() {
                         onCheckedChange={handleSelectAll}
                     />
                   </TableHead>
-                  <TableHead>Nome do Produto</TableHead>
-                  <TableHead>SKU</TableHead>
-                  <TableHead>Nível</TableHead>
-                  <TableHead>Setor Responsável</TableHead>
-                  <TableHead>Preço de Venda</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Ações</TableHead>
+                  <TableHead className="font-semibold">Nome do Produto</TableHead>
+                  <TableHead className="font-semibold">SKU</TableHead>
+                  <TableHead className="font-semibold">Nível</TableHead>
+                  <TableHead className="font-semibold">Setor Responsável</TableHead>
+                  <TableHead className="font-semibold text-right">Preço de Venda</TableHead>
+                  <TableHead className="font-semibold">Status</TableHead>
+                  <TableHead className="text-right font-semibold">Ações</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -515,22 +520,24 @@ function ProdutoListPage() {
                       <div className="font-medium flex items-center gap-2">
                         {produto.name}
                         {produto.has_variants && (
-                          <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
+                          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">
                             {produto.variants?.length || 0} variações
                           </span>
                         )}
                       </div>
                     </TableCell>
-                    <TableCell>{produto.sku_mestre || '-'}</TableCell>
+                    <TableCell className="font-mono text-sm">{produto.sku_mestre || '-'}</TableCell>
                     <TableCell>
                        <ProductLevelBadge type={produto.material_type} />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-muted-foreground">
                       {produto.setor_responsavel_nome || '-'}
                     </TableCell>
-                    <TableCell>R$ {produto.price ? parseFloat(produto.price).toFixed(2) : '0.00'}</TableCell>
+                    <TableCell className="text-right font-medium">
+                      R$ {produto.price ? parseFloat(produto.price).toFixed(2) : '0.00'}
+                    </TableCell>
                     <TableCell>
-                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                      <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${
                         produto.status === 'ativo' ? 'bg-green-100 text-green-800' :
                         produto.status === 'rascunho' ? 'bg-yellow-100 text-yellow-800' :
                         'bg-gray-100 text-gray-800'
@@ -601,7 +608,8 @@ function ProdutoListPage() {
             </Button>
           </div>
         </div>
-      </CardContent>
+        </CardContent>
+      </Card>
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={singleDeleteDialogOpen} onOpenChange={setSingleDeleteDialogOpen}>
@@ -785,7 +793,7 @@ function ProdutoListPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Card>
+    </div>
   );
 }
 

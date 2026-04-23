@@ -1,12 +1,41 @@
 from flask import Blueprint, render_template, jsonify, request
 from routes.auth import login_required
 from nistiprint_shared.services.orders_query_service import orders_query_service
+from nistiprint_shared.services.order_service import order_service
+from nistiprint_shared.services.canal_venda_service import canal_venda_service
 from utils.api_response import ApiResponse
 
 vendas_bp = Blueprint('vendas', __name__, url_prefix='/vendas')
 vendas_api_bp = Blueprint('vendas_api', __name__, url_prefix='/api/v2/vendas')
 
-# API Vendas routes
+@vendas_api_bp.route('/order-status-options', methods=['GET'])
+@login_required
+def api_order_status_options():
+    """
+    Retorna as opções de status de pedidos unificados.
+    """
+    try:
+        options = order_service.get_order_status_options()
+        return ApiResponse.success(data={'status_options': options})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return ApiResponse.error(message=str(e), status_code=500)
+
+@vendas_api_bp.route('/canal-venda-options', methods=['GET'])
+@login_required
+def api_canal_venda_options():
+    """
+    Retorna as opções de canais de venda.
+    """
+    try:
+        options = canal_venda_service.get_all()
+        return ApiResponse.success(data={'canal_venda_options': options})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return ApiResponse.error(message=str(e), status_code=500)
+
 @vendas_api_bp.route('/personalizadas', methods=['GET'])
 @login_required
 def api_personalizadas():

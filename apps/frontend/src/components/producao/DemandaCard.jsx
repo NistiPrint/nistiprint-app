@@ -3,27 +3,28 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { usePermissions } from '@/contexts/PermissionsContext';
 import { calculateTimeRemaining, diasRestantes, isUrgente } from '@/lib/demandaUtils';
 import { checkActionRequired } from '@/lib/notificationLogic';
 import {
-  AlertTriangle,
-  ArrowRight,
-  ArrowUp,
-  ArrowUpCircle,
-  CheckCircle,
-  CheckSquare,
-  Edit,
-  MoreVertical,
-  PlayCircle,
-  Printer,
-  Trash2,
-  Truck
+    AlertTriangle,
+    ArrowUp,
+    ArrowUpCircle,
+    Bot,
+    CheckCircle,
+    CheckSquare,
+    Edit,
+    MoreVertical,
+    PlayCircle,
+    Printer,
+    ShoppingCart,
+    Trash2,
+    Truck
 } from 'lucide-react';
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -31,8 +32,8 @@ import { useNavigate } from 'react-router-dom';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Progress } from '@/components/ui/progress';
 import {
-  ChevronDown,
-  ChevronUp
+    ChevronDown,
+    ChevronUp
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -54,6 +55,7 @@ const DemandaCard = React.memo(({
   const navigate = useNavigate();
   const { canEditField, canExecuteAction } = usePermissions();
   const [isExpanded, setIsExpanded] = useState(false);
+  const [showPedidosOrigem, setShowPedidosOrigem] = useState(false);
 
   const diasRest = diasRestantes(demanda.data_entrega);
   const urgente = isUrgente(demanda.data_entrega, demanda.horario_coleta);
@@ -77,17 +79,15 @@ const DemandaCard = React.memo(({
   const isNext = priorityScore >= 50 && priorityScore < 100;
 
   const totalItens = demanda.total_itens || demanda.total_quantidade || 1;
-  // itens_concluidos = itens com capa + miolo prontos (prontos para retirada)
+  // itens_prontos_para_retirar = unidades completas (capa + miolo) no buffer de prontos
   const itensProntosParaRetirar = demanda.itens_concluidos || 0;
-  // completed_quantidade = itens que a expedição já fechou/retirou (coleta consolidada)
-  const itensFechados = demanda.completed_quantidade || 0;
-  // itens_em_fechamento = soma do menor valor entre exp. capas e exp. miolos de cada item
+  // itens_finalizados = itens que foram FINALIZADOS manualmente no dashboard (progresso real)
+  const itensFinalizados = demanda.completed_quantidade || 0;
+  // itens_em_fechamento = soma do menor valor entre exp. capas e exp. miolos (retirados pela expedição)
   const itensEmFechamento = demanda.itens_em_fechamento || 0;
 
-  // Progresso total considera apenas itens finalizados (fechados pela expedição)
-  const percentualConcluido = (itensFechados / totalItens) * 100;
-
-  const isStuck = demanda.is_stuck === true;
+  // Progresso total considera estritamente itens finalizados manualmente
+  const percentualConcluido = (itensFinalizados / totalItens) * 100;
 
   const capasImpressas = demanda.capas_impressas_qtd || 0;
   const capasProduzidas = demanda.capas_produzidas_qtd || 0;
@@ -130,8 +130,9 @@ const DemandaCard = React.memo(({
     { label: 'Capas produzidas', val: capasProduzidas, scope: totalItens, color: '#10b981', bgColor: 'bg-emerald-500' },
     { label: 'Capas prontas', val: capasProntas, scope: totalItens, color: '#eab308', bgColor: 'bg-yellow-500' },
     { label: 'Miolos prontos', val: miolosProntos, scope: totalItens, color: '#ec4899', bgColor: 'bg-pink-500' },
-    { label: 'Itens prontos p/ retirar', val: itensProntosParaRetirar, scope: totalItens, color: '#6b7280', bgColor: 'bg-gray-500' },
-    { label: 'Itens em fechamento', val: itensEmFechamento, scope: totalItens, color: '#8b5cf6', bgColor: 'bg-violet-500' }
+    { label: 'Prontos para retirar', val: itensProntosParaRetirar, scope: totalItens, color: '#6b7280', bgColor: 'bg-gray-500' },
+    { label: 'Sendo fechados (Exp)', val: itensEmFechamento, scope: totalItens, color: '#8b5cf6', bgColor: 'bg-violet-500' },
+    { label: 'Finalizados (Manual)', val: itensFinalizados, scope: totalItens, color: '#22c55e', bgColor: 'bg-green-500' }
   ];
 
   const todoData = [
@@ -139,8 +140,8 @@ const DemandaCard = React.memo(({
     { label: 'Capas a finalizar', val: Math.max(0, capasImpressas - capasProduzidas), scope: totalItens, color: '#f97316', bgColor: 'bg-orange-500' },
     { label: 'Capas a casar', val: Math.max(0, capasProduzidas - capasProntas), scope: totalItens, color: '#fbbf24', bgColor: 'bg-yellow-400' },
     { label: 'Miolos a entregar', val: Math.max(0, totalItens - miolosProntos), scope: totalItens, color: '#ec4899', bgColor: 'bg-pink-500' },
-    { label: 'Itens a retirar', val: Math.max(0, itensProntosParaRetirar - itensFechados), scope: itensProntosParaRetirar, color: '#6b7280', bgColor: 'bg-gray-500' },
-    { label: 'Itens a fechar', val: Math.max(0, itensProntosParaRetirar - itensEmFechamento), scope: itensProntosParaRetirar, color: '#8b5cf6', bgColor: 'bg-violet-500' }
+    { label: 'Faltam retirar', val: Math.max(0, itensProntosParaRetirar - itensEmFechamento), scope: itensProntosParaRetirar, color: '#6b7280', bgColor: 'bg-gray-500' },
+    { label: 'Faltam finalizar', val: Math.max(0, totalItens - itensFinalizados), scope: totalItens, color: '#22c55e', bgColor: 'bg-green-500' }
   ];
 
   const progressData = viewMode === 'done' ? doneData : todoData;
@@ -259,9 +260,34 @@ const DemandaCard = React.memo(({
                     </button>
                   </div>
                 )}
+                {demanda.pedido_id && (
+                  <div className="flex items-center gap-1.5 text-[11px]">
+                    <ShoppingCart className="h-3 w-3 text-blue-500" />
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); navigate(`/vendas/pedidos-unificados?searchTerm=${demanda.pedido_numero}`); }}
+                      className="text-blue-600 hover:underline font-semibold"
+                    >
+                      Pedido: {demanda.pedido_numero}
+                    </button>
+                  </div>
+                )}
               </div>
               
               <div className="flex flex-wrap gap-1.5">
+                {/* Origem da demanda */}
+                {demanda.origem_demanda === 'AUTOMATICA' && (
+                  <Badge className="bg-blue-100 text-blue-700 border-blue-300 text-[10px] px-1.5 h-5 gap-1">
+                    <Bot className="h-3 w-3" />
+                    Automática
+                  </Badge>
+                )}
+                {demanda.origem_demanda === 'MANUAL' && (
+                  <Badge className="bg-gray-100 text-gray-700 border-gray-300 text-[10px] px-1.5 h-5 gap-1">
+                    <Edit className="h-3 w-3" />
+                    Manual
+                  </Badge>
+                )}
+
                 {isExpress && <Badge className="bg-purple-600 text-white border-none text-[10px] px-1.5 h-5">EXPRESS</Badge>}
                 {isEmergency && <Badge className="bg-red-600 text-white border-none animate-pulse text-[10px] px-1.5 h-5">PRIORIDADE MÁXIMA</Badge>}
                 {isLastChance && urgente && <Badge className="bg-orange-600 text-white border-none text-[10px] px-1.5 h-5">⚠️ ÚLTIMA CHANCE</Badge>}
@@ -278,7 +304,6 @@ const DemandaCard = React.memo(({
                     diasRest > 3
                   );
                 })() && <Badge className="bg-teal-600 text-white border-none text-[10px] px-1.5 h-5">LATERAL</Badge>}
-                {isStuck && <Badge className="bg-amber-500 text-white border-none animate-pulse text-[10px] px-1.5 h-5">⚠️ TRAVADO</Badge>}
                 {modalidadeLogistica && modalidadeLogistica !== 'STANDARD' && (
                   <Badge className="bg-blue-100 text-blue-800 border-none text-[10px] px-1.5 h-5">
                     {modalidadeLogistica === 'EXPRESS' ? 'EXPRESS' :
@@ -298,19 +323,6 @@ const DemandaCard = React.memo(({
           </div>
 
           <div className="flex items-center gap-1">
-             {isStuck && isMainLine && (
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
-                  className="hidden md:flex items-center gap-1 text-amber-600 hover:text-amber-700 hover:bg-amber-50 text-[10px] font-bold"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    document.getElementById('side-tracks-section')?.scrollIntoView({ behavior: 'smooth' });
-                  }}
-                >
-                  Ver Encaixes <ArrowRight className="h-3 w-3" />
-                </Button>
-             )}
              <div className="text-right mr-2 hidden sm:block">
                 <div className={`text-xs font-bold ${timeRemainingObj.color}`}>
                   {timeRemainingObj.text || (diasRest > 0 ? `${diasRest}d` : 'Vencido')}
@@ -348,6 +360,9 @@ const DemandaCard = React.memo(({
                     <div className="h-px bg-gray-200 my-1" />
                   </>
                 )}
+                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setShowPedidosOrigem(true); }}>
+                  <List className="mr-2 h-4 w-4" /> Ver Pedidos Relacionados
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={(e) => { e.stopPropagation(); navigate(`/producao/demanda/${demanda.id}/dashboard`); }}>
                   <PlayCircle className="mr-2 h-4 w-4" /> Abrir Dashboard
                 </DropdownMenuItem>
@@ -398,12 +413,7 @@ const DemandaCard = React.memo(({
                   <AlertTriangle className="h-3 w-3 mr-1" /> DESCOMPASSO SETORES
                 </Badge>
               )}
-              {isLateral && demanda.readiness_score > 0 && (
-                <span className="text-[10px] font-bold text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded">
-                  PRONTIDÃO: {demanda.readiness_score}%
-                </span>
-              )}
-              <span className="text-[10px] font-bold text-gray-900">{Math.round(percentualConcluido)}% ({itensFechados}/{totalItens})</span>
+              <span className="text-[10px] font-bold text-gray-900">{Math.round(percentualConcluido)}% ({itensFinalizados}/{totalItens})</span>
             </div>
           </div>
           <Progress value={percentualConcluido} className="h-1.5" indicatorClassName={percentualConcluido === 100 ? 'bg-green-500' : ''} />
@@ -431,6 +441,37 @@ const DemandaCard = React.memo(({
           </div>
         )}
       </div>
+
+      {/* Dialog for viewing related orders */}
+      <Dialog open={showPedidosOrigem} onOpenChange={setShowPedidosOrigem}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Pedidos Relacionados - {demanda.nome}</DialogTitle>
+          </DialogHeader>
+          {demanda.pedidos_origem && demanda.pedidos_origem.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Código Pedido Externo</TableHead>
+                  <TableHead>Número Pedido</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {demanda.pedidos_origem.map((pedido, idx) => (
+                  <TableRow key={idx}>
+                    <TableCell>{pedido.codigo_pedido_externo || '-'}</TableCell>
+                    <TableCell>{pedido.numero_pedido || '-'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="text-center py-8 text-gray-500">
+              Nenhum pedido relacionado encontrado.
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 });

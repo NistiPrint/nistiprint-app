@@ -7,7 +7,7 @@ import datetime
 import base64
 import requests
 import time
-from typing import List
+from typing import List, Dict
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from ...constants import PLATFORM_X_CNPJ
@@ -48,6 +48,9 @@ class BlingClient:
             self.expires_in = expires_in or 0
         self.client_id = account_data.get('client_id')
         self.client_secret = account_data.get('client_secret')
+        
+        # Cache de produtos para reduzir API calls
+        self._product_cache = {}
 
         # Timestamp da criação das credenciais
         created_at_raw = account_data.get('created_at')
@@ -121,6 +124,22 @@ class BlingClient:
         return BlingClient(account_data)
 
     @staticmethod
+    def create_client_for_integration_id(integration_id: int):
+        """
+        Carrega uma instância em installed_integrations pelo ID e retorna BlingClient.
+        Exige module_id = 'bling'.
+        """
+        if not integration_id:
+            raise ValueError("integration_id é obrigatório")
+        res = supabase_db.table('installed_integrations').select("*").eq('id', integration_id).execute()
+        if not res.data:
+            raise ValueError(f"Integração instalada {integration_id} não encontrada")
+        row = res.data[0]
+        if str(row.get('module_id', '')).lower() != 'bling':
+            raise ValueError(f"Integração {integration_id} não é Bling (module_id={row.get('module_id')})")
+        return BlingClient.create_client_from_integration(row)
+
+    @staticmethod
     def create_client(**kwargs):
         """Cria uma instância de BlingClient baseada em installed_integrations. (Otimizado)"""
         from nistiprint_shared.database.supabase_db_service import supabase_db
@@ -164,12 +183,14 @@ class BlingClient:
         return BlingClient(account_data)
 
     @staticmethod
-    def create_client_for_platform(platform_name, instance_name: str = None):
-        """Cria uma instância de BlingClient para uma plataforma específica, usando configurações.
+    def create_client_for_platform(platform_name, instance_name: str = None, channel_id: int = None, function_name: str = 'ORDER_IMPORT'):
+        """Cria uma instância de BlingClient para uma plataforma específica, usando configurações e roteamento.
 
         Args:
             platform_name (str): Nome da plataforma (ex: 'Shopee', 'Amazon').
             instance_name (str, optional): Nome específico da instância (para múltiplas contas da mesma plataforma).
+            channel_id (int, optional): ID do canal de venda para roteamento granular.
+            function_name (str): Função da integração (ORDER_IMPORT, NFE_EMISSION, etc).
 
         Returns:
             BlingClient: Instância configurada.
@@ -179,11 +200,55 @@ class BlingClient:
         """
         from nistiprint_shared.services.app_config_service import app_config_service
         from nistiprint_shared.services.conta_bling_service import conta_bling_service
+        from nistiprint_shared.services.integration_routing_service import integration_routing_service
+        from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
         from ...constants import PLATFORM_X_CNPJ
 
-        print(f"🔍 Buscando cliente Bling para plataforma: {platform_name}, instância: {instance_name}")
+        print(f"🔍 Buscando cliente Bling para plataforma: {platform_name}, canal: {channel_id}, função: {function_name}")
 
-        # 1. Tentar buscar configuração dinâmica por binding específico
+        # 0. Tentar resolver via novo serviço de vínculos (se channel_id fornecido)
+        if channel_id:
+            config = integracao_canal_service.get_integration_by_canal(channel_id, expected_module='bling')
+            if config and config.get('integration_id'):
+                # Buscar integração e criar client
+                try:
+                    res = supabase_db.table('installed_integrations').select("*").eq('id', config['integration_id']).execute()
+                    if res.data:
+                        print(f"✅ Vínculo encontrado: Canal {channel_id} → Bling Integration {config['integration_id']}")
+                        return BlingClient.create_client_from_integration(res.data[0])
+                    else:
+                        print(f"⚠️ Vínculo do Canal {channel_id} aponta para integração ID {config['integration_id']}, mas ela não foi encontrada.")
+                except Exception as e:
+                    print(f"⚠️ Erro ao buscar integração por vínculo: {e}")
+        
+        # 1. Tentar roteamento inteligente (Nova Arquitetura)
+        account_id = integration_routing_service.get_account_id(
+            function_name=function_name,
+            module='bling',
+            channel_id=channel_id,
+            platform_name=platform_name
+        )
+
+        if account_id:
+            print(f"✅ Roteamento encontrado: Account ID '{account_id}'")
+            
+            # Tentar carregar de installed_integrations primeiro (Nova arquitetura)
+            try:
+                # Se account_id for numérico ou puder ser, tenta na installed_integrations
+                res = supabase_db.table('installed_integrations').select("*").eq('id', account_id).eq('module_id', 'bling').execute()
+                if res.data:
+                    return BlingClient.create_client_from_integration(res.data[0])
+            except:
+                pass
+
+            # Fallback para contas_bling (Legado)
+            account = conta_bling_service.get_by_id(account_id)
+            if account:
+                return BlingClient(account)
+            else:
+                print(f"⚠️ Conta roteada '{account_id}' não encontrada em nenhuma tabela. Tentando fallback.")
+
+        # 2. Tentar buscar configuração dinâmica por binding específico (Legado/AppConfig)
         bindings = app_config_service.get_config('platform_account_bindings') or {}
 
         # Criar chave composta se tiver nome de instância
@@ -231,7 +296,11 @@ class BlingClient:
         raise ValueError(f"Nenhuma conta Bling configurada ou encontrada para a plataforma: {platform_name}")
 
     def _get_valid_token(self):
-        """Retorna o token de acesso atual."""
+        """
+        Retorna o token de acesso atual. 
+        O refresh automático está desabilitado nesta aplicação pois o gerenciamento 
+        é feito por uma função externa (Firestore Sync).
+        """
         return self.access_token
 
     def _update_token_cache(self, now):
@@ -367,6 +436,10 @@ class BlingClient:
             'Authorization': f'Bearer {access_token}'
         }
 
+        # Log de depuração do token (apenas últimos 6 caracteres por segurança)
+        token_preview = f"...{access_token[-6:]}" if access_token and len(access_token) > 6 else "INVALID"
+        print(f"📡 [BLING API] {method.upper()} {endpoint} | Auth: Bearer {token_preview}")
+
         headers.update(kwargs.pop('headers', {}))
 
         try:
@@ -385,25 +458,24 @@ class BlingClient:
     # ==================== MÉTODOS ADMINISTRATIVOS ====================
 
     def check_token_simple(self):
-        """Verifica se o token é válido através de chamada simples à API (/empresas/me/dados-basicos)."""
+        """Verifica se o token é válido através de chamada simples à API (/empresas/me/dados-basicos).
+        Esta função NÃO tenta refrescar o token, ela apenas verifica o estado atual do token.
+        """
+        if not self.access_token:
+            return False
+
+        # Tenta verificar se o token está ativo sem usar _get_valid_token para evitar refresh
+        url = f"https://api.bling.com.br/Api/v3/empresas/me/dados-basicos"
+        headers = {
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {self.access_token}'
+        }
+
         try:
-            # Chamada direta sem usar _get_valid_token() para evitar refresh automático desnecessário
-            url = f"https://api.bling.com.br/Api/v3/empresas/me/dados-basicos"
-            headers = {
-                'Accept': 'application/json',
-                'Authorization': f'Bearer {self.access_token}'
-            }
-
-            response = requests.get(url, headers=headers, timeout=30)
-
-            if response.status_code == 200:
-                data = response.json()
-                return 'data' in data
-
+            response = requests.get(url, headers=headers, timeout=10)
+            return response.status_code == 200 and 'data' in response.json()
         except Exception:
-            pass
-
-        return False
+            return False
 
     def get_basic_account_info(self):
         """Obtém informações básicas da conta através da API."""
@@ -424,8 +496,119 @@ class BlingClient:
         Returns:
             dict: Dados do produto ou None em caso de erro
         """
+        # Verificar cache primeiro
+        if product_id in self._product_cache:
+            return self._product_cache[product_id]
+
         response = self._request('GET', f'produtos/{str(product_id)}')
-        return response.get('data') if response else None
+        product = response.get('data') if response else None
+
+        # Cache para próxima verificação
+        if product:
+            self._product_cache[product_id] = product
+
+        return product
+
+    def is_product_personalized(self, product_id: int, custom_field_id: int = 2797770) -> bool:
+        """
+        Verifica se um produto é personalizado.
+
+        Critérios (por ordem de prioridade/eficiência):
+        1. Nome do produto contém "personaliza" (case-insensitive) → SEM API call (se cacheado)
+        2. Tem campo customizado com id == custom_field_id E valor == "true" → REQUER API call
+
+        Esta ordem otimiza reduzindo chamadas à API do Bling.
+
+        Args:
+            product_id (int): ID do produto no Bling
+            custom_field_id (int): ID do campo customizado de personalização (default: 2797770)
+
+        Returns:
+            bool: True se produto é personalizado, False caso contrário
+        """
+        # Buscar produto (usa cache interno se disponível)
+        product = self.get_product(product_id)
+        if not product:
+            return False
+
+        # Critério 1: Nome do produto (mais rápido, sem API call adicional)
+        if 'personaliza' in product.get('nome', '').lower():
+            return True
+
+        # Critério 2: Campo customizado (requer parsing dos dados)
+        for campo in product.get('camposCustomizados', []):
+            if (campo.get('idCampoCustomizado') == custom_field_id and
+                str(campo.get('valor', '')).lower() == 'true'):
+                return True
+
+        return False
+
+    def get_products_by_ids(self, product_ids: List[int]) -> Dict[int, dict]:
+        """
+        Busca múltiplos produtos de uma vez (otimização para pedidos com muitos itens).
+
+        Args:
+            product_ids (List[int]): Lista de IDs de produtos
+
+        Returns:
+            Dict[int, dict]: Dicionário {product_id: product_data}
+        """
+        products = {}
+        for pid in product_ids:
+            if pid in self._product_cache:
+                products[pid] = self._product_cache[pid]
+            else:
+                product = self.get_product(pid)
+                if product:
+                    products[pid] = product
+                    # Cache é atualizado automaticamente no get_product()
+                else:
+                    products[pid] = None
+        return products
+
+    def identify_personalized_products_batch(
+        self,
+        product_ids: List[int],
+        custom_field_id: int = 2797770
+    ) -> Dict[int, bool]:
+        """
+        Verifica múltiplos produtos de uma vez.
+
+        Args:
+            product_ids (List[int]): Lista de IDs de produtos
+            custom_field_id (int): ID do campo customizado de personalização
+
+        Returns:
+            Dict[int, bool]: Dicionário {product_id: is_personalized}
+        """
+        products = self.get_products_by_ids(product_ids)
+        results = {}
+
+        for pid, product in products.items():
+            if not product:
+                results[pid] = False
+                continue
+
+            # Critério 1: Nome (rápido)
+            if 'personaliza' in product.get('nome', '').lower():
+                results[pid] = True
+                continue
+
+            # Critério 2: Campo customizado
+            is_personalized = False
+            for campo in product.get('camposCustomizados', []):
+                if (campo.get('idCampoCustomizado') == custom_field_id and
+                    str(campo.get('valor', '')).lower() == 'true'):
+                    is_personalized = True
+                    break
+
+            results[pid] = is_personalized
+
+        return results
+
+    def clear_product_cache(self):
+        """Limpa cache de produtos."""
+        self._product_cache = {}
 
     def get_stores(self):
         """Busca a lista de lojas virtuais cadastradas no Bling.
@@ -543,6 +726,42 @@ class BlingClient:
             order['error_message'] = f"Erro inesperado: {str(e)}"
             return order
 
+    def get_order_numbers_by_store_numbers(self, order_numbers: list):
+        """Busca o mapeamento de IDs da loja para números do Bling (otimizado).
+
+        Diferente do get_orders_by_store_numbers, este método NÃO busca os detalhes
+        completos de cada pedido, usando apenas os dados retornados na listagem inicial.
+
+        Args:
+            order_numbers (list): Lista de números de pedido da loja (numeroLoja)
+
+        Returns:
+            list: Lista de dicionários com {'id', 'numero', 'numeroLoja'}
+        """
+        if not order_numbers:
+            return []
+
+        results = []
+        # Dividir os pedidos em chunks de 100 (limite da API do Bling)
+        chunks = [order_numbers[i:i + 100] for i in range(0, len(order_numbers), 100)]
+
+        for chunk in chunks:
+            # Construir parâmetros da URL usando numerosLojas[]
+            params = [('numerosLojas[]', str(num)) for num in chunk]
+            
+            # Fazer a requisição para a listagem de pedidos
+            response = self._request('GET', 'pedidos/vendas', params=params)
+
+            if response and response.get('data'):
+                for item in response['data']:
+                    results.append({
+                        'id': item.get('id'),
+                        'numero': item.get('numero'),
+                        'numeroLoja': item.get('numeroLoja')
+                    })
+
+        return results
+
     def get_orders_by_store_numbers(self, order_numbers: list):
         """Busca pedidos por números da loja.
 
@@ -611,7 +830,7 @@ class BlingClient:
             end_date (str): Data final (formato YYYY-MM-DD)
 
         Returns:
-            list: Lista de todos os pedidos encontrados
+            list: Lista de todos os pedidos encontrados (ordenados do mais recente para o mais antigo)
         """
         all_orders = []
         page = 1
@@ -624,7 +843,9 @@ class BlingClient:
                 'idLoja': store_id,
                 'dataInicial': start_date,
                 'dataFinal': end_date,
-                'limite': 100
+                'limite': 100,
+                'ordenacao': 'numeroPedido',
+                'ordem': 'desc'
             }
 
             url = "pedidos/vendas"

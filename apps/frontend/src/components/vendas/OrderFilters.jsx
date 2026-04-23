@@ -1,12 +1,21 @@
 import { Input } from '@/components/ui/input';
 import { Search } from 'lucide-react';
 
+/**
+ * OrderFilters — busca + filtros simplificados para pedidos personalizados.
+ *
+ * Filtros:
+ *   - Todos
+ *   - Sem Chat
+ *   - Nome Identificado (SUCCESS)
+ *   - A Revisar (NEEDS_REVIEW)
+ */
 function OrderFilters({ searchTerm, onSearchChange, statusFilter, onStatusFilterChange, statusCounts }) {
   const filterOptions = [
-    { key: '', label: 'Todos', count: statusCounts.all },
-    { key: 'success', label: 'Nome identificado', count: statusCounts.success },
-    { key: 'needs_review', label: 'Revisar', count: statusCounts.needs_review },
-    { key: 'no_personalization', label: 'Sem nome', count: statusCounts.no_personalization },
+    { key: '', label: 'Todos', count: statusCounts?.all ?? 0 },
+    { key: 'sem_chat', label: 'Sem Chat', count: statusCounts?.sem_chat ?? 0 },
+    { key: 'nome_identificado', label: 'Nome Identificado', count: statusCounts?.nome_identificado ?? 0 },
+    { key: 'a_revisar', label: 'A Revisar', count: statusCounts?.a_revisar ?? 0 },
   ];
 
   return (
@@ -28,7 +37,7 @@ function OrderFilters({ searchTerm, onSearchChange, statusFilter, onStatusFilter
           </div>
         </div>
 
-        {/* Filtros por Status */}
+        {/* Filtros */}
         <div className="lg:col-span-8">
           <div className="flex flex-wrap gap-2">
             {filterOptions.map((option) => (
@@ -45,24 +54,6 @@ function OrderFilters({ searchTerm, onSearchChange, statusFilter, onStatusFilter
               </button>
             ))}
           </div>
-        </div>
-      </div>
-
-      {/* Informações adicionais */}
-      <div className="mt-3 pt-3 border-t border-gray-100">
-        <div className="text-xs text-gray-500 flex flex-wrap gap-4">
-          <span>
-            <strong className="text-blue-600">{statusCounts.success}</strong> nomes identificados
-          </span>
-          <span>
-            <strong className="text-orange-600">{statusCounts.needs_review}</strong> precisam revisão
-          </span>
-          <span>
-            <strong className="text-red-600">{statusCounts.no_personalization}</strong> sem personalização
-          </span>
-          <span>
-            <strong className="text-gray-600">{statusCounts.all}</strong> total de pedidos
-          </span>
         </div>
       </div>
     </div>

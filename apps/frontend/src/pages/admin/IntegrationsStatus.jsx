@@ -1,39 +1,37 @@
-import QueueMonitor from '@/components/admin/QueueMonitor';
 import LiveOrderConsultation from '@/components/marketplace/LiveOrderConsultation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import MarketplaceService from '@/services/MarketplaceService';
-import { AlertCircle, CheckCircle2, Copy, ExternalLink, Plus, RefreshCw, Settings2, Trash2, Zap } from 'lucide-react';
+import * as integracaoCanalService from '@/services/integracaoCanalService';
+import { AlertCircle, CheckCircle2, Plus, RefreshCw, Trash2, Zap, Package, Building2, HelpCircle, Database, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import BlingInstanceConfigModal from '@/pages/integracoes/BlingInstanceConfigModal';
 
 export default function IntegrationsStatus({ onAddClick }) {
   const [integrations, setIntegrations] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
   const [testingId, setTestingId] = useState(null);
-  const [selectedIntegration, setSelectedIntegration] = useState(null);
-  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [moduleFilter, setModuleFilter] = useState('all');
+  const [configModalOpen, setConfigModalOpen] = useState(false);
+  const [selectedIntegrationId, setSelectedIntegrationId] = useState(null);
+
+  const handleOpenConfig = (id) => {
+    setSelectedIntegrationId(id);
+    setConfigModalOpen(true);
+  };
 
   const fetchIntegrations = async () => {
     try {
       setLoading(true);
       const data = await MarketplaceService.getInstalledIntegrations();
       if (data.success === false) {
-        // Em caso de erro, define como array vazio
         setIntegrations([]);
       } else {
-        // Caso contrário, extrai o array installations do objeto retornado
         setIntegrations(data.installations || []);
       }
     } catch (error) {
@@ -48,33 +46,16 @@ export default function IntegrationsStatus({ onAddClick }) {
     fetchIntegrations();
   }, []);
 
-  const handleRenew = async (id) => {
-    try {
-      toast.info("Iniciando renovação manual...");
-      const data = await MarketplaceService.renewToken(id);
-      
-      if (data.status === 'success') {
-        toast.success(data.message);
-        fetchIntegrations();
-      } else {
-        toast.error(data.message || "Erro na renovação");
-      }
-    } catch (error) {
-      const errorMsg = error.response?.data?.message || error.response?.data?.error || "Erro na comunicação com o servidor";
-      toast.error(errorMsg);
-    }
-  };
-
   const handleTest = async (id) => {
     try {
       setTestingId(id);
       toast.info("Executando teste de conexão...");
       const data = await MarketplaceService.testIntegration(id);
-      
+
       if (data.success) {
         const result = data.result;
         const isError = result.error || result.err_code || (result.message && result.message.includes("error"));
-        
+
         if (!isError) {
           toast.success("Teste concluído: Conexão OK!");
         } else {
@@ -103,55 +84,90 @@ export default function IntegrationsStatus({ onAddClick }) {
   };
 
   const handleSyncFirestore = async () => {
+    setSyncing(true);
     try {
-      setSyncing(true);
-      toast.info("Sincronizando com Firestore...");
-      const response = await fetch('/api/v2/integracoes/sync-firestore', { method: 'POST' });
-      const data = await response.json();
-      if (data.status === 'success') {
-        toast.success(data.message);
-        fetchIntegrations();
+      const result = await integracaoCanalService.syncFirestore();
+      if (result.status === 'success') {
+        toast.success('Tokens sincronizados com sucesso do Firestore!');
+        fetchIntegrations(); // Refresh para atualizar status
       } else {
-        toast.error(data.message);
+        toast.error('Falha ao sincronizar tokens. Verifique os logs.');
       }
-    } catch (error) {
-      toast.error("Erro na sincronização");
+    } catch (err) {
+      console.error('Erro ao sincronizar Firestore:', err);
+      toast.error('Falha ao sincronizar tokens do Firestore.');
     } finally {
       setSyncing(false);
     }
   };
 
-  const openDetails = (integration) => {
-    setSelectedIntegration(integration);
-    setIsDetailsOpen(true);
+  const handleRenewToken = async (instanceId, instanceName) => {
+    if (!confirm(`Deseja renovar o token da integração "${instanceName}"?`)) return;
+
+    try {
+      toast.info("Renovando token...");
+      await integracaoCanalService.renewToken(instanceId);
+      toast.success('Token renovado com sucesso!');
+      fetchIntegrations(); // Refresh para atualizar status
+    } catch (error) {
+      console.error('Erro ao renovar token:', error);
+      toast.error(`Erro ao renovar token: ${error.message || 'Tente novamente'}`);
+    }
   };
 
-  const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text);
-    toast.success("Copiado para a área de transferência!");
-  };
+  // Filtrar integrações por módulo
+  const filteredIntegrations = moduleFilter === 'all' 
+    ? integrations 
+    : integrations.filter(i => {
+        if (moduleFilter === 'bling') return i.module_id === 'bling';
+        if (moduleFilter === 'marketplace') return i.module_id !== 'bling';
+        return true;
+      });
 
-  const getWebhookUrl = (integration) => {
-    const baseUrl = window.location.origin;
-    return `${baseUrl}/api/v2/webhooks/${integration.module_id}/${integration.id}`;
-  };
+  // Contadores
+  const totalBling = integrations.filter(i => i.module_id === 'bling').length;
+  const totalMarketplace = integrations.filter(i => i.module_id !== 'bling').length;
 
   return (
     <div className="space-y-6">
-      <QueueMonitor />
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-semibold">Integrações Instaladas</h2>
+      <div className="flex justify-between items-center gap-4 flex-wrap">
+        <div className="flex items-center gap-2">
+          <h2 className="text-xl font-semibold">Integrações Instaladas</h2>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger>
+                <HelpCircle className="h-4 w-4 text-muted-foreground" />
+              </TooltipTrigger>
+              <TooltipContent className="max-w-md">
+                <p className="text-sm">
+                  <strong>Integrações</strong> são conexões configuradas com plataformas externas.
+                </p>
+                <ul className="text-xs mt-2 space-y-1">
+                  <li>• <strong>Bling (ERP):</strong> Gerencia pedidos, produtos e notas fiscais</li>
+                  <li>• <strong>Marketplaces:</strong> Shopee, Amazon, Mercado Livre, etc.</li>
+                </ul>
+                <p className="text-xs mt-2 text-muted-foreground">
+                  💡 Dica: Você precisa de pelo menos uma integração Bling e uma de marketplace para importar pedidos.
+                </p>
+                <p className="text-xs mt-2 text-blue-600 font-medium">
+                  🔑 <strong>Renovar Token:</strong> Use o botão "Renovar" nos cards de marketplace.
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
         <div className="flex gap-2">
-          <Button 
-            variant="outline" 
-            size="sm"
-            onClick={handleSyncFirestore} 
-            disabled={syncing}
-            className="flex items-center gap-2"
-          >
-            <RefreshCw className={`h-3 w-3 ${syncing ? 'animate-spin' : ''}`} />
-            Sync Legacy
-          </Button>
+          {totalBling > 0 && (
+            <Button
+              variant="outline"
+              onClick={handleSyncFirestore}
+              disabled={syncing}
+              className="gap-2"
+            >
+              <Database className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
+              {syncing ? 'Sincronizando...' : 'Sincronizar Bling'}
+            </Button>
+          )}
           <Button onClick={onAddClick} className="flex items-center gap-2">
             <Plus className="h-4 w-4" />
             Nova Integração
@@ -159,208 +175,131 @@ export default function IntegrationsStatus({ onAddClick }) {
         </div>
       </div>
 
-      <div className="grid gap-6">
-        {loading ? (
-          <div className="flex justify-center p-12">
-            <RefreshCw className="h-8 w-8 animate-spin text-primary" />
-          </div>
-        ) : integrations.length === 0 ? (
-          <Card>
-            <CardContent className="p-12 text-center flex flex-col items-center gap-4">
-              <p className="text-muted-foreground">Nenhuma integração encontrada.</p>
-              <Button onClick={onAddClick} variant="outline">
-                Adicionar Integração
-              </Button>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {integrations.map((item) => (
-              <Card key={item.id} className="overflow-hidden">
-                <CardHeader className="bg-muted/50 pb-4">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <Badge variant="secondary" className="mb-2">
-                        {item.module_id ? item.module_id.toUpperCase() : 'UNKNOWN'}
-                      </Badge>
-                      <CardTitle className="text-xl">{item.instance_name}</CardTitle>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button 
-                        variant="ghost" 
-                        size="icon" 
-                        className="h-8 w-8"
-                        onClick={() => openDetails(item)}
-                      >
-                        <Settings2 className="h-4 w-4" />
-                      </Button>
-                      {item.is_active ? (
-                        <CheckCircle2 className="h-5 w-5 text-green-500" />
-                      ) : (
-                        <AlertCircle className="h-5 w-5 text-red-500" />
-                      )}
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="pt-6 space-y-4">
-                  <div className="text-sm space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Status Sync:</span>
-                      <span className="font-medium capitalize">
-                        {item.sync_status || 'Pendente'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Último Sync:</span>
-                      <span className="font-medium">
-                        {item.last_sync ? new Date(item.last_sync).toLocaleString() : 'Nunca'}
-                      </span>
-                    </div>
-                    {item.expires_at && (
-                        <div className="flex justify-between">
-                        <span className="text-muted-foreground">Expira em:</span>
-                        <span className="font-medium">
-                            {new Date(item.expires_at).toLocaleString()}
-                        </span>
-                        </div>
-                    )}
-                  </div>
+      {/* Filtros por tipo de integração */}
+      <Tabs value={moduleFilter} onValueChange={setModuleFilter} className="w-full">
+        <TabsList className="grid w-full max-w-md grid-cols-3">
+          <TabsTrigger value="all" className="flex items-center gap-2">
+            <Package className="h-4 w-4" />
+            Todas ({integrations.length})
+          </TabsTrigger>
+          <TabsTrigger value="bling" className="flex items-center gap-2">
+            <Building2 className="h-4 w-4" />
+            ERP (Bling) ({totalBling})
+          </TabsTrigger>
+          <TabsTrigger value="marketplace" className="flex items-center gap-2">
+            <Package className="h-4 w-4" />
+            Marketplaces ({totalMarketplace})
+          </TabsTrigger>
+        </TabsList>
 
-                  {item.refresh_error && (
-                    <div className="bg-red-50 border border-red-100 p-2 rounded text-xs text-red-700 mt-2">
-                      <p className="font-bold mb-1 flex items-center gap-1">
-                        <AlertCircle className="h-3 w-3" /> Erro:
-                      </p>
-                      {item.refresh_error}
-                    </div>
-                  )}
-
-                                      <div className="flex gap-2">
-
-                                        <LiveOrderConsultation 
-
-                                          integrationId={item.id} 
-
-                                          moduleName={item.instance_name} 
-
-                                          moduleId={item.module_id}
-
-                                        />
-
-                                        <Button 
-
-                                          variant="secondary"
-
-                                          className="flex-1 flex items-center gap-2" 
-
-                                          onClick={() => handleRenew(item.id)}
-
-                                        >
-
-                                          <RefreshCw className="h-4 w-4" />
-
-                                          Renovar
-
-                                        </Button>
-
-                  
-                    <Button 
-                      variant="outline"
-                      className="flex items-center gap-2" 
-                      onClick={() => handleTest(item.id)}
-                      disabled={testingId === item.id}
-                    >
-                      <Zap className={`h-4 w-4 ${testingId === item.id ? 'animate-pulse text-yellow-500' : ''}`} />
-                      Testar
-                    </Button>
-                    <Button 
-                      variant="destructive"
-                      size="icon"
-                      onClick={() => handleDelete(item.id, item.instance_name)}
-                      title="Excluir Integração"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Details Modal */}
-      <Dialog open={isDetailsOpen} onOpenChange={setIsDetailsOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Settings2 className="h-5 w-5" />
-              Configurações Técnicas: {selectedIntegration?.instance_name}
-            </DialogTitle>
-            <DialogDescription>
-              Informações para configuração de webhooks e monitoramento.
-            </DialogDescription>
-          </DialogHeader>
-
-          {selectedIntegration && (
-            <div className="space-y-6 py-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <Label className="text-muted-foreground text-xs uppercase">ID da Instância</Label>
-                  <div className="flex items-center gap-2 bg-muted p-2 rounded-md">
-                    <code className="text-xs font-mono flex-1">{selectedIntegration.id}</code>
-                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(selectedIntegration.id)}>
-                      <Copy className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-muted-foreground text-xs uppercase">Módulo</Label>
-                  <div className="p-2 bg-muted rounded-md text-sm font-medium">
-                    {selectedIntegration.module_id.toUpperCase()}
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label className="text-sm font-bold flex items-center gap-2 text-primary">
-                  URL de Webhook (Callback)
-                </Label>
-                <div className="flex items-center gap-2">
-                  <Input 
-                    readOnly 
-                    value={getWebhookUrl(selectedIntegration)}
-                    className="font-mono text-xs bg-muted/50"
-                  />
-                  <Button variant="outline" size="icon" onClick={() => copyToClipboard(getWebhookUrl(selectedIntegration))}>
-                    <Copy className="h-4 w-4" />
-                  </Button>
-                </div>
-                <p className="text-[0.7rem] text-muted-foreground italic">
-                  Cadastre esta URL no painel da {selectedIntegration.module_id.toUpperCase()} para receber notificações de pedidos e estoque em tempo real.
+        <div className="grid gap-6 mt-4">
+          {loading ? (
+            <div className="flex justify-center p-12">
+              <RefreshCw className="h-8 w-8 animate-spin text-primary" />
+            </div>
+          ) : filteredIntegrations.length === 0 ? (
+            <Card>
+              <CardContent className="p-12 text-center flex flex-col items-center gap-4">
+                <p className="text-muted-foreground">
+                  {moduleFilter === 'bling' 
+                    ? 'Nenhuma integração Bling encontrada.' 
+                    : moduleFilter === 'marketplace'
+                    ? 'Nenhuma integração de marketplace encontrada.'
+                    : 'Nenhuma integração encontrada.'}
                 </p>
-              </div>
-
-              <div className="border-t pt-4">
-                <Label className="text-xs font-bold uppercase text-muted-foreground mb-3 block">Dados de Configuração</Label>
-                <div className="bg-muted/30 rounded-lg p-3 overflow-hidden">
-                  <pre className="text-[10px] font-mono whitespace-pre-wrap break-all max-h-[150px] overflow-y-auto">
-                    {JSON.stringify(selectedIntegration.config || {}, null, 2)}
-                  </pre>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2 border-t pt-4">
-                <Button variant="outline" onClick={() => setIsDetailsOpen(false)}>Fechar</Button>
-                <Button variant="ghost" className="gap-2" onClick={() => window.open(getWebhookUrl(selectedIntegration), '_blank')}>
-                  <ExternalLink className="h-4 w-4" />
-                  Testar Endpoint
+                <Button onClick={onAddClick} variant="outline">
+                  Adicionar Integração
                 </Button>
-              </div>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredIntegrations.map((item) => (
+                <Card key={item.id} className="overflow-hidden border-t-4" style={{ borderTopColor: item.instance_color || '#64748b' }}>
+                  <CardHeader className="bg-muted/30 pb-4">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <Badge variant="outline" className="mb-2 uppercase text-[10px]" style={{ color: item.instance_color }}>
+                          {item.module_id}
+                        </Badge>
+                        <CardTitle className="text-lg">{item.instance_name}</CardTitle>
+                        {item.description && <p className="text-xs text-muted-foreground mt-1">{item.description}</p>}
+                      </div>
+                      <div className="flex gap-1">
+                        {item.is_active ? (
+                          <CheckCircle2 className="h-5 w-5 text-green-500" />
+                        ) : (
+                          <AlertCircle className="h-5 w-5 text-red-500" />
+                        )}
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pt-4 space-y-4">
+                    <div className="text-xs space-y-2 text-muted-foreground">
+                      <div className="flex justify-between">
+                        <span>Status Sync:</span>
+                        <span className="font-medium text-foreground capitalize">{item.sync_status || 'Pendente'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Último Sync:</span>
+                        <span className="font-medium text-foreground">
+                          {item.last_sync ? new Date(item.last_sync).toLocaleString() : 'Nunca'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Ações para Bling (ERP) */}
+                    {item.module_id === 'bling' ? (
+                      <div className="grid grid-cols-2 gap-2 pt-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleOpenConfig(item.id)}
+                          className="gap-2 col-span-2"
+                        >
+                          <Settings className="h-3 w-3" /> Configurar
+                        </Button>
+                        <LiveOrderConsultation integrationId={item.id} moduleName={item.instance_name} moduleId={item.module_id} />
+                        <Button variant="ghost" size="sm" onClick={() => handleDelete(item.id, item.instance_name)} className="text-destructive gap-2">
+                          <Trash2 className="h-3 w-3" /> Excluir
+                        </Button>
+                      </div>
+                    ) : (
+                      /* Ações para Marketplace (com botão Renovar Token) */
+                      <div className="grid grid-cols-2 gap-2 pt-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleRenewToken(item.id, item.instance_name)}
+                          className="gap-2 col-span-2"
+                        >
+                          <RefreshCw className="h-3 w-3" /> Renovar Token
+                        </Button>
+                        <LiveOrderConsultation integrationId={item.id} moduleName={item.instance_name} moduleId={item.module_id} />
+                        <Button variant="secondary" size="sm" onClick={() => handleTest(item.id)} disabled={testingId === item.id} className="gap-2">
+                          <Zap className="h-3 w-3" /> Testar
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => handleDelete(item.id, item.instance_name)} className="text-destructive gap-2 col-span-2">
+                          <Trash2 className="h-3 w-3" /> Excluir
+                        </Button>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              ))}
             </div>
           )}
-        </DialogContent>
-      </Dialog>
+        </div>
+      </Tabs>
+
+      {/* Modal de Configuração Bling */}
+      {selectedIntegrationId && (
+        <BlingInstanceConfigModal
+          integrationId={selectedIntegrationId}
+          open={configModalOpen}
+          onOpenChange={setConfigModalOpen}
+        />
+      )}
     </div>
   );
 }
