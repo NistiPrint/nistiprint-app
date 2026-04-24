@@ -1,0 +1,265 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Registrar Movimentação de Estoque{% endblock %}
+
+{% block extra_head %}
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<style>
+    .select2-container .select2-selection--single {
+        height: calc(1.5em + .75rem + 2px);
+    }
+    /* Oculta campos por padrão */
+    .hidden-field {
+        display: none;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title"><i class="fas fa-exchange-alt"></i> Registrar Movimentação de Estoque</h3>
+        </div>
+        <div class="card-body">
+            <form id="formMovimentacao" class="mt-3">
+                <div class="form-row">
+                    <div class="form-group col-md-12">
+                        <label for="tipo_movimento">Tipo de Movimento</label>
+                        <select id="tipo_movimento" name="tipo_movimento" class="form-control" required>
+                            <option value="ENTRADA" selected>Entrada</option>
+                            <option value="SAIDA">Saída</option>
+                            <option value="TRANSFERENCIA">Transferência</option>
+                            <option value="BALANCO">Balanço</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="produto_id">Produto</label>
+                    <select id="produto_id" name="produto_id" class="form-control" required></select>
+                </div>
+
+                <div class="form-row">
+                    <!-- Campo de Depósito Padrão (para Entrada, Saída, Balanço) -->
+                    <div class="form-group col-md-6" id="deposito_padrao_container">
+                        <label for="deposito_id" id="deposito_label">Depósito</label>
+                        <select id="deposito_id" name="deposito_id" class="form-control" required>
+                            <option value="">Selecione um Depósito</option>
+                            {% for deposito in depositos %}
+                            <option value="{{ deposito.id }}">{{ deposito.nome }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <!-- Campo de Depósito de Destino (para Transferência) -->
+                    <div class="form-group col-md-6 hidden-field" id="deposito_destino_container">
+                        <label for="deposito_destino_id">Depósito de Destino</label>
+                        <select id="deposito_destino_id" name="deposito_destino_id" class="form-control">
+                            <option value="">Selecione um Depósito</option>
+                            {% for deposito in depositos %}
+                            <option value="{{ deposito.id }}">{{ deposito.nome }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group col-md-6">
+                        <label for="quantidade" id="quantidade_label">Quantidade</label>
+                        <input type="number" id="quantidade" name="quantidade" class="form-control" required>
+                    </div>
+                    <div class="form-group col-md-6 hidden-field" id="unidade_container">
+                        <label for="unidade">Unidade</label>
+                        <select id="unidade" name="unit_name" class="form-control">
+                            <!-- Options will be populated by JS -->
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="observacao">Observação</label>
+                    <textarea id="observacao" name="observacao" class="form-control" rows="3"></textarea>
+                </div>
+
+                <button type="submit" id="submit_button" class="btn btn-success"><i class="fas fa-plus"></i> Registrar Entrada</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script>
+$(document).ready(function() {
+    // --- Inicialização do Select2 para Produtos ---
+    function initProductSelect2() {
+        $('#produto_id').select2({
+            placeholder: 'Buscar produto...',
+            allowClear: true,
+            ajax: {
+                url: '/estoque/api/produtos-busca',
+                dataType: 'json',
+                delay: 250,
+                data: function (params) {
+                    // Para busca de saldo, usa o depósito de origem/padrão
+                    var depositoId = $('#deposito_id').val();
+                    return {
+                        q: params.term,
+                        deposito_id: depositoId
+                    };
+                },
+                processResults: function (data) {
+                    return { results: data.results };
+                },
+                cache: true
+            },
+            minimumInputLength: 2,
+            templateResult: function (data) {
+                if (data.loading) return data.text;
+                return $(`<div>
+                            <div>${data.text}</div>
+                            <div class="text-muted small">Saldo: ${data.saldo !== undefined ? data.saldo : 'N/A'}</div>
+                        </div>`);
+            },
+            templateSelection: function (data) {
+                return data.text || 'Selecione um produto';
+            }
+        });
+    }
+
+    initProductSelect2();
+
+    // --- Lógica para buscar e exibir as proporções (UoM Conversions) ---
+    $('#produto_id').on('select2:select', function (e) {
+        var productId = e.params.data.id;
+        var uomContainer = $('#unidade_container');
+        var uomSelect = $('#unidade');
+        var tipoMovimento = $('#tipo_movimento').val();
+
+        if (!productId || (tipoMovimento !== 'ENTRADA' && tipoMovimento !== 'BALANCO')) {
+            uomContainer.addClass('hidden-field');
+            return;
+        }
+
+        fetch(`/api/products/${productId}/uom-conversions`)
+            .then(response => response.json())
+            .then(conversions => {
+                uomSelect.empty().append(new Option('Unidade Base', ''));
+                if (conversions && conversions.length > 0) {
+                    conversions.forEach(conv => {
+                        uomSelect.append(new Option(`${conv.unitName} (${conv.conversionFactor})`, conv.unitName));
+                    });
+                    uomContainer.removeClass('hidden-field');
+                } else {
+                    uomContainer.addClass('hidden-field');
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching UoM conversions:', error);
+                uomContainer.addClass('hidden-field');
+            });
+    });
+
+    $('#produto_id').on('select2:unselect', function (e) {
+        $('#unidade_container').addClass('hidden-field');
+        $('#unidade').empty();
+    });
+
+
+    // --- Lógica para atualizar a UI baseada no Tipo de Movimento ---
+    $('#tipo_movimento').on('change', function() {
+        var tipo = $(this).val();
+        var depositoPadrao = $('#deposito_padrao_container');
+        var depositoDestino = $('#deposito_destino_container');
+        var depositoLabel = $('#deposito_label');
+        var quantidadeLabel = $('#quantidade_label');
+        var unidadeContainer = $('#unidade_container');
+        var submitButton = $('#submit_button');
+
+        // Resetar campos
+        depositoDestino.addClass('hidden-field').find('select').prop('required', false);
+        depositoPadrao.removeClass('hidden-field').find('select').prop('required', true);
+        unidadeContainer.addClass('hidden-field');
+        $('#produto_id').trigger('select2:unselect');
+
+
+        if (tipo === 'ENTRADA') {
+            depositoLabel.text('Depósito');
+            quantidadeLabel.text('Quantidade');
+            $('#quantidade').prop('min', 1);
+            submitButton.html('<i class="fas fa-plus"></i> Registrar Entrada').removeClass().addClass('btn btn-success');
+        } else if (tipo === 'SAIDA') {
+            depositoLabel.text('Depósito');
+            quantidadeLabel.text('Quantidade');
+            $('#quantidade').prop('min', 1);
+            submitButton.html('<i class="fas fa-minus"></i> Registrar Saída').removeClass().addClass('btn btn-danger');
+        } else if (tipo === 'TRANSFERENCIA') {
+            depositoLabel.text('Depósito de Origem');
+            quantidadeLabel.text('Quantidade');
+            $('#quantidade').prop('min', 1);
+            depositoDestino.removeClass('hidden-field').find('select').prop('required', true);
+            submitButton.html('<i class="fas fa-exchange-alt"></i> Registrar Transferência').removeClass().addClass('btn btn-primary');
+        } else if (tipo === 'BALANCO') {
+            depositoLabel.text('Depósito');
+            quantidadeLabel.text('Nova Quantidade em Estoque');
+            $('#quantidade').prop('min', 0);
+            submitButton.html('<i class="fas fa-balance-scale"></i> Registrar Balanço').removeClass().addClass('btn btn-warning');
+        }
+        
+        // Dispara o evento de change no produto para reavaliar a UOM
+        $('#produto_id').trigger('change');
+    }).trigger('change'); // Dispara no carregamento da página
+
+
+    // --- Lógica de submissão do formulário ---
+    $('#formMovimentacao').on('submit', function(e) {
+        e.preventDefault();
+        const form = $(this);
+        const formData = {};
+        form.serializeArray().forEach(item => {
+            formData[item.name] = item.value;
+        });
+
+        // Validação específica para transferência
+        if (formData.tipo_movimento === 'TRANSFERENCIA' && formData.deposito_id === formData.deposito_destino_id) {
+            alert('Depósito de Origem e Destino não podem ser os mesmos.');
+            return;
+        }
+
+        // Remove o campo de destino se não for transferência para não enviar dado desnecessário
+        if (formData.tipo_movimento !== 'TRANSFERENCIA') {
+            delete formData.deposito_destino_id;
+        }
+
+        $.ajax({
+            url: '/estoque/movimentar',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify(formData),
+            success: function(response) {
+                if (response.success) {
+                    let saldoMsg = '';
+                    if (response.novo_saldo !== undefined) {
+                        saldoMsg = ` Novo Saldo: ${response.novo_saldo}`;
+                    }
+                    alert(response.message + saldoMsg);
+                    
+                    // Limpa o formulário
+                    form[0].reset();
+                    $('#produto_id').val(null).trigger('change');
+                    $('#tipo_movimento').trigger('change'); // Reseta a UI para o estado inicial (Entrada)
+                } else {
+                    alert('Erro: ' + response.error);
+                }
+            },
+            error: function(xhr, status, error) {
+                const errorMsg = xhr.responseJSON ? xhr.responseJSON.error : 'Ocorreu um erro desconhecido.';
+                alert('Erro ao registrar movimentação: ' + errorMsg);
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

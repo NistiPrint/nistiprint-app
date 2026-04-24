@@ -1,0 +1,1276 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}
+  Pedidos Personalizados
+{% endblock %}
+
+{% block head %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/chat.js') }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<h1 class="mb-4 font-weight-bold text-center">
+  <button type="button" class="btn btn-outline-primary mr-3" onclick="window.location.href='{{ url_for('main.index') }}'">
+    <i class="fas fa-arrow-left"></i> Voltar
+  </button>
+  <button type="button" class="btn btn-outline-secondary mr-2" onclick="window.location.href='/ferramentas/identificar_nomes_ia'">
+    <i class="fas fa-brain"></i> Identificar Nomes IA
+  </button>
+  Pedidos personalizados
+</h1>
+
+
+<div class="container-fluid my-4 px-2">
+  <div class="card shadow rounded-lg border border-light">
+    <div class="card-body text-gray-900 p-4">
+      <div class="card mb-4 border shadow-sm border-light">
+        <div class="card-body p-3">
+          <h6 class="card-title text-muted mb-3">Filtrar pedidos</h6>
+          <div class="row g-3">
+            <div class="col-md-6 col-lg-4">
+              <div class="input-group input-group-sm">
+                <span class="input-group-text bg-light border-end-0">
+                  <i class="fas fa-search text-muted"></i>
+                </span>
+                <input type="text"
+                       id="orderSearch"
+                       class="form-control border-start-0 ps-0"
+                       placeholder="Buscar ID Pedido ou Cliente"
+                       style="background-color: #f8f9fa;">
+              </div>
+            </div>
+            <div class="col-md-6 col-lg-8">
+              <nav class="nav nav-pills nav-fill flex-column flex-sm-row" id="statusFilterPills">
+                <a class="nav-link active" id="pill-all" data-status="" href="#">Todos (<span id="count-all">0</span>)</a>
+                <a class="nav-link" id="pill-success" data-status="success" href="#">Nome identificado (<span id="count-success">0</span>)</a>
+                <a class="nav-link" id="pill-needs_review" data-status="needs_review" href="#">Revisar (<span id="count-needs-review">0</span>)</a>
+                <a class="nav-link" id="pill-no_personalization" data-status="no_personalization" href="#">Sem nome (<span id="count-no-personalization">0</span>)</a>
+              </nav>
+            </div>
+          </div>
+      </div>
+
+      <div class="container-fluid px-0">
+        <div id="ordersContainer">
+          {% if bling_orders %}
+            {% for order in bling_orders %}
+            <div class="card mb-3 order-card"
+                 data-order-id="{{ order.numero }}"
+                 data-customer="{{ order.contato.nome or 'Cliente não identificado' }}"
+                 data-order-json='{{ order|tojson|safe }}'>
+              <div class="card-body p-3">
+                <div class="row g-0">
+                  <!-- Coluna 1: Número do pedido e informações do cliente -->
+                  <div class="col-md-2 px-3 py-2 border-end">
+                    <div class="d-flex flex-column h-100">
+                      <h5 class="mb-1">
+                        <a href="https://www.bling.com.br/vendas.php#edit/{{ order.bling_id }}" target="_blank" class="text-decoration-none">
+                          #{{ order.numero }}
+                          <i class="fas fa-external-link-alt ms-1" style="font-size: 0.8em;"></i>
+                        </a>
+                      </h5>
+                      <div class="mb-2">
+                        <small class="text-muted">
+                          <i class="fas fa-user me-1"></i>
+                          {{ order.contato.nome or 'Cliente não identificado' }}
+                        </small>
+                        {% if order.shopee and order.shopee.username %}
+                          <div class="mt-1">
+                            <small class="text-muted">
+                              <i class="fas fa-at me-1"></i>
+                              {{ order.shopee.username }}
+                            </small>
+                          </div>
+                        {% endif %}
+                      </div>
+                      <div class="mb-2">
+                        <small class="text-muted">
+                          <i class="far fa-calendar-alt me-1"></i>
+                          {{ order.data.strftime('%d/%m/%Y') or 'Data não informada' }}
+                        </small>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Coluna 2: Dados do produto -->
+                  <div class="col-md-8 px-3 py-2 border-end">
+                    <!-- top line containing order.shopee.message -->
+                    {% if order.shopee.message %}
+                    <div class="mb-2">
+                      <span class="text-muted">
+                        <i class="fas fa-comment me-1"></i>
+                        {{ order.shopee.message or 'Mensagem não disponível' }}
+                      </span>
+                    </div>
+                    {% endif %}
+                    <div class="product-details-container">
+                      {% if order.itens %}
+                        {% for item in order.itens %}
+                            <div class="product-item mb-2">
+                              <div class="p-2 border rounded {% if item.personalizado %}border-warning border-2{% endif %}">
+                                <div class="d-flex align-items-start">
+                                  <div class="fw-bold text-dark text-end me-2" style="font-size: 1.1em; min-width: 30px;">
+                                    {{ item.quantidade|int or '1' }} x
+                                  </div>
+                                  <div class="flex-grow-1">
+                                    <div class="fw-semibold">{{ item.descricao or 'N/A' }}</div>
+                                    {% if item.codigo %}
+                                      <div class="small text-muted">{{ item.codigo }}</div>
+                                    {% endif %}
+                                    {% if item.personalizations %}
+                                      <div class="mt-2">
+                                        <div class="d-flex flex-wrap gap-2">
+                                        {% for personalization in item.personalizations %}
+                                          {% if personalization.customization_name %}
+                                            <div class="d-flex align-items-center">
+                                              <span class="badge border border-info text-info ml-2 click-to-copy" 
+                                                    style="font-size: 1em; padding: 0.5em 0.8em; white-space: nowrap; background-color: transparent; color: #0d3f8f; cursor: pointer; transition: all 0.2s;"
+                                                    data-copy-text="{{ personalization.customization_name }}"
+                                                    data-display-text="{{ personalization.customization_name }}{% if personalization.customization_initial %} ({{ personalization.customization_initial }}){% endif %}"
+                                                    title="Clique para copiar '{{ personalization.customization_name }}'">
+                                                <strong>{{ personalization.customization_name }}
+                                                {% if personalization.customization_initial %}
+                                                  ({{ personalization.customization_initial }})
+                                                {% endif %}</strong>
+                                              </span>
+                                              {% if personalization.quantity_to_personalize > 1 %}
+                                                <span class="badge bg-warning ms-1" style="font-size: 0.9em; padding: 0.4em 0.6em;">x{{ personalization.quantity_to_personalize }}</span>
+                                              {% endif %}
+                                            </div>
+                                          {% endif %}
+                                        {% endfor %}
+                                        </div>
+                                      </div>
+                                    {% endif %}
+                                  </div>
+                                </div>
+                                {% if item.produto and item.produto.descricaoDetalhada %}
+                                  <div class="mt-2 p-2 bg-light border rounded small">
+                                    <span class="text-muted">Descrição detalhada:</span>
+                                    <div>{{ item.produto.descricaoDetalhada }}</div>
+                                  </div>
+                                {% endif %}
+                              </div>
+                            </div>
+                        {% endfor %}
+                      {% else %}
+                        <div class="alert alert-warning mb-0">
+                          <i class="fas fa-exclamation-triangle me-2"></i>
+                          Nenhum item encontrado para este pedido.
+                        </div>
+                      {% endif %}
+                    </div>
+                  </div>
+
+                  <!-- Coluna 3: Ações -->
+                  <div class="col-md-2 px-3 py-2">
+                    <div class="d-flex flex-column h-100">
+                      <div class="mb-3">
+                        <small class="text-muted d-block">Número da loja:</small>
+                        <div class="fw-bold">{{ order.numeroLoja or 'N/A' }}</div>
+                      </div>
+
+                      <!-- Action Buttons -->
+                      <div class="mt-auto">
+                        {% if order.has_chat_messages %}
+                        <button class="btn btn-outline-primary btn-sm w-100 mb-2 chat-button"
+                                  data-username="{{ order.shopee.username }}"
+                                  data-bs-toggle="tooltip" data-bs-placement="top">
+                            <i class="fas fa-comments me-1"></i> Abrir Chat
+                          </button>
+                        {% endif %}
+                        <button class="btn btn-sm btn-outline-secondary w-100 mb-2" style="display:none;"
+                                 onclick="copyToClipboard('{{ order.numeroLoja or '' }}')">
+                           <i class="fas fa-copy me-1"></i> Copiar Dados
+                         </button>
+                         
+                         <button class="btn btn-sm btn-outline-info w-100 mb-2"
+                                 onclick="openAiLogsModal('{{ order.numeroLoja }}')">
+                           <i class="fas fa-history me-1"></i> Ver Logs IA
+                         </button>
+                         <button class="btn btn-sm btn-outline-primary w-100 mb-2"
+                                 onclick="processOrderWithAI('{{ order.numeroLoja }}', this)">
+                           <i class="fas fa-brain me-1"></i> Processar IA
+                         </button>
+                         <!-- Feedback Buttons -->
+                         <div class="d-flex justify-content-between mt-2">
+                           <button class="btn btn-sm btn-outline-success flex-grow-1 me-1"
+                                   onclick="submitFeedback('{{ order.numero }}', 1)"
+                                   title="Marcar como correto">
+                             <i class="fas fa-thumbs-up"></i>
+                           </button>
+                           <button class="btn btn-sm btn-outline-danger flex-grow-1 ms-1"
+                                   onclick="submitFeedback('{{ order.numero }}', 0)"
+                                   title="Reportar erro">
+                             <i class="fas fa-thumbs-down"></i>
+                           </button>
+                         </div>
+                      </div>
+                    </div>
+                  </div>
+                </div> <!-- Fecha row -->
+              </div> <!-- Fecha card-body -->
+            </div> <!-- Fecha card -->
+            {% endfor %}
+            {% else %}
+            <div class="col-12">
+              <div class="text-center p-5 border rounded">
+                <i class="fas fa-inbox fa-3x text-muted mb-3"></i>
+                <h5 class="text-muted">Nenhum pedido encontrado</h5>
+                <p class="text-muted">Não há pedidos com histórico de chat disponível.</p>
+              </div>
+            </div>
+            {% endif %}
+            <!-- No results message (initially hidden) -->
+            <div class="col-12 no-results-message" style="display: none;">
+              <div class="text-center p-5 border rounded">
+                <i class="fas fa-search fa-3x text-muted mb-3"></i>
+                <h5 class="text-muted">Nenhum pedido corresponde aos filtros atuais</h5>
+                <p class="text-muted">Tente ajustar os critérios de busca ou limpe os filtros</p>
+                <button class="btn btn-outline-primary btn-sm mt-2" onclick="document.getElementById('orderSearch').value=''; document.getElementById('pill-all').click();">
+                  <i class="fas fa-times me-1"></i> Limpar todos os filtros
+                </button>
+              </div>
+            </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="sidebar" style="position: fixed; top: 0; right: 0; height: 100vh; width: 600px; max-width: 90vw; background-color: #ffffff; box-shadow: -3px 0 15px rgba(0,0,0,0.15); transform: translateX(100%); transition: transform 0.3s ease-in-out; z-index: 1050; display: flex; flex-direction: column; border-radius: 0 0 0 0.5rem;">
+  <div style="padding: 1rem; border-bottom: 1px solid #dee2e6; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;">
+    <h3 id="sidebarOrderId" style="margin: 0; font-size: 1.25rem; font-weight: 600; color: #212529;"></h3>
+    <button type="button" aria-label="Close sidebar" onclick="toggleSidebar()" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #6c757d;">×</button>
+  </div>
+  <div id="messageToSellerContainer" style="padding: 1rem; border-bottom: 1px solid #dee2e6; display: none; justify-content: space-between; align-items: center; flex-shrink: 0;">
+    <h3 id="sidebarOrderMessageToSeller" style="margin: 0; font-size: 1.25rem; font-weight: 600; color: #212529;"></h3>
+  </div>
+  <div id="sidebarMessagesContainer" style="padding: 1rem; overflow-y: auto; flex-grow: 1; display: flex; flex-direction: column; gap: 0.5rem;">
+    <!-- Content will be added here later -->
+    <p style="text-align: center; color: #6c757d;">Conteúdo da sidebar virá aqui.</p>
+  </div>
+</div>
+<div id="sidebar-overlay" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background-color: rgba(0,0,0,0.25); opacity: 0; visibility: hidden; transition: opacity 0.3s ease-in-out; z-index: 1040;" onclick="toggleSidebar()"></div>
+
+<style>
+  /* Highlight styles for personalization messages */
+  .highlight-message {
+    border: 2px solid #ffc107 !important;
+    position: relative;
+  }
+  
+  /* Click to copy styles 
+  .click-to-copy {
+    user-select: none;
+  }
+  */
+  
+  .click-to-copy:active {
+    transform: scale(0.98);
+  }
+  
+  .click-to-copy.copied {
+    background-color: #e7f5ff !important;
+    border-color: #4dabf7 !important;
+    color: #1971c2 !important;
+  }
+  
+  /* Tooltip */
+  [data-bs-toggle="tooltip"] {
+    position: relative;
+  }
+  
+  /* Chat Sidebar Styles */
+  body.sidebar-open {
+    overflow: hidden;
+  }
+
+  /* Ensure body scroll is restored when sidebar is closed */
+  body {
+    overflow: auto;
+  }
+
+  /* Sidebar specific styles */
+  #sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    height: 100vh;
+    width: 600px; /* Adjust width as needed */
+    max-width: 90vw;
+    background-color: #ffffff;
+    box-shadow: -3px 0 15px rgba(0,0,0,0.15);
+    transform: translateX(100%);
+    transition: transform 0.3s ease-in-out;
+    z-index: 1050;
+    display: flex;
+    flex-direction: column;
+    border-radius: 0 0 0 0.5rem;
+  }
+
+  #sidebar-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: rgba(0,0,0,0.25);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.3s ease-in-out;
+    z-index: 1040;
+  }
+
+  #sidebar .card-header {
+      padding: 1rem;
+      border-bottom: 1px solid #dee2e6;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+  }
+
+  #sidebar .card-body {
+      padding: 1rem;
+      overflow-y: auto;
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+  }
+
+  /* Message styles from messages.html */
+  .message {
+    margin-bottom: 15px;
+    padding: 10px 15px;
+    border-radius: 10px;
+    max-width: 80%;
+    word-wrap: break-word;
+    border: 2px solid transparent;
+  }
+
+  .message.old-message .message-time {
+    color: #dc3545 !important;
+    font-weight: bold;
+  }
+
+  .received {
+    background-color: #f1f0f0;
+    margin-right: auto;
+  }
+
+  .sent {
+    background-color: #007bff;
+    color: white;
+    margin-left: auto;
+  }
+
+  .notification {
+    background-color: #fff3cd;
+    border-left: 44px solid #ffc107;
+    margin: 10px auto;
+    max-width: 90%;
+    text-align: center;
+    color: #856404;
+    padding: 10px 15px;
+  }
+
+  .bundle-message {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    margin: 15px auto;
+    max-width: 90%;
+  }
+
+  .bundle-header {
+    background-color: #e9ecef;
+    padding: 8px 15px;
+    font-size: 0.85rem;
+    color: #495057;
+    border-bottom: 1px solid #dee2e6;
+  }
+
+  .bundle-content {
+    padding: 10px 15px;
+  }
+
+  .bundle-message .message {
+    margin: 8px 0;
+    max-width: 100%; /* Ensure messages within bundle take full width of bundle content */
+    position: relative;
+    padding-right: 40px;
+  }
+
+  .bundle-message .message .message-time {
+    font-size: 0.7rem;
+    opacity: 0.7;
+    margin-top: 2px;
+    text-align: right;
+  }
+
+  /* Ensure sent/received styles apply within bundle */
+  .bundle-message .received {
+    background-color: #f1f0f0;
+    margin-right: auto; /* Add margin to align left */
+    border-radius: 10px;
+  }
+
+  .bundle-message .sent {
+    background-color: #007bff;
+    color: white;
+    margin-left: auto; /* Add margin to align right */
+    border-radius: 10px;
+  }
+
+  .message-time {
+    font-size: 0.75rem;
+    opacity: 0.8;
+    margin-top: 4px;
+    text-align: right;
+  }
+
+  .sent .message-time {
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  /* Add styles for personalization highlights */
+  .personalization-badge {
+    font-size: 0.7rem;
+    color: #198754;
+    margin-top: 4px;
+  }
+  
+  .message.personalization-source {
+    position: relative;
+    border-left: 3px solid #198754;
+    padding-left: 10px;
+  }
+  
+  .message.personalization-source .message-content {
+    background-color: #f8f9fa;
+  }
+  
+  .personalization-info {
+    background-color: #f8f9fa;
+    border-radius: 4px;
+    padding: 8px;
+    margin-top: 8px;
+    border-left: 3px solid #0d6efd;
+  }
+</style>
+
+<script>
+  // Initialize sidebar elements
+  const sidebar = document.getElementById('sidebar');
+  const sidebarOverlay = document.getElementById('sidebar-overlay');
+  const sidebarMessagesContainer = document.getElementById('sidebarMessagesContainer');
+  const sidebarOrderIdElement = document.getElementById('sidebarOrderId');
+  
+  // Toggle sidebar visibility
+  function toggleSidebar() {
+    const isHidden = sidebar.style.transform === 'translateX(100%)' || !sidebar.style.transform;
+    sidebar.style.transform = isHidden ? 'translateX(0)' : 'translateX(100%)';
+    sidebarOverlay.style.opacity = isHidden ? '1' : '0';
+    sidebarOverlay.style.visibility = isHidden ? 'visible' : 'hidden';
+    sidebar.classList.toggle('show');
+    document.body.classList.toggle('sidebar-open');
+  
+    // Clear messages when closing sidebar
+    if (!isHidden) {
+      sidebarMessagesContainer.innerHTML = '<p style="text-align: center; color: #6c757d;">Conteúdo da sidebar virá aqui.</p>';
+      sidebarOrderIdElement.textContent = '';
+    }
+  }
+  
+  // New function to open chat and load messages
+  function openChat(buttonElement) {
+    const username = buttonElement.dataset.username;
+    const orderCard = buttonElement.closest('.order-card');
+    const orderId = orderCard ? orderCard.dataset.orderId : 'N/A';
+    
+    // Get personalization message IDs from the order data
+    const orderData = JSON.parse(orderCard.getAttribute('data-order-json') || '{}');
+    const personalizationMessageIds = [];
+    
+    if (orderData.itens) {
+      orderData.itens.forEach(item => {
+        if (item.personalizations) {
+          item.personalizations.forEach(p => {
+            if (p.name_source_message_id) personalizationMessageIds.push(p.name_source_message_id);
+            if (p.initial_source_message_id) personalizationMessageIds.push(p.initial_source_message_id);
+          });
+        }
+      });
+    }
+  
+    if (username) {
+      sidebarOrderIdElement.textContent = `Pedido #${orderId} - ${username}`;
+      // Store the personalization message IDs in a data attribute for use in loadMessages
+      document.getElementById('sidebar').setAttribute('data-highlight-messages', 
+        JSON.stringify(personalizationMessageIds));
+      loadMessages(username);
+      toggleSidebar();
+    } else {
+      console.error('Username not found for this order.');
+    }
+  }
+  
+  // Load messages function
+  function loadMessages(username) {
+    sidebarMessagesContainer.innerHTML = '<div class="text-center"><div class="spinner-border text-primary" role="status"><span class="visually-hidden"></span></div></div>';
+  
+    fetch(`/api/messages/${encodeURIComponent(username)}`)
+      .then(response => {
+        if (!response.ok) {
+          return response.text().then(text => {
+            throw new Error(`HTTP error! status: ${response.status}, body: ${text}`);
+          });
+        }
+        return response.json();
+      })
+      .then(messages => {
+  
+        if (!Array.isArray(messages)) {
+          console.error('Expected array but got:', typeof messages, messages);
+          throw new Error('Formato de dados inválido recebido do servidor');
+        }
+  
+        if (messages.error) {
+          throw new Error(messages.error);
+        }
+  
+        if (messages.length === 0) {
+          sidebarMessagesContainer.innerHTML = '<div class="text-center text-muted p-4">Nenhuma mensagem encontrada</div>';
+          return;
+        }
+  
+        let html = '';
+        messages.forEach(msg => {
+          const isNotification = msg.type === 'notification';
+          const isBundle = msg.type === 'bundle_message';
+          const isSent = msg.from_user_name === username;
+          const messageClass = isNotification ? 'notification' : (isBundle ? 'bundle-message' : (isSent ? 'received' : 'sent'));
+          
+          // Check if this message should be highlighted
+          const highlightMessages = JSON.parse(document.getElementById('sidebar').getAttribute('data-highlight-messages') || '[]');
+          const isHighlighted = highlightMessages.includes(msg.id);
+          const highlightClass = isHighlighted ? 'highlight-message' : '';
+          
+          const utcDate = new Date(msg.created_at + 'Z');
+          const now = new Date();
+          const sevenDaysAgo = new Date(now);
+          sevenDaysAgo.setDate(now.getDate() - 7);
+          const isOld = utcDate < sevenDaysAgo;
+          const oldClass = isOld ? ' old-message' : '';
+          const time = utcDate.toLocaleString('pt-BR', {
+            hour: '2-digit',
+            minute: '2-digit',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+          });
+  
+          if (msg.type === 'bundle_message' && msg.bundle_messages && msg.bundle_messages.length > 0) {
+            // Check if any message in the bundle should be highlighted
+            const hasHighlightedBundleMessage = msg.bundle_messages.some(bundleMsg => 
+              highlightMessages.includes(bundleMsg.id)
+            );
+            
+            let bundleHtml = `
+              <div class="bundle-header"> FAQ </div>
+              <div class="bundle-content">
+            `;
+            
+            msg.bundle_messages.forEach(bundleMsg => {
+              const bundleIsSent = bundleMsg.from_user_name === username;
+              const bundleMessageClass = bundleIsSent ? 'received' : 'sent';
+              const bundleIsHighlighted = highlightMessages.includes(bundleMsg.id);
+              const bundleHighlightClass = bundleIsHighlighted ? 'highlight-message' : '';
+              const bundleContent = bundleMsg.display_content || 'Mensagem sem conteúdo';
+              
+              let bundleTime = '';
+              if (bundleMsg.created_at) {
+                const bundleDate = new Date(bundleMsg.created_at + 'Z');
+                bundleTime = bundleDate.toLocaleString('pt-BR', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  day: '2-digit',
+                  month: '2-digit',
+                  year: 'numeric',
+                  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+                });
+              }
+              
+              bundleHtml += `
+                <div class="message ${bundleMessageClass} ${bundleHighlightClass}" data-message-id="${bundleMsg.id}">
+                  <div>${bundleContent}</div>
+                  ${bundleTime ? `<div class="message-time">${bundleTime}</div>` : ''}
+                </div>
+              `;
+            });
+            
+            bundleHtml += `</div>`;
+            
+            // Add highlight class to the bundle container if any message inside is highlighted
+            const bundleHighlightClass = hasHighlightedBundleMessage ? 'has-highlighted-message' : '';
+            
+            html += `
+              <div class="message ${messageClass} ${highlightClass} ${bundleHighlightClass}${oldClass}" data-message-id="${msg.id}">
+                ${bundleHtml}
+              </div>
+            `;
+          } else {
+            const messageText = msg.display_content || 'Mensagem sem conteúdo';
+            html += `
+              <div class="message ${messageClass} ${highlightClass}${oldClass}" data-message-id="${msg.id}">
+                <div>${messageText}</div>
+                <div class="message-time">${time}</div>
+              </div>
+            `;
+          }
+        });
+
+        sidebarMessagesContainer.innerHTML = html;
+        // Scroll to bottom after messages are loaded
+        setTimeout(() => {
+          sidebarMessagesContainer.scrollTop = sidebarMessagesContainer.scrollHeight;
+        }, 50);
+      })
+      .catch(error => {
+        console.error('Error loading messages:', error);
+        let errorMessage = error.message || 'Erro desconhecido ao carregar mensagens';
+        if (error instanceof SyntaxError) {
+          errorMessage = 'Erro ao processar a resposta do servidor';
+        }
+        sidebarMessagesContainer.innerHTML = `
+          <div class="alert alert-danger">
+            <strong>Erro ao carregar mensagens:</strong><br>
+            ${errorMessage}
+            ${window.location.hostname === 'localhost' ? `<br><small class="text-muted">${error.stack || ''}</small>` : ''}
+          </div>
+        `;
+      });
+  }
+  
+  // Add event listeners for chat buttons
+  document.addEventListener('click', function(e) {
+    if (e.target.closest('.chat-button')) {
+      openChat(e.target.closest('.chat-button'));
+    }
+  });
+  
+  // Initialize UI
+  function initializeUI() {
+    // Close sidebar with Escape key
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && sidebar.style.transform === 'translateX(0)') {
+        toggleSidebar();
+      }
+    });
+  
+    // Copy text to clipboard
+    /*
+    function copyToClipboard(textToCopy) {
+      if (!textToCopy) {
+        console.log('textToCopy is empty or null.');
+        showToast();
+        return;
+      }
+  
+      const text = textToCopy.trim();
+  
+      function showToast() {
+        const toastEl = document.getElementById('feedbackToast');
+        const toastBodyEl = document.getElementById('feedbackToastBody');
+        if (toastEl && toastBodyEl) {
+          toastBodyEl.textContent = 'Dados copiados para a área de transferência!';
+          const toast = new bootstrap.Toast(toastEl);
+          toast.show();
+        }
+      }
+  
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(() => {
+          console.log('Successfully copied using clipboard API.');
+          showToast();
+        }).catch((err) => {
+          console.error('Failed to copy using clipboard API:', err);
+          fallbackCopyTextToClipboard(text);
+        });
+      } else {
+        console.log('Clipboard API not available, using fallback.');
+        fallbackCopyTextToClipboard(text);
+      }
+  
+      function fallbackCopyTextToClipboard(text) {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.top = '0';
+        textArea.style.left = '0';
+        textArea.style.position = 'fixed';
+        textArea.style.opacity = '0';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        try {
+          const successful = document.execCommand('copy');
+          if (successful) {
+            console.log('Successfully copied using fallback.');
+            showToast();
+          } else {
+            console.error('Fallback: document.execCommand("copy") returned false.');
+          }
+        } catch (err) {
+          console.error('Fallback: Oops, unable to copy', err);
+        }
+        document.body.removeChild(textArea);
+      }
+    }
+    */
+    
+    // Initialize dropdowns
+    const dropdownElementList = [].slice.call(document.querySelectorAll('.dropdown-toggle'));
+    const dropdownList = dropdownElementList.map(function (dropdownToggleEl) {
+      return new bootstrap.Dropdown(dropdownToggleEl);
+    });
+  
+    // Initialize tooltips
+    var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
+    var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+      return new bootstrap.Tooltip(tooltipTriggerEl)
+    });
+  
+    // Click to copy functionality
+    /*
+    document.querySelectorAll('.click-to-copy').forEach(element => {
+      element.addEventListener('click', function() {
+        const textToCopy = this.getAttribute('data-copy-text');
+        navigator.clipboard.writeText(textToCopy).then(() => {
+          // Show feedback
+          const originalText = this.innerHTML;
+          const originalClass = this.className;
+          this.innerHTML = '<i class="fas fa-check me-1"></i> Copiado!';
+          this.classList.add('copied');
+          
+          // Reset after 1.5 seconds
+          setTimeout(() => {
+            this.innerHTML = originalText;
+            this.className = originalClass;
+          }, 1500);
+        }).catch(err => {
+          console.error('Failed to copy text: ', err);
+        });
+      });
+    });
+    */
+  }
+  
+  // Handle feedback submission
+  function submitFeedback(orderId, feedbackValue, feedbackNotesFromModal = null, buttonArg = null) {
+    // console.log('submitFeedback called with:', { orderId, feedbackValue, feedbackNotesFromModal, buttonArg });
+    
+    // Use the button passed in, or from window._pendingFeedback, or from event
+    let button = buttonArg;
+    if (!button) {
+      if (window._pendingFeedback && window._pendingFeedback.button) {
+        button = window._pendingFeedback.button;
+      } else if (typeof event !== 'undefined' && event.target) {
+        button = event.target.closest('button');
+      }
+    }
+    if (!button) {
+      console.error('Could not find the feedback button');
+      return;
+    }
+    
+    // For negative feedback, open modal for additional notes
+    let feedbackNotes = '';
+    if (feedbackValue === 0 && feedbackNotesFromModal === null) {
+      // Store orderId and feedbackValue for modal submit
+      window._pendingFeedback = { orderId, feedbackValue, button };
+      // Reset modal state
+      document.getElementById('negativeFeedbackTextarea').value = '';
+      document.getElementById('negativeFeedbackSubmit').disabled = true;
+      var feedbackModal = new bootstrap.Modal(document.getElementById('negativeFeedbackModal'));
+      feedbackModal.show();
+      return; // Wait for modal submit
+    }
+    
+    // Show loading state
+    const originalContent = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Enviando...';
+
+    // Prepare the request data
+    const requestData = {
+      order_id: orderId,
+      feedback: feedbackValue,
+      feedback_notes: feedbackNotesFromModal !== null ? feedbackNotesFromModal : (feedbackNotes || '')
+    };
+    
+    // console.log('Sending feedback data:', requestData);
+    
+    fetch('/submit_feedback', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestData)
+    })
+    .then(async response => {
+      // console.log('Raw response status:', response.status);
+      const responseText = await response.text();
+      // console.log('Raw response text:', responseText);
+      
+      if (!response.ok) {
+        console.error('Response not OK:', response.status, response.statusText);
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      try {
+        return JSON.parse(responseText);
+      } catch (e) {
+        console.error('Error parsing JSON:', e);
+        console.error('Response text that failed to parse:', responseText);
+        throw new Error('Invalid JSON response from server');
+      }
+    })
+    .then(data => {
+      // console.log('Parsed response data:', data);
+      
+      if (data && data.success) {
+        console.log('Feedback submitted successfully');
+        // Show success feedback
+        const toastEl = document.getElementById('feedbackToast');
+        const toastBody = document.getElementById('feedbackToastBody');
+        const toastHeader = toastEl.querySelector('.toast-header');
+        
+        // Update toast content and style based on feedback
+        if (feedbackValue === 1) {
+          // For positive feedback (thumbs up)
+          toastHeader.className = 'toast-header bg-success text-white';
+          toastBody.innerHTML = '<i class="fas fa-thumbs-up me-2"></i> Obrigado pelo seu feedback positivo!';
+        } else {
+          // For negative feedback (thumbs down)
+          toastHeader.className = 'toast-header bg-danger text-white';
+          toastBody.innerHTML = '<i class="fas fa-thumbs-down me-2"></i> Obrigado pelo seu feedback. Vamos analisar o ocorrido.';
+          // Close the modal and reset fields after negative feedback
+          const modalEl = document.getElementById('negativeFeedbackModal');
+          if (modalEl && typeof bootstrap !== 'undefined') {
+            const instance = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+            instance.hide();
+          }
+          const textarea = document.getElementById('negativeFeedbackTextarea');
+          if (textarea) textarea.value = '';
+          const errorMsg = document.getElementById('negativeFeedbackError');
+          if (errorMsg) errorMsg.style.display = 'none';
+        }
+        
+        // Initialize and show the toast
+        const toast = new bootstrap.Toast(toastEl);
+        toast.show();
+        
+        // Reset button to initial state
+        button.disabled = false;
+        button.innerHTML = originalContent;
+      } else {
+        console.error('Unexpected response format:', data);
+        throw new Error(data?.message || 'Resposta inválida do servidor');
+      }
+    })
+    .catch(error => {
+      console.error('Error in submitFeedback:', error);
+      
+      const toastEl = document.getElementById('feedbackToast');
+      const toastBody = document.getElementById('feedbackToastBody');
+      const toastHeader = toastEl.querySelector('.toast-header');
+      
+      toastHeader.className = 'toast-header bg-danger text-white';
+      toastBody.innerHTML = `
+        <i class="fas fa-exclamation-circle me-2"></i>
+        ${error.message || 'Erro ao enviar feedback. Tente novamente.'}
+      `;
+      
+      const toast = new bootstrap.Toast(toastEl);
+      toast.show();
+      
+      // Reset button state on error
+      button.disabled = false;
+      button.innerHTML = originalContent;
+    });
+  }
+  
+  // Check if an order matches the selected status filter
+  function orderMatchesStatusFilter(order, statusFilter) {
+    if (!statusFilter) return true; // Show all if no filter selected
+    
+    if (statusFilter === 'with_chat') {
+      return order.has_chat_messages === true;
+    } else if (statusFilter === 'without_chat') {
+      return order.has_chat_messages !== true;
+    }
+    
+    // Check if any item in the order has a personalization that matches the status
+    if (order.itens && order.itens.length > 0) {
+      for (const item of order.itens) {
+        if (item.personalizations && item.personalizations.length > 0) {
+          if (statusFilter === 'success') {
+            return item.personalizations.some(p => p.status === 'SUCCESS');
+          } else if (statusFilter === 'needs_review') {
+            return item.personalizations.some(p => p.status === 'NEEDS_REVIEW');
+          } else if (statusFilter === 'no_personalization') {
+            return item.personalizations.every(p => p.status === 'NO_PERSONALIZATION_FOUND' || !p.status);
+          }
+        }
+      }
+    }
+    
+    // For no_personalization filter, also match orders with no personalizations at all
+    if (statusFilter === 'no_personalization') {
+      const hasAnyPersonalizations = order.itens && order.itens.some(item => 
+        item.personalizations && item.personalizations.length > 0
+      );
+      return !hasAnyPersonalizations;
+    }
+    
+    return false;
+  }
+  
+  // Count orders by status
+  function countOrdersByStatus() {
+    const orders = document.querySelectorAll('.order-card');
+    let countAll = 0;
+    let countSuccess = 0;
+    let countNeedsReview = 0;
+    let countNoPersonalization = 0;
+    
+    orders.forEach(order => {
+      const orderData = JSON.parse(order.getAttribute('data-order-json'));
+      countAll++;
+      
+      let hasSuccess = false;
+      let hasNeedsReview = false;
+      let hasNoPersonalization = true;
+      let hasAnyPersonalizations = false;
+      
+      if (orderData.itens && orderData.itens.length > 0) {
+        for (const item of orderData.itens) {
+          if (item.personalizations && item.personalizations.length > 0) {
+            hasAnyPersonalizations = true;
+            if (item.personalizations.some(p => p.status === 'SUCCESS')) {
+              hasSuccess = true;
+            }
+            if (item.personalizations.some(p => p.status === 'NEEDS_REVIEW')) {
+              hasNeedsReview = true;
+            }
+            if (!item.personalizations.every(p => p.status === 'NO_PERSONALIZATION_FOUND' || !p.status)) {
+              hasNoPersonalization = false;
+            }
+          }
+        }
+      }
+      
+      if (hasSuccess) countSuccess++;
+      if (hasNeedsReview) countNeedsReview++;
+      if (hasNoPersonalization && hasAnyPersonalizations) countNoPersonalization++;
+    });
+    
+    // Update counter displays
+    document.getElementById('count-all').textContent = countAll;
+    document.getElementById('count-success').textContent = countSuccess;
+    document.getElementById('count-needs-review').textContent = countNeedsReview;
+    document.getElementById('count-no-personalization').textContent = countNoPersonalization;
+  }
+  
+  // Apply filters based on search and status
+  function applyFilters() {
+    const searchTerm = document.getElementById('orderSearch').value.toLowerCase();
+    const activePill = document.querySelector('#statusFilterPills .nav-link.active');
+    const statusFilter = activePill ? activePill.getAttribute('data-status') : '';
+    const orders = document.querySelectorAll('.order-card');
+    let visibleCount = 0;
+    
+    orders.forEach(order => {
+      const orderId = order.getAttribute('data-order-id') || '';
+      const customerName = (order.getAttribute('data-customer') || '').toLowerCase();
+      const orderData = JSON.parse(order.getAttribute('data-order-json'));
+      
+      // Check search term match
+      const matchesSearch = !searchTerm || 
+        orderId.toLowerCase().includes(searchTerm) || 
+        customerName.includes(searchTerm);
+      
+      // Check status filter match
+      const matchesStatus = orderMatchesStatusFilter(orderData, statusFilter);
+      
+      // Show/hide based on filters
+      if (matchesSearch && matchesStatus) {
+        order.style.display = '';
+        visibleCount++;
+      } else {
+        order.style.display = 'none';
+      }
+    });
+    
+    // Show/hide no results message
+    const noResults = document.querySelector('.no-results-message');
+    if (noResults) {
+      noResults.style.display = visibleCount === 0 ? 'block' : 'none';
+    }
+  }
+  
+  // Initialize UI when DOM is loaded
+  document.addEventListener('DOMContentLoaded', function() {
+    initializeUI();
+    
+    // Add event listeners for filtering
+    document.getElementById('orderSearch').addEventListener('input', applyFilters);
+    
+    // Add event listener for status filter pills
+    document.getElementById('statusFilterPills').addEventListener('click', function(event) {
+      event.preventDefault();
+      const clickedPill = event.target.closest('.nav-link');
+      if (clickedPill) {
+        // Remove 'active' from all pills
+        document.querySelectorAll('#statusFilterPills .nav-link').forEach(pill => {
+          pill.classList.remove('active');
+        });
+        // Add 'active' to the clicked pill
+        clickedPill.classList.add('active');
+        applyFilters();
+      }
+    });
+    
+    // Initial count update
+    countOrdersByStatus();
+    
+    // Apply any initial filters from URL parameters
+    const urlParams = new URLSearchParams(window.location.search);
+    const initialFilter = urlParams.get('filter');
+    if (initialFilter) {
+      const targetPill = document.querySelector(`#statusFilterPills .nav-link[data-status="${initialFilter}"]`);
+      if (targetPill) {
+        document.querySelectorAll('#statusFilterPills .nav-link').forEach(pill => pill.classList.remove('active'));
+        targetPill.classList.add('active');
+      }
+      applyFilters();
+    }
+  });
+  
+  // Filter orders by order.numero
+  const orderSearchInput = document.getElementById('orderSearch');
+  const ordersContainer = document.getElementById('ordersContainer');
+  
+  orderSearchInput.addEventListener('input', function() {
+    const searchValue = orderSearchInput.value.trim().toLowerCase();
+    const orderCards = ordersContainer.querySelectorAll('.order-card');
+    orderCards.forEach(card => {
+      const orderNumero = card.getAttribute('data-order-id') || '';
+      if (orderNumero.toLowerCase().includes(searchValue)) {
+        card.style.display = '';
+      } else {
+        card.style.display = 'none';
+      }
+    });
+  });
+
+  function openAiLogsModal(orderSn) {
+    const modal = new bootstrap.Modal(document.getElementById('aiLogsModal'));
+    const modalBody = document.getElementById('aiLogsModalBody');
+    const modalTitle = document.getElementById('aiLogsModalLabel');
+
+    modalTitle.textContent = `Logs de Execução da IA para o Pedido: ${orderSn}`;
+    modalBody.innerHTML = '<div class="text-center"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Carregando...</span></div></div>';
+    modal.show();
+
+    fetch(`/api/ai_logs/${orderSn}`)
+      .then(response => response.json())
+      .then(logs => {
+        if (logs.error) {
+          throw new Error(logs.error);
+        }
+        if (logs.length === 0) {
+          modalBody.innerHTML = '<p class="text-center">Nenhum log de execução encontrado para este pedido.</p>';
+          return;
+        }
+
+        let logsHtml = '<div class="accordion" id="aiLogsAccordion">';
+        logs.forEach((log, index) => {
+          const executedAt = new Date(log.executed_at).toLocaleString('pt-BR');
+          const statusBadge = log.status === 'success' ? 'bg-success' : 'bg-danger';
+
+          logsHtml += `
+            <div class="accordion-item">
+              <h2 class="accordion-header" id="heading-${log.id}">
+                <button class="accordion-button ${index > 0 ? 'collapsed' : ''}" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${log.id}" aria-expanded="${index === 0}" aria-controls="collapse-${log.id}">
+                  <strong>Execução #${log.id}</strong>&nbsp;-&nbsp;${executedAt}&nbsp;-&nbsp;<span class="badge ${statusBadge}">${log.status}</span>
+                </button>
+              </h2>
+              <div id="collapse-${log.id}" class="accordion-collapse collapse ${index === 0 ? 'show' : ''}" aria-labelledby="heading-${log.id}" data-bs-parent="#aiLogsAccordion">
+                <div class="accordion-body">
+                  <h6>Input</h6>
+                  <pre><code>${JSON.stringify(JSON.parse(log.input_data), null, 2)}</code></pre>
+                  <h6>Chat Context</h6>
+                  <pre><code>${JSON.stringify(JSON.parse(log.chat_context), null, 2)}</code></pre>
+                  <h6>Extracted Personalization</h6>
+                  <pre><code>${JSON.stringify(JSON.parse(log.extracted_personalization), null, 2)}</code></pre>
+                  <h6>Model Result</h6>
+                  <pre><code>${JSON.stringify(JSON.parse(log.model_result), null, 2)}</code></pre>
+                  ${log.error_message ? `<h6>Error</h6><pre><code>${log.error_message}</code></pre>` : ''}
+                </div>
+              </div>
+            </div>
+          `;
+        });
+        logsHtml += '</div>';
+        modalBody.innerHTML = logsHtml;
+      })
+      .catch(error => {
+        modalBody.innerHTML = `<div class="alert alert-danger">Erro ao carregar os logs: ${error.message}</div>`;
+      });
+  }
+
+  function processOrderWithAI(orderSn, button) {
+    const originalButtonHtml = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processando...';
+
+    fetch('/ferramentas/processar_nomes_ia', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        'shopee_order_sn': orderSn
+      })
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.success) {
+        showToast('Sucesso!', data.message, 'success');
+        setTimeout(() => {
+          window.location.reload();
+        }, 2000);
+      } else {
+        showToast('Erro!', data.message, 'danger');
+        button.disabled = false;
+        button.innerHTML = originalButtonHtml;
+      }
+    })
+    .catch(error => {
+      showToast('Erro de Rede!', 'Não foi possível conectar ao servidor.', 'danger');
+      button.disabled = false;
+      button.innerHTML = originalButtonHtml;
+    });
+  }
+
+  function showToast(title, message, type) {
+    const toastEl = document.getElementById('feedbackToast');
+    const toastBody = document.getElementById('feedbackToastBody');
+    const toastHeader = toastEl.querySelector('.toast-header');
+
+    toastHeader.className = `toast-header bg-${type} text-white`;
+    toastEl.querySelector('.me-auto').textContent = title;
+    toastBody.innerHTML = message;
+
+    const toast = new bootstrap.Toast(toastEl);
+    toast.show();
+  }
+  </script>
+<!-- Bootstrap JS Bundle with Popper -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+
+<!-- AI Logs Modal -->
+<div class="modal fade" id="aiLogsModal" tabindex="-1" aria-labelledby="aiLogsModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="aiLogsModalLabel">Logs de Execução da IA</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="aiLogsModalBody">
+        <p>Carregando logs...</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Feedback Toast (from personalizados.html) -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index: 11">
+  <div id="feedbackToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true" data-bs-delay="5000">
+    <div class="toast-header">
+      <strong class="me-auto">Feedback</strong>
+      <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+    </div>
+    <div id="feedbackToastBody" class="toast-body">
+      <!-- Toast content will be inserted here by JavaScript -->
+    </div>
+  </div>
+</div>
+
+<!-- Negative Feedback Modal -->
+<div class="modal fade" id="negativeFeedbackModal" tabindex="-1" aria-labelledby="negativeFeedbackModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header bg-danger text-white">
+        <h5 class="modal-title" id="negativeFeedbackModalLabel"><i class="fas fa-thumbs-down me-2"></i> Reportar um Problema</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fechar"></button>
+      </div>
+      <div class="modal-body">
+        <label for="negativeFeedbackTextarea" class="form-label">Descreva o problema encontrado neste pedido:</label>
+        <textarea class="form-control" id="negativeFeedbackTextarea" rows="4" placeholder="Explique o que está errado, para que possamos melhorar..." required></textarea>
+        <div class="form-text text-danger" id="negativeFeedbackError" style="display:none;">Por favor, descreva o problema.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-danger" id="negativeFeedbackSubmit" disabled>Enviar Feedback</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Modal feedback logic
+(function() {
+  const textarea = document.getElementById('negativeFeedbackTextarea');
+  const submitBtn = document.getElementById('negativeFeedbackSubmit');
+  const errorMsg = document.getElementById('negativeFeedbackError');
+  let feedbackModal = null;
+  if (document.getElementById('negativeFeedbackModal')) {
+    feedbackModal = new bootstrap.Modal(document.getElementById('negativeFeedbackModal'));
+  }
+  if (textarea && submitBtn) {
+    textarea.addEventListener('input', function() {
+      if (this.value.trim().length > 0) {
+        submitBtn.disabled = false;
+        errorMsg.style.display = 'none';
+      } else {
+        submitBtn.disabled = true;
+      }
+    });
+    submitBtn.addEventListener('click', function() {
+      if (textarea.value.trim().length === 0) {
+        errorMsg.style.display = 'block';
+        textarea.focus();
+        return;
+      }
+      // Retrieve pending feedback info
+      const { orderId, feedbackValue, button } = window._pendingFeedback || {};
+      if (!orderId || feedbackValue !== 0) return;
+      // Call original submitFeedback with message and button
+      submitFeedback(orderId, feedbackValue, textarea.value.trim(), button);
+      // Clear pending feedback
+      window._pendingFeedback = null;
+    });
+  }
+})();
+</script>
+
+{% endblock %}

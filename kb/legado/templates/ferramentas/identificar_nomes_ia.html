@@ -1,0 +1,233 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Identificação de Nomes IA - NistiPrint{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-12">
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="/ferramentas">Ferramentas</a></li>
+                    <li class="breadcrumb-item active">Identificação de Nomes IA</li>
+                </ol>
+            </nav>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h4 class="card-title mb-0">
+                        <i class="fas fa-brain mr-2"></i>
+                        Identificação de Nomes por Inteligência Artificial
+                    </h4>
+                    <button type="button" class="btn btn-outline-primary" onclick="window.location.href='/vendas/personalizadas'">
+                        <i class="fas fa-arrow-left"></i> Pedidos Personalizados
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-8">
+                            <p class="lead">
+                                Esta ferramenta utiliza inteligência artificial para analisar automaticamente pedidos de personalização.
+                                O sistema examina mensagens dos compradores no chat da Shopee e identifica nomes e iniciais para personalização de produtos.
+                            </p>
+
+                            <div class="alert alert-info">
+                                <h6><i class="fas fa-info-circle"></i> Como funciona:</h6>
+                                <ul class="mb-0">
+                                    <li>Analisa pedidos pendentes de personalização</li>
+                                    <li>Lê mensagens de chat dos compradores</li>
+                                    <li>Extrai nomes e iniciais mencionados</li>
+                                    <li>Registra informações de personalização no sistema</li>
+                                    <li>Fornece logs detalhados de todo o processo</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4">
+                            <div class="card bg-light">
+                                <div class="card-header">
+                                    <h6 class="mb-0">Configurações</h6>
+                                </div>
+                                <div class="card-body">
+                                    <form id="processForm">
+                                        <div class="form-group">
+                                            <label for="shopee_order_sn">Número do Pedido Shopee (opcional)</label>
+                                            <input type="text" class="form-control" id="shopee_order_sn" name="shopee_order_sn"
+                                                   placeholder="Cole o número do pedido aqui">
+                                            <small class="form-text text-muted">
+                                                Processe um único pedido específico.
+                                            </small>
+                                        </div>
+
+                                        <div class="form-group">
+                                            <label for="limit">Limite de pedidos (opcional)</label>
+                                            <input type="number" class="form-control" id="limit" name="limit"
+                                                   placeholder="Deixe vazio para processar todos"
+                                                   min="1">
+                                            <small class="form-text text-muted">
+                                                Limite o número de pedidos a processar (útil para testes).
+                                            </small>
+                                        </div>
+
+                                        <button type="submit" class="btn btn-primary btn-block" id="processBtn">
+                                            <i class="fas fa-play"></i>
+                                            Iniciar Processamento IA
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Resultados -->
+    <div class="row mt-4" id="resultsSection" style="display: none;">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-chart-bar"></i>
+                        Resultados do Processamento
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div id="resultsContent">
+                        <div class="text-center">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="sr-only">Processando...</span>
+                            </div>
+                            <p class="mt-3">Processando pedidos... Aguarde.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Logs -->
+    <div class="row mt-4" id="logsSection" style="display: none;">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-terminal"></i>
+                        Logs de Execução
+                    </h5>
+                    <button class="btn btn-sm btn-secondary" id="refreshLogsBtn">
+                        <i class="fas fa-sync-alt"></i>
+                        Atualizar
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div id="logsContent" class="bg-dark text-light p-3 rounded" style="font-family: 'Courier New', monospace; font-size: 0.875rem; max-height: 400px; overflow-y: auto;">
+                        <p>Carregando logs...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- View Logs by Order SN -->
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-search"></i>
+                        Visualizar Logs por Pedido
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="form-group">
+                                <label for="log_order_sn">Número do Pedido Shopee</label>
+                                <input type="text" class="form-control" id="log_order_sn" placeholder="Insira o número do pedido (order_sn)">
+                            </div>
+                            <button type="button" class="btn btn-info" id="viewLogsBtn">
+                                <i class="fas fa-eye"></i>
+                                Visualizar Logs
+                            </button>
+                        </div>
+                    </div>
+                    <div class="row mt-4">
+                        <div class="col-12">
+                            <div id="viewLogsResult"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='js/ferramentas/identificar_nomes_ia.js') }}"></script>
+<script>
+document.getElementById('viewLogsBtn').addEventListener('click', function() {
+    const orderSn = document.getElementById('log_order_sn').value;
+    const resultDiv = document.getElementById('viewLogsResult');
+
+    if (!orderSn) {
+        resultDiv.innerHTML = '<div class="alert alert-warning">Por favor, insira um número de pedido.</div>';
+        return;
+    }
+
+    resultDiv.innerHTML = '<div class="text-center"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Carregando...</span></div></div>';
+
+    fetch(`/api/ai_logs/${orderSn}`)
+        .then(response => response.json())
+        .then(logs => {
+            if (logs.error) {
+                throw new Error(logs.error);
+            }
+            if (logs.length === 0) {
+                resultDiv.innerHTML = '<p class="text-center">Nenhum log de execução encontrado para este pedido.</p>';
+                return;
+            }
+
+            let logsHtml = '<div class="accordion" id="viewLogsAccordion">';
+            logs.forEach((log, index) => {
+                const executedAt = new Date(log.executed_at).toLocaleString('pt-BR');
+                const statusBadge = log.status === 'success' ? 'bg-success' : 'bg-danger';
+
+                logsHtml += `
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="view-heading-${log.id}">
+                            <button class="accordion-button ${index > 0 ? 'collapsed' : ''}" type="button" data-bs-toggle="collapse" data-bs-target="#view-collapse-${log.id}" aria-expanded="${index === 0}" aria-controls="view-collapse-${log.id}">
+                                <strong>Execução #${log.id}</strong>&nbsp;-&nbsp;${executedAt}&nbsp;-&nbsp;<span class="badge ${statusBadge}">${log.status}</span>
+                            </button>
+                        </h2>
+                        <div id="view-collapse-${log.id}" class="accordion-collapse collapse ${index === 0 ? 'show' : ''}" aria-labelledby="view-heading-${log.id}" data-bs-parent="#viewLogsAccordion">
+                            <div class="accordion-body">
+                                <h6>Input</h6>
+                                <pre><code>${JSON.stringify(JSON.parse(log.input_data), null, 2)}</code></pre>
+                                <h6>Chat Context</h6>
+                                <pre><code>${JSON.stringify(JSON.parse(log.chat_context), null, 2)}</code></pre>
+                                <h6>Extracted Personalization</h6>
+                                <pre><code>${JSON.stringify(JSON.parse(log.extracted_personalization), null, 2)}</code></pre>
+                                <h6>Model Result</h6>
+                                <pre><code>${JSON.stringify(JSON.parse(log.model_result), null, 2)}</code></pre>
+                                ${log.error_message ? `<h6>Error</h6><pre><code>${log.error_message}</code></pre>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            logsHtml += '</div>';
+            resultDiv.innerHTML = logsHtml;
+        })
+        .catch(error => {
+            resultDiv.innerHTML = `<div class="alert alert-danger">Erro ao carregar os logs: ${error.message}</div>`;
+        });
+});
+</script>
+{% endblock %}

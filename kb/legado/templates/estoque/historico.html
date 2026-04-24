@@ -1,0 +1,306 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Histórico de Movimentações{% endblock %}
+
+{% block extra_head %}
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<style>
+    .select2-container .select2-selection--single {
+        height: calc(1.5em + .75rem + 2px);
+    }
+    .cancelled-row {
+        text-decoration: line-through;
+        color: #6c757d;
+        background-color: #f8f9fa !important;
+    }
+    .cancelled-row .badge {
+        opacity: 0.7;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <!-- Card de Filtros -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h3 class="card-title"><i class="fas fa-filter"></i> Filtrar Histórico</h3>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="filter_produto_id">Produto</label>
+                        <select id="filter_produto_id" name="filter_produto_id" class="form-control">
+                            {% if produto_selecionado %}
+                                <option value="{{ produto_selecionado.id }}" selected>{{ produto_selecionado.name or produto_selecionado.nome }} ({{ produto_selecionado.sku }})</option>
+                            {% else %}
+                                <option value="" selected>Todos os Produtos</option>
+                            {% endif %}
+                        </select>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="filter_deposito_id">Depósito</label>
+                        <select id="filter_deposito_id" name="filter_deposito_id" class="form-control">
+                            <option value="">Todos os Depósitos</option>
+                            {% for deposito in depositos %}
+                            <option value="{{ deposito.id }}" {% if deposito.id|string == filtro_deposito|string %}selected{% endif %}>{{ deposito.nome }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="filter_tipo_movimento">Tipo de Movimento</label>
+                        <select id="filter_tipo_movimento" name="filter_tipo_movimento" class="form-control">
+                            <option value="">Todos os Tipos</option>
+                            <option value="ENTRADA" {% if filtro_tipo == 'ENTRADA' %}selected{% endif %}>Entrada</option>
+                            <option value="SAIDA" {% if filtro_tipo == 'SAIDA' %}selected{% endif %}>Saída</option>
+                            <option value="BALANCO" {% if filtro_tipo == 'BALANCO' %}selected{% endif %}>Balanço</option>
+                            <option value="TRANSFERENCIA" {% if filtro_tipo == 'TRANSFERENCIA' %}selected{% endif %}>Transferência</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="filter_limit">Limite de Resultados</label>
+                        <input type="number" id="filter_limit" name="filter_limit" class="form-control" value="{{ request.args.get('limit', 100) }}">
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="filter_data_inicio">Data Início</label>
+                        <input type="date" id="filter_data_inicio" name="filter_data_inicio" class="form-control" value="{{ filtro_data_inicio }}">
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="filter_data_fim">Data Fim</label>
+                        <input type="date" id="filter_data_fim" name="filter_data_fim" class="form-control" value="{{ filtro_data_fim }}">
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-12 text-right">
+                    <button id="apply_filters" class="btn btn-primary"><i class="fas fa-search"></i> Aplicar Filtros</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Card do Histórico de Movimentações -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title"><i class="fas fa-history"></i> Histórico de Movimentações</h3>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover">
+                    <thead>
+                        <tr>
+                            <th>Data</th>
+                            <th>Produto</th>
+                            <th>Tipo</th>
+                            <th>Depósito</th>
+                            <th class="text-right">Quantidade</th>
+                            <th class="text-right">Saldo Anterior</th>
+                            <th class="text-right">Saldo Posterior</th>
+                            <th>Observação</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for mov in movimentacoes %}
+                        <tr class="{{ 'cancelled-row' if mov.cancelado }}">
+                            <td>{{ mov.data_hora.strftime('%d/%m/%Y %H:%M') if mov.data_hora else 'N/A' }}</td>
+                            <td>
+                                {% set produto = prefetched_products.get(mov.produto_id, {}) %}
+                                {{ produto.get('name') or produto.get('nome') or mov.produto_id or 'N/A' }}
+                            </td>
+                            <td><span class="badge badge-{{ 'success' if mov.tipo_movimento == 'ENTRADA' else 'danger' if mov.tipo_movimento == 'SAIDA' else 'info' if mov.tipo_movimento == 'BALANCO' else 'primary' }}">{{ mov.tipo_movimento }}</span></td>
+                            <td>
+                                {% if 'TRANSFERENCIA' in mov.tipo_movimento %}
+                                    De {{ prefetched_depositos.get(mov.deposito_origem_id, {}).get('nome', 'N/A') }} para {{ prefetched_depositos.get(mov.deposito_destino_id, {}).get('nome', 'N/A') }}
+                                {% else %}
+                                    {{ prefetched_depositos.get(mov.deposito_id, {}).get('nome', 'N/A') }}
+                                {% endif %}
+                            </td>
+                            <td class="text-right">{{ mov.quantidade | int }}</td>
+                            <td class="text-right">{{ mov.saldo_anterior | int }}</td>
+                            <td class="text-right">{{ mov.saldo_posterior | int }}</td>
+                            <td>
+                                {{ mov.observacao }}
+                                {% if mov.cancelado %}
+                                    <br><small class="text-danger">Cancelado em {{ mov.revertido_em.strftime('%d/%m/%Y') if mov.revertido_em }}. Reversão: {{ mov.revertido_pelo_lancamento_id }}</small>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <button class="btn btn-sm btn-danger btn-cancelar" 
+                                        data-lancamento-id="{{ mov.id }}"
+                                        title="Cancelar Movimentação"
+                                        {{ 'disabled' if mov.cancelado or 'TRANSFERENCIA' in mov.tipo_movimento or mov.tipo_movimento.startswith('REVERSAO_') }}>
+                                    <i class="fas fa-times"></i>
+                                </button>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="9" class="text-center text-muted">Nenhuma movimentação encontrada.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script>
+    $(document).ready(function() {
+        // Inicializa Select2 para filtro de produto
+        $('#filter_produto_id').select2({
+            placeholder: 'Filtrar por produto...',
+            allowClear: true,
+            ajax: {
+                url: '/estoque/api/produtos-busca',
+                dataType: 'json',
+                delay: 250,
+                data: function (params) {
+                    return {
+                        q: params.term,
+                        deposito_id: $('#filter_deposito_id').val() // Filtrar busca de produtos pelo depósito selecionado
+                    };
+                },
+                processResults: function (data) {
+                    return {
+                        results: data.results
+                    };
+                },
+                cache: true
+            },
+            minimumInputLength: 2
+        });
+
+        // Pre-selecionar produto se já estiver na URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const initialProdutoId = urlParams.get('produto_id');
+        if (initialProdutoId) {
+            // Se o produto já foi pre-selecionado pelo backend, o Select2 já deve ter a opção
+        }
+
+        // Event listener para aplicar filtros
+        $('#apply_filters').on('click', function() {
+            const produtoId = $('#filter_produto_id').val();
+            const depositoId = $('#filter_deposito_id').val();
+            const tipoMovimento = $('#filter_tipo_movimento').val();
+            const dataInicio = $('#filter_data_inicio').val();
+            const dataFim = $('#filter_data_fim').val();
+            const limit = $('#filter_limit').val();
+
+            let url = '/estoque/historico';
+            const params = [];
+            if (produtoId) {
+                params.push(`produto_id=${produtoId}`);
+            }
+            if (depositoId) {
+                params.push(`deposito_id=${depositoId}`);
+            }
+            if (tipoMovimento) {
+                params.push(`tipo_movimento=${tipoMovimento}`);
+            }
+            if (dataInicio) {
+                params.push(`data_inicio=${dataInicio}`);
+            }
+            if (dataFim) {
+                params.push(`data_fim=${dataFim}`);
+            }
+            if (limit && limit !== '100') { // Apenas se for diferente do default
+                params.push(`limit=${limit}`);
+            }
+            if (params.length > 0) {
+                url += `?${params.join('&')}`;
+            }
+            window.location.href = url;
+        });
+
+        // Cancelamento de Movimentação
+        $('.btn-cancelar').on('click', function() {
+            const lancamentoId = $(this).data('lancamento-id');
+            const button = $(this);
+            
+            if (!confirm(`Tem certeza que deseja CANCELAR a movimentação ${lancamentoId}?\n\nEsta ação é irreversível e criará um lançamento de reversão.`)) {
+                return;
+            }
+
+            button.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i>');
+
+            fetch('/estoque/api/reverter-movimentacao', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ lancamento_id: lancamentoId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message, 'success');
+                    setTimeout(() => window.location.reload(), 1500);
+                } else {
+                    alert('Erro ao cancelar: ' + data.error);
+                    button.prop('disabled', false).html('<i class="fas fa-times"></i>');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Ocorreu um erro de comunicação ao tentar cancelar a movimentação.');
+                button.prop('disabled', false).html('<i class="fas fa-times"></i>');
+            });
+        });
+
+        // Cancelamento de Movimentação
+        $('.btn-cancelar').on('click', function() {
+            const lancamentoId = $(this).data('lancamento-id');
+            const button = $(this);
+            
+            if (!confirm(`Tem certeza que deseja CANCELAR a movimentação ${lancamentoId}?\n\nEsta ação é irreversível e criará um lançamento de reversão.`)) {
+                return;
+            }
+
+            button.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i>');
+
+            fetch('/estoque/api/reverter-movimentacao', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ lancamento_id: lancamentoId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast(data.message, 'success');
+                    setTimeout(() => window.location.reload(), 1500);
+                } else {
+                    alert('Erro ao cancelar: ' + data.error);
+                    button.prop('disabled', false).html('<i class="fas fa-times"></i>');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Ocorreu um erro de comunicação ao tentar cancelar a movimentação.');
+                button.prop('disabled', false).html('<i class="fas fa-times"></i>');
+            });
+        });
+    });
+</script>
+{% endblock %}

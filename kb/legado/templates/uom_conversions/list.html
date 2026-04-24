@@ -1,0 +1,57 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Proporções de Unidade{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-sm-flex align-items-center justify-content-between mb-4">
+        <h1 class="h3 mb-0 text-gray-800">Proporções de Unidade (Conversões)</h1>
+        <a href="{{ url_for('uom_conversions_bp.new_conversion') }}" class="btn btn-primary shadow-sm"><i class="fas fa-plus fa-sm text-white-50"></i> Adicionar Nova Proporção</a>
+    </div>
+
+    <div class="card shadow mb-4">
+        <div class="card-header py-3">
+            <h6 class="m-0 font-weight-bold text-primary">Regras de Conversão Cadastradas</h6>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-bordered" id="dataTable" width="100%" cellspacing="0">
+                    <thead>
+                        <tr>
+                            <th>Produto Base</th>
+                            <th>Nome da Proporção</th>
+                            <th class="text-right">Fator de Conversão</th>
+                            <th>Exemplo</th>
+                            <th class="text-center">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for conv in conversions %}
+                        <tr>
+                            <td>{{ conv.productName }}</td>
+                            <td><strong>{{ conv.unitName }}</strong></td>
+                            <td class="text-right">{{ conv.conversionFactor }}</td>
+                            <td>1 {{ conv.unitName }} = {{ conv.conversionFactor }} unidades</td>
+                            <td class="text-center">
+                                <a href="{{ url_for('uom_conversions_bp.edit_conversion', conversion_id=conv.id) }}" class="btn btn-sm btn-warning">
+                                    <i class="fas fa-edit"></i> Editar
+                                </a>
+                                <form action="{{ url_for('uom_conversions_bp.delete_conversion', conversion_id=conv.id) }}" method="POST" class="d-inline" onsubmit="return confirm('Tem certeza que deseja deletar esta proporção?');">
+                                    <button type="submit" class="btn btn-sm btn-danger">
+                                        <i class="fas fa-trash"></i> Deletar
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="5" class="text-center">Nenhuma proporção cadastrada.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

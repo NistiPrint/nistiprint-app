@@ -1,0 +1,81 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}{% if fornecedor %}Editar{% else %}Novo{% endif %} Fornecedor{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-md-8 offset-md-2">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        {% if fornecedor %}✏️ Editar{% else %}➕ Novo{% endif %} Fornecedor
+                    </h3>
+                </div>
+
+                <form method="POST">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-group">
+                                    <label for="nome_razao_social">Nome/Razão Social *</label>
+                                    <input type="text" class="form-control" id="nome_razao_social" name="nome_razao_social"
+                                           value="{{ fornecedor.nome_razao_social if fornecedor else '' }}" required>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="cpf_cnpj">CPF/CNPJ</label>
+                                    <input type="text" class="form-control" id="cpf_cnpj" name="cpf_cnpj"
+                                           value="{{ fornecedor.cpf_cnpj if fornecedor else '' }}"
+                                           placeholder="000.000.000-00 ou 00.000.000/0000-00">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="telefone">Telefone</label>
+                                    <input type="text" class="form-control" id="telefone" name="telefone"
+                                           value="{{ fornecedor.telefone if fornecedor else '' }}"
+                                           placeholder="(00) 00000-0000">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-group">
+                                    <label for="email">Email</label>
+                                    <input type="email" class="form-control" id="email" name="email"
+                                           value="{{ fornecedor.email if fornecedor else '' }}">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="ativo" name="ativo"
+                                           {% if fornecedor and fornecedor.get('ativo', True) %}checked{% elif not fornecedor %}checked{% endif %}>
+                                    <label class="form-check-label" for="ativo">Ativo</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-footer">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Salvar
+                        </button>
+                        <a href="{{ url_for('cadastros.fornecedor_list') }}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Voltar
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

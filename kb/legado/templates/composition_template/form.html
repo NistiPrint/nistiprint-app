@@ -1,0 +1,110 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}{% if template %}Editar Template de Composição{% else %}Novo Template de Composição{% endif %}{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-md-10 offset-md-1">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        <i class="fas fa-file-alt"></i> {% if template %}Editar Template: {{ template.name }}{% else %}Novo Template de Composição{% endif %}
+                    </h3>
+                </div>
+                <div class="card-body">
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                                    {{ message }}
+                                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                                </div>
+                            {% endfor %}
+                        {% endif %}
+                    {% endwith %}
+
+                    <form method="POST" action="{% if template %}{{ url_for('composition_templates.edit_template', template_id=template.id) }}{% else %}{{ url_for('composition_templates.create_template') }}{% endif %}">
+                        <div class="mb-3">
+                            <label for="name" class="form-label">Nome do Template</label>
+                            <input type="text" class="form-control" id="name" name="name" value="{{ template.name if template else '' }}" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="description" class="form-label">Descrição</label>
+                            <textarea class="form-control" id="description" name="description" rows="3">{{ template.description if template else '' }}</textarea>
+                        </div>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save"></i> {% if template %}Atualizar Template{% else %}Criar Template{% endif %}
+                        </button>
+                        <a href="{{ url_for('composition_templates.list_templates') }}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Voltar
+                        </a>
+                    </form>
+
+                    {% if template %}
+                    <hr class="my-4">
+                    <h4><i class="fas fa-cubes"></i> Itens do Template</h4>
+                    <p class="text-muted">Defina os componentes que farão parte deste template.</p>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="component-search" class="form-label">Buscar Componente</label>
+                            <select class="form-control select2" id="component-search" style="width: 100%;"></select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="component-quantity" class="form-label">Quantidade</label>
+                            <input type="number" class="form-control" id="component-quantity" value="1" min="0.01" step="0.01">
+                        </div>
+                        <div class="col-md-3 d-flex align-items-end">
+                            <button type="button" class="btn btn-success w-100" id="add-component-btn">
+                                <i class="fas fa-plus"></i> Adicionar Componente
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover" id="template-items-table">
+                            <thead>
+                                <tr>
+                                    <th>Produto</th>
+                                    <th>SKU</th>
+                                    <th style="width: 150px;">Quantidade</th>
+                                    <th class="text-center">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% if template_items %}
+                                    {% for item in template_items %}
+                                    <tr data-item-id="{{ item.id }}" data-component-id="{{ item.component_product_id }}">
+                                        <td>{{ item.component_name }}</td>
+                                        <td>{{ item.component_sku }}</td>
+                                        <td>
+                                            <input type="number" class="form-control form-control-sm item-quantity-input" 
+                                                   value="{{ item.quantity }}" min="0.01" step="0.01">
+                                        </td>
+                                        <td class="text-center">
+                                            <button type="button" class="btn btn-danger btn-sm delete-item-btn" title="Remover">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                {% else %}
+                                    <tr id="no-items-row"><td colspan="4" class="text-center">Nenhum item neste template.</td></tr>
+                                {% endif %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if template %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/composition_template_form.js') }}"></script>
+{% endblock %}
+{% endif %}
+{% endblock %}

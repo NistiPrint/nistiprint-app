@@ -1,0 +1,301 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Ajuste de Inventário{% endblock %}
+
+{% block extra_head %}
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<style>
+    #review-step, #counting-step { display: none; }
+    .form-control-sm { height: auto !important; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title"><i class="fas fa-clipboard-check"></i> Ajuste de Inventário (Contagem Cega)</h3>
+        </div>
+        <div class="card-body">
+            <!-- Step 1: Select Warehouse -->
+            <div id="warehouse-step">
+                <h4>Passo 1: Selecione o Depósito</h4>
+                <div class="form-group">
+                    <label for="deposito_select">Depósito</label>
+                    <select id="deposito_select" class="form-control form-control-lg">
+                        <option value="" selected disabled>Selecione um depósito para iniciar a contagem...</option>
+                        {% for d in depositos %}
+                        <option value="{{ d.id }}">{{ d.nome }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <!-- Step 2: Counting -->
+            <div id="counting-step">
+                <h4>Passo 2: Insira a Contagem Física</h4>
+                <p>Adicione os produtos e a quantidade física contada no depósito <strong id="deposito-name"></strong>.</p>
+                <div class="form-group">
+                    <label for="product_search">Adicionar Produto</label>
+                    <select id="product_search" class="form-control"></select>
+                </div>
+                <table class="table table-bordered" id="counting-table">
+                    <thead>
+                        <tr>
+                            <th>Produto</th>
+                            <th>SKU</th>
+                            <th style="width: 150px;">Qtd. Contada</th>
+                            <th style="width: 80px;">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Rows will be added by JS -->
+                    </tbody>
+                </table>
+                <button id="review-button" class="btn btn-primary"><i class="fas fa-list-alt"></i> Revisar Contagem</button>
+                <button id="change-warehouse" class="btn btn-secondary"><i class="fas fa-exchange-alt"></i> Trocar Depósito</button>
+            </div>
+
+            <!-- Step 3: Review -->
+            <div id="review-step">
+                <h4>Passo 3: Revise e Confirme os Ajustes</h4>
+                <p>Confira as variações antes de salvar. Apenas linhas com variação serão ajustadas.</p>
+                <form id="adjustment-form" method="POST">
+                    <input type="hidden" name="deposito_id_hidden" id="deposito_id_hidden">
+                    <div class="table-responsive">
+                        <table class="table table-bordered" id="review-table">
+                            <thead>
+                                <tr>
+                                    <th>Produto</th>
+                                    <th>SKU</th>
+                                    <th class="text-right">Qtd. Sistema</th>
+                                    <th class="text-right">Qtd. Contada</th>
+                                    <th class="text-right">Variação</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Rows will be added by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                    <button type="submit" class="btn btn-success"><i class="fas fa-save"></i> Confirmar e Salvar Ajustes</button>
+                    <button type="button" id="back-to-counting" class="btn btn-secondary"><i class="fas fa-arrow-left"></i> Voltar para Contagem</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    // State management
+    let state = {
+        depositoId: null,
+        depositoName: null,
+        countedItems: {} // Using an object for faster lookups by product ID
+    };
+
+    // DOM Elements
+    const warehouseStep = document.getElementById('warehouse-step');
+    const countingStep = document.getElementById('counting-step');
+    const reviewStep = document.getElementById('review-step');
+    const depositoSelect = document.getElementById('deposito_select');
+    const depositoNameSpan = document.getElementById('deposito-name');
+    const productSearch = $('#product_search'); // jQuery object for Select2
+    const countingTableBody = document.querySelector('#counting-table tbody');
+    const reviewTableBody = document.querySelector('#review-table tbody');
+    const reviewButton = document.getElementById('review-button');
+    const changeWarehouseButton = document.getElementById('change-warehouse');
+    const backToCountingButton = document.getElementById('back-to-counting');
+    const adjustmentForm = document.getElementById('adjustment-form');
+    const depositoIdHidden = document.getElementById('deposito_id_hidden');
+
+    // --- Step 1: Warehouse Selection ---
+    depositoSelect.addEventListener('change', function() {
+        if (!this.value) return;
+        state.depositoId = this.value;
+        state.depositoName = this.options[this.selectedIndex].text;
+        
+        depositoNameSpan.textContent = state.depositoName;
+        depositoIdHidden.value = state.depositoId;
+
+        warehouseStep.style.display = 'none';
+        countingStep.style.display = 'block';
+        reviewStep.style.display = 'none';
+
+        initializeProductSearch();
+    });
+
+    changeWarehouseButton.addEventListener('click', () => {
+        if (Object.keys(state.countedItems).length > 0 && !confirm('Ao trocar de depósito, todos os itens contados serão perdidos. Deseja continuar?')) {
+            return;
+        }
+        resetState();
+        renderCountingTable();
+        warehouseStep.style.display = 'block';
+        countingStep.style.display = 'none';
+        reviewStep.style.display = 'none';
+    });
+
+    // --- Step 2: Counting ---
+    function initializeProductSearch() {
+        productSearch.select2({
+            placeholder: 'Buscar produto por nome ou SKU...',
+            ajax: {
+                url: '/estoque/api/produtos-busca',
+                dataType: 'json',
+                delay: 250,
+                data: function (params) {
+                    return { q: params.term, deposito_id: state.depositoId };
+                },
+                processResults: function (data) {
+                    return { results: data.results };
+                },
+                cache: true
+            },
+            minimumInputLength: 2
+        }).on('select2:select', function(e) {
+            const product = e.params.data;
+            if (!state.countedItems[product.id]) {
+                state.countedItems[product.id] = {
+                    id: product.id,
+                    name: product.text.split(' - ')[1] || product.text,
+                    sku: product.text.split(' - ')[0] || 'N/A',
+                    counted: 1 // Default to 1
+                };
+                renderCountingTable();
+            }
+            productSearch.val(null).trigger('change');
+        });
+    }
+
+    function renderCountingTable() {
+        countingTableBody.innerHTML = '';
+        for (const productId in state.countedItems) {
+            const item = state.countedItems[productId];
+            const row = document.createElement('tr');
+            row.dataset.productId = item.id;
+            row.innerHTML = `
+                <td>${item.name}</td>
+                <td>${item.sku}</td>
+                <td><input type="number" class="form-control form-control-sm counted-qty" data-id="${item.id}" value="${item.counted}" min="0"></td>
+                <td><button class="btn btn-sm btn-danger remove-item" data-id="${item.id}" title="Remover"><i class="fas fa-trash"></i></button></td>
+            `;
+            countingTableBody.appendChild(row);
+        }
+    }
+
+    countingTableBody.addEventListener('change', function(e) {
+        if (e.target.classList.contains('counted-qty')) {
+            const productId = e.target.dataset.id;
+            state.countedItems[productId].counted = parseInt(e.target.value, 10) || 0;
+        }
+    });
+
+    countingTableBody.addEventListener('click', function(e) {
+        const button = e.target.closest('.remove-item');
+        if (button) {
+            const productId = button.dataset.id;
+            delete state.countedItems[productId];
+            renderCountingTable();
+        }
+    });
+
+    // --- Step 3: Review ---
+    reviewButton.addEventListener('click', async function() {
+        const productIds = Object.keys(state.countedItems);
+        if (productIds.length === 0) {
+            alert('Adicione pelo menos um produto para revisar.');
+            return;
+        }
+
+        this.disabled = true;
+        this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Buscando...';
+
+        try {
+            const response = await fetch('/estoque/api/saldos-batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ product_ids: productIds, deposito_id: state.depositoId })
+            });
+            if (!response.ok) throw new Error('Falha ao buscar saldos do sistema.');
+            
+            const systemSaldos = await response.json();
+
+            for(const productId in state.countedItems) {
+                state.countedItems[productId].system = systemSaldos[productId] || 0;
+            }
+            
+            renderReviewTable();
+            countingStep.style.display = 'none';
+            reviewStep.style.display = 'block';
+
+        } catch (error) {
+            alert('Erro: ' + error.message);
+            console.error(error);
+        } finally {
+            this.disabled = false;
+            this.innerHTML = '<i class="fas fa-list-alt"></i> Revisar Contagem';
+        }
+    });
+
+    function renderReviewTable() {
+        reviewTableBody.innerHTML = '';
+        let hasVariance = false;
+        for (const productId in state.countedItems) {
+            const item = state.countedItems[productId];
+            const systemQty = item.system || 0;
+            const variance = item.counted - systemQty;
+            if (variance !== 0) hasVariance = true;
+            
+            const row = document.createElement('tr');
+            row.className = variance === 0 ? 'table-secondary' : (variance > 0 ? 'table-success' : 'table-danger');
+            row.innerHTML = `
+                <td>${item.name}</td>
+                <td>${item.sku}</td>
+                <td class="text-right">${systemQty}</td>
+                <td class="text-right">${item.counted}</td>
+                <td class="text-right font-weight-bold">${variance}</td>
+            `;
+            reviewTableBody.appendChild(row);
+
+            // Add hidden input for form submission only if there is a variance
+            if (variance !== 0) {
+                const hiddenInput = document.createElement('input');
+                hiddenInput.type = 'hidden';
+                hiddenInput.name = 'adjustments';
+                hiddenInput.value = JSON.stringify({id: item.id, counted: item.counted, system: systemQty, variance: variance});
+                adjustmentForm.appendChild(hiddenInput);
+            }
+        }
+        // Disable submit button if no variance
+        adjustmentForm.querySelector('button[type="submit"]').disabled = !hasVariance;
+    }
+
+    backToCountingButton.addEventListener('click', () => {
+        reviewStep.style.display = 'none';
+        countingStep.style.display = 'block';
+        // Clear hidden inputs from form
+        adjustmentForm.querySelectorAll('input[name="adjustments"]').forEach(el => el.remove());
+    });
+
+    // --- Form Submission ---
+    adjustmentForm.addEventListener('submit', function(e) {
+        if (!confirm('Tem certeza que deseja salvar estes ajustes? Esta ação não pode ser desfeita.')) {
+            e.preventDefault();
+        }
+    });
+
+    function resetState() {
+        state.depositoId = null;
+        state.depositoName = null;
+        state.countedItems = {};
+        depositoSelect.value = '';
+        productSearch.val(null).trigger('change');
+    }
+});
+</script>
+{% endblock %}

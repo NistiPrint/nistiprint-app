@@ -1,0 +1,188 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Monitoramento de Webhooks{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">📡 Monitoramento de Webhooks</h3>
+                    <div class="card-tools">
+                        <button class="btn btn-primary btn-sm" onclick="processPending()">
+                            <i class="fas fa-play"></i> Processar Pendentes
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card-body">
+                    <!-- Estatísticas -->
+                    <div class="row mb-4">
+                        <div class="col-md-3">
+                            <div class="small-box bg-warning">
+                                <div class="inner">
+                                    <h3>{{ pendentes }}</h3>
+                                    <p>Pendentes</p>
+                                </div>
+                                <div class="icon">
+                                    <i class="fas fa-clock"></i>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="small-box bg-info">
+                                <div class="inner">
+                                    <h3>{{ processando }}</h3>
+                                    <p>Processando</p>
+                                </div>
+                                <div class="icon">
+                                    <i class="fas fa-cog fa-spin"></i>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="small-box bg-success">
+                                <div class="inner">
+                                    <h3>{{ sucesso }}</h3>
+                                    <p>Sucesso</p>
+                                </div>
+                                <div class="icon">
+                                    <i class="fas fa-check"></i>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="small-box bg-danger">
+                                <div class="inner">
+                                    <h3>{{ erro }}</h3>
+                                    <p>Erro</p>
+                                </div>
+                                <div class="icon">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Lista de Webhooks Recentes -->
+                    <div class="row">
+                        <div class="col-12">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h4 class="card-title">📋 Webhooks Recentes</h4>
+                                </div>
+                                <div class="card-body">
+                                    <table class="table table-striped">
+                                        <thead>
+                                            <tr>
+                                                <th>ID</th>
+                                                <th>Data Recebimento</th>
+                                                <th>Conta Bling</th>
+                                                <th>Tipo Evento</th>
+                                                <th>Status</th>
+                                                <th>Tentativas</th>
+                                                <th>Ações</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for webhook in recentes %}
+                                            <tr>
+                                                <td>
+                                                    <small class="text-muted">{{ webhook.id[:8] }}</small>
+                                                </td>
+                                                <td>
+                                                    {{ webhook.data_recebimento.strftime('%d/%m/%Y %H:%M') if webhook.data_recebimento else 'N/A' }}
+                                                </td>
+                                                <td>{{ webhook.conta_bling_id }}</td>
+                                                <td>
+                                                    <span class="badge badge-primary">{{ webhook.tipo_evento }}</span>
+                                                </td>
+                                                <td>
+                                                    {% if webhook.status == 'PENDENTE' %}
+                                                        <span class="badge badge-warning">Pendente</span>
+                                                    {% elif webhook.status == 'PROCESSANDO' %}
+                                                        <span class="badge badge-info">Processando</span>
+                                                    {% elif webhook.status == 'SUCESSO' %}
+                                                        <span class="badge badge-success">Sucesso</span>
+                                                    {% else %}
+                                                        <span class="badge badge-danger">Erro</span>
+                                                    {% endif %}
+                                                </td>
+                                                <td>{{ webhook.tentativas or 0 }}</td>
+                                                <td>
+                                                    <button class="btn btn-xs btn-info" onclick="showDetails('{{ webhook.id }}')">
+                                                        <i class="fas fa-eye"></i>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal para Detalhes do Webhook -->
+<div class="modal fade" id="webhookModal" tabindex="-1" role="dialog">
+    <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4 class="modal-title">Detalhes do Webhook</h4>
+                <button type="button" class="close" data-dismiss="modal">
+                    <span>&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <pre id="webhookDetails">Carregando...</pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function processPending() {
+    if (!confirm('Deseja processar os webhooks pendentes?')) return;
+
+    fetch('/webhooks/processar', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+        }
+    })
+    .then(response => {
+        if (response.redirected) {
+            window.location.reload();
+        }
+    })
+    .catch(error => {
+        alert('Erro ao processar webhooks: ' + error);
+    });
+}
+
+function showDetails(webhookId) {
+    fetch(`/webhooks/api/${webhookId}`)
+    .then(response => response.json())
+    .then(data => {
+        document.getElementById('webhookDetails').textContent = JSON.stringify(data, null, 2);
+        $('#webhookModal').modal('show');
+    })
+    .catch(error => {
+        alert('Erro ao carregar detalhes: ' + error);
+    });
+}
+
+// Recarregar página a cada 30 segundos
+setInterval(() => {
+    if (!document.hidden) {
+        window.location.reload();
+    }
+}, 30000);
+</script>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}{% if unidade %}Editar{% else %}Nova{% endif %} Unidade de Medida{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-md-8 offset-md-2">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        {% if unidade %}✏️ Editar{% else %}➕ Nova{% endif %} Unidade de Medida
+                    </h3>
+                </div>
+
+                <form method="POST">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="name">Nome *</label>
+                                    <input type="text" class="form-control" id="name" name="name"
+                                           value="{{ unidade.name if unidade else '' }}" required
+                                           placeholder="Ex: Quilograma, Metro">
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="symbol">Símbolo *</label>
+                                    <input type="text" class="form-control" id="symbol" name="symbol"
+                                           value="{{ unidade.symbol if unidade else '' }}" required
+                                           placeholder="Ex: kg, m, m²">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-footer">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Salvar
+                        </button>
+                        <a href="{{ url_for('cadastros.unidade_medida_list') }}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Voltar
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

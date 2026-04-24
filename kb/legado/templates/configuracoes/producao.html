@@ -1,0 +1,98 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Configuração da Tela de Produção{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1 class="mb-4">Configuração da Tela de Produção de Miolos</h1>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <div class="card shadow-sm">
+        <div class="card-body">
+            <h5 class="card-title">Categoria para Controle de Produção</h5>
+            <p class="card-text">Selecione a categoria de produtos que será utilizada na tela de controle de produção diária. Os produtos desta categoria serão exibidos para o registro de produção.</p>
+            
+            <form method="POST" action="{{ url_for('configuracoes.producao_config') }}">
+                <div class="form-group">
+                    <label for="category_id">Categoria</label>
+                    <select name="category_id" id="category_id" class="form-control select2" required>
+                        <option value="">Selecione uma categoria...</option>
+                        {% for category in all_categories %}
+                            <option value="{{ category.id }}" {% if category.id == selected_category_id %}selected{% endif %}>
+                                {{ category.name }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="deposit_id">Depósito Padrão para Produção</label>
+                    <select name="deposit_id" id="deposit_id" class="form-control select2" required>
+                        <option value="">Selecione um depósito...</option>
+                        {% for deposit in all_deposits %}
+                            <option value="{{ deposit.id }}" {% if deposit.id == selected_deposit_id %}selected{% endif %}>
+                                {{ deposit.nome }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <hr>
+
+                <h5 class="card-title mt-4">Relatórios de Consumo</h5>
+                <div class="form-group">
+                    <label for="sulfite_sheet_product_id">Produto "Folha Sulfite" para Relatório</label>
+                    <select name="sulfite_sheet_product_id" id="sulfite_sheet_product_id" class="form-control select2" required>
+                        <option value="">Selecione um produto...</option>
+                        {% for product in all_products %}
+                            <option value="{{ product.id }}" {% if product.id == selected_sulfite_id %}selected{% endif %}>
+                                {{ product.name }} (SKU: {{ product.sku }})
+                            </option>
+                        {% endfor %}
+                    </select>
+                    <small class="form-text text-muted">Selecione o produto que representa a folha sulfite para o cálculo do relatório de consumo.</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="material_safety_days">Dias de Segurança para Compra de Insumos</label>
+                    <input type="number" class="form-control" id="material_safety_days" name="material_safety_days" value="{{ material_safety_days }}" placeholder="Ex: 15" required>
+                    <small class="form-text text-muted">O sistema irá sugerir a data de compra de um insumo quando a cobertura de estoque for menor que este número de dias.</small>
+                </div>
+
+                <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Salvar Configurações</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+$(document).ready(function() {
+    $('#category_id').select2({
+        placeholder: "Selecione uma categoria...",
+        theme: 'bootstrap4'
+    });
+    $('#deposit_id').select2({
+        placeholder: "Selecione um depósito...",
+        theme: 'bootstrap4'
+    });
+    $('#sulfite_sheet_product_id').select2({
+        placeholder: "Selecione o produto para o relatório...",
+        theme: 'bootstrap4'
+    });
+});
+</script>
+{% endblock %}

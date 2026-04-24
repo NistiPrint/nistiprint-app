@@ -1,0 +1,69 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Categorias{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">🏷️ Categorias</h3>
+                    <div class="card-tools">
+                        <a href="{{ url_for('cadastros.categoria_new') }}" class="btn btn-primary btn-sm">
+                            <i class="fas fa-plus"></i> Nova Categoria
+                        </a>
+                    </div>
+                </div>
+
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Nome</th>
+                                    <th>Descrição</th>
+                                    <th>Pai</th>
+                                    <th>ID Bling</th>
+                                    <th>Status</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for categoria in categorias %}
+                                <tr>
+                                    <td>{{ categoria.name }}</td>
+                                    <td>{{ categoria.get('description', '') or 'N/A' }}</td>
+                                    <td>
+                                        {% if categoria.get('parent_category_id') %}
+                                            <span class="badge badge-info">{{ categoria.parent_name or 'N/A' }}</span>
+                                        {% else %}
+                                            <span class="text-muted">Raiz</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ categoria.get('bling_category_id', 'N/A') }}</td>
+                                    <td>
+                                        <span class="badge badge-success">Ativo</span>
+                                    </td>
+                                    <td>
+                                        <a href="{{ url_for('cadastros.categoria_edit', categoria_id=categoria.id) }}" class="btn btn-xs btn-info">
+                                            <i class="fas fa-edit"></i> Editar
+                                        </a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {% if not categorias %}
+                    <div class="alert alert-info">
+                        Nenhuma categoria cadastrada.
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

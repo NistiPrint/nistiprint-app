@@ -1,0 +1,584 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Controle de Produção de Miolos{% endblock %}
+
+{% block extra_styles %}
+<style>
+    .stock-info {
+        font-size: 0.85rem;
+        color: #6c757d;
+    }
+    .sub-stock-info {
+        font-size: 0.8rem;
+        color: #6c757d;
+        margin-top: 4px;
+    }
+    .stock-delta-negative {
+        color: #dc3545;
+        font-weight: bold;
+    }
+    .stock-details-grid .badge {
+        font-size: 0.75rem;
+    }
+
+    /* Grid view styles */
+    #grid-view {
+        display: none; /* Hidden by default */
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 1rem;
+    }
+    .product-card {
+        border: 1px solid #dee2e6;
+        border-radius: 0.25rem;
+        text-align: center;
+        padding: 1rem;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .product-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .product-card .product-name {
+        font-weight: bold;
+        margin-bottom: 0.5rem;
+        flex-grow: 1;
+    }
+    .product-card .stock-display {
+        font-size: 1.8rem;
+        font-weight: bold;
+        margin: 0.5rem 0;
+    }
+    .stock-ok {
+        color: #28a745;
+    }
+    .stock-low {
+        color: #dc3545;
+    }
+    .produced-qty-display, .removed-qty-display {
+        font-size: 0.9rem;
+        font-weight: bold;
+    }
+    .produced-qty-display {
+        color: #007bff;
+    }
+    .removed-qty-display {
+        color: #dc3545;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h1 class="mb-4">Controle de Produção de Miolos</h1>
+
+    <!-- Controls -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-body d-flex justify-content-between align-items-center flex-wrap">
+            <div class="d-flex align-items-center mb-2 mb-md-0">
+                <span class="mr-2"><strong>Data da Produção:</strong> {{ selected_date.strftime('%d/%m/%Y') }}</span>
+                <input type="hidden" id="data" name="data" value="{{ date_str }}">
+                <span class="badge badge-info ml-3">Total de Miolos Ativos: {{ total_active_cores }}</span>
+            </div>
+            <div class="d-flex align-items-center">
+                <input type="text" id="name-filter" class="form-control mr-3" placeholder="Filtrar por nome...">
+                <div class="btn-group btn-group-toggle" data-toggle="buttons">
+                    <label class="btn btn-outline-secondary" id="list-view-btn">
+                        <input type="radio" name="options" autocomplete="off"> <i class="fas fa-list"></i>
+                    </label>
+                    <label class="btn btn-outline-secondary" id="grid-view-btn">
+                        <input type="radio" name="options" autocomplete="off"> <i class="fas fa-th"></i>
+                    </label>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% if not products %}
+        <div class="alert alert-info">Nenhum produto encontrado na categoria configurada. <a href="{{ url_for('configuracoes.producao_config') }}">Verifique a configuração</a>.</div>
+    {% else %}
+        <!-- List View -->
+        <div id="list-view">
+            <div class="card shadow-sm">
+                <div class="card-body table-responsive">
+                    <table class="table table-hover table-bordered">
+                        <thead class="thead-light">
+                            <tr>
+                                <th>Produto</th>
+                                <th class="stock-col text-center">Atual</th>
+                                <th class="text-center">Ideal</th>
+                                <th class="text-center">Variação</th>
+                                <th class="text-center">Impresso</th>
+                                <th class="text-center">Saída</th>
+                                <th style="width: 20%;">Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody id="list-body">
+                            {% for product in products %}
+                            <tr class="product-item" data-product-id="{{ product.id }}" data-stock-min="{{ product.stock_min|default(0, true)|int }}">
+                                <td class="product-name">
+                                    <strong>{{ product.sku }}</strong>
+                                    <a href="{{ url_for('produtos.editar', produto_id=product.id) }}" class="btn btn-sm btn-outline-secondary ml-2" title="Editar Produto">
+                                        <i class="fas fa-edit"></i>
+                                    </a>
+                                    <br>
+                                    <small class="text-muted">{{ product.name }}</small>
+                                </td>
+                                <td class="stock-display-cell text-center">
+                                    {% set details = product.stock_details %}
+                                    {% set disponivel = details.quantidade_disponivel|int %}
+                                    {% set p_min = product.stock_min|default(0)|int %}
+                                    {% set is_low = disponivel < p_min %}
+                                    <div class="font-weight-bold {{ 'stock-low' if is_low else 'stock-ok' }}"
+                                         style="font-size: 1.2rem; cursor: pointer;"
+                                         data-toggle="popover"
+                                         data-trigger="hover"
+                                         title="Detalhes do Estoque"
+                                         data-html="true"
+                                         data-content="Físico: <span class='badge badge-light'>{{ details.quantidade|int }}</span><br>Reservado: <span class='badge badge-warning'>{{ details.quantidade_reservada|int }}</span>">
+                                        {{ disponivel }}
+                                    </div>
+                                </td>
+                                <td class="text-center">{{ product.stock_min|default(0, true)|int }}</td>
+                                <td class="text-center">
+                                    {% set variacao = (details.quantidade_disponivel|int) - (product.stock_min|default(0)|int) %}
+                                    <span class="variation-value {{ 'stock-delta-negative' if variacao < 0 }}">{{ variacao }}</span>
+                                </td>
+                                <td class="text-center produced-qty-display">{{ product.quantity_produced_today|int if product.quantity_produced_today > 0 else 0 }}</td>
+                                <td class="text-center removed-qty-display">{{ product.quantity_removed_today|int if product.quantity_removed_today > 0 else 0 }}</td>
+                                <td>
+                                    <div class="input-group">
+                                        <input type="number" class="form-control quantity-input" placeholder="Qtd" style="width: 80px;">
+                                        <div class="input-group-append">
+                                            <button class="btn btn-outline-success btn-sm production-btn" type="button" title="Registrar Entrada">Impressão</button>
+                                            <button class="btn btn-outline-danger btn-sm removal-btn" type="button" title="Registrar Saída">Saída</button>
+                                            <button class="btn btn-outline-info btn-sm view-log-btn" type="button" title="Ver Log do Dia"><i class="fas fa-history"></i></button>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Grid View -->
+        <div id="grid-view">
+            {% for product in products %}
+            {% set details = product.stock_details %}
+            {% set disponivel = details.quantidade_disponivel|int %}
+            {% set p_min = product.stock_min|default(0)|int %}
+            {% set is_low = disponivel < p_min %}
+            <div class="product-card product-item" data-product-id="{{ product.id }}" data-product-name="{{ product.name }}" data-stock-min="{{ p_min }}">
+                <div class="product-name">
+                    {{ product.sku }}
+                    <a href="{{ url_for('produtos.editar', produto_id=product.id) }}" class="btn btn-sm btn-outline-secondary ml-1" title="Editar Produto">
+                        <i class="fas fa-edit"></i>
+                    </a>
+                </div>
+                <div class="sub-stock-info mb-2">
+                    Ideal: {{ p_min }} | Variação: <span class="variation-value {{ 'stock-delta-negative' if (disponivel - p_min) < 0 }}">{{ disponivel - p_min }}</span>
+                </div>
+                <div class="stock-display {{ 'stock-low' if is_low else 'stock-ok' }}"
+                     style="cursor: pointer;"
+                     data-toggle="popover"
+                     data-trigger="hover"
+                     title="Detalhes do Estoque"
+                     data-html="true"
+                     data-content="Físico: <span class='badge badge-light'>{{ details.quantidade|int }}</span><br>Reservado: <span class='badge badge-warning'>{{ details.quantidade_reservada|int }}</span>">
+                    {{ disponivel }}
+                </div>
+                <div class="d-flex justify-content-around w-100 my-2">
+                    <div class="produced-qty-display">Impresso: {{ product.quantity_produced_today|int }}</div>
+                    <div class="removed-qty-display">Saída: {{ product.quantity_removed_today|int }}</div>
+                </div>
+                <div class="input-group mt-auto">
+                    <input type="number" class="form-control quantity-input" placeholder="Qtd" style="width: 60px;">
+                    <div class="input-group-append">
+                        <button class="btn btn-outline-success btn-sm production-btn" type="button" title="Registrar Entrada"><i class="fas fa-plus"></i></button>
+                        <button class="btn btn-outline-danger btn-sm removal-btn" type="button" title="Registrar Saída"><i class="fas fa-minus"></i></button>
+                        <button class="btn btn-outline-info btn-sm view-log-btn" type="button" title="Ver Log do Dia"><i class="fas fa-history"></i></button>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    {% endif %}
+</div>
+
+<!-- Custom Modal for Associating Demand -->
+<div id="customAssociateDemandModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 1060; justify-content: center; align-items: center;">
+  <div style="background-color: #fff; padding: 20px; border-radius: 5px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); max-width: 500px; width: 90%; position: relative;">
+    <h5 class="modal-title" id="customAssociateDemandModalLabel">Associar Saída à Demanda</h5>
+    <button type="button" class="close-custom-modal" style="position: absolute; top: 10px; right: 10px; border: none; background: none; font-size: 1.5rem; cursor: pointer;">&times;</button>
+    <div class="modal-body">
+      <p>Selecione a demanda de produção para associar esta saída de estoque.</p>
+      <div class="form-group">
+          <label for="demand-list">Demandas em aberto:</label>
+          <select class="form-control" id="demand-list">
+              <!-- Options will be loaded dynamically -->
+          </select>
+      </div>
+      <p class="text-muted">Se nenhuma demanda for selecionada, a saída será registrada sem associação.</p>
+    </div>
+    <div class="modal-footer" style="border-top: 1px solid #dee2e6; padding-top: 15px; margin-top: 15px; text-align: right;">
+      <button type="button" class="btn btn-secondary close-custom-modal">Cancelar</button>
+      <button type="button" class="btn btn-primary" id="confirm-removal-btn">Confirmar Saída</button>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+$(document).ready(function() {
+    // --- Popover Initialization --- //
+    $('[data-toggle="popover"]').popover();
+
+    // --- View Toggler and Filter --- //
+    const listView = document.getElementById('list-view');
+    const gridView = document.getElementById('grid-view');
+    const listViewBtn = document.getElementById('list-view-btn');
+    const gridViewBtn = document.getElementById('grid-view-btn');
+    const nameFilter = document.getElementById('name-filter');
+
+    function switchView(view) {
+        if (view === 'grid') {
+            listView.style.display = 'none';
+            gridView.style.display = 'grid';
+            localStorage.setItem('productionView', 'grid');
+        } else {
+            gridView.style.display = 'none';
+            listView.style.display = 'block';
+            localStorage.setItem('productionView', 'list');
+        }
+    }
+
+    listViewBtn.addEventListener('click', () => switchView('list'));
+    gridViewBtn.addEventListener('click', () => switchView('grid'));
+
+    const savedView = localStorage.getItem('productionView');
+    if (savedView === 'grid') {
+        switchView('grid');
+        gridViewBtn.classList.add('active');
+        gridViewBtn.querySelector('input').checked = true;
+        listViewBtn.classList.remove('active');
+    } else {
+        switchView('list');
+        listViewBtn.classList.add('active');
+        listViewBtn.querySelector('input').checked = true;
+        gridViewBtn.classList.remove('active');
+    }
+
+    function filterProducts() {
+        const filterText = nameFilter.value.toLowerCase();
+        document.querySelectorAll('.product-item').forEach(item => {
+            const productName = item.querySelector('.product-name').textContent.toLowerCase();
+            const displayStyle = productName.includes(filterText) ? '' : 'none';
+            if (item.tagName === 'TR') {
+                item.style.display = displayStyle;
+            } else {
+                item.style.display = displayStyle === 'none' ? 'none' : 'flex';
+            }
+        });
+    }
+    nameFilter.addEventListener('keyup', filterProducts);
+
+    // --- Inline Production/Removal Logic --- //
+    function handleAction(button, url, successMessage) {
+        const productItem = button.closest('.product-item');
+        const productId = productItem.dataset.productId;
+        const quantityInput = productItem.querySelector('.quantity-input');
+        const quantity = quantityInput.value;
+        const productionDate = document.getElementById('data').value;
+
+        if (!quantity || parseInt(quantity, 10) <= 0) {
+            showToast('Por favor, insira uma quantidade válida.', 'warning');
+            return;
+        }
+
+        button.disabled = true;
+        const originalContent = button.innerHTML;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+        fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ product_id: productId, quantity: quantity, date: productionDate }),
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                updateUI(productId, data.new_stock, data.new_daily_produced, data.new_daily_removed);
+                showToast(data.message || successMessage, 'success');
+                quantityInput.value = ''; // Clear input on success
+            } else {
+                showToast(`Erro: ${data.error}`, 'danger');
+            }
+        })
+        .catch(error => showToast(`Erro de comunicação: ${error}`, 'danger'))
+        .finally(() => {
+            button.disabled = false;
+            button.innerHTML = originalContent;
+        });
+    }
+
+    // --- New logic for removal button to open modal --- //
+    $(document).on('click', '.removal-btn', function() {
+        const button = this;
+        const productItem = $(button).closest('.product-item');
+        const productId = productItem.data('product-id');
+        const quantityInput = productItem.find('.quantity-input');
+        const quantity = quantityInput.val();
+
+        if (!quantity || parseInt(quantity, 10) <= 0) {
+            showToast('Por favor, insira uma quantidade válida.', 'warning');
+            return;
+        }
+
+        // Fetch active demands
+        fetch("{{ url_for('demanda_producao.get_active_demands') }}?product_id=" + productId)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const demandList = $('#demand-list');
+                    demandList.empty(); // Clear previous options
+                    // demandList.append('<option value="">Nenhuma (saída avulsa)</option>'); // Removed as free text will serve this purpose
+                    data.demandas.forEach(demanda => {
+                        demandList.append(`<option value="${demanda.id}">${demanda.nome}</option>`);
+                    });
+
+                    // Initialize Select2 for searchable dropdown with free text input
+                    demandList.select2({
+                        theme: 'bootstrap4',
+                        placeholder: "Selecione ou digite uma demanda",
+                        allowClear: true, // Option to clear selection
+                        tags: true, // Allow free text input
+                        minimumInputLength: 0, // Ensure dropdown appears immediately
+                        dropdownParent: $('#customAssociateDemandModal'), // Render dropdown within the modal
+                        createTag: function (params) {
+                            // Do not create tags if the term is empty
+                            if ($.trim(params.term) === '') {
+                                return null;
+                            }
+                            return {
+                                id: params.term,
+                                text: params.term,
+                                newTag: true // add additional parameters
+                            };
+                        }
+                    });
+
+                    // Store data on modal and show it
+                    const modal = $('#customAssociateDemandModal');
+                    modal.data('product-id', productId);
+                    modal.data('quantity', quantity);
+                    modal.data('original-button', button);
+                    modal.css('display', 'flex'); // Show the custom modal
+                    $('body').addClass('modal-open'); // Prevent body scrolling
+                } else {
+                    showToast('Erro ao carregar demandas ativas.', 'danger');
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching demands:', error);
+                showToast('Erro de rede ao buscar demandas.', 'danger');
+            });
+    });
+
+    // --- New logic for custom modal confirmation --- //
+    $('#confirm-removal-btn').on('click', function() {
+        const modal = $('#customAssociateDemandModal');
+        const demandaId = $('#demand-list').val();
+        const productId = modal.data('product-id');
+        const quantity = modal.data('quantity');
+        const originalButton = modal.data('original-button');
+        const productionDate = document.getElementById('data').value;
+
+        const url = '{{ url_for("producao.registrar_saida_estoque") }}';
+        const payload = {
+            product_id: productId,
+            quantity: quantity,
+            date: productionDate
+        };
+
+        if (demandaId) {
+            payload.demanda_id = demandaId;
+        }
+
+        // Reuse handleAction logic, but simplified for this specific case
+        $(originalButton).prop('disabled', true).html('<span class="spinner-border spinner-border-sm"></span>');
+        modal.css('display', 'none'); // Hide the custom modal
+        $('body').removeClass('modal-open'); // Re-enable body scrolling
+
+        fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                updateUI(productId, data.new_stock, data.new_daily_produced, data.new_daily_removed);
+                showToast(data.message || 'Saída registrada com sucesso!', 'success');
+                // Clear input on success
+                $(originalButton).closest('.product-item').find('.quantity-input').val('');
+            } else {
+                showToast(`Erro: ${data.error}`, 'danger');
+            }
+        })
+        .catch(error => showToast(`Erro de comunicação: ${error}`, 'danger'))
+        .finally(() => {
+            $(originalButton).prop('disabled', false).html('Saída'); // Restore button text
+        });
+    });
+
+    // --- Custom modal close logic --- //
+    $(document).on('click', '.close-custom-modal', function() {
+        $('#customAssociateDemandModal').css('display', 'none');
+        $('body').removeClass('modal-open');
+    });
+
+    $(document).on('click', '.production-btn', function() {
+        handleAction(this, '{{ url_for("producao.registrar_item_producao") }}', 'Produção registrada com sucesso!');
+    });
+
+    $(document).on('keyup', '.quantity-input', function(e) {
+        if (e.key === 'Enter') {
+            $(this).closest('.input-group').find('.production-btn').click();
+        }
+    });
+
+    // --- UI Update --- //
+    function updateUI(productId, newStock, newDailyProduced, newDailyRemoved) {
+        const productItems = document.querySelectorAll(`.product-item[data-product-id="${productId}"]`);
+        productItems.forEach(item => {
+            const stockMin = parseInt(item.dataset.stockMin, 10) || 0;
+            const newStockInt = parseInt(newStock, 10);
+            const variation = newStockInt - stockMin;
+
+            // Update stock display (for both list and grid)
+            const stockDisplay = item.querySelector('.stock-display');
+            if (stockDisplay) {
+                stockDisplay.textContent = newStockInt;
+            }
+            const listCellDisplay = item.querySelector('.stock-display-cell > div');
+            if (listCellDisplay) {
+                listCellDisplay.innerHTML = newStockInt;
+            }
+
+            // Update variation display
+            const variationSpan = item.querySelector('.variation-value');
+            if (variationSpan) {
+                variationSpan.textContent = variation;
+                variationSpan.classList.toggle('stock-delta-negative', variation < 0);
+            }
+
+            // Update produced and removed quantity displays
+            if (typeof newDailyProduced !== 'undefined') {
+                const producedQtyDisplays = item.querySelectorAll('.produced-qty-display');
+                producedQtyDisplays.forEach(display => {
+                    if (item.matches('.product-card')) {
+                        display.textContent = `Impresso: ${newDailyProduced}`;
+                    } else {
+                        display.textContent = newDailyProduced;
+                    }
+                });
+            }
+            if (typeof newDailyRemoved !== 'undefined') {
+                const removedQtyDisplays = item.querySelectorAll('.removed-qty-display');
+                removedQtyDisplays.forEach(display => {
+                    if (item.matches('.product-card')) {
+                        display.textContent = `Saída: ${newDailyRemoved}`;
+                    } else {
+                        display.textContent = newDailyRemoved;
+                    }
+                });
+            }
+        });
+    }
+
+    // --- Log Modal Logic --- //
+    $(document).on('click', '.view-log-btn', function() {
+        const productItem = $(this).closest('.product-item');
+        const productId = productItem.data('productId');
+        const productName = productItem.find('.product-name').text().trim();
+        const productionDate = $('#data').val();
+
+        $('#logModalLabel').text(`Log de Produção: ${productName}`);
+        $('#log-content').html('<div class="text-center"><div class="spinner-border" role="status"><span class="sr-only">Loading...</span></div></div>');
+        $('#logModal').modal('show');
+
+        fetch(`/producao/logs/${productId}/${productionDate}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    let logHtml = '<ul class="list-group">';
+                    if (data.logs.length > 0) {
+                        data.logs.forEach(log => {
+                            const badgeClass = log.type === 'ENTRADA' ? 'badge-success' : 'badge-danger';
+                            const typeText = log.type === 'ENTRADA' ? 'Entrada' : 'Saída';
+                            logHtml += `
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <span class="badge ${badgeClass}">${typeText}</span>
+                                        <strong>${log.quantity}</strong> unidades às ${log.timestamp}
+                                        <small class="text-muted">por ${log.user_email}</small>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-danger delete-log-btn" data-log-id="${log.id}" data-product-id="${productId}"><i class="fas fa-trash"></i></button>
+                                </li>`;
+                        });
+                    } else {
+                        logHtml += '<li class="list-group-item">Nenhum registro encontrado para este dia.</li>';
+                    }
+                    logHtml += '</ul>';
+                    $('#log-content').html(logHtml);
+                } else {
+                    $('#log-content').html(`<div class="alert alert-danger">${data.error}</div>`);
+                }
+            })
+            .catch(err => {
+                $('#log-content').html('<div class="alert alert-danger">Erro ao carregar o log.</div>');
+            });
+    });
+
+    $(document).on('click', '.delete-log-btn', function() {
+        const logId = $(this).data('logId');
+        const productId = $(this).data('productId');
+        const button = $(this);
+
+        if (!confirm('Tem certeza que deseja excluir este registro? Esta ação não pode ser desfeita.')) {
+            return;
+        }
+
+        button.prop('disabled', true).html('<span class="spinner-border spinner-border-sm"></span>');
+
+        fetch(`/producao/logs/delete/${logId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast('Registro excluído com sucesso!', 'success');
+                button.closest('li').remove();
+                // Update the main UI
+                updateUI(productId, data.new_stock, data.new_daily_produced, data.new_daily_removed);
+            } else {
+                showToast(`Erro: ${data.error}`, 'danger');
+                button.prop('disabled', false).html('<i class="fas fa-trash"></i>');
+            }
+        })
+        .catch(error => {
+            showToast(`Erro de comunicação: ${error}`, 'danger');
+            button.prop('disabled', false).html('<i class="fas fa-trash"></i>');
+        });
+    });
+});
+</script>
+{% endblock %}
