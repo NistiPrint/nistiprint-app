@@ -79,7 +79,6 @@ from routes.alertas import alertas_bp
 from routes.webhooks import webhooks_bp
 from routes.producao_contexto import producao_contexto_bp
 from routes.erp_links import erp_links_bp
-from routes.personalizados import personalizados_api_bp
 from routes.impressao import impressao_api_bp
 from routes.order_reprocess import order_reprocess_bp
 from routes.pedidos_sync import pedidos_sync_bp
@@ -224,7 +223,6 @@ def create_app():
     app.register_blueprint(webhooks_bp)
     app.register_blueprint(producao_contexto_bp, url_prefix='/api/v2/producao-contexto')
     app.register_blueprint(erp_links_bp)
-    app.register_blueprint(personalizados_api_bp)
     app.register_blueprint(impressao_api_bp)
     app.register_blueprint(order_reprocess_bp)
     app.register_blueprint(pedidos_sync_bp, url_prefix='/api/v2/pedidos')
