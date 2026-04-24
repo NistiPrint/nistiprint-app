@@ -1,0 +1,163 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Posição de Estoque{% endblock %}
+
+{% block extra_head %}
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<style>
+    .select2-container .select2-selection--single {
+        height: calc(1.5em + .75rem + 2px);
+    }
+    .low-stock {
+        background-color: #f8d7da; /* Light red for low stock */
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <!-- Card de Filtros -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h3 class="card-title"><i class="fas fa-filter"></i> Filtrar Posição de Estoque</h3>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="filter_produto_id">Produto</label>
+                        <select id="filter_produto_id" name="filter_produto_id" class="form-control">
+                            {% if filtro_produto %}
+                                {% set produto_selecionado = product_service.get_by_id(filtro_produto) %}
+                                {% if produto_selecionado %}
+                                    <option value="{{ produto_selecionado.id }}" selected>{{ produto_selecionado.name }} ({{ produto_selecionado.sku }})</option>
+                                {% else %}
+                                    <option value="" selected>Todos os Produtos</option>
+                                {% endif %}
+                            {% else %}
+                                <option value="" selected>Todos os Produtos</option>
+                            {% endif %}
+                        </select>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-group">
+                        <label for="filter_deposito_id">Depósito</label>
+                        <select id="filter_deposito_id" name="filter_deposito_id" class="form-control">
+                            <option value="">Todos os Depósitos</option>
+                            {% for deposito in depositos %}
+                            <option value="{{ deposito.id }}" {% if deposito.id|string == filtro_deposito|string %}selected{% endif %}>{{ deposito.nome }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-12 text-right">
+                    <button id="apply_filters" class="btn btn-primary"><i class="fas fa-search"></i> Aplicar Filtros</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Card da Posição de Estoque -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title"><i class="fas fa-boxes"></i> Posição de Estoque</h3>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover">
+                    <thead>
+                        <tr>
+                            <th>Produto</th>
+                            <th>SKU</th>
+                            <th>Depósito</th>
+                            <th class="text-right">Est. Mínimo</th>
+                            <th class="text-right">Físico</th>
+                            <th class="text-right">Reservado</th>
+                            <th class="text-right font-weight-bold">Disponível</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in posicao_estoque %}
+                        {% set produto = product_service.get_by_id(item.produto_id) %}
+                        {% set deposito = deposito_service.get_by_id(item.deposito_id) %}
+                        {% set estoque_minimo = produto.estoque_minimo if produto else 0 %}
+                        <tr class="{% if produto and item.quantidade_disponivel < estoque_minimo %}low-stock{% endif %}">
+                            <td>{{ produto.name if produto else item.produto_id }}</td>
+                            <td>{{ produto.sku if produto else 'N/A' }}</td>
+                            <td>{{ deposito.nome if deposito else item.deposito_id }}</td>
+                            <td class="text-right">{{ estoque_minimo | int }}</td>
+                            <td class="text-right">{{ item.quantidade | int }}</td>
+                            <td class="text-right">{{ item.quantidade_reservada | int }}</td>
+                            <td class="text-right font-weight-bold">{{ item.quantidade_disponivel | int }}</td>
+                            <td>
+                                <a href="{{ url_for('estoque.historico', produto_id=item.produto_id, deposito_id=item.deposito_id) }}" class="btn btn-sm btn-info" title="Ver Histórico">
+                                    <i class="fas fa-history"></i>
+                                </a>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="8" class="text-center text-muted">Nenhuma posição de estoque encontrada.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script>
+    $(document).ready(function() {
+        // Inicializa Select2 para filtro de produto
+        $('#filter_produto_id').select2({
+            placeholder: 'Filtrar por produto...',
+            allowClear: true,
+            ajax: {
+                url: '/estoque/api/produtos-busca',
+                dataType: 'json',
+                delay: 250,
+                data: function (params) {
+                    return {
+                        q: params.term,
+                        deposito_id: $('#filter_deposito_id').val() // Filtrar busca de produtos pelo depósito selecionado
+                    };
+                },
+                processResults: function (data) {
+                    return {
+                        results: data.results
+                    };
+                },
+                cache: true
+            },
+            minimumInputLength: 2
+        });
+
+        // Event listener para aplicar filtros
+        $('#apply_filters').on('click', function() {
+            const produtoId = $('#filter_produto_id').val();
+            const depositoId = $('#filter_deposito_id').val();
+
+            let url = '/estoque/posicao';
+            const params = [];
+            if (produtoId) {
+                params.push(`produto_id=${produtoId}`);
+            }
+            if (depositoId) {
+                params.push(`deposito_id=${depositoId}`);
+            }
+            if (params.length > 0) {
+                url += `?${params.join('&')}`;
+            }
+            window.location.href = url;
+        });
+    });
+</script>
+{% endblock %}

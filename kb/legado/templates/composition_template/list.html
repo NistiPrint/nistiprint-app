@@ -1,0 +1,78 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Templates de Composição{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-md-10 offset-md-1">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        <i class="fas fa-file-alt"></i> Gerenciar Templates de Composição
+                    </h3>
+                    <div class="card-tools">
+                        <a href="{{ url_for('composition_templates.create_template') }}" class="btn btn-success btn-sm">
+                            <i class="fas fa-plus-circle"></i> Novo Template
+                        </a>
+                    </div>
+                </div>
+                <div class="card-body">
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                        {% if messages %}
+                            {% for category, message in messages %}
+                                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                                    {{ message }}
+                                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                                </div>
+                            {% endfor %}
+                        {% endif %}
+                    {% endwith %}
+
+                    {% if templates %}
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Nome</th>
+                                    <th>Descrição</th>
+                                    <th>Itens</th>
+                                    <th>Criado Em</th>
+                                    <th>Atualizado Em</th>
+                                    <th class="text-center">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for template in templates %}
+                                <tr>
+                                    <td>{{ template.name }}</td>
+                                    <td>{{ template.description or 'N/A' }}</td>
+                                    <td>{{ template.items|length if template.items else 0 }}</td>
+                                    <td>{{ template.created_at.split('T')[0] if template.created_at else 'N/A' }}</td>
+                                    <td>{{ template.updated_at.split('T')[0] if template.updated_at else 'N/A' }}</td>
+                                    <td class="text-center">
+                                        <a href="{{ url_for('composition_templates.edit_template', template_id=template.id) }}" class="btn btn-primary btn-sm" title="Editar">
+                                            <i class="fas fa-edit"></i>
+                                        </a>
+                                        <form action="{{ url_for('composition_templates.delete_template', template_id=template.id) }}" method="POST" style="display:inline;" onsubmit="return confirm('Tem certeza que deseja deletar este template?');">
+                                            <button type="submit" class="btn btn-danger btn-sm" title="Deletar">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </form>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% else %}
+                    <div class="alert alert-info">
+                        Nenhum template de composição encontrado. <a href="{{ url_for('composition_templates.create_template') }}">Crie um agora!</a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

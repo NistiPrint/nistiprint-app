@@ -1,0 +1,55 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Demandas de Produção{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>Demandas de Produção</h1>
+        <a href="{{ url_for('demanda_producao.list_in_progress_dashboard') }}" class="btn btn-info mr-2">
+            <i class="fas fa-eye"></i> Ver Demandas em Andamento
+        </a>
+        <a href="{{ url_for('demanda_producao.create_demanda') }}" class="btn btn-primary">
+            <i class="fas fa-plus"></i> Gerar Nova Demanda
+        </a>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">Demandas Atuais</h5>
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>Nome</th>
+                            <th>Criado em</th>
+                            <th>Status</th>
+                            <th>Progresso</th>
+                            <th>Coletado em</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for demanda in demandas %}
+                        <tr>
+                            <td>{{ demanda.nome }}</td>
+                            <td>{{ demanda.data_criacao.strftime('%d/%m/%Y %H:%M') }}</td>
+                            <td><span class="badge badge-info">{{ demanda.status }}</span></td>
+                            <td>{{ demanda['progresso_percentual'] }}% ({{ demanda['completed_quantidade'] }} / {{ demanda['total_quantidade'] }})</td>
+                            <td>{{ demanda.data_coleta.strftime('%d/%m/%Y %H:%M') if demanda.data_coleta else '' }}</td>
+                            <td>
+                                <a href="{{ url_for('demanda_producao.view_dashboard', demanda_id=demanda['id']) }}" class="btn btn-sm btn-outline-primary">Ver Dashboard</a>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="6" class="text-center">Nenhuma demanda encontrada.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

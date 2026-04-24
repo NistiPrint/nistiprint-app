@@ -1,0 +1,76 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Canais de Venda{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">📊 Canais de Venda</h3>
+                <div class="card-tools">
+                    <a href="{{ url_for('cadastros.canal_venda_new') }}" class="btn btn-primary btn-sm">
+                        <i class="fas fa-plus"></i> Novo Canal
+                    </a>
+                </div>
+            </div>
+
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Nome</th>
+                                <th>Plataforma</th>
+                                <th>Conta Bling</th>
+                                <th>Status</th>
+                                <th>Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for canal in canais %}
+                            <tr>
+                                <td>{{ canal.nome }}</td>
+                                <td>
+                                    {% if canal.get('plataforma') %}
+                                        <span class="badge badge-info">{{ canal.plataforma|capitalize }}</span>
+                                    {% else %}
+                                        N/A
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% set conta = contas_bling | selectattr('id', 'equalto', canal.conta_bling_id) | list | first if contas_bling %}
+                                    {% if conta %}
+                                        {{ conta.account_name }} ({{ conta.cnpj }})
+                                    {% else %}
+                                        N/A
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if canal.get('ativo', True) %}
+                                        <span class="badge badge-success">Ativo</span>
+                                    {% else %}
+                                        <span class="badge badge-danger">Inativo</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <a href="{{ url_for('cadastros.canal_venda_edit', canal_id=canal.id) }}" class="btn btn-xs btn-info">
+                                        <i class="fas fa-edit"></i> Editar
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                {% if not canais %}
+                <div class="alert alert-info">
+                    Nenhum canal de venda cadastrado.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

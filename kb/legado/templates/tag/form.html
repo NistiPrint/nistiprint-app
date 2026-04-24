@@ -1,0 +1,59 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}{% if tag %}Editar{% else %}Nova{% endif %} Tag{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-md-8 offset-md-2">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        {% if tag %}✏️ Editar{% else %}➕ Nova{% endif %} Tag
+                    </h3>
+                </div>
+
+                <form method="POST">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-group">
+                                    <label for="name">Nome *</label>
+                                    <input type="text" class="form-control" id="name" name="name"
+                                           value="{{ tag.name if tag else '' }}" required>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="form-group">
+                                    <label for="composition_template_id">Template de Composição</label>
+                                    <select class="form-control" id="composition_template_id" name="composition_template_id">
+                                        <option value="">Nenhum template selecionado</option>
+                                        {% for template in templates %}
+                                        <option value="{{ template.id }}" {% if tag and tag.get('composition_template_id') == template.id %}selected{% endif %}>
+                                            {{ template.name }}
+                                        </option>
+                                        {% endfor %}
+                                    </select>
+                                    <small class="form-text text-muted">Selecione um template para associar a esta tag.</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-footer">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save"></i> Salvar
+                        </button>
+                        <a href="{{ url_for('cadastros.tag_list') }}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Voltar
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

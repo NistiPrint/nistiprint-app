@@ -1,0 +1,268 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Detalhes da Ordem de Produção{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <!-- Cabeçalho da OP -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h3 class="card-title mb-1">
+                                📋 OP {{ po.id[:8] }}... - {{ po.productName }}
+                            </h3>
+                            <small class="text-muted">{{ po.productSku }}</small>
+                        </div>
+                        <div class="text-right">
+                            <h4 class="mb-1">
+                                <span class="badge badge-{getStatusBadgeClass(po.status)} badge-lg">
+                                    {{ getStatusLabel(po.status) }}
+                                </span>
+                            </h4>
+                            <small class="text-muted">Criada em {{ po.createdAt.strftime('%d/%m/%Y %H:%M') if po.createdAt else 'N/A' }}</small>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-body">
+                    <!-- Barra de Progresso -->
+                    <div class="row mb-4">
+                        <div class="col-md-8">
+                            <h5>Progresso da Produção</h5>
+                            <div class="progress" style="height: 25px;">
+                                <div class="progress-bar bg-{getProgressBarClass(po.status)} progress-bar-striped"
+                                     role="progressbar"
+                                     style="width: {{ progress_percentage }}%"
+                                     aria-valuenow="{{ progress_percentage }}"
+                                     aria-valuemin="0"
+                                     aria-valuemax="100">
+                                    {{ "%.1f"|format(progress_percentage) }}%
+                                </div>
+                            </div>
+                            <small class="text-muted mt-1 d-block">
+                                Produzido: {{ po.quantityProduced }} / {{ po.quantityToProduce }}
+                            </small>
+                        </div>
+                        <div class="col-md-4">
+                            <!-- Botões de Ação -->
+                            <div class="d-flex flex-wrap gap-2 justify-content-end">
+                                {% if po.status == 'DRAFT' %}
+                                    <a href="{{ url_for('ordem_producao.edit', po_id=po.id) }}" class="btn btn-outline-primary">
+                                        <i class="fas fa-edit"></i> Editar
+                                    </a>
+                                    <form method="POST" action="{{ url_for('ordem_producao.start', po_id=po.id) }}" class="d-inline"
+                                          onsubmit="return confirm('Isso irá reservar o estoque dos componentes. Continuar?')">
+                                        <button type="submit" class="btn btn-success">
+                                            <i class="fas fa-play"></i> Iniciar Produção
+                                        </button>
+                                    </form>
+                                    <form method="POST" action="{{ url_for('ordem_producao.cancel', po_id=po.id) }}" class="d-inline"
+                                          onsubmit="return confirm('Tem certeza que deseja cancelar esta Ordem de Produção?')">
+                                        <button type="submit" class="btn btn-danger">
+                                            <i class="fas fa-times"></i> Cancelar
+                                        </button>
+                                    </form>
+                                {% elif po.status in ['PENDING', 'IN_PROGRESS'] %}
+                                    <button type="button" class="btn btn-warning" data-toggle="modal" data-target="#deliverModal">
+                                        <i class="fas fa-truck"></i> Entregar Produção
+                                    </button>
+                                    <form method="POST" action="{{ url_for('ordem_producao.pause', po_id=po.id) }}" class="d-inline"
+                                          onsubmit="return confirm('Pausar produção?')">
+                                        <button type="submit" class="btn btn-warning">
+                                            <i class="fas fa-pause"></i> Pausar
+                                        </button>
+                                    </form>
+                                    <form method="POST" action="{{ url_for('ordem_producao.cancel', po_id=po.id) }}" class="d-inline"
+                                          onsubmit="return confirm('Tem certeza que deseja cancelar esta Ordem de Produção? As reservas serão estornadas.')">
+                                        <button type="submit" class="btn btn-danger">
+                                            <i class="fas fa-times"></i> Cancelar
+                                        </button>
+                                    </form>
+                                {% elif po.status == 'PAUSED' %}
+                                    <form method="POST" action="{{ url_for('ordem_producao.resume', po_id=po.id) }}" class="d-inline">
+                                        <button type="submit" class="btn btn-success">
+                                            <i class="fas fa-play"></i> Retomar Produção
+                                        </button>
+                                    </form>
+                                    <form method="POST" action="{{ url_for('ordem_producao.cancel', po_id=po.id) }}" class="d-inline"
+                                          onsubmit="return confirm('Tem certeza que deseja cancelar esta Ordem de Produção? As reservas serão estornadas.')">
+                                        <button type="submit" class="btn btn-danger">
+                                            <i class="fas fa-times"></i> Cancelar
+                                        </button>
+                                    </form>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Abas de Informação -->
+                    <ul class="nav nav-tabs" id="poTabs" role="tablist">
+                        <li class="nav-item">
+                            <a class="nav-link active" id="components-tab" data-toggle="tab" href="#components" role="tab">
+                                <i class="fas fa-cogs"></i> Componentes
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" id="history-tab" data-toggle="tab" href="#history" role="tab">
+                                <i class="fas fa-history"></i> Histórico
+                            </a>
+                        </li>
+                    </ul>
+
+                    <div class="tab-content mt-3" id="poTabContent">
+                        <!-- Aba Componentes -->
+                        <div class="tab-pane fade show active" id="components" role="tabpanel">
+                            <h5>Componentes Necessários</h5>
+                            {% if components %}
+                                <div class="table-responsive">
+                                    <table class="table table-striped">
+                                        <thead>
+                                            <tr>
+                                                <th>Componente</th>
+                                                <th>Requerido</th>
+                                                <th>Consumido</th>
+                                                <th>Pendente</th>
+                                                <th>Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for comp in components %}
+                                            <tr>
+                                                <td>{{ comp.componentName }}</td>
+                                                <td>{{ comp.quantityRequired }}</td>
+                                                <td>{{ comp.quantityConsumed }}</td>
+                                                <td>{{ comp.quantityRequired - comp.quantityConsumed }}</td>
+                                                <td>
+                                                    {% if comp.quantityConsumed >= comp.quantityRequired %}
+                                                        <span class="badge badge-success">Concluído</span>
+                                                    {% elif comp.quantityConsumed > 0 %}
+                                                        <span class="badge badge-warning">Parcial</span>
+                                                    {% else %}
+                                                        <span class="badge badge-secondary">Não Iniciado</span>
+                                                    {% endif %}
+                                                </td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            {% else %}
+                                <div class="alert alert-info">
+                                    <i class="fas fa-info-circle"></i> Nenhum componente encontrado para esta Ordem de Produção.
+                                </div>
+                            {% endif %}
+                        </div>
+
+                        <!-- Aba Histórico -->
+                        <div class="tab-pane fade" id="history" role="tabpanel">
+                            <h5>Histórico da Ordem</h5>
+                            <div class="timeline">
+                                {% if po.createdAt %}
+                                <div class="timeline-item">
+                                    <div class="timeline-marker bg-secondary"></div>
+                                    <div class="timeline-content">
+                                        <h6 class="timeline-title">{{ po.createdAt.strftime('%d/%m/%Y %H:%M') }} - Ordem Criada</h6>
+                                        <p>Rascunho da Ordem de Produção criado.</p>
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                {% if po.startedAt %}
+                                <div class="timeline-item">
+                                    <div class="timeline-marker bg-success"></div>
+                                    <div class="timeline-content">
+                                        <h6 class="timeline-title">{{ po.startedAt.strftime('%d/%m/%Y %H:%M') }} - Produção Iniciada</h6>
+                                        <p>Estoque dos componentes foi reservado e produção teve início.</p>
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                {% if po.completedAt %}
+                                <div class="timeline-item">
+                                    <div class="timeline-marker bg-primary"></div>
+                                    <div class="timeline-content">
+                                        <h6 class="timeline-title">{{ po.completedAt.strftime('%d/%m/%Y %H:%M') }} - Produção Concluída</h6>
+                                        <p>Todos os componentes foram consumidos e produtos finais foram entregues.</p>
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                {% if po.canceledAt %}
+                                <div class="timeline-item">
+                                    <div class="timeline-marker bg-danger"></div>
+                                    <div class="timeline-content">
+                                        <h6 class="timeline-title">{{ po.canceledAt.strftime('%d/%m/%Y %H:%M') }} - Produção Cancelada</h6>
+                                        <p>Ordem de produção foi cancelada. Reservas de estoque foram estornadas.</p>
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                {% if po.status == 'COMPLETED' and po.quantityProduced >= po.quantityToProduce %}
+                                    <div class="timeline-item">
+                                        <div class="timeline-marker bg-success"></div>
+                                        <div class="timeline-content">
+                                            <h6 class="timeline-title">Produção Finalizada</h6>
+                                            <p>Meta de produção atingida: {{ po.quantityProduced }} unidades produzidas.</p>
+                                        </div>
+                                    </div>
+                                {% elif po.status in ['PENDING', 'IN_PROGRESS', 'PAUSED'] %}
+                                    <div class="timeline-item">
+                                        <div class="timeline-marker bg-warning"></div>
+                                        <div class="timeline-content">
+                                            <h6 class="timeline-title">Em Andamento</h6>
+                                            <p>Progresso: {{ po.quantityProduced }} / {{ po.quantityToProduce }} unidades.</p>
+                                        </div>
+                                    </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal para Entrega de Produção -->
+    <div class="modal fade" id="deliverModal" tabindex="-1" role="dialog">
+        <div class="modal-dialog" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">📦 Entregar Produção</h5>
+                    <button type="button" class="close" data-dismiss="modal">
+                        <span>&times;</span>
+                    </button>
+                </div>
+                <form method="POST" action="{{ url_for('ordem_producao.deliver', po_id=po.id) }}">
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label for="quantity_delivered">Quantidade produzida nesta entrega *</label>
+                            <input type="number" class="form-control" name="quantity_delivered" id="quantity_delivered"
+                                   min="0.01" step="0.01" max="{{ po.quantityToProduce - po.quantityProduced }}" required>
+                            <small class="form-text text-muted">
+                                Máximo possível: {{ po.quantityToProduce - po.quantityProduced }}
+                            </small>
+                        </div>
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle"></i>
+                            <strong>Atenção:</strong> Esta ação irá consumir proporcionalmente os componentes reservados
+                            e adicionar os produtos finais ao estoque.
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="btn btn-primary">Confirmar Entrega</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<a href="{{ url_for('ordem_producao.index') }}" class="btn btn-secondary mt-3">
+    <i class="fas fa-arrow-left"></i> Voltar para Lista
+</a>
+
+{% endblock %}

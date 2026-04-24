@@ -1,0 +1,114 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Nova Movimentação de Estoque{% endblock %}
+
+{% block extra_head %}
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<style>
+    .select2-container .select2-selection--single {
+        height: calc(1.5em + .75rem + 2px);
+    }
+    #info-produto {
+        position: sticky;
+        top: 20px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <!-- Coluna do Formulário -->
+        <div class="col-md-7">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="fas fa-exchange-alt"></i> Registrar Movimentação Manual</h3>
+                </div>
+                <form id="form-movimentacao" method="POST" action="{{ url_for('estoque.nova_movimentacao') }}">
+                    <div class="card-body">
+                        <!-- Linha Produto e Depósito -->
+                        <div class="row">
+                            <div class="col-md-8">
+                                <div class="form-group">
+                                    <label for="produto_id">Produto</label>
+                                    <select id="produto_id" name="produto_id" class="form-control" required>
+                                        <option value="">Buscar produto por nome ou SKU...</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="form-group">
+                                    <label for="deposito_id">Depósito</label>
+                                    <select id="deposito_id" name="deposito_id" class="form-control" required>
+                                        {% for deposito in depositos %}
+                                        <option value="{{ deposito.id }}">{{ deposito.nome }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Linha Tipo, Quantidade -->
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="tipo_movimento">Tipo de Movimento</label>
+                                    <select id="tipo_movimento" name="tipo_movimento" class="form-control" required>
+                                        <option value="ENTRADA">Entrada (Crédito)</option>
+                                        <option value="SAIDA">Saída (Débito)</option>
+                                        <option value="BALANCO">Balanço (Ajuste)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-group">
+                                    <label for="quantidade">Quantidade</label>
+                                    <input type="number" id="quantidade" name="quantidade" class="form-control" step="any" required>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Linha Observação -->
+                        <div class="form-group">
+                            <label for="observacao">Observação</label>
+                            <textarea id="observacao" name="observacao" class="form-control" rows="3" placeholder="Ex: Compra do fornecedor X, ajuste de inventário, etc."></textarea>
+                        </div>
+                    </div>
+                    <div class="card-footer text-right">
+                        <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Salvar Movimentação</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Coluna de Informações Dinâmicas -->
+        <div class="col-md-5">
+            <div id="info-produto" class="card">
+                <div class="card-header">
+                    <h4 class="card-title">Informações do Produto</h4>
+                </div>
+                <div class="card-body">
+                    <div id="info-content" class="text-center text-muted">
+                        <p><i class="fas fa-search"></i> Selecione um produto para ver os detalhes.</p>
+                    </div>
+                    <div id="saldo-content" style="display: none;">
+                        <h5>Saldo Atual</h5>
+                        <p id="saldo-atual" class="lead">...</p>
+                    </div>
+                    <div id="movimentacoes-recentes" style="display: none;">
+                        <h5 class="mt-4">Movimentações Recentes</h5>
+                        <ul id="lista-movimentacoes" class="list-group">
+                            <!-- Movimentações serão inseridas aqui via JS -->
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script src="{{ url_for('static', filename='js/movimentacao_estoque.js') }}"></script>
+{% endblock %}

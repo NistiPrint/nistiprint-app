@@ -1,0 +1,31 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Configuração da Conta Bling Padrão{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h1 class="h3 mb-4 text-gray-800">Configuração da Conta Bling Padrão</h1>
+
+    <div class="card shadow mb-4">
+        <div class="card-header py-3">
+            <h6 class="m-0 font-weight-bold text-primary">Definir Conta Bling para Cadastro de Produtos</h6>
+        </div>
+        <div class="card-body">
+            <form method="POST">
+                <div class="form-group">
+                    <label for="default_bling_account_id">Conta Bling Padrão:</label>
+                    <select class="form-control" id="default_bling_account_id" name="default_bling_account_id">
+                        <option value="">-- Selecione uma conta --</option>
+                        {% for account in all_bling_accounts %}
+                            <option value="{{ account.id }}" {% if account.id == selected_bling_account_id %}selected{% endif %}>
+                                {{ account.account_name }} ({{ account.cnpj }})
+                            </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-primary">Salvar Configuração</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

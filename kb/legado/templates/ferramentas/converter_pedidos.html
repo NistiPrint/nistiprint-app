@@ -1,0 +1,132 @@
+{% extends "layouts/base.html" %}
+
+{% block title %}Conversão de IDs de Pedidos - NistiPrint{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="/">Home</a></li>
+            <li class="breadcrumb-item"><a href="/ferramentas">Ferramentas</a></li>
+            <li class="breadcrumb-item active">Conversão de IDs</li>
+        </ol>
+    </nav>
+
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h4 class="card-title mb-0">Conversão de IDs de Pedidos para Bling</h4>
+                </div>
+                <div class="card-body">
+                    <div class="row mb-4">
+                        <div class="col-md-3">
+                            <label for="platform" class="form-label">Plataforma</label>
+                            <select class="form-select" id="platform" required>
+                                <option value="">Selecione uma plataforma</option>
+                                <option value="shopee">Shopee</option>
+                                <option value="amazon">Amazon</option>
+                                <option value="mercadolivre">Mercado Livre</option>
+                                <option value="shein">Shein</option>
+                                <option value="shopeeflex">Shopee Flex</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3 d-flex align-items-end">
+                            <button id="convertBtn" class="btn btn-primary">
+                                <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                                Converter IDs
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Entrada -->
+                    <div class="row" id="inputPanel">
+                        <div class="col-12">
+                            <div class="mb-3">
+                                <label for="inputIds" class="form-label">
+                                    <strong>IDs de Pedidos da Plataforma</strong>
+                                    <small class="text-muted d-block">Um ID por linha</small>
+                                </label>
+                                <textarea class="form-control" id="inputIds" rows="15" placeholder="Cole aqui os IDs dos pedidos..." spellcheck="false"></textarea>
+                                <div class="form-text">
+                                    Total: <span id="inputCount">0</span> IDs
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Resultado -->
+                    <div class="row d-none" id="resultPanel">
+                        <div class="col-12">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <div>
+                                    <label class="form-label">
+                                        <strong>Números de Pedidos na Bling</strong>
+                                        <small class="text-muted d-block">Resultado na mesma ordem</small>
+                                    </label>
+                                    <div class="form-text">
+                                        Processados: <span id="outputCount">0</span>
+                                        | Não encontrados: <span id="notFoundCount">0</span>
+                                    </div>
+                                </div>
+                                <div>
+                                    <button id="backBtn" class="btn btn-outline-secondary me-2">
+                                        <i class="bi bi-arrow-left"></i> Voltar
+                                    </button>
+                                    <button id="selectAllBtn" class="btn btn-outline-secondary btn-sm d-none">
+                                        <i class="bi bi-copy"></i> Copiar
+                                    </button>
+                                </div>
+                            </div>
+                            <div style="min-height: 400px; max-height: 400px; overflow-y: auto; background-color: #f8f9fa; border: 1px solid #ced4da; border-radius: 0.25rem; padding: 0.375rem 0.75rem;">
+                                <table id="outputTable" class="table table-sm table-borderless mb-0" style="font-size: 0.9em;">
+                                    <thead style="border-bottom: 1px solid #dee2e6;">
+                                        <tr>
+                                            <th style="border-bottom: none;">Loja</th>
+                                            <th style="border-bottom: none;">Bling</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <!-- resultados aqui -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Status -->
+                    <div id="statusContainer" class="mt-3 d-none">
+                        <div id="successAlert" class="alert alert-success d-none">
+                            <i class="bi bi-check-circle"></i>
+                            Conversão realizada com sucesso!
+                        </div>
+                        <div id="errorAlert" class="alert alert-danger d-none">
+                            <i class="bi bi-exclamation-triangle"></i>
+                            <span id="errorMessage"></span>
+                        </div>
+                        <div id="loadingAlert" class="alert alert-info d-none">
+                            <i class="bi bi-hourglass-split"></i>
+                            Processando conversão...
+                        </div>
+                    </div>
+
+                    <!-- Instruções -->
+                    <div class="alert alert-info">
+                        <h6><i class="bi bi-info-circle"></i> Como usar:</h6>
+                        <ol class="mb-0">
+                            <li>Selecione a plataforma do pedido</li>
+                            <li>Cole os IDs dos pedidos (um por linha) no campo à esquerda</li>
+                            <li>Clique em "Converter IDs"</li>
+                            <li>Os números correspondentes aparecerão no campo à direita</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="/static/js/ferramentas/converter_pedidos.js"></script>
+{% endblock %}

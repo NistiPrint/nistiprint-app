@@ -1,0 +1,111 @@
+{% extends 'layouts/base.html' %}
+
+{% block title %}Histórico de Produção de Miolos{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="d-sm-flex align-items-center justify-content-between mb-4">
+        <h1 class="h3 mb-0 text-gray-800">Histórico de Produção de Miolos</h1>
+        <a href="{{ url_for('relatorios_bp.index') }}" class="btn btn-sm btn-secondary shadow-sm"><i class="fas fa-arrow-left fa-sm text-white-50"></i> Voltar aos Relatórios</a>
+    </div>
+
+    <div class="card shadow mb-4">
+        <div class="card-header py-3">
+            <h6 class="m-0 font-weight-bold text-primary">Registros do Controle de Produção</h6>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-bordered" id="dataTable" width="100%" cellspacing="0">
+                    <thead>
+                        <tr>
+                            <th>Data</th>
+                            <th>Produto</th>
+                            <th class="text-right">Quantidade Produzida</th>
+                            <th>Detalhes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log in logs %}
+                        <tr class="log-row">
+                            <td>{{ log.date.strftime('%d/%m/%Y %H:%M') if log.date else 'N/A' }}</td>
+                            <td>{{ log.productName }}</td>
+                            <td class="text-right">{{ log.quantityProduced }}</td>
+                            <td>
+                                {% if log.componentStockSnapshot %}
+                                <button class="btn btn-sm btn-outline-primary toggle-details-btn" data-target="#details-{{ loop.index }}">
+                                    <i class="fas fa-exchange-alt"></i>
+                                </button>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% if log.componentStockSnapshot %}
+                        <tr id="details-{{ loop.index }}" class="snapshot-details-row" style="display: none;">
+                            <td colspan="4" class="p-0">
+                                <div class="p-3">
+                                    <h6 class="text-primary">Snapshot do Consumo de Componentes</h6>
+                                    <table class="table table-sm table-striped">
+                                        <thead class="thead-light">
+                                            <tr>
+                                                <th>Componente</th>
+                                                <th class="text-right">Qtd. Usada</th>
+                                                <th class="text-right">Estoque Anterior</th>
+                                                <th class="text-right">Estoque Posterior</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for snapshot in log.componentStockSnapshot %}
+                                            <tr>
+                                                <td>{{ snapshot.component_name }}</td>
+                                                <td class="text-right">{{ snapshot.quantity_used|round(2) }}</td>
+                                                <td class="text-right">{{ snapshot.stock_before_production|round(2) }}</td>
+                                                <td class="text-right text-danger font-weight-bold">{{ snapshot.stock_after_production|round(2) }}</td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endif %}
+                        {% else %}
+                        <tr>
+                            <td colspan="4" class="text-center">Nenhum registro de produção encontrado.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Pagination -->
+            <nav aria-label="Page navigation">
+                <ul class="pagination justify-content-center">
+                    <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+                        <a class="page-link" href="{{ url_for('relatorios_bp.historico_producao', page=page-1) }}">Anterior</a>
+                    </li>
+                    <li class="page-item {% if not has_next %}disabled{% endif %}">
+                        <a class="page-link" href="{{ url_for('relatorios_bp.historico_producao', page=page+1) }}">Próxima</a>
+                    </li>
+                </ul>
+            </nav>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+$(document).ready(function() {
+    $('.toggle-details-btn').on('click', function() {
+        var target = $(this).data('target');
+        $(target).toggle();
+        // Optional: change icon on toggle
+        var icon = $(this).find('i');
+        if (icon.hasClass('fa-exchange-alt')) {
+            icon.removeClass('fa-exchange-alt').addClass('fa-times');
+        } else {
+            icon.removeClass('fa-times').addClass('fa-exchange-alt');
+        }
+    });
+});
+</script>
+{% endblock %}
