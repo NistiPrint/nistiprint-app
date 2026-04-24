@@ -230,6 +230,29 @@ class DemandaItemsService:
         # Método descontinuado - usar eventos_producao_v2 diretamente
         pass
 
+    def _resolver_produto_direto(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Resolve o produto principal que deve ter baixa de estoque síncrona.
+        Tenta resolver MIOLO ou CAPA.
+        """
+        # 1. Tenta miolo associado ao item
+        id_miolo = item.get('id_produto_miolo')
+        if id_miolo:
+            res = supabase_db.table('produtos').select('id, nome, sku').eq('id', id_miolo).maybe_single().execute()
+            if res.data:
+                return res.data
+        
+        # 2. Se não tem miolo explícito, tenta resolver via BOM do produto pai
+        # (simplificação para este refactor: se for agenda/caderno, o produto_id é o produto final)
+        # O ideal é buscar na BOM o componente principal.
+        produto_id = item.get('produto_id')
+        if produto_id:
+            res = supabase_db.table('produtos').select('id, nome, sku').eq('id', produto_id).maybe_single().execute()
+            if res.data:
+                return res.data
+        
+        return None
+
     def finalizar_item(self, demanda_id, item_id, user_id='System'):
         response = supabase_db.execute_with_retry(self.itens_table.select("*").eq('id', item_id))
         if not response.data:
@@ -259,7 +282,22 @@ class DemandaItemsService:
 
         supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
 
-        # 2. DISPARAR EVENTO DE LIQUIDAÇÃO (Event Sourcing)
+        # 2. ESTOQUE SYNC (Produtos Diretos: Miolo/Capa)
+        produto_direto = self._resolver_produto_direto(item_original)
+        if produto_direto:
+            try:
+                estoque_service.movimentar_por_delta(
+                    produto_id=produto_direto['id'],
+                    delta=-float(total_qty),
+                    demanda_id=demanda_id,
+                    item_id=item_id,
+                    idempotency_key=f"direto:finalizar:{item_id}"
+                )
+                logger.info(f"Baixa síncrona de estoque realizada para produto {produto_direto['id']} (item {item_id})")
+            except Exception as e:
+                logger.error(f"Erro na baixa síncrona de estoque (produto_direto): {e}")
+
+        # 3. ESTOQUE ASYNC (Restante da BOM recursiva)
         # O ConsolidadorDeEstoque processará assincronamente via Celery
         try:
             import uuid
@@ -270,14 +308,14 @@ class DemandaItemsService:
                     'demanda_id': demanda_id,
                     'estagio': 'finalizados_qtd',
                     'quantidade_reportada': float(total_qty),
-                    'tipo_evento': 'LIQUIDACAO',
+                    'tipo_evento': 'BOM_RECURSIVO_APOS_DIRETO',
+                    'skip_produto_id': produto_direto['id'] if produto_direto else None,
                     'processado': False,
                     'correlation_id': correlation_id,
                     'usuario_id': user_id if isinstance(user_id, int) else None,
                     'created_at': get_now_iso()
                 }).execute()
             except Exception as event_error:
-                # Erros do Realtime não devem interromper o fluxo principal
                 error_str = str(event_error)
                 if 'StreamID' in error_str or 'Realtime' in error_str:
                     print(f"AVISO: Erro do Realtime ao inserir evento de finalização (não crítico): {event_error}")
@@ -303,6 +341,9 @@ class DemandaItemsService:
             curr = item_original.get(field, 0) or 0
             return max(0, min(total_qty, curr + quantidade_parcial))
 
+        new_finalizados = get_new_val('finalizados_qtd')
+        delta_real = new_finalizados - (item_original.get('finalizados_qtd', 0) or 0)
+
         updates = {
             'capas_impressas_qtd': get_new_val('capas_impressas_qtd'),
             'capas_produzidas_qtd': get_new_val('capas_produzidas_qtd'),
@@ -310,7 +351,7 @@ class DemandaItemsService:
             'miolos_prontos_retirada_qtd': get_new_val('miolos_prontos_retirada_qtd'),
             'expedicao_capas_retiradas_qtd': get_new_val('expedicao_capas_retiradas_qtd'),
             'expedicao_miolos_retirados_qtd': get_new_val('expedicao_miolos_retirados_qtd'),
-            'finalizados_qtd': get_new_val('finalizados_qtd'),
+            'finalizados_qtd': new_finalizados,
             'updated_at': get_now_iso()
         }
 
@@ -321,8 +362,22 @@ class DemandaItemsService:
 
         supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
 
-        # 2. DISPARAR EVENTO DE LIQUIDAÇÃO PARCIAL (Event Sourcing)
-        # O ConsolidadorDeEstoque processará assincronamente via Celery
+        # 2. ESTOQUE SYNC (Produtos Diretos: Miolo/Capa)
+        if delta_real > 0:
+            produto_direto = self._resolver_produto_direto(item_original)
+            if produto_direto:
+                try:
+                    estoque_service.movimentar_por_delta(
+                        produto_id=produto_direto['id'],
+                        delta=-float(delta_real),
+                        demanda_id=demanda_id,
+                        item_id=item_id,
+                        idempotency_key=f"direto:finalizar_parcial:{item_id}:{new_finalizados}"
+                    )
+                except Exception as e:
+                    logger.error(f"Erro na baixa síncrona de estoque parcial: {e}")
+
+        # 3. ESTOQUE ASYNC (Restante da BOM)
         try:
             import uuid
             correlation_id = str(uuid.uuid4())
@@ -331,15 +386,15 @@ class DemandaItemsService:
                     'item_demanda_id': item_id,
                     'demanda_id': demanda_id,
                     'estagio': 'finalizados_qtd',
-                    'quantidade_reportada': float(updates.get('finalizados_qtd', 0)),
-                    'tipo_evento': 'LIQUIDACAO',
+                    'quantidade_reportada': float(delta_real),
+                    'tipo_evento': 'BOM_RECURSIVO_APOS_DIRETO',
+                    'skip_produto_id': produto_direto['id'] if produto_direto else None,
                     'processado': False,
                     'correlation_id': correlation_id,
                     'usuario_id': user_id if isinstance(user_id, int) else None,
                     'created_at': get_now_iso()
                 }).execute()
             except Exception as event_error:
-                # Erros do Realtime não devem interromper o fluxo principal
                 error_str = str(event_error)
                 if 'StreamID' in error_str or 'Realtime' in error_str:
                     print(f"AVISO: Erro do Realtime ao inserir evento de finalização parcial (não crítico): {event_error}")
@@ -347,6 +402,11 @@ class DemandaItemsService:
                     raise event_error
         except Exception as e:
             print(f"ERRO ao registrar evento de finalização parcial do item {item_id}: {e}")
+
+        if updates.get('status_item') == 'Concluído':
+            self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
+
+        return self._process_item_dict({**item_original, **updates})
 
         if updates.get('status_item') == 'Concluído':
             self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)

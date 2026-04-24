@@ -39,12 +39,14 @@ class ConsolidacaoChave:
         self,
         canal_venda_id: int,
         modalidade: str,
+        is_flex: bool = False,
         produto_id: Optional[int] = None,
         miolo_id: Optional[int] = None,
         data_entrega: Optional[str] = None
     ):
         self.canal_venda_id = canal_venda_id
         self.modalidade = modalidade
+        self.is_flex = is_flex
         self.produto_id = produto_id
         self.miolo_id = miolo_id
         self.data_entrega = data_entrega
@@ -53,6 +55,7 @@ class ConsolidacaoChave:
         return {
             'canal_venda_id': self.canal_venda_id,
             'modalidade': self.modalidade,
+            'is_flex': self.is_flex,
             'produto_id': self.produto_id,
             'miolo_id': self.miolo_id,
             'data_entrega': self.data_entrega
@@ -64,6 +67,7 @@ class ConsolidacaoChave:
         return (
             self.canal_venda_id == other.canal_venda_id and
             self.modalidade == other.modalidade and
+            self.is_flex == other.is_flex and
             self.produto_id == other.produto_id and
             self.miolo_id == other.miolo_id and
             self.data_entrega == other.data_entrega
@@ -295,6 +299,7 @@ class ConsolidationService:
         return ConsolidacaoChave(
             canal_venda_id=pedido.get('canal_venda_id'),
             modalidade=modalidade,
+            is_flex=bool(pedido.get('is_flex')),
             produto_id=pedido.get('produto_id') if regra.agrupar_por_produto else None,
             miolo_id=pedido.get('id_produto_miolo') if regra.agrupar_por_miolo else None,
             data_entrega=pedido.get('data_entrega') or pedido.get('data_limite_envio', '').split('T')[0] if regra.agrupar_por_data_entrega else None
@@ -306,20 +311,13 @@ class ConsolidationService:
     ) -> Optional[Dict[str, Any]]:
         """
         Busca rascunho compatível para agrupamento.
-        
-        Usa SELECT FOR UPDATE SKIP LOCKED para evitar race condition.
-        
-        Args:
-            chave: Chave de consolidação
-        
-        Returns:
-            Rascunho compatível ou None
         """
         # Construir query dinâmica baseada na chave
         query = self.demandas_table.select('*') \
             .eq('status', 'RASCUNHO') \
             .eq('canal_venda_id', chave.canal_venda_id) \
             .eq('modalidade_logistica', chave.modalidade) \
+            .eq('is_flex', chave.is_flex) \
             .gt('rascunho_expira_em', get_now_iso()) \
             .order('rascunho_expira_em', desc=False) \
             .limit(1)
@@ -469,8 +467,8 @@ class ConsolidationService:
             'produto_id': chave.produto_id,
             'modalidade_logistica': modalidade,
             'horario_coleta': horario_coleta,
-            'is_flex': modalidade == 'EXPRESS',
-            'fulfillment': modalidade == 'FULFILLMENT',
+            'is_flex': bool(pedido.get('is_flex')),
+            'fulfillment': bool(pedido.get('fulfillment')),
             'data_entrega': data_entrega,
             'quantidade': quantidade,
             'rascunho_expira_em': (get_now() + timedelta(hours=regra.janela_agrupamento_horas)).isoformat(),
@@ -543,8 +541,8 @@ class ConsolidationService:
             'produto_id': pedido.get('produto_id'),
             'modalidade_logistica': modalidade,
             'horario_coleta': horario_coleta,
-            'is_flex': modalidade == 'EXPRESS',
-            'fulfillment': modalidade == 'FULFILLMENT',
+            'is_flex': bool(pedido.get('is_flex')),
+            'fulfillment': bool(pedido.get('fulfillment')),
             'data_entrega': data_entrega,
             'quantidade': quantidade,
             'categoria_temporal': categoria_temporal,
