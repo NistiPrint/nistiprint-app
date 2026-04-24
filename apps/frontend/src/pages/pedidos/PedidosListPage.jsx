@@ -313,33 +313,52 @@ function PedidosListPage() {
     }
   };
 
-  // Handler para alterar situação em massa
-  const handleAlterarSituacao = async (situacaoId, observacoes) => {
+  // Handler para sincronizar status com Bling
+  const handleSyncBlingStatus = async () => {
+    if (pedidosSelecionados.length === 0) {
+      toast.error('Selecione pelo menos um pedido');
+      return;
+    }
+
     try {
-      const response = await fetch('/api/v2/pedidos/bulk-update-status', {
-        method: 'PUT',
+      const response = await fetch('/api/v2/pedidos/sync-bling-status', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pedido_ids: pedidosSelecionados,
-          situacao_pedido_id: situacaoId,
-          observacoes,
-        }),
+        body: JSON.stringify({ pedido_ids: pedidosSelecionados }),
       });
 
       const data = await response.json();
-      
-      if (data.success) {
-        toast.success(data.message || 'Situação alterada com sucesso!');
-        setAlterarSituacaoModalOpen(false);
-        setPedidosSelecionados([]);
-        carregarPedidos();
+      if (data.batch_id) {
+        toast.info('Sincronização iniciada...');
+        pollSyncProgress(data.batch_id);
       } else {
-        toast.error(data.message || 'Erro ao alterar situação');
+        toast.error('Erro ao iniciar sincronização');
       }
     } catch (error) {
-      console.error('Erro ao alterar situação:', error);
-      toast.error('Erro ao alterar situação');
+      console.error('Erro ao iniciar sync:', error);
+      toast.error('Erro ao iniciar sincronização');
     }
+  };
+
+  const pollSyncProgress = (batchId) => {
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/v2/pedidos/sync-bling-status/${batchId}`);
+        const data = await response.json();
+        
+        if (data.status === 'CONCLUIDO') {
+          clearInterval(interval);
+          toast.success(`Sincronização concluída: ${data.sucesso} sucesso, ${data.falha} falha.`);
+          setPedidosSelecionados([]);
+          carregarPedidos();
+        } else if (data.status === 'ERRO') {
+          clearInterval(interval);
+          toast.error('Erro no processamento da sincronização');
+        }
+      } catch (error) {
+        console.error('Erro ao verificar progresso:', error);
+      }
+    }, 2000);
   };
 
   return (
@@ -389,6 +408,13 @@ function PedidosListPage() {
                 onClick={() => setPedidosSelecionados([])}
               >
                 Limpar seleção
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleSyncBlingStatus()}
+              >
+                Atualizar status Bling
               </Button>
               <Button
                 variant="outline"

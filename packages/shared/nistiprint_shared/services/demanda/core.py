@@ -598,7 +598,17 @@ class DemandaCoreService:
 
         return item
 
-    def create_from_order(self, order_data: Dict[str, Any], user_id='System') -> Dict[str, Any]:
+    def create_from_order(self, order_data: Dict[str, Any], user_id='System', **kwargs) -> Dict[str, Any]:
+        """
+        Gera uma demanda de produção a partir de um pedido.
+        Aceita is_flex, modalidade_logistica e canal_venda_id via kwargs.
+        Se não fornecidos, tenta derivar do banco 'pedidos'.
+        """
+        # 1. Resolver metadados básicos
+        is_flex = kwargs.get('is_flex')
+        modalidade = kwargs.get('modalidade_logistica')
+        canal_venda_id = kwargs.get('canal_venda_id')
+
         # Determine Platform and ID based on payload
         # Priority: order_sn (Shopee), order_id (ML), numeroLoja (Bling)
         plataforma = order_data.get('plataforma', 'Bling')
@@ -620,6 +630,21 @@ class DemandaCoreService:
         if not external_id:
             raise ValueError("Pedido sem número identificador (numeroLoja, order_sn, etc)")
 
+        # Se não vieram via kwargs, tenta ler do banco 'pedidos'
+        if is_flex is None or modalidade is None or canal_venda_id is None:
+            try:
+                pedido_db = supabase_db.table('pedidos')\
+                    .select('is_flex, modalidade_logistica, canal_venda_id')\
+                    .eq('codigo_pedido_externo', external_id)\
+                    .maybe_single().execute().data
+                if pedido_db:
+                    if is_flex is None: is_flex = pedido_db.get('is_flex')
+                    if modalidade is None: modalidade = pedido_db.get('modalidade_logistica')
+                    if canal_venda_id is None: canal_venda_id = pedido_db.get('canal_venda_id')
+            except Exception as e:
+                import logging
+                logging.error(f"⚠️ Erro ao buscar metadados do pedido {external_id} no banco: {e}")
+
         # Prepare list for deduplication check
         items_for_check = []
         for item in order_data.get('itens', []):
@@ -640,19 +665,16 @@ class DemandaCoreService:
             'plataforma': plataforma
         }]
 
-        # 1. Filter Deduplication
+        # 2. Filter Deduplication
         filtered_orders = order_tracker_service.filter_processed_items(orders_list, plataforma)
         if not filtered_orders:
             # All items processed
             existing = self.demandas_table.select("id").eq('demanda_id', external_id).execute()
             if existing.data:
                 return self.get_demanda_with_itens(existing.data[0]['id'])
-            # If no demand exists but items are processed, maybe they were processed in a consolidated batch?
-            # Return None to indicate no *new* demand created.
             return None
 
-        # 2. Process Remaining Items
-        # We take the first order from filtered list (since we passed only one)
+        # 3. Process Remaining Items
         remaining_items = filtered_orders[0]['items']
 
         # Prepare content for new demand
@@ -664,14 +686,6 @@ class DemandaCoreService:
             data_entrega = data_entrega.split('T')[0]
 
         itens_demanda = []
-
-        # We iterate over original items to preserve metadata (desc), but check against remaining
-        # OR just use remaining items if we carried enough metadata.
-        # Since 'items_for_check' was lightweight, we should match back to full 'order_data' items
-        # or simply rely on the fact that if it's in 'remaining', we process it.
-        # But 'remaining' lacks description if we didn't put it in 'items_for_check'.
-
-        # Better approach: map remaining item keys to allow lookup
         remaining_map = {(i['sku_externo'], i['item_externo_id']): i['quantidade'] for i in remaining_items}
 
         for item in order_data.get('itens', []):
@@ -681,11 +695,8 @@ class DemandaCoreService:
             key = (sku, item_ext_id)
             if key in remaining_map:
                 qty_to_process = remaining_map[key]
-
-                # Resolve Variation
                 nome_externo = item.get('descricao') or item.get('name')
                 resolved_prod = product_service.resolve_variation(sku, plataforma, nome_externo)
-
                 prod_id = resolved_prod['id'] if resolved_prod else None
 
                 itens_demanda.append({
@@ -693,7 +704,6 @@ class DemandaCoreService:
                     'descricao': nome_externo,
                     'quantidade': qty_to_process,
                     'produto_id': prod_id,
-                    # Pass external ID to persist in tracking later
                     '_item_externo_id': item_ext_id
                 })
 
@@ -704,40 +714,35 @@ class DemandaCoreService:
         if 'observacoes' in order_data:
              observacoes += f"\nObs Pedido: {order_data['observacoes']}"
 
-        # --- NOVO: BUSCAR PEDIDO_ID UNIFICADO ---
         pedido_id_vincular = None
         try:
-            # Tenta achar o pedido centralizado pelo codigo_pedido_externo
-            # external_id aqui é o numeroLoja/order_sn/etc
             pedido_res = supabase_db.table('pedidos')\
                 .select('id')\
                 .eq('codigo_pedido_externo', str(external_id))\
                 .execute()
-
             if pedido_res.data:
                 pedido_id_vincular = pedido_res.data[0]['id']
         except Exception as find_err:
-            print(f"Erro ao buscar pedido unificado para vínculo: {find_err}")
-        # ----------------------------------------
+            import logging
+            logging.error(f"Erro ao buscar pedido unificado para vínculo: {find_err}")
 
-        # 3. Create Demand
+        # 4. Create Demand
         new_demanda = self.criar_demanda_direta(
             nome_demanda=nome_demanda,
-            canal_venda_id=None,
+            canal_venda_id=canal_venda_id,
             data_entrega_str=data_entrega,
             lista_de_itens=itens_demanda,
             demanda_id=external_id,
             pedido_numero=str(order_data.get('numero') or external_id),
-            pedido_id=pedido_id_vincular, # Passando o ID unificado
+            pedido_id=pedido_id_vincular,
             observacoes=observacoes,
             user_id=user_id,
-            tipo_demanda='PLATAFORMA'
+            tipo_demanda='PLATAFORMA',
+            is_flex=is_flex,
+            modalidade_logistica=modalidade
         )
 
-        # 4. Register Processed Items
-        # Reconstruct orders_list with the items we actually processed (itens_demanda)
-        # to ensure tracker is accurate on what was done.
-
+        # 5. Register Processed Items
         items_processed_for_tracker = []
         for iditem in itens_demanda:
             items_processed_for_tracker.append({
@@ -748,6 +753,7 @@ class DemandaCoreService:
             })
 
         final_orders_list = [{
+
             'pedido_externo_id': external_id,
             'plataforma': plataforma,
             'items': items_processed_for_tracker

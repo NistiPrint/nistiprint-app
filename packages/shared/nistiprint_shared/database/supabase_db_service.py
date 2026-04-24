@@ -23,13 +23,26 @@ class SupabaseDBService:
         self.supabase_url = url or os.environ.get('SUPABASE_URL')
         self.supabase_key = key or os.environ.get('SUPABASE_SERVICE_KEY')
         self.client = None
+        
+        # Part C 3.8: httpx pool explicit limits
+        import httpx
+        self._httpx_client = httpx.Client(
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            timeout=httpx.Timeout(30.0, connect=5.0),
+        )
+
+        # Circuit breaker state
+        self._pool_timeout_count = 0
+        self._last_pool_timeout_time = 0
+        self._circuit_broken_until = 0
 
         if self.supabase_url and self.supabase_key:
             try:
-                # Use the default initialization which is more resilient to library updates
+                # Use the default initialization with our custom httpx client
                 self.client: Client = create_client(
                     self.supabase_url,
-                    self.supabase_key
+                    self.supabase_key,
+                    options={"http_client": self._httpx_client}
                 )
                 logging.info("Successfully connected to Supabase")
             except Exception as e:
@@ -53,7 +66,12 @@ class SupabaseDBService:
             return False
             
         try:
-            self.client: Client = create_client(self.supabase_url, self.supabase_key)
+            from supabase import create_client
+            self.client: Client = create_client(
+                self.supabase_url, 
+                self.supabase_key,
+                options={"http_client": self._httpx_client}
+            )
             logging.info("Supabase client initialized via late-binding.")
             return True
         except Exception as e:
@@ -63,6 +81,7 @@ class SupabaseDBService:
     def execute_with_retry(self, query, max_retries=3, base_delay=0.5):
         """
         Execute a Supabase/PostgREST query with retry logic for connection errors.
+        Includes a circuit breaker for PoolTimeout.
         """
         if not self._ensure_client():
             raise ValueError("Supabase client is not initialized and environment variables are missing.")
@@ -71,12 +90,35 @@ class SupabaseDBService:
         import httpx
         import ssl
 
+        # Check circuit breaker
+        current_time = time.time()
+        if self._circuit_broken_until > current_time:
+            wait_time = self._circuit_broken_until - current_time
+            logging.warning(f"Supabase circuit breaker active. Waiting {wait_time:.1f}s...")
+            time.sleep(wait_time)
+
         last_exception = None
         for attempt in range(max_retries):
             try:
                 return query.execute()
+            except httpx.PoolTimeout as e:
+                last_exception = e
+                # Circuit breaker logic: 3 timeouts in 30s -> break for 5s
+                self._pool_timeout_count += 1
+                if current_time - self._last_pool_timeout_time > 30:
+                    self._pool_timeout_count = 1
+                self._last_pool_timeout_time = current_time
+
+                if self._pool_timeout_count >= 3:
+                    self._circuit_broken_until = current_time + 5.0
+                    logging.error("Supabase PoolTimeout circuit breaker triggered! Backing off for 5s.")
+                    break # Don't retry this specific call anymore
+                
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    time.sleep(delay)
             except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.TimeoutException,
-                    httpx.ReadTimeout, httpx.PoolTimeout, ssl.SSLError, httpx.WriteError) as e:
+                    httpx.ReadTimeout, ssl.SSLError, httpx.WriteError) as e:
                 last_exception = e
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)
