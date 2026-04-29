@@ -93,6 +93,10 @@ def get_default_schedules():
             'task': 'tasks.eventos_tasks.process_eventos_producao',
             'schedule': 10,  # 10 segundos
         },
+        'renew-shopee-tokens': {
+            'task': 'tasks.token_renewal_tasks.renew_shopee_tokens',
+            'schedule': 7200,  # 6 horas
+        },
     }
 
 # Criar aplicação Celery

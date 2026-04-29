@@ -2,14 +2,14 @@ import LiveOrderConsultation from '@/components/marketplace/LiveOrderConsultatio
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import BlingInstanceConfigModal from '@/pages/integracoes/BlingInstanceConfigModal';
 import MarketplaceService from '@/services/MarketplaceService';
 import * as integracaoCanalService from '@/services/integracaoCanalService';
-import { AlertCircle, CheckCircle2, Plus, RefreshCw, Trash2, Zap, Package, Building2, HelpCircle, Database, Settings } from 'lucide-react';
+import { AlertCircle, Building2, CheckCircle2, Database, HelpCircle, Package, Plus, RefreshCw, Settings, Trash2, Zap } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import BlingInstanceConfigModal from '@/pages/integracoes/BlingInstanceConfigModal';
 
 export default function IntegrationsStatus({ onAddClick }) {
   const [integrations, setIntegrations] = useState([]);
@@ -19,10 +19,41 @@ export default function IntegrationsStatus({ onAddClick }) {
   const [moduleFilter, setModuleFilter] = useState('all');
   const [configModalOpen, setConfigModalOpen] = useState(false);
   const [selectedIntegrationId, setSelectedIntegrationId] = useState(null);
+  const [shopeeConfigModalOpen, setShopeeConfigModalOpen] = useState(false);
+  const [selectedShopeeIntegration, setSelectedShopeeIntegration] = useState(null);
+  const [shopeeConfig, setShopeeConfig] = useState({ partner_id: '', partner_key: '', shop_id: '' });
+  const [savingConfig, setSavingConfig] = useState(false);
 
   const handleOpenConfig = (id) => {
     setSelectedIntegrationId(id);
     setConfigModalOpen(true);
+  };
+
+  const handleOpenShopeeConfig = (integration) => {
+    setSelectedShopeeIntegration(integration);
+    setShopeeConfig({
+      partner_id: integration.config?.partner_id || '',
+      partner_key: integration.config?.partner_key || '',
+      shop_id: integration.config?.shop_id || ''
+    });
+    setShopeeConfigModalOpen(true);
+  };
+
+  const handleSaveShopeeConfig = async () => {
+    if (!selectedShopeeIntegration) return;
+    
+    setSavingConfig(true);
+    try {
+      await integracaoCanalService.updateIntegrationConfig(selectedShopeeIntegration.id, shopeeConfig);
+      toast.success('Configuração Shopee atualizada com sucesso!');
+      setShopeeConfigModalOpen(false);
+      fetchIntegrations();
+    } catch (error) {
+      console.error('Erro ao salvar config Shopee:', error);
+      toast.error('Erro ao salvar configuração: ' + (error.message || 'Tente novamente'));
+    } finally {
+      setSavingConfig(false);
+    }
   };
 
   const fetchIntegrations = async () => {
@@ -267,6 +298,16 @@ export default function IntegrationsStatus({ onAddClick }) {
                     ) : (
                       /* Ações para Marketplace (com botão Renovar Token) */
                       <div className="grid grid-cols-2 gap-2 pt-2">
+                        {item.module_id === 'shopee' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleOpenShopeeConfig(item)}
+                            className="gap-2 col-span-2"
+                          >
+                            <Settings className="h-3 w-3" /> Configurar
+                          </Button>
+                        )}
                         <Button
                           variant="outline"
                           size="sm"
@@ -299,6 +340,60 @@ export default function IntegrationsStatus({ onAddClick }) {
           open={configModalOpen}
           onOpenChange={setConfigModalOpen}
         />
+      )}
+
+      {/* Modal de Configuração Shopee */}
+      {shopeeConfigModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-lg max-w-md w-full p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold">Configurar Shopee</h3>
+              <Button variant="ghost" size="sm" onClick={() => setShopeeConfigModalOpen(false)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Partner ID</label>
+                <input
+                  type="text"
+                  value={shopeeConfig.partner_id}
+                  onChange={(e) => setShopeeConfig({ ...shopeeConfig, partner_id: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-md"
+                  placeholder="ID do parceiro Shopee"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Partner Key</label>
+                <input
+                  type="password"
+                  value={shopeeConfig.partner_key}
+                  onChange={(e) => setShopeeConfig({ ...shopeeConfig, partner_key: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-md"
+                  placeholder="Chave do parceiro Shopee"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Shop ID</label>
+                <input
+                  type="text"
+                  value={shopeeConfig.shop_id}
+                  onChange={(e) => setShopeeConfig({ ...shopeeConfig, shop_id: e.target.value })}
+                  className="w-full px-3 py-2 border rounded-md"
+                  placeholder="ID da loja Shopee"
+                />
+              </div>
+              <div className="flex gap-2 justify-end pt-4">
+                <Button variant="outline" onClick={() => setShopeeConfigModalOpen(false)}>
+                  Cancelar
+                </Button>
+                <Button onClick={handleSaveShopeeConfig} disabled={savingConfig}>
+                  {savingConfig ? 'Salvando...' : 'Salvar'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
