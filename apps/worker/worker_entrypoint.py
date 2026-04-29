@@ -144,11 +144,5 @@ def debug_task(self):
     return 'Celery worker is running!'
 
 
-# Auto-discovery de tasks
-celery_app.autodiscover_tasks([
-    'tasks.eventos_tasks',
-    'tasks.consolidation_tasks',
-    'tasks.auto_consolidation_tasks',
-    'tasks.pedidos_fetch_tasks',
-    'nistiprint_shared.services.personalizados_tasks',
-])
+# Tasks já incluídas explicitamente no parâmetro 'include' acima
+# autodiscover_tasks removido para evitar ModuleNotFoundError
