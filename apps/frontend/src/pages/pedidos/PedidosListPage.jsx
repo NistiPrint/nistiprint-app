@@ -35,6 +35,8 @@ function PedidosListPage() {
     is_personalizado: null, // true, false, null - Filtro para pedidos personalizados
     delivery_start: '',
     delivery_end: '',
+    pedido_date_start: '',
+    pedido_date_end: '',
   });
 
   // Estados de paginação
@@ -45,6 +47,10 @@ function PedidosListPage() {
 
   // Estados de seleção
   const [pedidosSelecionados, setPedidosSelecionados] = useState([]);
+
+  // Estados de integrações disponíveis para sync
+  const [availableIntegrations, setAvailableIntegrations] = useState([]);
+  const [loadingIntegrations, setLoadingIntegrations] = useState(false);
 
   // Estados de canais próximos (para highlight e contexto)
   const [canaisProximosIds, setCanaisProximosIds] = useState([]);
@@ -135,7 +141,12 @@ function PedidosListPage() {
           data_venda: order.data_venda || order.dataVenda || order.created_at,
           cliente_nome: order.cliente_nome || order.clienteNome,
           cliente_documento: order.cliente_documento || order.clienteDocumento,
-          canal_venda_nome: order.canal_venda_nome || order.canalVendaNome || order.canal?.nome,
+          // Priorizar marketplace_nome sobre canal_venda_nome para nova arquitetura
+          canal_venda_nome: order.marketplace_nome || order.canal_venda_nome || order.canalVendaNome || order.canal?.nome,
+          marketplace_slug: order.marketplace_slug,
+          marketplace_color: order.marketplace_color,
+          marketplace_integration_id: order.marketplace_integration_id,
+          canal_venda_id: order.canal_venda_id,
           situacao_pedido_id: order.situacao_pedido_id || order.situacaoPedidoId,
           total_pedido: order.total_pedido || order.totalPedido || order.total,
           tem_demanda: order.tem_demanda || order.temDemanda || order.has_demanda || false,
@@ -206,6 +217,8 @@ function PedidosListPage() {
       is_personalizado: null,
       delivery_start: '',
       delivery_end: '',
+      pedido_date_start: '',
+      pedido_date_end: '',
     });
     setPage(1);
   };
@@ -313,23 +326,135 @@ function PedidosListPage() {
     }
   };
 
-  // Handler para alterar situação em massa
-  const handleAlterarSituacao = async (situacaoId, observacoes) => {
+  // Handler para carregar integrações disponíveis
+  const loadAvailableIntegrations = async () => {
+    if (pedidosSelecionados.length === 0) {
+      return;
+    }
+
+    setLoadingIntegrations(true);
     try {
-      const response = await fetch('/api/v2/pedidos/bulk-update-status', {
-        method: 'PUT',
+      const response = await fetch('/api/v2/pedidos/sync-available-integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pedido_ids: pedidosSelecionados }),
+      });
+
+      const data = await response.json();
+      if (data.integrations) {
+        setAvailableIntegrations(data.integrations);
+      }
+    } catch (error) {
+      console.error('Erro ao carregar integrações:', error);
+      toast.error('Erro ao carregar integrações disponíveis');
+    } finally {
+      setLoadingIntegrations(false);
+    }
+  };
+
+  // Handler para sincronizar status com Bling
+  const handleSyncBlingStatus = async () => {
+    if (pedidosSelecionados.length === 0) {
+      toast.error('Selecione pelo menos um pedido');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/v2/pedidos/sync-bling-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pedido_ids: pedidosSelecionados }),
+      });
+
+      const data = await response.json();
+      if (data.batch_id) {
+        toast.info('Sincronização iniciada...');
+        pollSyncProgress(data.batch_id);
+      } else {
+        toast.error('Erro ao iniciar sincronização');
+      }
+    } catch (error) {
+      console.error('Erro ao iniciar sync:', error);
+      toast.error('Erro ao iniciar sincronização');
+    }
+  };
+
+  // Handler para sincronizar com integração específica
+  const handleSyncWithIntegration = async (integrationId, moduleId, instanceName) => {
+    if (pedidosSelecionados.length === 0) {
+      toast.error('Selecione pelo menos um pedido');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/v2/pedidos/sync-with-integration', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           pedido_ids: pedidosSelecionados,
-          situacao_pedido_id: situacaoId,
-          observacoes,
+          integration_id: integrationId,
+          module_id: moduleId,
         }),
       });
 
       const data = await response.json();
-      
+      if (data.batch_id) {
+        toast.info(`Sincronização iniciada com ${instanceName}...`);
+        pollSyncProgress(data.batch_id);
+      } else if (data.error) {
+        toast.error(data.error);
+      } else {
+        toast.error('Erro ao iniciar sincronização');
+      }
+    } catch (error) {
+      console.error('Erro ao iniciar sync:', error);
+      toast.error('Erro ao iniciar sincronização');
+    }
+  };
+
+  const pollSyncProgress = (batchId) => {
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/v2/pedidos/sync-bling-status/${batchId}`);
+        const data = await response.json();
+
+        if (data.status === 'CONCLUIDO') {
+          clearInterval(interval);
+          toast.success(`Sincronização concluída: ${data.sucesso} sucesso, ${data.falha} falha.`);
+          setPedidosSelecionados([]);
+          carregarPedidos();
+        } else if (data.status === 'ERRO') {
+          clearInterval(interval);
+          toast.error('Erro no processamento da sincronização');
+        }
+      } catch (error) {
+        console.error('Erro ao verificar progresso:', error);
+      }
+    }, 2000);
+  };
+
+  // Handler para alterar situação em massa
+  const handleAlterarSituacao = async (situacaoId, observacoes) => {
+    if (pedidosSelecionados.length === 0) {
+      toast.error('Selecione pelo menos um pedido');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/v2/pedidos/alterar-situacao', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pedido_ids: pedidosSelecionados,
+          situacao_id: situacaoId,
+          observacoes
+        }),
+      });
+
+      const data = await response.json();
+
       if (data.success) {
-        toast.success(data.message || 'Situação alterada com sucesso!');
+        toast.success(`Situação alterada para ${pedidosSelecionados.length} pedido(s)`);
         setAlterarSituacaoModalOpen(false);
         setPedidosSelecionados([]);
         carregarPedidos();
@@ -390,6 +515,43 @@ function PedidosListPage() {
               >
                 Limpar seleção
               </Button>
+              <DropdownMenu onOpenChange={(open) => {
+                if (open) loadAvailableIntegrations();
+              }}>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                  >
+                    Sincronizar
+                    <ChevronDown className="h-4 w-4 ml-2" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {loadingIntegrations ? (
+                    <DropdownMenuItem disabled>
+                      Carregando integrações...
+                    </DropdownMenuItem>
+                  ) : availableIntegrations.length === 0 ? (
+                    <DropdownMenuItem disabled>
+                      Nenhuma integração disponível
+                    </DropdownMenuItem>
+                  ) : (
+                    availableIntegrations.map((integration) => (
+                      <DropdownMenuItem
+                        key={integration.id}
+                        onClick={() => handleSyncWithIntegration(
+                          integration.id,
+                          integration.module_id,
+                          integration.instance_name
+                        )}
+                      >
+                        {integration.type === 'erp' ? '🔹' : '🛒'} {integration.instance_name}
+                      </DropdownMenuItem>
+                    ))
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button
                 variant="outline"
                 size="sm"

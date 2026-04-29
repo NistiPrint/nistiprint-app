@@ -44,6 +44,12 @@ def get_pedido_detalhe(pedido_id):
                 slug,
                 color
             ),
+            marketplace_integration:installed_integrations!pedidos_marketplace_integration_id_fkey(
+                id,
+                instance_name,
+                module_id,
+                config
+            ),
             itens_pedido:itens_pedido(
                 id,
                 sku_externo,
@@ -84,10 +90,50 @@ def get_pedido_detalhe(pedido_id):
         
         pedido = pedido_response.data
         
+        # Fetch integration_module for marketplace info
+        marketplace_info = None
+        if pedido.get('marketplace_integration') and pedido.get('marketplace_integration').get('module_id'):
+            module_response = supabase_db.table('integration_modules').select('id, slug, name, tipo').eq('id', pedido['marketplace_integration']['module_id']).execute()
+            if module_response.data:
+                module = module_response.data[0]
+                marketplace_info = {
+                    'id': pedido['marketplace_integration']['id'],
+                    'instance_name': pedido['marketplace_integration']['instance_name'],
+                    'module_id': module['id'],
+                    'slug': module['slug'],
+                    'name': module['name'],
+                    'tipo': module['tipo'],
+                    'color': {
+                        'shopee': '#EE4D2D',
+                        'mercadolivre': '#FFF159',
+                        'amazon': '#FF9900',
+                        'shein': '#FF6B6B'
+                    }.get(module['slug'], '#007bff')
+                }
+        
         # Calcular totais
         total_itens = len(pedido.get('itens_pedido', []))
         total_quantidade = sum(float(item.get('quantidade', 0)) for item in pedido.get('itens_pedido', []))
         
+        # Determinar dados de "canal" priorizando marketplace
+        canal_legacy = pedido.get('canal_venda') or {}
+        if marketplace_info:
+            canal_payload = {
+                'id': marketplace_info['id'],
+                'nome': marketplace_info['instance_name'],
+                'slug': marketplace_info['slug'],
+                'cor': marketplace_info['color'],
+                'origem': 'marketplace',
+            }
+        else:
+            canal_payload = {
+                'id': pedido.get('canal_venda_id'),
+                'nome': canal_legacy.get('nome'),
+                'slug': canal_legacy.get('slug'),
+                'cor': canal_legacy.get('color') or '#007bff',
+                'origem': 'canal_venda_legacy',
+            }
+
         # Formatando dados para resposta
         resultado = {
             'id': pedido.get('id'),
@@ -109,7 +155,7 @@ def get_pedido_detalhe(pedido_id):
                 'informacoes_adicionais': pedido.get('informacoes_cliente', {})
             },
             'financeiro': {
-                'total': float(pedido.get('total_pedido', 0)),
+                'total': float(pedido.get('total_pedido') or 0),
                 'moeda': pedido.get('moeda', 'BRL'),
                 'total_itens': total_itens,
                 'total_quantidade': total_quantidade
@@ -123,12 +169,8 @@ def get_pedido_detalhe(pedido_id):
             'logistica': {
                 'is_flex': pedido.get('is_flex', False),
                 'servico_logistico': pedido.get('servico_logistico'),
-                'canal_venda': {
-                    'id': pedido.get('canal_venda_id'),
-                    'nome': pedido.get('canal_venda', {}).get('nome') if pedido.get('canal_venda') else None,
-                    'slug': pedido.get('canal_venda', {}).get('slug') if pedido.get('canal_venda') else None,
-                    'cor': pedido.get('canal_venda', {}).get('color') if pedido.get('canal_venda') else '#007bff'
-                }
+                'canal_venda': canal_payload,
+                'marketplace': marketplace_info
             },
             'itens': pedido.get('itens_pedido', []),
             'integracoes': pedido.get('integracoes', []),
@@ -477,7 +519,7 @@ def get_pedido_demandas(pedido_id):
             # Calcular progresso
             total_itens = len(demanda.get('itens', []))
             itens_finalizados = sum(
-                float(item.get('finalizados_qtd', 0)) 
+                float(item.get('finalizados_qtd') or 0) 
                 for item in demanda.get('itens', [])
             )
             progresso = round((itens_finalizados / total_itens * 100)) if total_itens > 0 else 0

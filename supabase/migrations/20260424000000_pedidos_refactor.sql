@@ -129,19 +129,25 @@ $$ LANGUAGE sql STABLE;
 -- 1.3.7 Seed inicial de flex_classification_rules
 INSERT INTO flex_classification_rules
     (canal_venda_id, campo, operador, padrao, is_flex, modalidade, prioridade)
-SELECT id, 'servico_logistico', 'ILIKE_NORMALIZED', 'entrega rapida', true, 'FLEX', 10
-  FROM canais_venda WHERE plataforma = 'shopee';
+SELECT cv.id, 'servico_logistico', 'ILIKE_NORMALIZED', 'entrega rapida', true, 'FLEX', 10
+  FROM canais_venda cv
+  JOIN plataformas p ON cv.plataforma_id = p.id
+ WHERE p.nome = 'shopee';
 
 INSERT INTO flex_classification_rules
     (canal_venda_id, campo, operador, padrao, is_flex, modalidade, prioridade)
-SELECT id, 'shipping_carrier', 'ILIKE_NORMALIZED', 'entrega rapida', true, 'FLEX', 10
-  FROM canais_venda WHERE plataforma = 'shopee';
+SELECT cv.id, 'shipping_carrier', 'ILIKE_NORMALIZED', 'entrega rapida', true, 'FLEX', 10
+  FROM canais_venda cv
+  JOIN plataformas p ON cv.plataforma_id = p.id
+ WHERE p.nome = 'shopee';
 
 -- Fallback: qualquer coisa Shopee que não caiu em regra acima vai como STANDARD
 INSERT INTO flex_classification_rules
     (canal_venda_id, campo, operador, padrao, is_flex, modalidade, prioridade)
-SELECT id, 'shipping_carrier', 'ILIKE', '%', false, 'STANDARD', 9999
-  FROM canais_venda WHERE plataforma = 'shopee';
+SELECT cv.id, 'shipping_carrier', 'ILIKE', '%', false, 'STANDARD', 9999
+  FROM canais_venda cv
+  JOIN plataformas p ON cv.plataforma_id = p.id
+ WHERE p.nome = 'shopee';
 
 -- 2.3 Tabela de progresso Sync Status
 CREATE TABLE IF NOT EXISTS sync_status_batches (

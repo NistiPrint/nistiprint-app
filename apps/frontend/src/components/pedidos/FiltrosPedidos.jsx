@@ -1,11 +1,11 @@
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
-import { X, Zap, Loader2, ChevronDown, ChevronUp, Filter, Sparkles } from 'lucide-react';
+import { ChevronDown, ChevronUp, Filter, Loader2, Sparkles, X, Zap } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import FiltrosContextuais from './FiltrosContextuais';
@@ -16,20 +16,20 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
   const [loading, setLoading] = useState(true);
   const [filtrosAbertos, setFiltrosAbertos] = useState(false);
 
-  // Buscar canais e status ao montar o componente
+  // Buscar marketplaces (nova arquitetura) e status ao montar o componente
   useEffect(() => {
     const carregarDados = async () => {
       try {
-        const [canaisRes, statusRes] = await Promise.all([
-          fetch('/api/v2/pedidos/canais-venda?ativos=true'),
+        const [marketplacesRes, statusRes] = await Promise.all([
+          fetch('/api/v2/pedidos/marketplaces?ativos=true'),
           fetch('/api/v2/pedidos/status-opcoes')
         ]);
         
-        const canaisData = await canaisRes.json();
+        const marketplacesData = await marketplacesRes.json();
         const statusData = await statusRes.json();
         
-        if (canaisData.success) {
-          setCanais(canaisData.data.canais || []);
+        if (marketplacesData.success) {
+          setCanais(marketplacesData.data.marketplaces || []);
         }
         if (statusData.success) {
           setStatusList(statusData.data.status || []);
@@ -51,6 +51,8 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
     filtros.has_demanda !== null ||
     filtros.delivery_start ||
     filtros.delivery_end ||
+    filtros.pedido_date_start ||
+    filtros.pedido_date_end ||
     filtros.is_flex ||
     filtros.is_personalizado;
 
@@ -92,21 +94,37 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
               </Badge>
             )}
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 w-8 p-0"
-            onClick={(e) => {
-              e.stopPropagation();
-              setFiltrosAbertos(!filtrosAbertos);
-            }}
-          >
-            {filtrosAbertos ? (
-              <ChevronUp className="h-4 w-4" />
-            ) : (
-              <ChevronDown className="h-4 w-4" />
+          <div className="flex items-center gap-2">
+            {hasFiltros && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onLimparFiltros();
+                }}
+                className="gap-2 h-8"
+              >
+                <X className="h-4 w-4" />
+                Limpar
+              </Button>
             )}
-          </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0"
+              onClick={(e) => {
+                e.stopPropagation();
+                setFiltrosAbertos(!filtrosAbertos);
+              }}
+            >
+              {filtrosAbertos ? (
+                <ChevronUp className="h-4 w-4" />
+              ) : (
+                <ChevronDown className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
         </div>
         
         {filtrosAbertos && (
@@ -233,6 +251,26 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
               type="date"
               value={filtros.delivery_end}
               onChange={(e) => onFiltroChange({ delivery_end: e.target.value })}
+            />
+          </div>
+
+          {/* Data do Pedido - De */}
+          <div className="space-y-2">
+            <Label>Data do Pedido - De</Label>
+            <Input
+              type="date"
+              value={filtros.pedido_date_start}
+              onChange={(e) => onFiltroChange({ pedido_date_start: e.target.value })}
+            />
+          </div>
+
+          {/* Data do Pedido - Até */}
+          <div className="space-y-2">
+            <Label>Data do Pedido - Até</Label>
+            <Input
+              type="date"
+              value={filtros.pedido_date_end}
+              onChange={(e) => onFiltroChange({ pedido_date_end: e.target.value })}
             />
           </div>
 
