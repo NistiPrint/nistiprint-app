@@ -129,7 +129,7 @@ export async function listarIntegracoes() {
  * @returns {Promise<Object>} Resultado da renovação
  */
 export async function renewToken(instanceId) {
-  const response = await api.post(`/marketplace/installed/${instanceId}/renew`);
+  const response = await api.post(`/api/v2/marketplace/installed/${instanceId}/renew`);
   return response.data;
 }
 
