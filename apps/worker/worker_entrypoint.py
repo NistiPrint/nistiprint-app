@@ -10,6 +10,15 @@ import logging
 from celery import Celery
 from celery.schedules import crontab
 
+# Configurar logging formatter explícito para o worker
+LOG_FORMAT = "[%(asctime)s] %(levelname)s %(name)s %(message)s"
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+
+# Forçar nível INFO nos loggers do pipeline
+for name in ("bling_order_processing", "flex_classifier",
+             "shopee_driver", "demanda_producao"):
+    logging.getLogger(name).setLevel(logging.INFO)
+
 # 1. Inicialização do ambiente e infraestrutura compartilhada
 try:
     from nistiprint_shared.utils.env_loader import load_nistiprint_env

@@ -1,22 +1,21 @@
-import React from 'react';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
-  ArrowLeft,
-  Copy,
-  ExternalLink,
-  MoreHorizontal,
-  Printer,
-  Share2,
-  Sparkles
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+    ArrowLeft,
+    Copy,
+    ExternalLink,
+    MoreHorizontal,
+    Printer,
+    Share2,
+    Sparkles
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { toast } from 'sonner';
 
 /**
@@ -115,7 +114,11 @@ export default function PedidoHeader({
             ) : (
               <>
                 <span>•</span>
-                <Badge variant="destructive" className="text-xs bg-red-50 text-red-600 border-red-200">
+                <Badge 
+                  variant="destructive" 
+                  className="text-xs bg-red-50 text-red-600 border-red-200 cursor-pointer hover:bg-red-100"
+                  onClick={() => navigate('/admin/integracoes?tab=marketplace')}
+                >
                   Canal Não Mapeado 
                   {pedido.cliente?.informacoes_adicionais?.bling_loja_id && 
                     ` (ID Loja: ${pedido.cliente.informacoes_adicionais.bling_loja_id})`

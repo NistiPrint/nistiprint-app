@@ -286,9 +286,12 @@ class EstoqueService:
             user_context=user_context
         )
 
-    def movimentar_por_delta(self, produto_id: Any, delta: float, role: str, motivo: str = "", 
+    def movimentar_por_delta(self, produto_id: Any, delta: float, motivo: str = "", 
                            usuario_id: Optional[int] = None, user_context: dict = None,
-                           documento_referencia: Optional[str] = None) -> None:
+                           documento_referencia: Optional[str] = None,
+                           demanda_id: Optional[Any] = None,
+                           item_id: Optional[Any] = None,
+                           idempotency_key: Optional[str] = None) -> None:
         """
         Processa uma movimentação de estoque baseada em um 'Delta' (mudança manual no dashboard).
         Se delta > 0 (aumentou o progresso), registra SAÍDA (consumo).
@@ -299,6 +302,12 @@ class EstoqueService:
         from nistiprint_shared.services.app_config_service import app_config_service
         deposito_id = app_config_service.get_config('default_production_deposit_id') or 'principal'
 
+        # Documento referência prioritário
+        doc_ref = documento_referencia or (f"Demanda:{demanda_id}" if demanda_id else None)
+        
+        # IDempotency key gerada se não fornecida
+        idemp = idempotency_key or (f"delta:{demanda_id}:{item_id}:{delta}" if demanda_id and item_id else None)
+
         if delta > 0:
             # Aumentou progresso -> CONSUMO (SAÍDA)
             self.registrar_saida(
@@ -308,11 +317,11 @@ class EstoqueService:
                 motivo=f"{motivo} (Consumo via Dashboard)",
                 usuario_id=usuario_id,
                 user_context=user_context,
-                documento_referencia=documento_referencia
+                documento_referencia=doc_ref,
+                idempotency_key=idemp
             )
         else:
             # Reduziu progresso -> ESTORNO (ENTRADA)
-            # Para Miolos/Capas, a entrada deve ser simples (não gera nova produção de subcomponentes)
             self.registrar_entrada(
                 produto_id=produto_id,
                 deposito_id=deposito_id,
@@ -320,7 +329,8 @@ class EstoqueService:
                 observacao=f"{motivo} (Estorno via Dashboard)",
                 usuario_id=usuario_id,
                 user_context=user_context,
-                ordem_compra_id=documento_referencia # Usando campo genérico para referência
+                ordem_compra_id=doc_ref,
+                idempotency_key=idemp
             )
 
     def registrar_producao_com_insumos(self, produto_id: Any, quantidade: float, deposito_id: Any = None, 

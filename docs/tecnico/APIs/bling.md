@@ -1,3 +1,140 @@
+
+
+Endpoint para obter múltiplos pedidos de venda
+
+GET /pedidos/vendas/
+
+Query parameters:
+
+```
+Name	Description
+pagina
+integer
+(query)
+N° da página da listagem
+Default value : 1
+
+limite
+integer
+(query)
+Quantidade de registros que devem ser exibidos por página
+Default value : 100
+
+idContato
+integer
+(query)
+ID do contato
+
+idsSituacoes[]
+array<integer>
+(query)
+Conjunto de situações
+
+dataInicial
+string($date)
+(query)
+Data incial
+2022-01-01
+
+dataFinal
+string($date)
+(query)
+Data final
+2022-01-15
+
+dataAlteracaoInicial
+string($datetime)
+(query)
+Data inicial da alteração
+2022-01-01 10:00:00
+
+dataAlteracaoFinal
+string($datetime)
+(query)
+Data final da alteração
+2022-01-15 11:00:00
+
+dataPrevistaInicial
+string($date)
+(query)
+Data inicial prevista
+2022-01-01
+
+dataPrevistaFinal
+string($date)
+(query)
+Data final prevista
+2022-01-15
+
+numero
+integer
+(query)
+Número do pedido de venda
+
+idLoja
+integer
+(query)
+ID da loja
+
+idVendedor
+integer
+(query)
+ID do vendedor
+
+idControleCaixa
+integer
+(query)
+ID do controle de caixa
+
+numerosLojas[]
+array<string>
+(query)
+Conjunto de números de pedidos nas lojas
+
+idUnidadeNegocio
+integer
+(query)
+ID da unidade de negócio (filial)
+
+
+```
+
+Response:
+
+```
+{
+  "data": [
+    {
+      "id": 12345678,
+      "numero": 123,
+      "numeroLoja": "Loja_123",
+      "data": "2023-01-12",
+      "dataSaida": "2023-01-12",
+      "dataPrevista": "2023-01-12",
+      "totalProdutos": 10,
+      "total": 12,
+      "contato": {
+        "id": 12345678,
+        "nome": "Contato do Bling",
+        "tipoPessoa": "J",
+        "numeroDocumento": "30188025000121"
+      },
+      "situacao": {
+        "id": 12345678,
+        "valor": 1
+      },
+      "loja": {
+        "id": 12345678,
+        "unidadeNegocio": {
+          "id": 12345678
+        }
+      }
+    }
+  ]
+}
+```
+
+
 Endpoint para obter pedido de venda
 
 **GET** [/pedidos/vendas/{idPedidoVenda}](https://developer.bling.com.br/referencia#/Pedidos%20-%20Vendas/get_pedidos_vendas__idPedidoVenda_) Obtém um pedido de venda

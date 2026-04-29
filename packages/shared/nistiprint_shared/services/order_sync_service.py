@@ -147,7 +147,7 @@ class OrderSyncService:
             logger.info("[FASE 2] message_to_seller: %s", message_to_seller)
             logger.info("[FASE 2] recipient.name: %s", recipient.get('name'))
 
-            cliente_nome = recipient.get('name') or raw_order.get('buyer_username')
+            cliente_nome = recipient.get('name')
             cliente_telefone = recipient.get('phone')
 
             # Data real de envio (ship_by_date) - CRÍTICO para Shopee

@@ -805,13 +805,10 @@ class BlingClient:
 
                 # Extrair todos os IDs dos pedidos e adicionar à lista
                 bling_orders_id.extend([item['id'] for item in response['data']])
-
-        # Buscar detalhes de cada pedido
-        for order_id in bling_orders_id:
-            order = self.get_order(order_id)
-            if order is not None:
-                bling_orders_data.append(order)
-                bling_orders_obtained_count += 1
+                
+                # A resposta já contém os dados completos dos pedidos
+                bling_orders_data.extend(response['data'])
+                bling_orders_obtained_count += len(response['data'])
 
         bling_orders_id_numero = [
             {'id': item['id'], 'numero': item['numero']}
