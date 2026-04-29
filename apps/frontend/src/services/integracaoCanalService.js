@@ -129,7 +129,7 @@ export async function listarIntegracoes() {
  * @returns {Promise<Object>} Resultado da renovação
  */
 export async function renewToken(instanceId) {
-  const response = await api.post(`/api/v2/marketplace/installed/${instanceId}/renew`);
+  const response = await api.post(`/marketplace/installed/${instanceId}/renew`);
   return response.data;
 }
 
@@ -140,7 +140,7 @@ export async function renewToken(instanceId) {
  * @returns {Promise<Object>} Resultado da atualização
  */
 export async function updateIntegrationConfig(instanceId, config) {
-  const response = await api.put(`/api/v2/marketplace/installed/${instanceId}/config`, { config });
+  const response = await api.put(`/marketplace/installed/${instanceId}/config`, { config });
   return response.data;
 }
 
