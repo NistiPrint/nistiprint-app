@@ -1,175 +1,205 @@
 # Guia de Deploy — Nistiprint
 
-**Última atualização:** 2026-04-13
+**Última atualização:** 2026-04-29
 
 ---
 
-## 1. Visão Geral das Gerações
+## 1. Arquitetura
 
-| Geração | Status | Pastas | Stack Portainer |
-|---------|--------|--------|----------------|
-| G1 (Legado PHP) | Manutenção mínima | `/app` | Google Cloud Run |
-| G2 (v2 estável) | Produção | `nistiprint-core`, `nistiprint-frontend` | `nistiprint-v2-prod` |
-| G3 (v3 nova) | Desenvolvimento ativo | `nistiprint-api`, `nistiprint-worker`, `nistiprint-shared` | `nistiprint-v3-dev` |
+A aplicação roda em um **servidor único**, com os processos da aplicação gerenciados por **systemd** e dois serviços auxiliares ainda em containers Docker (Redis e n8n). O **nginx-proxy-manager** (em container) faz o roteamento público com SSL.
+
+```
+                         ┌──────────────────────────────────┐
+                         │      Internet (HTTPS)            │
+                         └───────────────┬──────────────────┘
+                                         ▼
+                         ┌──────────────────────────────────┐
+                         │   nginx-proxy-manager (Docker)   │
+                         │   Portas 80 / 443 / 81 (admin)   │
+                         └───────────────┬──────────────────┘
+                                         │
+                  ┌──────────────────────┼──────────────────────┐
+                  ▼                      ▼                      ▼
+        ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+        │  Caddy (host)    │   │  gunicorn (host) │   │  n8n (Docker)    │
+        │  127.0.0.1:3000  │   │  0.0.0.0:8080    │   │  :5678           │
+        │  Frontend SPA    │   │  API Flask       │   │  Webhooks        │
+        └──────────────────┘   └──────────────────┘   └────────┬─────────┘
+                                         │                     │
+                                         ▼                     ▼
+                                ┌──────────────────────────────────┐
+                                │  Redis (Docker, :6379)           │
+                                └────────────┬─────────────────────┘
+                                             ▼
+                              ┌──────────────────────────────┐
+                              │  Celery Worker + Beat (host) │
+                              │  systemd                     │
+                              └──────────────────────────────┘
+```
+
+### Componentes
+
+| Componente | Onde roda | Como é gerenciado |
+|---|---|---|
+| Frontend (React/Vite) | Servido por **Caddy** no host | `systemctl … caddy` |
+| API (Flask + gunicorn) | Processo no host | `systemd: nistiprint-api` |
+| Worker (Celery) | Processo no host | `systemd: nistiprint-worker` |
+| Beat (Celery scheduler) | Processo no host | `systemd: nistiprint-beat` |
+| Redis | Container Docker (stack `nistiprint-infra`) | Portainer |
+| n8n | Container Docker (stack `nistiprint-infra`) | Portainer |
+| nginx-proxy-manager | Container Docker | Portainer |
+
+### Por que sem containers para a aplicação?
+
+- Build/push de imagem eliminado → deploy de ~30s em vez de ~5min
+- `packages/shared` é compartilhado entre API e Worker via uma única **venv** com `pip install -e packages/shared` — qualquer alteração é refletida nos dois com um único `git pull`
+- Logs centralizados via `journalctl`
+- Rollback é `git checkout <sha> && ./deploy.sh`
 
 ---
 
-## 2. Arquitetura de Deploy
+## 2. Deploy automático (GitHub Actions)
 
+A cada push em `main`, um workflow do GitHub roda no servidor via SSH e executa o script de deploy.
+
+### Fluxo
 ```
-┌─────────────────────────────────────────────────────────┐
-│              APLICAÇÕES (build.bat)                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐               │
-│  │   API    │  │  WORKER  │  │ FRONTEND │               │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘               │
-│       └──────────────┼──────────────┘                    │
-│              Docker Hub (push)                           │
-└──────────────────────┼───────────────────────────────────┘
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│              INFRAESTRUTURA (Portainer)                  │
-│  ┌────────────────────┐  ┌────────────────────┐         │
-│  │  nistiprint-infra  │  │   nistiprint-app   │         │
-│  │  redis + n8n       │  │   api + frontend   │         │
-│  └────────────────────┘  └────────────────────┘         │
-│  ┌────────────────────┐                                 │
-│  │  nistiprint-worker │                                 │
-│  │  worker + beat     │                                 │
-│  └────────────────────┘                                 │
-└─────────────────────────────────────────────────────────┘
+git push (main)
+    ↓
+GitHub Actions (.github/workflows/deploy.yml)
+    ↓
+SSH no servidor → /opt/nistiprint/deploy.sh
+    ↓
+git pull + pip install + npm build + systemctl restart
+    ↓
+Aplicação atualizada (~30-60s)
 ```
+
+### Secrets necessários no GitHub
+- `SSH_HOST` — IP/hostname do servidor
+- `SSH_USER` — `nistiprint`
+- `SSH_KEY` — chave privada do usuário `nistiprint`
 
 ---
 
-## 3. Deploy de Infraestrutura (Raro)
+## 3. Deploy manual
 
-### Quando
-- Primeira instalação
-- Mudança no Redis ou n8n
-
-### Como
-```batch
-cd apps/ops
-deploy-infra.bat up
-deploy-infra.bat status
-```
-
-### Verificação
 ```bash
-docker exec nistiprint-redis redis-cli ping   # PONG
-curl https://automacao.nistiprint.neolabs.com.br/healthz  # {"status":"ok"}
+ssh nistiprint@<servidor> /opt/nistiprint/deploy.sh
 ```
 
----
+Conteúdo do `deploy.sh` (em `/opt/nistiprint/deploy.sh`):
 
-## 4. Deploy de Aplicações (Frequente)
-
-### Build + Push
-```batch
-# Teste local
-build.bat local
-build.bat local worker
-
-# Push completo
-build.bat push
-
-# Push de serviço específico
-build.bat push worker
-build.bat push api
-build.bat push frontend
-build.bat push v1.2.3 worker
-```
-
-### Portainer
-1. **Worker** → Stacks → `nistiprint-worker` → Update the stack
-2. **API** → Stacks → `nistiprint-app` → Update the stack
-3. **Frontend** → Stacks → `nistiprint-app` → Update the stack
-
-### Verificação Pós-Deploy
 ```bash
-# Worker
-docker exec nistiprint-worker celery -A worker_entrypoint inspect ping
+#!/usr/bin/env bash
+set -euo pipefail
+cd /opt/nistiprint
 
-# API
-curl https://api.nistiprint.neolabs.com.br/health
+echo "→ git fetch + reset"
+git fetch --prune origin
+git reset --hard origin/main
 
-# Frontend
-# Acessar https://app.nistiprint.neolabs.com.br/
+echo "→ pip install"
+.venv/bin/pip install -q -r apps/api/requirements.txt
+.venv/bin/pip install -q -r apps/worker/requirements.txt
+.venv/bin/pip install -q -e packages/shared
+
+echo "→ frontend build"
+( cd apps/frontend && npm ci --silent && npm run build )
+
+echo "→ restart services"
+sudo /bin/systemctl restart nistiprint-api nistiprint-worker nistiprint-beat
+
+echo "✓ deploy $(git rev-parse --short HEAD) ok"
+```
+
+> O `git reset --hard` é seguro porque o servidor é apenas runtime — qualquer alteração local é acidental.
+
+---
+
+## 4. Rollback
+
+```bash
+ssh nistiprint@<servidor>
+cd /opt/nistiprint
+git log --oneline -10                  # localizar o commit alvo
+git checkout <sha>
+./deploy.sh                            # reaplica build e reinicia
+```
+
+Para voltar ao topo da `main`:
+```bash
+git checkout main && ./deploy.sh
 ```
 
 ---
 
-## 5. Deploy GCP (Cloud Run Unificado)
+## 5. Verificação pós-deploy
 
-Para deploy do Frontend + API juntos no Google Cloud Run usando supervisord (nginx + gunicorn no mesmo container), consulte: [deploy-gcp.md](./deploy-gcp.md)
+```bash
+# API direta no host
+curl http://127.0.0.1:8080/health
 
----
+# Frontend (Caddy) direto no host
+curl -I http://127.0.0.1:3000/
 
-## 6. Rollback
+# Status dos services
+systemctl status nistiprint-api nistiprint-worker nistiprint-beat --no-pager
 
-### Worker
-1. Portainer → Stacks → `nistiprint-worker`
-2. Editar → mudar imagem para versão anterior
-3. Update the stack
-
-### Infraestrutura
-```batch
-cd apps/ops
-deploy-infra.bat restart
+# Públicos (via NPM)
+curl -I https://app.nistiprint.neolabs.com.br/
+curl https://app.nistiprint.neolabs.com.br/api/health
 ```
 
 ---
 
-## 7. Fluxo Típico de Desenvolvimento
+## 6. Atualizando dependências
 
+### Python (api / worker / shared)
+1. Edite `requirements.txt` correspondente
+2. Commit e push → o `deploy.sh` roda `pip install` automaticamente
+
+### Frontend
+1. `npm install <pacote>` localmente
+2. **Commit `package.json` e `package-lock.json` juntos** (lock fora de sincronia quebra o `npm ci` no servidor)
+3. Push → `deploy.sh` faz o build
+
+---
+
+## 7. Variáveis de ambiente
+
+Mantidas em `/opt/nistiprint/.env` (chmod 600, owner `nistiprint`). Não estão no Git.
+
+Os 3 services systemd carregam o mesmo arquivo via `EnvironmentFile=/opt/nistiprint/.env`.
+
+Para alterar uma variável:
+```bash
+sudo -u nistiprint nano /opt/nistiprint/.env
+sudo systemctl restart nistiprint-api nistiprint-worker nistiprint-beat
 ```
-1. Desenvolvimento local
-   → build.bat local worker
-   → docker-compose -f docker-compose.local.yml up -d
 
-2. Commit e Push
-   → git add . && git commit -m "fix: correção" && git push
+> Cuidado: o parser do systemd **não** aceita aspas em volta dos valores nem `#` no meio da linha. Valores multi-linha (ex: JSON do Firebase) precisam estar em uma única linha com `\n` literais.
 
-3. Deploy em Produção
-   → build.bat push worker
-   → Portainer: Update stack nistiprint-worker
-   → Verificar logs
-
-4. Monitoramento
-   → deploy-worker.bat logs
-   → Verificar webhooks no n8n
-```
+Lista completa das variáveis: [variaveis-ambiente.md](./variaveis-ambiente.md).
 
 ---
 
-## 8. Dicas
+## 8. Comandos úteis
 
-1. **Sempre teste localmente antes de publicar**
-2. **Use tags semânticas** (`v1.2.3`, `dev`, `beta`)
-3. **Nunca reinicie infra para deploy de worker** — stacks são independentes
-4. **Shared package**: ao alterar `nistiprint-shared`, re-buildar API e Worker
-
----
-
-## 9. Comandos Rápidos
-
-| Comando | Função |
-|---------|--------|
-| `build.bat local` | Testa api + worker + frontend localmente |
-| `build.bat push worker` | Publica apenas worker |
-| `deploy-infra.bat up` | Sobe redis + n8n |
-| `deploy-worker.bat logs` | Logs do worker em tempo real |
+| Tarefa | Comando |
+|---|---|
+| Deploy manual | `/opt/nistiprint/deploy.sh` |
+| Status dos 3 services | `systemctl status nistiprint-{api,worker,beat}` |
+| Reiniciar tudo | `sudo systemctl restart nistiprint-{api,worker,beat}` |
+| Logs API (live) | `journalctl -u nistiprint-api -f` |
+| Logs Worker (live) | `journalctl -u nistiprint-worker -f` |
+| Recarregar Caddy | `sudo systemctl reload caddy` |
+| Containers ativos | `docker ps` |
 
 ---
 
-## 10. Arquivos de Referência
+## 9. Referências
 
-| Arquivo | Descrição |
-|---------|-----------|
-| `build.bat` | Build e push de aplicações |
-| `apps/ops/deploy-infra.bat` | Deploy de infra |
-| `apps/ops/deploy-worker.bat` | Deploy de worker |
-| [variaveis-ambiente.md](./variaveis-ambiente.md) | Variáveis de ambiente |
-| [infraestrutura.md](./infraestrutura.md) | Setup detalhado de infra |
-| [troubleshooting.md](./troubleshooting.md) | Solução de problemas |
-| [logging.md](./logging.md) | Configuração de logs com rotação |
+- [infraestrutura.md](./infraestrutura.md) — detalhamento dos services systemd, Caddy e NPM
+- [logging.md](./logging.md) — como ler logs (journalctl)
+- [variaveis-ambiente.md](./variaveis-ambiente.md) — variáveis usadas pela aplicação

@@ -210,7 +210,7 @@ Antes de começar, preparar:
 - [ ] Slack ou Teams aberto (comunicar progresso)
 - [ ] Jira access (criar tickets)
 - [ ] Git clonado e branches setup
-- [ ] Docker/Dev environment rodando
+- [ ] Ambiente local pronto (venv + Redis local) — ver [setup-local.md](../guias/setup-local.md)
 - [ ] BD staging (ou backup de prod) disponível
 - [ ] Slack #dev-nistiprint channel criado
 

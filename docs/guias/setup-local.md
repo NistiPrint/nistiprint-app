@@ -1,119 +1,152 @@
-# ===========================================
-# SETUP DESENVOLVIMENTO LOCAL (NISTIPRINT V3)
-# ===========================================
-# Guia para rodar a API, Worker e Shared Package
-# tanto com Docker quanto localmente (Bare Metal)
-# ===========================================
+# Setup de Desenvolvimento Local
+
+**Última atualização:** 2026-04-29
+
+A produção roda nativamente via systemd (sem Docker para a aplicação). Recomendamos o mesmo padrão localmente: rodar API/Worker com Python direto e usar Docker apenas para Redis.
+
+---
 
 ## Pré-requisitos
-- Docker & Docker Compose
-- Python 3.10+
-- Node.js 18+ (para o frontend)
+
+- Python 3.11+
+- Node.js 20+
+- Docker (apenas para o Redis local)
+- Git
 
 ---
 
-## Opção A: Rodar TUDO via Docker (Recomendado)
+## 1. Clonar e preparar a venv
 
-Esta opção garante que todo o ambiente (API, Worker, Redis, n8n) esteja isolado e configurado corretamente.
+```bash
+git clone https://github.com/NistiPrint/nistiprint-app.git
+cd nistiprint-app
 
-### 1. Iniciar Infraestrutura Base
-O Redis e o n8n são compartilhados entre todas as versões.
-```powershell
-docker-compose -f nistiprint-ops/docker-compose.infra.yml up -d
+python -m venv .venv
+# Linux/Mac
+source .venv/bin/activate
+# Windows (PowerShell)
+.\.venv\Scripts\Activate.ps1
+
+pip install --upgrade pip wheel
+pip install -e packages/shared
+pip install -r apps/api/requirements.txt
+pip install -r apps/worker/requirements.txt
 ```
 
-### 2. Iniciar Aplicação V3 (API + Worker)
-```powershell
-# Na raiz do projeto
-docker-compose up -d --build
-```
-
-### 3. Verificar Status
-```powershell
-docker-compose ps
-# nistiprint-api      Up
-# nistiprint-worker   Up
-# nistiprint-redis    Up (via infra)
-```
+Uma única venv atende API + Worker — `packages/shared` instalado em modo editável (`-e`) faz com que qualquer alteração no código compartilhado seja refletida imediatamente nos dois.
 
 ---
 
-## Opção B: Rodar Localmente SEM Docker (Bare Metal)
+## 2. Subir o Redis local
 
-Ideal para desenvolvimento rápido e debug com VS Code/PyCharm.
-
-### 1. Iniciar apenas a Infraestrutura (Docker)
-A API e o Worker precisam do Redis rodando.
-```powershell
-docker-compose -f nistiprint-ops/docker-compose.infra.yml up -d redis
+```bash
+docker run -d --name nistiprint-redis-local -p 6379:6379 redis:7-alpine
 ```
 
-### 2. Configurar o Pacote Compartilhado (Shared)
-Este passo é **obrigatório** para que o Python encontre o módulo `nistiprint_shared`.
-
-```powershell
-# Crie e ative seu ambiente virtual na raiz ou em cada módulo
-cd nistiprint-api
-python -m venv venv
-.\venv\Scripts\activate  # Windows
-
-# Instale o shared em modo editável
-pip install -e ..\nistiprint-shared
-```
-
-### 3. Instalar Dependências e Rodar a API
-```powershell
-# Dentro de nistiprint-api (com venv ativo)
-pip install -r requirements.txt
-python main.py
-```
-A API estará em `http://localhost:8080`.
-
-### 4. Rodar o Worker (Celery)
-```powershell
-# Em um novo terminal (com o mesmo venv ativo)
-cd nistiprint-worker
-pip install -r requirements.txt
-celery -A worker_entrypoint worker --loglevel=info
+(Opcional) também subir n8n se você precisa testar webhooks:
+```bash
+docker run -d --name nistiprint-n8n-local -p 5678:5678 -v n8n_data:/home/node/.n8n n8nio/n8n
 ```
 
 ---
 
-## Configuração de Ambiente (.env)
+## 3. Configurar `.env`
 
-Cada módulo (`nistiprint-api`, `nistiprint-worker`, `nistiprint-legacy`) possui seu próprio arquivo `.env`.
+Crie um `.env` na raiz com:
 
-**Exemplo para API Local (.env):**
-```env
+```ini
 FLASK_ENV=development
-DATABASE_URL=postgresql://user:pass@localhost:6543/db?pgbouncer=true
-REDIS_HOST=localhost
-REDIS_PORT=6379
+SECRET_KEY=algum-valor-qualquer-pra-dev
+
 SUPABASE_URL=https://xxx.supabase.co
-SUPABASE_SERVICE_KEY=xxx
+SUPABASE_SERVICE_KEY=eyJ...
+DATABASE_URL=postgresql://user:pass@host:6543/db?pgbouncer=true
+
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6379
+CELERY_BROKER_URL=redis://127.0.0.1:6379/0
+CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
+
+FIREBASE_CREDENTIALS={"type":"service_account",...}
+SHOPEE_PARTNER_ID=...
+SHOPEE_PARTNER_KEY=...
 ```
 
-*Nota: Ao rodar FORA do Docker, use `localhost` para o Redis. Ao rodar DENTRO do Docker, use `redis`.*
+> Lista completa das variáveis: [variaveis-ambiente.md](../operacoes/variaveis-ambiente.md).
 
 ---
 
-## Dicas de Desenvolvimento
+## 4. Rodar a API
 
-### VS Code Settings
-Para que o VS Code não acuse erros de import no `nistiprint_shared`, adicione o caminho ao `extraPaths`:
+```bash
+cd apps/api
+python main.py        # dev server (Flask)
+```
+
+A API sobe em `http://localhost:8080`. Use o dev server em desenvolvimento — o `gunicorn` é só pra produção.
+
+---
+
+## 5. Rodar o Worker
+
+Em outro terminal, com a mesma venv ativa:
+
+```bash
+cd apps/worker
+celery -A worker_entrypoint worker --loglevel=info --concurrency=2
+```
+
+E o Beat (scheduler), em mais um terminal, se for testar tarefas agendadas:
+
+```bash
+cd apps/worker
+celery -A worker_entrypoint beat --loglevel=info
+```
+
+---
+
+## 6. Rodar o Frontend
+
+```bash
+cd apps/frontend
+npm install
+npm run dev
+```
+
+Vite sobe em `http://localhost:5173` com hot reload. Por padrão proxa `/api` para `http://localhost:8080` (ver `vite.config.js`).
+
+---
+
+## 7. Configuração do VS Code
+
+Para que o autocomplete encontre `nistiprint_shared`, em `.vscode/settings.json`:
 
 ```json
 {
-  "python.analysis.extraPaths": [
-    "./nistiprint-shared"
-  ]
+  "python.defaultInterpreterPath": ".venv/bin/python",
+  "python.analysis.extraPaths": ["packages/shared"]
 }
 ```
 
-### Hot Reload
-- **Docker**: O `docker-compose.yml` da raiz está configurado para refletir mudanças nos arquivos da API/Worker instantaneamente (via volumes).
-- **Local**: O Flask e o Celery (com `--autoreload` se configurado) detectam mudanças automaticamente.
+(Em Windows: `.venv\\Scripts\\python.exe`.)
 
 ---
 
-**Dúvidas frequentes?** Consulte `docs/troubleshooting/general.md`
+## 8. Encerrar tudo
+
+```bash
+# Ctrl+C nos terminais da API, Worker, Beat e Frontend
+docker stop nistiprint-redis-local
+```
+
+---
+
+## Dicas
+
+- **Hot reload Python:** o Flask em modo dev recarrega sozinho ao salvar arquivos. O Celery não — você precisa reiniciar o worker após mudar código de tasks.
+- **Reset Redis local:** `docker exec nistiprint-redis-local redis-cli FLUSHALL`
+- **Testar uma task manualmente:**
+  ```python
+  from worker_entrypoint import celery_app
+  celery_app.send_task('tasks.minha_task', args=[...])
+  ```

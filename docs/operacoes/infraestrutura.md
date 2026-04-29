@@ -1,219 +1,268 @@
+# Manual de Infraestrutura — Nistiprint
 
-# Manual de Infraestrutura: Nistiprint App
+**Última atualização:** 2026-04-29
 
-Este documento descreve a infraestrutura em produção da Nistiprint.
+Hospedagem em **servidor único (VPS)** rodando Ubuntu. A aplicação (API, Worker, Beat, Frontend) roda nativamente no host via **systemd** + **Caddy**. Apenas Redis, n8n e nginx-proxy-manager seguem em containers Docker.
 
-## 1. Visão Geral da Arquitetura
+---
 
-A infraestrutura é hospedada em um **servidor dedicado com Portainer**, organizada em stacks Docker:
+## 1. Visão Geral
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    SERVIDOR (Portainer)                     │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │              nginx-proxy-manager                    │    │
-│  │         (Proxy Reverso + SSL - Port 80/443)         │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                                                             │
-│  ┌──────────────────┐  ┌──────────────────┐                │
-│  │  nistiprint-infra│  │  nistiprint-app  │                │
-│  │  ┌────────────┐  │  │  ┌────────────┐  │                │
-│  │  │   redis    │  │  │  │    api     │  │                │
-│  │  │    n8n     │  │  │  │  frontend  │  │                │
-│  │  └────────────┘  │  │  └────────────┘  │                │
-│  └──────────────────┘  └──────────────────┘                │
-│                                                             │
-│  ┌──────────────────┐                                       │
-│  │ nistiprint-worker│                                       │
-│  │  ┌────────────┐  │                                       │
-│  │  │   worker   │  │                                       │
-│  │  │    beat    │  │                                       │
-│  │  └────────────┘  │                                       │
-│  └──────────────────┘                                       │
-└─────────────────────────────────────────────────────────────┘
+Servidor (VPS)
+│
+├── /opt/nistiprint/                      ← repo Git
+│   ├── apps/api/         (Flask)
+│   ├── apps/worker/      (Celery)
+│   ├── apps/frontend/dist/   (build estático servido pelo Caddy)
+│   ├── packages/shared/  (lib comum, instalada editável na venv)
+│   ├── .venv/            (uma venv só para api + worker)
+│   ├── .env              (variáveis, chmod 600, fora do Git)
+│   └── deploy.sh
+│
+├── systemd
+│   ├── nistiprint-api.service       (gunicorn :8080)
+│   ├── nistiprint-worker.service    (celery worker)
+│   ├── nistiprint-beat.service      (celery beat)
+│   └── caddy.service                (frontend estático :3000)
+│
+└── Docker
+    ├── nginx-proxy-manager           (proxy + SSL, :80/:443/:81)
+    ├── nistiprint-redis              (broker Celery + cache, :6379)
+    └── nistiprint-n8n                (webhooks, :5678)
 ```
 
-## 2. Stacks Docker
+---
 
-### 2.1 nginx-proxy-manager
-- **Função:** Proxy reverso, gerenciamento de SSL (Let's Encrypt), roteamento de domínios
-- **Portas:** 80 (HTTP), 443 (HTTPS), 81 (Admin)
-- **Domínios:**
-  - `api.nistiprint.neolabs.com.br` → nistiprint-api
-  - `app.nistiprint.neolabs.com.br` → nistiprint-frontend
-  - `automacao.nistiprint.neolabs.com.br` → nistiprint-n8n
+## 2. Services systemd
 
-### 2.2 nistiprint-infra
-- **Função:** Serviços de infraestrutura base
-- **Serviços:**
-  - **redis:** Fila de mensagens para Celery
-  - **n8n:** Automação de webhooks (Bling, Shopee)
+Arquivos em `/etc/systemd/system/`. Todos rodam como user `nistiprint`.
 
-### 2.3 nistiprint-app
-- **Função:** Aplicação principal
-- **Serviços:**
-  - **api:** API REST Flask/FastAPI
-  - **frontend:** Aplicação React
+### `nistiprint-api.service`
+```ini
+[Unit]
+Description=Nistiprint API
+After=network.target
 
-### 2.4 nistiprint-worker
-- **Função:** Processamento assíncrono de tarefas
-- **Serviços:**
-  - **worker:** Worker Celery para processamento de filas
-  - **beat:** Agendador de tarefas periódicas Celery
+[Service]
+Type=simple
+User=nistiprint
+Group=nistiprint
+WorkingDirectory=/opt/nistiprint/apps/api
+EnvironmentFile=/opt/nistiprint/.env
+ExecStart=/opt/nistiprint/.venv/bin/gunicorn -w 4 -b 0.0.0.0:8080 "main:create_app()"
+Restart=always
+RestartSec=5
 
-## 3. Domínios e Endpoints
-
-| Serviço | Domínio | Descrição |
-|---------|---------|-----------|
-| API | `https://api.nistiprint.neolabs.com.br` | API REST principal |
-| Frontend | `https://app.nistiprint.neolabs.com.br` | Interface web |
-| n8n | `https://automacao.nistiprint.neolabs.com.br` | Automação e webhooks |
-| Portainer | `https://gestao.nistiprint.neolabs.com.br` | Gestão de containers |
-
-## 4. Fluxo de Dados
-
-### 4.1 Webhook Bling/Shopee
+[Install]
+WantedBy=multi-user.target
 ```
-1. Evento na plataforma (Bling/Shopee)
+
+### `nistiprint-worker.service`
+```ini
+[Unit]
+Description=Nistiprint Celery Worker
+After=network.target
+
+[Service]
+Type=simple
+User=nistiprint
+Group=nistiprint
+WorkingDirectory=/opt/nistiprint/apps/worker
+EnvironmentFile=/opt/nistiprint/.env
+ExecStart=/opt/nistiprint/.venv/bin/celery -A worker_entrypoint worker --loglevel=info --concurrency=2
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### `nistiprint-beat.service`
+```ini
+[Unit]
+Description=Nistiprint Celery Beat
+After=network.target
+
+[Service]
+Type=simple
+User=nistiprint
+Group=nistiprint
+WorkingDirectory=/opt/nistiprint/apps/worker
+EnvironmentFile=/opt/nistiprint/.env
+ExecStart=/opt/nistiprint/.venv/bin/celery -A worker_entrypoint beat --loglevel=info
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Após qualquer edição:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart nistiprint-api nistiprint-worker nistiprint-beat
+```
+
+---
+
+## 3. Caddy (frontend)
+
+Binário único, instalado via apt. Configuração em `/etc/caddy/Caddyfile`:
+
+```
+:3000 {
+    root * /opt/nistiprint/apps/frontend/dist
+    try_files {path} /index.html
+    file_server
+    encode gzip
+}
+```
+
+`try_files {path} /index.html` faz o **SPA fallback** (rotas client-side do React).
+
+```bash
+sudo systemctl reload caddy        # após editar Caddyfile
+sudo systemctl status caddy
+```
+
+---
+
+## 4. nginx-proxy-manager (NPM)
+
+Container que termina SSL e roteia o tráfego público para os services internos.
+
+| Domínio | Forward target |
+|---|---|
+| `app.nistiprint.neolabs.com.br` | `172.18.0.1:3000` (Caddy/Frontend) — com Custom Location `/api` → `172.18.0.1:8080` (API) |
+| `automacao.nistiprint.neolabs.com.br` | container `nistiprint-n8n:5678` |
+| `gestao.nistiprint.neolabs.com.br` | container `portainer:9000` |
+
+> `172.18.0.1` é o gateway da rede docker `gateway_net` — é como o NPM, dentro do container, alcança serviços que escutam no host.
+
+UI do NPM: `http://<servidor>:81`.
+
+---
+
+## 5. Stacks Docker remanescentes
+
+### `nistiprint-infra` (Portainer)
+- **redis** — broker Celery, expõe `6379` para o host
+- **n8n** — webhooks externos (Bling, Shopee), expõe `5678`
+
+Atualizações dessas imagens são raras. Quando necessário: Portainer → Stacks → `nistiprint-infra` → Update.
+
+> As stacks antigas `nistiprint-app` e `nistiprint-worker` foram **removidas** — agora rodam via systemd.
+
+---
+
+## 6. Domínios e Endpoints públicos
+
+| Serviço | URL |
+|---|---|
+| Frontend + API | `https://app.nistiprint.neolabs.com.br` (UI) e `…/api/...` (API) |
+| n8n (webhooks) | `https://automacao.nistiprint.neolabs.com.br` |
+| Portainer | `https://gestao.nistiprint.neolabs.com.br` |
+
+---
+
+## 7. Fluxo de Dados
+
+### Webhook Bling/Shopee
+```
+1. Plataforma externa
    ↓
 2. Webhook → n8n (automacao.nistiprint.neolabs.com.br)
    ↓
-3. n8n → Redis (fila 'celery')
+3. n8n enfileira no Redis (fila 'celery')
    ↓
-4. Worker Celery processa a tarefa
+4. Worker Celery (systemd) consome e processa
    ↓
-5. Resultado → Supabase/PostgreSQL
+5. Persiste em Supabase
 ```
 
-### 4.2 Requisição API
+### Requisição da UI
 ```
-1. Frontend/Navegador
+1. Navegador → app.nistiprint.neolabs.com.br/...
    ↓
 2. nginx-proxy-manager (SSL termination)
    ↓
-3. nistiprint-api
+3a. /            → Caddy (host:3000)  → arquivos estáticos do React
+3b. /api/*       → gunicorn (host:8080) → Flask
    ↓
-4. Supabase/PostgreSQL
+4. (API) → Supabase / Redis
 ```
 
-## 5. Aplicação Legada (Firestore)
+---
 
-A aplicação legada em PHP utiliza **Google Firestore** e serve como:
+## 8. Operações Comuns
 
-- **Origem para sincronização de tokens Bling**
-- **Backup histórico de pedidos**
-
-### Sincronização de Tokens
-No dashboard: `configuracoes/integracoes > aba 'status' > botão 'sync legacy'`
-
-Esta funcionalidade recupera os tokens de acesso das 3 contas Bling armazenados no Firestore e os migra para o banco de dados principal (Supabase).
-
-## 6. Operações Comuns
-
-### 6.1 Deploy de Nova Versão
-
-```batch
-# Build e push para Docker Hub
-build.bat push worker        # Apenas worker
-build.bat push api           # Apenas API
-build.bat push frontend      # Apenas frontend
-build.bat push               # Todos os serviços
-
-# No Portainer:
-# 1. Stacks → [stack desejada]
-# 2. Update the stack
-# 3. Aguardar ~60s
-```
-
-### 6.2 Verificação de Saúde
-
+### Verificação rápida de saúde
 ```bash
-# Redis
-docker exec nistiprint-redis redis-cli ping
-# Expected: PONG
-
-# Worker
-docker exec nistiprint-worker celery -A worker_entrypoint inspect ping
-# Expected: OK
-
-# n8n Health Check
-curl https://automacao.nistiprint.neolabs.com.br/healthz
-# Expected: {"status":"ok"}
-
-# API Health Check
-curl https://api.nistiprint.neolabs.com.br/health
-```
-
-### 6.3 Logs em Tempo Real
-
-```bash
-# Worker
-docker logs -f nistiprint-worker
-
 # API
-docker logs -f nistiprint-api
+curl http://127.0.0.1:8080/health
 
-# n8n
-docker logs -f nistiprint-n8n
+# Frontend
+curl -I http://127.0.0.1:3000/
 
 # Redis
-docker logs -f nistiprint-redis
+docker exec nistiprint-redis redis-cli ping     # PONG
+
+# Worker (via Celery)
+sudo -u nistiprint /opt/nistiprint/.venv/bin/celery \
+    -A worker_entrypoint -b redis://127.0.0.1:6379/0 inspect ping
+
+# Status systemd
+systemctl status nistiprint-api nistiprint-worker nistiprint-beat caddy --no-pager
 ```
 
-### 6.4 Reiniciar Serviços
-
+### Reinício de serviços
 ```bash
-# No Portainer:
-# 1. Stacks → [stack desejada]
-# 2. Restart the stack
+# Aplicação
+sudo systemctl restart nistiprint-api
+sudo systemctl restart nistiprint-worker
+sudo systemctl restart nistiprint-beat
 
-# Via Docker CLI:
-docker restart nistiprint-worker
-docker restart nistiprint-api
-docker restart nistiprint-n8n
+# Frontend (Caddy)
+sudo systemctl reload caddy
+
+# Containers
+docker restart nistiprint-redis nistiprint-n8n nginx-proxy-manager
 ```
 
-## 7. Troubleshooting
+---
 
-| Problema | Solução |
-|----------|---------|
-| Worker não processa filas | Verificar conexão Redis: `docker logs nistiprint-worker` |
-| Webhooks não chegam | Verificar n8n: `docker logs nistiprint-n8n` |
-| API indisponível | Verificar logs: `docker logs nistiprint-api` |
-| SSL expirado | NPM → Certificates → Renew Let's Encrypt |
-| Redis cheio | `docker exec nistiprint-redis redis-cli INFO memory` |
+## 9. Troubleshooting
 
-## 8. Backup e Recuperação
+| Problema | Verificação |
+|---|---|
+| API responde 502 / connection refused | `systemctl status nistiprint-api` e `journalctl -u nistiprint-api -n 50` |
+| Worker não processa filas | `journalctl -u nistiprint-worker -f`; checar Redis: `docker exec nistiprint-redis redis-cli ping` |
+| Webhooks não chegam | Logs n8n: `docker logs --tail 100 nistiprint-n8n` |
+| Frontend abre em branco | `journalctl -u caddy -n 30`; conferir `apps/frontend/dist/index.html` |
+| SSL expirado | NPM (`:81`) → Certificates → Renew |
+| NPM 502 ao acessar domínio | `docker logs --tail 30 nginx-proxy-manager` — verificar se algum upstream aponta para host inexistente |
 
-### Dados Críticos
-- **Supabase:** Banco de dados principal (gerenciado externamente)
-- **n8n:** Workflows e execuções (volume Docker)
-- **Firestore:** Aplicação legada (gerenciado pelo Google)
+---
 
-### Backup n8n
+## 10. Backup
+
+| Item | Onde |
+|---|---|
+| Banco de dados | Supabase (gerenciado externamente) |
+| Workflows n8n | volume Docker `nistiprint-infra_n8n_data` |
+| Código + composes | Repositório Git (GitHub) |
+| `.env` | **Não está no Git** — manter cópia segura offline |
+
 ```bash
-# O volume do n8n contém database.sqlite com workflows
+# Localizar volume do n8n
 docker volume inspect nistiprint-infra_n8n_data
 ```
 
-## 9. Variáveis de Ambiente
+---
 
-Consulte `apps/ops/VARIAVEIS-AMBIENTE.md` para lista completa.
+## 11. Variáveis de Ambiente
 
-### Principais Variáveis
+Lista completa: [variaveis-ambiente.md](./variaveis-ambiente.md).
 
-#### nistiprint-infra
-- `BLING_CLIENT_SECRET`: Segredo da API Bling
-- `REDIS_URL`: URL de conexão Redis
-
-#### nistiprint-app
-- `SUPABASE_URL`: URL do projeto Supabase
-- `SUPABASE_KEY`: Chave de serviço Supabase
-- `REDIS_URL`: URL de conexão Redis
-
-#### nistiprint-worker
-- `SUPABASE_URL`: URL do projeto Supabase
-- `SUPABASE_KEY`: Chave de serviço Supabase
-- `REDIS_URL`: URL de conexão Redis
-- `CELERY_BROKER_URL`: URL do broker Celery (Redis)
+Arquivo único: `/opt/nistiprint/.env` (compartilhado entre os 3 services).
