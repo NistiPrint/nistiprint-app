@@ -83,15 +83,8 @@ try:
 except ImportError:
     pass
 
-# Auto-discovery de tasks em módulos de serviço
-celery_app.autodiscover_tasks(lambda: [
-    'nistiprint_shared.services.redis_queue_tasks',
-    'tasks.eventos_tasks',
-    'tasks.consolidation_tasks',
-    'tasks.pedidos_fetch_tasks',
-    'tasks.personalizados_tasks',
-    'tasks.token_renewal_tasks',
-])
+# Tasks já incluídas explicitamente no parâmetro 'include' acima
+# autodiscover_tasks removido para evitar ModuleNotFoundError
 
 
 @celery_app.task(bind=True)
