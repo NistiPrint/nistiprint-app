@@ -2,13 +2,16 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.mappers.order_mappers import BlingMapper, ShopeeMapper
-from nistiprint_shared.services.marketplace_enrichment_service import MarketplaceEnrichmentService
 import logging
 
 class OrderService:
     """
     Serviço unificado para gestão de pedidos.
     Implementa a arquitetura Core Order + Integration Links (V3) + Canonical Payload & Events.
+
+    NOTA: Enriquecimento de marketplace (Shopee) agora é feito no pipeline
+    unificado de ingest (bling_order_processing_service). Este serviço
+    legado mantém apenas compatibilidade para callers existentes.
     """
 
     def __init__(self):
@@ -16,7 +19,6 @@ class OrderService:
         self.itens_table = supabase_db.table('itens_pedido')
         self.vinculos_table = supabase_db.table('vinculos_integracao_pedido')
         self.eventos_table = supabase_db.table('eventos_pedido')
-        self.marketplace_enrichment = MarketplaceEnrichmentService()
 
     def _get_mapper(self, platform: str):
         if platform.upper() == 'BLING': return BlingMapper
@@ -84,61 +86,19 @@ class OrderService:
                         update_core['cliente_telefone'] = order_data.get('cliente_telefone')
                     if order_data.get('cliente_email'):
                         update_core['cliente_email'] = order_data.get('cliente_email')
-                # Shopee/Outros: NÃO atualizar numero_pedido, codigo_pedido_externo ou dados do cliente
-                # para não sobrescrever dados do Bling. Apenas atualiza dados enriquecidos:
-                # - is_flex, data_limite_envio, servico_logistico, informacoes_cliente
+                # Dados de outras plataformas: atualizar campos enriquecidos
+                # sem proteções - a fonte de verdade agora é o pipeline unificado
                 if platform.upper() != 'BLING':
-                    # Dados enriquecidos da Shopee (sempre atualizar se vierem)
                     if order_data.get('is_flex') is not None:
-                        # PROTEÇÃO: Se já for Flex, não permitir voltar para False via planilha
-                        # a menos que o status atual permita essa mudança (ex: raras correções)
-                        # No momento, vamos ser conservadores: uma vez Flex, sempre Flex.
-                        current_is_flex = existing_order.data[0].get('is_flex', False)
-                        if current_is_flex and order_data.get('is_flex') is False:
-                            logging.info(f"Ignorando atualização de is_flex para FALSE no pedido {core_id} (já é TRUE)")
-                            if 'is_flex' in update_core:
-                                del update_core['is_flex']
-                        else:
-                            update_core['is_flex'] = order_data.get('is_flex')
-
+                        update_core['is_flex'] = order_data.get('is_flex')
                     if order_data.get('data_limite_envio'):
                         update_core['data_limite_envio'] = order_data.get('data_limite_envio')
-                    
                     if order_data.get('servico_logistico'):
-                        # PROTEÇÃO similar para servico_logistico
-                        current_servico = existing_order.data[0].get('servico_logistico', '')
-                        new_servico = order_data.get('servico_logistico', '')
-
-                        # Se o atual é Entrega Rápida e o novo não é, ignore
-                        if 'ENTREGA RÁPIDA' in str(current_servico).upper() and 'ENTREGA RÁPIDA' not in str(new_servico).upper():
-                             logging.info(f"Ignorando atualização de servico_logistico no pedido {core_id} para preservar Flex")
-                             if 'servico_logistico' in update_core:
-                                 del update_core['servico_logistico']
-                        else:
-                            update_core['servico_logistico'] = order_data.get('servico_logistico')
-
-                    # PROTEÇÃO para buyer_username e shipping_carrier
+                        update_core['servico_logistico'] = order_data.get('servico_logistico')
                     if order_data.get('buyer_username'):
-                        current_buyer_username = existing_order.data[0].get('buyer_username', '')
-                        new_buyer_username = order_data.get('buyer_username', '')
-                        # Se já tem buyer_username, não sobrescrever com vazio
-                        if current_buyer_username and not new_buyer_username:
-                            logging.info(f"Ignorando atualização de buyer_username para vazio no pedido {core_id}")
-                            if 'buyer_username' in update_core:
-                                del update_core['buyer_username']
-                        else:
-                            update_core['buyer_username'] = order_data.get('buyer_username')
-
+                        update_core['buyer_username'] = order_data.get('buyer_username')
                     if order_data.get('shipping_carrier'):
-                        current_carrier = existing_order.data[0].get('shipping_carrier', '')
-                        new_carrier = order_data.get('shipping_carrier', '')
-                        # Se já tem shipping_carrier, não sobrescrever com vazio
-                        if current_carrier and not new_carrier:
-                            logging.info(f"Ignorando atualização de shipping_carrier para vazio no pedido {core_id}")
-                            if 'shipping_carrier' in update_core:
-                                del update_core['shipping_carrier']
-                        else:
-                            update_core['shipping_carrier'] = order_data.get('shipping_carrier')
+                        update_core['shipping_carrier'] = order_data.get('shipping_carrier')
                 
                 update_core = {k: v for k, v in update_core.items() if v is not None}
                 self.pedidos_table.update(update_core).eq('id', core_id).execute()
@@ -202,33 +162,8 @@ class OrderService:
             }
             self.vinculos_table.upsert(vinculo, on_conflict='pedido_id,plataforma').execute()
 
-            # 3.5 Enriquecer com dados do Marketplace (quando houver integration_id configurado)
-            if integration_id:
-                try:
-                    # Extrair bling_loja_id do raw_payload (para plataforma BLING)
-                    bling_loja_id = None
-                    if isinstance(raw_payload, dict):
-                        # Tenta extrair de diferentes caminhos possíveis
-                        bling_loja_id = raw_payload.get('loja', {}).get('id')
-                        if not bling_loja_id:
-                            volumes = raw_payload.get('transporte', {}).get('volumes') or []
-                            if volumes:
-                                bling_loja_id = volumes[0].get('contato', {}).get('id')
-
-                    # Para plataforma SHOPEE, usa integration_id diretamente como erp_store_id
-                    erp_store_id = str(bling_loja_id) if bling_loja_id else None
-
-                    if erp_store_id:
-                        # Enriquecer com dados do marketplace usando erp_marketplace_links
-                        self.marketplace_enrichment.enrich_order_from_marketplace(
-                            pedido_id=core_id,
-                            codigo_pedido_externo=external_id,
-                            erp_integration_id=int(integration_id),
-                            erp_store_id=erp_store_id
-                        )
-                except Exception as e:
-                    logging.warning(f"Erro ao enriquecer pedido {core_id} com dados do marketplace: {e}")
-                    # Não falhar o upsert se o enriquecimento falhar
+            # NOTA: Enriquecimento de marketplace removido - agora feito no pipeline unificado
+            # de ingest (bling_order_processing_service) para garantir dados consistentes.
 
             # 4. Processar Itens
             if items:
