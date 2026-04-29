@@ -1,360 +1,178 @@
-# Logging Persistente - Nistiprint
+# Logging — Nistiprint
 
-## Visão Geral
+**Última atualização:** 2026-04-29
 
-Todos os containers Docker agora possuem **logging persistente com rotação automática**, garantindo que os logs sejam mantidos por até **7 dias** sem consumir espaço excessivo em disco.
-
----
-
-## Configuração
-
-### Driver de Logging
-
-Todos os serviços utilizam o driver `local` do Docker com as seguintes configurações:
-
-| Parâmetro | Valor | Descrição |
-|-----------|-------|-----------|
-| `driver` | `local` | Driver nativo do Docker com rotação |
-| `max-size` | `10m` | Tamanho máximo por arquivo: 10MB |
-| `max-file` | `10` | Máximo de 10 arquivos por container |
-| `compress` | `true` | Compressão automática de logs antigos |
-
-### Capacidade de Armazenamento
-
-```
-Por container:
-  - 10 arquivos × 10MB = 100MB máximo
-  - Com compressão: ~20-30MB real (taxa ~70%)
-
-Produção (2 containers):
-  - Máximo: ~200MB
-  - Com compressão: ~40-60MB
-
-Local (5 containers):
-  - Máximo: ~500MB
-  - Com compressão: ~100-150MB
-```
-
-### Retenção Estimada
-
-Com a configuração atual, os logs são retidos por **7-14 dias** dependendo do volume de logs gerados por cada serviço.
+A aplicação usa o **journald** (systemd) para os processos no host (API, Worker, Beat, Caddy) e o **driver de logs do Docker** para os containers remanescentes (Redis, n8n, NPM).
 
 ---
 
-## Serviços Configurados
+## 1. Onde estão os logs
 
-### Produção (`docker-compose.yml`)
-
-- ✅ `frontend` - React/Vite
-- ✅ `api` - Flask API
-
-### Desenvolvimento (`docker-compose.local.yml`)
-
-- ✅ `redis` - Cache e filas
-- ✅ `api` - Flask API
-- ✅ `worker` - Celery Worker
-- ✅ `celery-beat` - Celery Beat (scheduler)
-- ✅ `frontend` - React/Vite
+| Componente | Onde | Como ler |
+|---|---|---|
+| API (Flask + gunicorn) | journald | `journalctl -u nistiprint-api` |
+| Worker (Celery) | journald | `journalctl -u nistiprint-worker` |
+| Beat (Celery scheduler) | journald | `journalctl -u nistiprint-beat` |
+| Caddy (frontend) | journald | `journalctl -u caddy` |
+| Redis | docker | `docker logs nistiprint-redis` |
+| n8n | docker | `docker logs nistiprint-n8n` |
+| nginx-proxy-manager | docker | `docker logs nginx-proxy-manager` |
 
 ---
 
-## Utilização
+## 2. Comandos essenciais (`journalctl`)
 
-### Comandos Docker Nativos
-
+### Ler logs de um serviço
 ```bash
-# Ver logs de um serviço
-docker logs <container_name>
-
-# Logs em tempo real
-docker logs -f <container_name>
-
 # Últimas 100 linhas
-docker logs --tail 100 <container_name>
+journalctl -u nistiprint-worker -n 100 --no-pager
 
-# Logs com timestamp
-docker logs -t <container_name>
+# Em tempo real (Ctrl+C para sair)
+journalctl -u nistiprint-worker -f
 
-# Filtrar por data (últimas 24h)
-docker logs --since 24h <container_name>
+# Desde determinado horário
+journalctl -u nistiprint-api --since "2026-04-29 14:00"
 
-# Buscar termo específico
-docker logs <container_name> 2>&1 | grep "ERROR"
+# Última hora
+journalctl -u nistiprint-worker --since "1 hour ago"
+
+# Apenas a inicialização atual do serviço
+journalctl -u nistiprint-api -b
 ```
 
-### Scripts de Gerenciamento
-
-#### Linux/Mac
-
+### Filtros úteis
 ```bash
-# Status de todos os containers
-./scripts/logs.sh status
+# Apenas erros (severity)
+journalctl -u nistiprint-worker -p err
 
-# Tamanho dos logs
-./scripts/logs.sh size
+# Buscar texto
+journalctl -u nistiprint-worker --since today | grep -i "shopee"
 
-# Monitorar em tempo real
-./scripts/logs.sh follow api
+# Múltiplos services ao mesmo tempo
+journalctl -u nistiprint-api -u nistiprint-worker -f
 
-# Últimas 200 linhas
-./scripts/logs.sh tail api 200
-
-# Buscar termo
-./scripts/logs.sh search api "error"
-
-# Exportar logs
-./scripts/logs.sh export api
+# Saída em JSON (útil para tooling)
+journalctl -u nistiprint-api -o json | head
 ```
 
-#### Windows
-
-```cmd
-REM Status de todos os containers
-scripts\logs.bat status
-
-REM Tamanho dos logs
-scripts\logs.bat size
-
-REM Monitorar em tempo real
-scripts\logs.bat follow api
-
-REM Últimas 200 linhas
-scripts\logs.bat tail api 200
-
-REM Buscar termo
-scripts\logs.bat search api error
-
-REM Exportar logs
-scripts\logs.bat export api
+### Ver consumo de disco
+```bash
+journalctl --disk-usage
 ```
 
 ---
 
-## Onde os Logs são Armazenados
+## 3. Logs do Worker (Celery)
 
-### Linux
-
-```
-/var/lib/docker/containers/<container_id>/
-  └── <container_id>-json.log
-      <container_id>-json.log.1.gz
-      <container_id>-json.log.2.gz
-      ...
-```
-
-### Windows (Docker Desktop)
+O fluxo padrão de um job aparece no journal assim:
 
 ```
-\\wsl$\docker-desktop-data\data\docker\containers\<container_id>\
-  └── <container_id>-json.log
-      <container_id>-json.log.1.gz
-      ...
+Task tasks.process_bling_webhook[abc-123] received
+Task tasks.process_bling_webhook[abc-123] succeeded in 1.42s
 ```
 
-### macOS (Docker Desktop)
-
+### Acompanhar uma task específica
+```bash
+# Pegue o task_id (UUID) e filtre
+journalctl -u nistiprint-worker --since today | grep <task_id>
 ```
-~/Library/Containers/com.docker.docker/Data/vms/0/data/
-  └── Docker.raw (imagem completa)
+
+### Ver apenas erros de tasks
+```bash
+journalctl -u nistiprint-worker -p err --since "1 day ago"
+```
+
+### Verificar se o worker está consumindo a fila
+```bash
+# 1) Worker ativo?
+systemctl status nistiprint-worker
+
+# 2) Fila acumulando?
+docker exec nistiprint-redis redis-cli LLEN celery
+
+# 3) Inspecionar workers ativos via Celery
+sudo -u nistiprint /opt/nistiprint/.venv/bin/celery \
+    -A worker_entrypoint -b redis://127.0.0.1:6379/0 inspect active
 ```
 
 ---
 
-## Rotação de Logs
+## 4. Retenção e rotação
 
-### Como Funciona
+`journald` aplica rotação automaticamente. Padrão Ubuntu: até **10% do disco** ou **4GB**, o que for menor. Para ajustar:
 
-```
-1. Container gera logs → arquivo principal
-2. Arquivo atinge 10MB → rotaciona
-3. Arquivo antigo comprimido (.gz)
-4. Após 10 arquivos → mais antigo é deletado
+```bash
+sudo nano /etc/systemd/journald.conf
 ```
 
-### Diagrama de Rotação
-
+Variáveis úteis:
+```ini
+SystemMaxUse=2G          # tamanho máximo total
+MaxRetentionSec=30day    # quanto tempo manter
+Compress=yes
 ```
-┌─────────────────────────────────────────────────┐
-│  Container gera logs (stdout/stderr)            │
-└───────────────────┬─────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────────────┐
-│  json.log (arquivo atual - max 10MB)           │
-└───────────────────┬─────────────────────────────┘
-                    │ (atingiu 10MB)
-                    ▼
-┌─────────────────────────────────────────────────┐
-│  json.log.1 (comprimido)                        │
-│  json.log.2 (comprimido)                        │
-│  ...                                            │
-│  json.log.10 (comprimido - será deletado)       │
-└─────────────────────────────────────────────────┘
+
+```bash
+sudo systemctl restart systemd-journald
+```
+
+### Limpar logs antigos manualmente
+```bash
+sudo journalctl --vacuum-time=7d     # mantém últimos 7 dias
+sudo journalctl --vacuum-size=500M   # mantém até 500MB
 ```
 
 ---
 
-## Monitoramento
-
-### Verificar Espaço Usado
+## 5. Containers Docker (Redis, n8n, NPM)
 
 ```bash
-# Espaço total usado por logs
-docker system df -v | grep "log"
+# Em tempo real
+docker logs -f nistiprint-redis
+docker logs -f nistiprint-n8n
+docker logs -f nginx-proxy-manager
 
-# Limpar logs não usados
-docker system prune -f
-```
+# Últimas N linhas
+docker logs --tail 100 nistiprint-n8n
 
-### Alertas Recomendados
+# Desde determinado horário
+docker logs --since 1h nginx-proxy-manager
 
-Monitore o diretório de logs do Docker:
-
-```bash
-# Verificar tamanho total
-du -sh /var/lib/docker/containers/
-
-# Listar maiores arquivos
-du -ah /var/lib/docker/containers/ | sort -rh | head -20
+# Buscar erro
+docker logs nistiprint-n8n 2>&1 | grep -i error
 ```
 
 ---
 
-## Troubleshooting
+## 6. Atalhos recomendados
 
-### Logs não aparecem
-
-```bash
-# Verificar se container está rodando
-docker ps | grep <service>
-
-# Reiniciar container
-docker-compose restart <service>
-
-# Verificar configuração
-docker inspect <container> | grep -A 10 LogConfig
-```
-
-### Logs consumindo muito espaço
+Adicione ao `~/.bashrc` do seu user de operação:
 
 ```bash
-# Limpar logs de todos os containers
-docker logs <container> > /dev/null 2>&1
-
-# Ou usar script
-./scripts/logs.sh clean
-```
-
-### Container específico com muitos logs
-
-```bash
-# Verificar tamanho
-docker inspect --format='{{.LogPath}}' <container> | xargs du -sh
-
-# Truncar logs (sem parar container)
-truncate -s 0 $(docker inspect --format='{{.LogPath}}' <container>)
-```
-
-### Windows - Acesso aos Logs
-
-```powershell
-# Acessar via WSL2
-wsl -d docker-desktop
-
-# Navegar até diretório de logs
-cd /var/lib/docker/containers
-
-# Listar containers
-ls -la
+alias logs-api='journalctl -u nistiprint-api -f'
+alias logs-worker='journalctl -u nistiprint-worker -f'
+alias logs-beat='journalctl -u nistiprint-beat -f'
+alias logs-all='journalctl -u nistiprint-api -u nistiprint-worker -u nistiprint-beat -f'
 ```
 
 ---
 
-## Boas Práticas
+## 7. Erros comuns
 
-### 1. Não aumente `max-file` desnecessariamente
-
-O valor atual (10) já garante ~7 dias de retenção. Aumentar pode causar:
-- Consumo excessivo de disco
-- Performance degradada
-
-### 2. Monitore o espaço em disco
-
-```bash
-# Verificar disco
-df -h /var/lib/docker
-
-# Alerta se > 80%
-```
-
-### 3. Exporte logs importantes
-
-Para auditoria ou debugging:
-
-```bash
-# Exportar com timestamp
-./scripts/logs.sh export api
-```
-
-### 4. Use logging centralizado (produção)
-
-Para ambientes de produção, considere:
-- **ELK Stack** (Elasticsearch, Logstash, Kibana)
-- **Grafana Loki**
-- **Cloud Logging** (GCP, AWS, Azure)
+| Sintoma | Onde olhar |
+|---|---|
+| `503` do NPM | `docker logs --tail 30 nginx-proxy-manager` |
+| API retorna 500 | `journalctl -u nistiprint-api -p err -n 50` |
+| Worker travado / sem consumir fila | `journalctl -u nistiprint-worker -f` + `docker exec nistiprint-redis redis-cli LLEN celery` |
+| Task disparada nunca executa | confira se Beat está vivo: `systemctl status nistiprint-beat` |
+| Frontend abre em branco | `journalctl -u caddy -n 30` |
 
 ---
 
-## Integração com GCP Cloud Run
+## 8. Centralização (futuro)
 
-No Cloud Run, os logs são gerenciados automaticamente pelo **Google Cloud Logging**:
+Para ambientes com múltiplos servidores ou maior auditoria, considere:
+- **Grafana Loki** — barato, integra direto com journald via `promtail`
+- **Better Stack / Logtail** — SaaS, sem infra adicional
 
-```bash
-# Ver logs no Cloud Run
-gcloud run services logs read nistiprint-app --region southamerica-east1
-
-# Logs em tempo real
-gcloud run services logs tail nistiprint-app --region southamerica-east1
-
-# Filtrar por severidade
-gcloud run services logs read nistiprint-app \
-    --region southamerica-east1 \
-    --filter "severity>=ERROR"
-```
-
-### Retenção no Cloud Logging
-
-| Tipo | Retenção |
-|------|----------|
-| Standard | 30 dias (grátis) |
-| Long-term | Configurável (pago) |
-
----
-
-## Próximos Passos
-
-### Curto Prazo
-
-- ✅ Configurar rotação de logs
-- ✅ Criar scripts de gerenciamento
-- ✅ Documentar procedimentos
-
-### Médio Prazo
-
-- [ ] Implementar health checks com logging
-- [ ] Configurar alertas de erros críticos
-- [ ] Centralizar logs (ELK/Loki)
-
-### Longo Prazo
-
-- [ ] Dashboard de monitoramento
-- [ ] Análise automatizada de padrões
-- [ ] Integração com PagerDuty/Sentry
-
----
-
-## Referências
-
-- [Docker Logging Documentation](https://docs.docker.com/config/containers/logging/)
-- [Local Logging Driver](https://docs.docker.com/config/containers/logging/local/)
-- [Cloud Run Logging](https://cloud.google.com/run/docs/logging)
+Hoje (servidor único) o `journalctl` é suficiente.
