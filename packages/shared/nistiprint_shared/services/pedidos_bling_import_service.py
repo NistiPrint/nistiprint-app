@@ -1,20 +1,13 @@
 """
-Importação de pedidos 'Em Andamento' via API Bling (listagem + detalhe + OrderSyncService).
-Usado pelo worker (Celery) e pode ser chamado de forma síncrona pela API (import manual).
+Importação de pedidos 'Em Andamento' via API Bling.
+Fluxo: lista pedidos -> enfileira no Redis -> worker processa via pipeline única.
 
-FLUXO DE PROCESSAMENTO:
-1. FASE 1 (Obrigatória): Importa TODOS os pedidos do Bling e salva na base
-   - Independente de plataforma (Shopee, Amazon, MercadoLivre, Shein, etc.)
-   - Dados do Bling são a fonte primária
-   - Persistência ocorre ANTES de qualquer enriquecimento
-
-2. FASE 2 (Opcional): Enriquecimento com dados do marketplace
-   - Executado APÓS a persistência dos dados do Bling
-   - Falha no enriquecimento NÃO afeta os dados já persistidos
-   - Pode ser executado independentemente em outros pontos do sistema
+DEPRECATED: As funções _sync_bling_order_phase1 e _enrich_from_marketplace
+foram substituídas pelo pipeline unificado em bling_order_processing_service.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -22,9 +15,26 @@ from typing import Any, Dict, List, Optional
 
 from nistiprint_shared.services.bling.bling_client import BlingClient
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
-from nistiprint_shared.services.order_sync_service import order_sync_service
 
 logger = logging.getLogger(__name__)
+
+# Configuração do Redis
+REDIS_HOST = 'redis'
+REDIS_PORT = 6379
+REDIS_DB = 0
+BLING_WEBHOOK_QUEUE = 'bling:webhooks:pendentes'
+
+
+def _get_redis_client():
+    import redis
+    return redis.Redis(
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        db=REDIS_DB,
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=5
+    )
 
 
 def _iso_date(d: datetime) -> str:
@@ -33,91 +43,56 @@ def _iso_date(d: datetime) -> str:
 
 def _enrich_from_marketplace(full_order: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
-    FASE 2: Enriquece pedido com dados adicionais do marketplace.
-    
-    Este processo é:
-    - OPCIONAL: Falha não afeta dados já persistidos do Bling
-    - INDEPENDENTE: Pode ser executado em outros pontos do sistema
-    - POSTERIOR: Executado APÓS persistência dos dados do Bling
-    
+    DEPRECATED: O enriquecimento agora é feito automaticamente dentro do
+    process_webhook em bling_order_processing_service. Esta função retorna
+    apenas um stub para compatibilidade.
+    """
+    logger.debug("_enrich_from_marketplace é deprecated - enriquecimento no pipeline unificado")
+    return {"enriched": False, "platform": None, "error": None, "deprecated": True}
+
+
+def _enqueue_bling_order_to_redis(full_order: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Enfileira pedido no Redis para processamento pelo pipeline unificado.
+
     Args:
         full_order: Dados completos do pedido no Bling
-        cfg: Configuração do vínculo com dados da integração
-        
+        cfg: Configuração do vínculo com bling_integration_id
+
     Returns:
-        Dict com status do enriquecimento
-    """
-    result = {"enriched": False, "platform": None, "error": None}
-    
-    order_sn = full_order.get("numeroLoja")
-    if not order_sn:
-        logger.debug("Pedido sem numeroLoja - pulando enriquecimento")
-        return result
-
-    mp_id = cfg.get("marketplace_integration_id")
-    plataforma = (cfg.get("plataforma_nome") or "").lower()
-    
-    if not mp_id:
-        logger.debug("Sem marketplace_integration_id para %s - usando apenas dados do Bling", order_sn)
-        return result
-    
-    result["platform"] = plataforma
-    
-    # Atualmente apenas Shopee tem enriquecimento implementado
-    if plataforma == "shopee":
-        try:
-            order_sync_service.sync_shopee_order(str(order_sn), instance_id=str(mp_id))
-            logger.info("✓ Enriquecimento Shopee realizado para %s", order_sn)
-            result["enriched"] = True
-        except Exception as e:
-            # Falha no enriquecimento NÃO deve bloquear - dados do Bling já estão persistidos
-            logger.warning(
-                "⚠ Enriquecimento Shopee falhou para %s: %s (dados do Bling permanecem válidos)",
-                order_sn, e
-            )
-            result["error"] = str(e)
-    else:
-        logger.debug("Plataforma %s não possui enriquecimento implementado - usando dados do Bling", plataforma)
-    
-    return result
-
-
-def _sync_bling_order_phase1(full_order: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    FASE 1: Sincroniza pedido do Bling na base de dados.
-    
-    Este processo é:
-    - OBRIGATÓRIO: Todos os pedidos devem ser persistidos
-    - INDEPENDENTE DE PLATAFORMA: Funciona para qualquer marketplace
-    - PRIORITÁRIO: Ocorre antes do enriquecimento
-    
-    Args:
-        full_order: Dados completos do pedido no Bling
-        cfg: Configuração do vínculo
-        
-    Returns:
-        Resultado da sincronização
+        Resultado do enfileiramento
     """
     bling_id = full_order.get("id")
     order_sn = full_order.get("numeroLoja")
-    
+    bling_company_id = cfg.get("bling_company_id")
+
     logger.info(
-        "FASE 1: Sincronizando pedido Bling %s (numeroLoja=%s)",
+        "Enfileirando pedido Bling %s (numeroLoja=%s) no Redis",
         bling_id,
         order_sn or "N/A"
     )
-    
-    result = order_sync_service.sync_bling_order(full_order)
-    
-    if result.get("error"):
-        logger.error("✗ FASE 1 falhou para pedido %s: %s", bling_id, result["error"])
-    else:
-        logger.info(
-            "✓ FASE 1 concluída: pedido %s persistido com sucesso",
-            bling_id
-        )
-    
-    return result
+
+    try:
+        # Montar payload no mesmo formato do webhook
+        payload = {
+            'data': {
+                'id': bling_id,
+                'numero': full_order.get('numero'),
+                'numeroLoja': order_sn,
+            },
+            'companyId': bling_company_id,
+        }
+
+        # Enfileirar no Redis
+        redis_client = _get_redis_client()
+        redis_client.rpush(BLING_WEBHOOK_QUEUE, json.dumps(payload))
+
+        logger.info("✓ Pedido %s enfileirado com sucesso", bling_id)
+        return {"success": True, "bling_id": bling_id, "enqueued": True}
+
+    except Exception as e:
+        logger.error("✗ Falha ao enfileirar pedido %s: %s", bling_id, e)
+        return {"success": False, "error": str(e), "bling_id": bling_id}
 
 
 def _bling_client_for_config(cfg: Dict[str, Any]) -> BlingClient:
@@ -289,40 +264,16 @@ def run_fetch_pedidos_em_andamento(
                     if not full:
                         continue
 
-                    # ===========================================
-                    # FASE 1: Persistir dados do Bling (OBRIGATÓRIO)
-                    # ===========================================
-                    phase1_result = _sync_bling_order_phase1(full, cfg)
-                    
-                    if phase1_result.get("error"):
-                        raise RuntimeError(phase1_result["error"])
+                    # Enfileirar no Redis para processamento pelo pipeline unificado
+                    enqueue_result = _enqueue_bling_order_to_redis(full, cfg)
 
-                    # ===========================================
-                    # FASE 2: Enriquecimento marketplace (OPCIONAL)
-                    # ===========================================
-                    # Executado APÓS persistência - falha não afeta dados do Bling
-                    phase2_result = _enrich_from_marketplace(full, cfg)
-                    
-                    loja_stat["synced"] += 1
-                    stats["totals"]["orders_synced"] += 1
-                    
-                    # Log do resultado das duas fases
-                    if phase2_result.get("enriched"):
-                        logger.info(
-                            "  → Pedido %s: FASE 1 ✓ | FASE 2 ✓ (%s)",
-                            order_id,
-                            phase2_result.get("platform", "unknown")
-                        )
-                    elif phase2_result.get("error"):
-                        logger.info(
-                            "  → Pedido %s: FASE 1 ✓ | FASE 2 ⚠ (enriquecimento falhou, dados do Bling válidos)",
-                            order_id
-                        )
+                    if enqueue_result.get("success"):
+                        loja_stat["synced"] += 1
+                        stats["totals"]["orders_synced"] += 1
+                        logger.info("  → Pedido %s enfileirado ✓", order_id)
                     else:
-                        logger.info(
-                            "  → Pedido %s: FASE 1 ✓ | FASE 2 - (sem enriquecimento para %s)",
-                            order_id,
-                            plataforma_nome or "N/A"
+                        raise RuntimeError(
+                            enqueue_result.get("error", "Falha ao enfileirar")
                         )
 
                 except Exception as e:
