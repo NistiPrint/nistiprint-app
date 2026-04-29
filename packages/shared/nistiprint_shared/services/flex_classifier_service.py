@@ -1,8 +1,8 @@
 """
 Aplica regras parametrizáveis em flex_classification_rules.
 Ordem de resolução (prioridade crescente):
-  1) regras por integracao_instancia_id (match exato)
-  2) regras por canal_venda_id
+  1) regras por marketplace_integration_id (match exato)
+  2) regras globais (sem escopo de instância)
   3) fallback (primeira regra com padrão '%')
 
 Operadores:
@@ -11,9 +11,12 @@ Operadores:
   - ILIKE_NORMALIZED     : normalize(campo) ILIKE normalize(padrao)
                            onde normalize = lower + strip_accents
 """
+import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional
-import unicodedata
+
+logger = logging.getLogger("flex_classifier")
 
 def _normalize(s: Optional[str]) -> str:
     if not s:
@@ -27,60 +30,55 @@ class FlexResult:
     is_flex: bool
     modalidade: str
     matched_rule_id: Optional[int]
+    motivo: str   # explicação humana p/ log
 
 def classify(
     db,  # SupabaseDBService
     fields: dict,                 # {'servico_logistico': ..., 'shipping_carrier': ..., 'fulfillment_flag': ...}
-    integracao_instancia_id: Optional[int] = None,
-    canal_venda_id: Optional[int] = None,
+    marketplace_integration_id: Optional[int] = None,
+    log_context: Optional[dict] = None,    # ex.: {'order_sn': '...', 'pedido_id': ...}
 ) -> FlexResult:
-    # Busca todas as regras ativas ordenadas por prioridade
+    ctx = log_context or {}
     rules = db.table('flex_classification_rules') \
-        .select('*') \
-        .eq('ativo', True) \
-        .order('prioridade', desc=False) \
-        .execute().data
+        .select('*').eq('ativo', True) \
+        .order('prioridade', desc=False).execute().data
 
     def matches(rule, value):
-        op, pat = rule['operador'], rule['padrao']
         if value is None:
-            # Se o valor for None, só dá match se o padrão for '%' (fallback)
-            return pat == '%'
-        
+            return False
+        op, pat = rule['operador'], rule['padrao']
         if op == 'EQUALS':
             return value == pat
         if op == 'ILIKE':
-            # Implementação simples de ILIKE: case insensitive e suporte a '%'
-            if pat == '%':
-                return True
-            clean_pat = pat.replace('%', '').lower()
-            return clean_pat in value.lower()
+            return pat == '%' or pat.replace('%', '').lower() in value.lower()
         if op == 'ILIKE_NORMALIZED':
             return _normalize(pat) in _normalize(value)
         return False
 
-    # Ordem de preferência: instância > canal > global
-    # Primeiro tentamos match com integracao_instancia_id
-    if integracao_instancia_id:
+    # 1) Regras com escopo da instância marketplace
+    if marketplace_integration_id is not None:
         for r in rules:
-            if r.get('integracao_instancia_id') == integracao_instancia_id:
-                val = fields.get(r['campo'])
-                if matches(r, val):
-                    return FlexResult(r['is_flex'], r.get('modalidade') or 'STANDARD', r['id'])
-
-    # Depois tentamos match com canal_venda_id
-    if canal_venda_id:
-        for r in rules:
-            if r.get('canal_venda_id') == canal_venda_id:
-                val = fields.get(r['campo'])
-                if matches(r, val):
-                    return FlexResult(r['is_flex'], r.get('modalidade') or 'STANDARD', r['id'])
-
-    # Por fim, fallback global (regras sem escopo de instância ou canal)
-    for r in rules:
-        if r.get('integracao_instancia_id') is None and r.get('canal_venda_id') is None:
+            if r.get('marketplace_integration_id') != marketplace_integration_id:
+                continue
             val = fields.get(r['campo'])
             if matches(r, val):
-                return FlexResult(r['is_flex'], r.get('modalidade') or 'STANDARD', r['id'])
+                motivo = (f"{r['campo']}={val!r} casou regra #{r['id']} "
+                          f"(scope=marketplace:{marketplace_integration_id})")
+                logger.info("[flex] %s %s → is_flex=%s modalidade=%s",
+                            ctx, motivo, r['is_flex'], r.get('modalidade'))
+                return FlexResult(r['is_flex'], r.get('modalidade') or 'STANDARD', r['id'], motivo)
 
-    return FlexResult(False, 'STANDARD', None)
+    # 2) Regras globais
+    for r in rules:
+        if r.get('marketplace_integration_id') is None:
+            val = fields.get(r['campo'])
+            if matches(r, val):
+                motivo = (f"{r['campo']}={val!r} casou regra global #{r['id']}")
+                logger.info("[flex] %s %s → is_flex=%s modalidade=%s",
+                            ctx, motivo, r['is_flex'], r.get('modalidade'))
+                return FlexResult(r['is_flex'], r.get('modalidade') or 'STANDARD', r['id'], motivo)
+
+    # 3) Default
+    motivo = (f"nenhuma regra casou para fields={fields!r} → STANDARD por default")
+    logger.info("[flex] %s %s", ctx, motivo)
+    return FlexResult(False, 'STANDARD', None, motivo)

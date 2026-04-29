@@ -45,6 +45,8 @@ def get_unified_orders_advanced():
     - is_flex: true/false (pedidos de entrega rápida)
     - delivery_start: Data início do período de entrega
     - delivery_end: Data fim do período de entrega
+    - pedido_date_start: Data início do período do pedido
+    - pedido_date_end: Data fim do período do pedido
     - search: Termo de busca (cliente, numero_pedido, codigo_externo)
     - sort: Campo para ordenação (default: numero_pedido)
     - order: Ordem asc/desc (default: desc)
@@ -59,6 +61,8 @@ def get_unified_orders_advanced():
         is_flex = request.args.get('is_flex')
         delivery_start = request.args.get('delivery_start')
         delivery_end = request.args.get('delivery_end')
+        pedido_date_start = request.args.get('pedido_date_start')
+        pedido_date_end = request.args.get('pedido_date_end')
         search = request.args.get('search')
         sort = request.args.get('sort', 'numero_pedido')
         order = request.args.get('order', 'desc')
@@ -97,6 +101,10 @@ def get_unified_orders_advanced():
             delivery_start = None
         if not delivery_end:
             delivery_end = None
+        if not pedido_date_start:
+            pedido_date_start = None
+        if not pedido_date_end:
+            pedido_date_end = None
 
         # Chamar função RPC (usa nome novo para evitar conflito) com retry
         max_retries = 3
@@ -110,6 +118,8 @@ def get_unified_orders_advanced():
                     'p_is_personalizado': is_personalizado,
                     'p_delivery_start_date': delivery_start,
                     'p_delivery_end_date': delivery_end,
+                    'p_pedido_date_start': pedido_date_start,
+                    'p_pedido_date_end': pedido_date_end,
                     'p_search_term': search,
                     'p_sort': sort,
                     'p_order': order,
@@ -142,6 +152,18 @@ def get_unified_orders_advanced():
                         'nome': pedido.get('situacao_nome', 'Desconhecido'),
                         'cor': pedido.get('situacao_cor', '#9ca3af')
                     }
+                
+                # Formatar cliente como objeto aninhado (para consistência com detalhes)
+                pedido['cliente'] = {
+                    'nome': pedido.get('cliente_nome'),
+                    'documento': pedido.get('cliente_documento')
+                }
+                
+                # Formatar canal como objeto aninhado (para consistência com detalhes)
+                pedido['canal_venda'] = {
+                    'id': pedido.get('canal_venda_id'),
+                    'nome': pedido.get('canal_venda_nome')
+                }
                 
                 # Garantir que is_flex e data_limite_envio estejam presentes
                 if 'is_flex' not in pedido:
