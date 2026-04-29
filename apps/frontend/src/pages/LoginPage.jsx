@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/contexts/AuthContext';
-import { Loader2, Package2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -47,7 +47,11 @@ function LoginPage() {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <div className="flex justify-center mb-4">
-            <Package2 className="h-12 w-12 text-primary" />
+            <img
+              src="/logomarca.png"
+              alt="Logo"
+              className="h-12 w-auto object-contain"
+            />
           </div>
           <CardTitle className="text-2xl font-bold">Nisti Print</CardTitle>
         </CardHeader>
