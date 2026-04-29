@@ -1,193 +1,258 @@
 # PLANO TÉCNICO DE REFATORAÇÃO — NISTIPRINT
-**Data:** 2026-04-23
-**Escopo:** Pedidos (modelo de dados + ingestão), Sync status Bling em lote, IA de personalização em lote, Classificação Flex, Consolidação, Estoque sync/async.
-**Destino:** Este documento foi escrito para ser consumido por um agente de IA executor. Cada seção traz caminho de arquivo, linhas afetadas, SQL, pseudo-código e critério de aceitação.
+**Versão:** 2026-04-23 (revisão definitiva)
+**Escopo:** Arquitetura de canais e ingestão de pedidos, classificação Flex confiável, sync de status em lote, IA de personalização em lote.
+**Premissa de simplificação:** A plataforma será modelada **primeiro para as regras da Nisti Print**. Multi-tenancy/parametrização excessiva fica para depois.
 
 ---
 
-## 0. CONVENÇÕES
+## 0. PRINCÍPIOS DE PROJETO (NÃO NEGOCIÁVEIS)
 
-- Caminhos são relativos à raiz do repositório.
-- Quando um arquivo não existir, está explicitado "**CRIAR**".
-- Migrations novas devem seguir padrão `supabase/migrations/YYYYMMDDHHMMSS_<nome>.sql`.
-- Sempre usar `SupabaseDBService` existente para acesso a dados (singleton).
-- Celery tasks devem viver em `packages/shared/nistiprint_shared/services/` e ser registradas em `apps/worker/celery_config.py`.
+1. **Um marketplace = uma `installed_integration`.** "Canal de venda" deixa de ser entidade autônoma e passa a ser sinônimo de **instância instalada de marketplace** (ex.: Shopee Conta 01, Shopee Conta 02, ML Conta 01).
+2. **Bling não é canal de venda.** É um agregador usado pela Nisti apenas para emissão de NF (1 conta Bling por CNPJ → 3 contas) e para receber webhooks dos marketplaces. Bling tem suas próprias `installed_integrations`, mas **regras logísticas e classificação Flex apontam para o marketplace**, não para o Bling.
+3. **Mapeamento Bling → marketplace é direto via `shop_id`.** O campo `payload.loja.id` (também chamado `shop.id`) que o Bling envia em pedidos de marketplaces é o mesmo identificador exposto na API do marketplace (no caso da Shopee, é o `shop_id`). Esse valor é armazenado em `installed_integrations.config->>'bling_loja_id'` da instância marketplace correspondente. **Nada de tabela de mapeamento intermediária**.
+4. **Fluxo de ingestão é linear**:
+   ```
+   webhook Bling → resolve instância Bling (por CNPJ)
+                 → upsert em pedidos_bling
+                 → resolve instância marketplace por payload.loja.id
+                 → se Shopee: enriquece via API → upsert em pedidos_shopee
+                 → classifica is_flex (regras + log explícito)
+                 → upsert em pedidos
+                 → dispara create_from_order (demanda)
+   ```
+5. **Logs do worker explicam cada decisão de classificação Flex.** Exemplo: `"order_sn=XYZ shipping_carrier='Entrega Rápida' matched_rule=10 → is_flex=true modalidade=FLEX"`.
+6. **Sem triggers escondidos derivando `is_flex`.** Toda classificação acontece no worker, em código auditável.
 
 ---
 
-## 1. PARTE A — REFATORAÇÃO DO MODELO DE PEDIDOS
+## 1. ARQUITETURA DE DADOS DEFINITIVA
 
-### 1.1 Objetivo
-Restaurar modelo "mestre + tabelas-plataforma" onde:
-- `pedidos_bling` é espelho fiel do payload Bling v3 (`/pedidos/vendas/{id}`).
-- `pedidos_shopee` é espelho fiel do payload Shopee v2 (`/api/v2/order/get_order_detail`).
-- `pedidos` é o centralizador normalizado, referenciando as tabelas-plataforma via FK.
+### 1.1 Tabelas centrais e seus papéis
 
-### 1.2 Estado atual relevante
-- As tabelas `pedidos_bling` e `pedidos_shopee` **já existem** (migration `20260301000000_initial_schema.sql`, linhas 1443-1520) mas estão subutilizadas.
-- Driver Shopee [packages/shared/nistiprint_shared/services/platform_drivers/shopee.py:24](../../packages/shared/nistiprint_shared/services/platform_drivers/shopee.py#L24) implementa `get_order_detail` mas **não é chamado** a partir do fluxo Bling.
-- Pedido Bling identifica Shopee via campo `numeroLoja` (código externo do pedido no marketplace) — ver [bling_order_processing_service.py:106](../../packages/shared/nistiprint_shared/services/bling_order_processing_service.py#L106).
-- Webhooks Shopee **não são tratados** — todo fluxo entra por Bling; quando é pedido Shopee (`numeroLoja` preenchido + loja Bling mapeada para Shopee), o sistema deve chamar a API Shopee para enriquecer.
-- **Mapeamento loja Bling → conta Shopee já existe em `channel_connections`** — ver [docs/tecnico/MODELO-DADOS.md:135](MODELO-DADOS.md#L135). Campos relevantes:
-  - `aggregator_store_id` = ID da loja no Bling (equivale ao `payload.loja.id`).
-  - `bling_integration_id` → FK para `installed_integrations` da instância Bling.
-  - `marketplace_integration_id` → FK para `installed_integrations` da instância Shopee (contém `shop_id` e credenciais em `config`).
-  - `channel_id` → FK para `canais_venda`.
-  - **Não é necessário criar tabela adicional** para esse mapeamento.
+| Tabela | Papel | Status |
+|---|---|---|
+| `installed_integrations` | Instâncias instaladas. **Esta é a entidade "canal de venda"** quando `module.tipo='marketplace'`. Quando `module.tipo='aggregator'`, é uma conta Bling (1 por CNPJ). | Existe — adicionar campos no `config` |
+| `pedidos_bling` | Espelho fiel do payload Bling v3 por instância Bling. | Existe — corrigir uso |
+| `pedidos_shopee` | Espelho fiel do payload Shopee v2 enriquecido. | Existe — corrigir preenchimento |
+| `pedidos` | Centralizador normalizado. Tem FK para `pedidos_bling`, `pedidos_shopee` e `installed_integrations` (marketplace). | Existe — substituir `canal_venda_id` por `marketplace_integration_id` |
+| `regras_logisticas_canal` | Regras de horário de corte, ponto de coleta, modalidade. | Renomear coluna `canal_venda_id` → `marketplace_integration_id` |
+| `pontos_coleta` | Pontos físicos de coleta. | OK como está |
+| `flex_classification_rules` | Regras parametrizadas de classificação Flex. | Trocar escopo de `canal_venda_id` para `marketplace_integration_id` |
 
-### 1.3 Mudanças de schema (migration nova)
+### 1.2 Tabelas a APOSENTAR
 
-**Arquivo CRIAR:** `supabase/migrations/20260424000000_pedidos_refactor.sql`
+| Tabela | Decisão |
+|---|---|
+| `canais_venda` | **Aposentar.** Conteúdo migra para `installed_integrations` de marketplace. |
+| `channel_connections` | **Aposentar.** Mapeamento `bling_loja_id → marketplace_integration` passa a viver em `installed_integrations.config` da instância marketplace. |
+| `integracao_canais_config` | **Deletar.** Duplicava `channel_connections`. |
+| `loja_bling_shopee_map` | **Não criar.** Versões anteriores deste plano sugeriam — descartado. |
+| `canal_modalidade_mapeamento` | **Aposentar.** `flex_classification_rules` cobre. |
 
-```sql
--- 1.3.1 Colunas de link em pedidos
-ALTER TABLE pedidos
-    ADD COLUMN IF NOT EXISTS pedido_bling_id BIGINT REFERENCES pedidos_bling(id) ON DELETE SET NULL,
-    ADD COLUMN IF NOT EXISTS pedido_shopee_id BIGINT REFERENCES pedidos_shopee(id) ON DELETE SET NULL,
-    ADD COLUMN IF NOT EXISTS modalidade_logistica TEXT,
-    ADD COLUMN IF NOT EXISTS shop_id_shopee BIGINT;
+### 1.3 Estrutura de `installed_integrations.config` para marketplace
 
-CREATE UNIQUE INDEX IF NOT EXISTS ux_pedidos_pedido_bling_id
-    ON pedidos (pedido_bling_id) WHERE pedido_bling_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS ux_pedidos_pedido_shopee_id
-    ON pedidos (pedido_shopee_id) WHERE pedido_shopee_id IS NOT NULL;
+Cada instância de marketplace passa a guardar TUDO no `config`:
 
--- 1.3.2 Garantir colunas em pedidos_shopee
-ALTER TABLE pedidos_shopee
-    ADD COLUMN IF NOT EXISTS fulfillment_flag TEXT,
-    ADD COLUMN IF NOT EXISTS shipping_carrier TEXT,
-    ADD COLUMN IF NOT EXISTS package_list JSONB,
-    ADD COLUMN IF NOT EXISTS pay_time TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS recipient_address JSONB,
-    ADD COLUMN IF NOT EXISTS item_list JSONB,
-    ADD COLUMN IF NOT EXISTS shop_id BIGINT,
-    ADD COLUMN IF NOT EXISTS raw_payload JSONB,
-    ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ;
-
-CREATE INDEX IF NOT EXISTS ix_pedidos_shopee_shop_id ON pedidos_shopee(shop_id);
-
--- 1.3.3 Garantir colunas em pedidos_bling
-ALTER TABLE pedidos_bling
-    ADD COLUMN IF NOT EXISTS situacao_id INT,
-    ADD COLUMN IF NOT EXISTS situacao_valor INT,
-    ADD COLUMN IF NOT EXISTS contato JSONB,
-    ADD COLUMN IF NOT EXISTS transporte JSONB,
-    ADD COLUMN IF NOT EXISTS intermediador_cnpj TEXT,
-    ADD COLUMN IF NOT EXISTS loja_id BIGINT,
-    ADD COLUMN IF NOT EXISTS observacoes TEXT,
-    ADD COLUMN IF NOT EXISTS observacoes_internas TEXT,
-    ADD COLUMN IF NOT EXISTS raw_payload JSONB,
-    ADD COLUMN IF NOT EXISTS integracao_instancia_id BIGINT REFERENCES integracao_instancia(id);
-
-CREATE INDEX IF NOT EXISTS ix_pedidos_bling_loja_id ON pedidos_bling(loja_id);
-CREATE INDEX IF NOT EXISTS ix_pedidos_bling_integracao ON pedidos_bling(integracao_instancia_id);
-
--- 1.3.4 (MAPEAMENTO LOJA BLING → SHOPEE: usa channel_connections existente, nada a criar)
--- Confirmar que os índices abaixo existem; criar se faltarem:
-CREATE INDEX IF NOT EXISTS ix_channel_conn_aggregator
-    ON channel_connections (bling_integration_id, aggregator_store_id)
-    WHERE is_active = true;
-
--- 1.3.5 Regras parametrizáveis de classificação Flex por instância
-CREATE TABLE IF NOT EXISTS flex_classification_rules (
-    id BIGSERIAL PRIMARY KEY,
-    integracao_instancia_id BIGINT REFERENCES integracao_instancia(id) ON DELETE CASCADE,
-    canal_venda_id BIGINT REFERENCES canais_venda(id) ON DELETE CASCADE,
-    campo TEXT NOT NULL,              -- 'shipping_carrier' | 'servico_logistico' | 'fulfillment_flag'
-    operador TEXT NOT NULL,           -- 'ILIKE' | 'EQUALS' | 'ILIKE_NORMALIZED'
-    padrao TEXT NOT NULL,             -- 'entrega rápida' | 'entrega rapida'
-    is_flex BOOLEAN NOT NULL,
-    modalidade TEXT,                  -- 'FLEX' | 'STANDARD' | 'FULL' ...
-    prioridade INT DEFAULT 100,       -- menor = maior prioridade
-    ativo BOOLEAN DEFAULT true,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    CHECK (integracao_instancia_id IS NOT NULL OR canal_venda_id IS NOT NULL)
-);
-
-CREATE INDEX IF NOT EXISTS ix_flex_rules_instancia ON flex_classification_rules(integracao_instancia_id, ativo);
-CREATE INDEX IF NOT EXISTS ix_flex_rules_canal ON flex_classification_rules(canal_venda_id, ativo);
-
--- 1.3.6 DROP triggers legadas que interferem em is_flex
-DROP TRIGGER IF EXISTS trg_calcular_is_flex ON pedidos;
-DROP FUNCTION IF EXISTS calcular_is_flex();
--- O fn_snapshot_channel_on_insert NÃO deve mais tocar is_flex:
--- substitua o CREATE OR REPLACE da função, removendo linha
---    NEW.is_flex := (NEW.channel_snapshot->>'flex')::boolean;
--- Manter o resto do snapshot.
+```json
+{
+  "shop_id":       123456,
+  "bling_loja_id": "123456",
+  "partner_id":    20012345,
+  "horario_coleta":     "13:00",
+  "horario_corte":      "11:00",
+  "ponto_coleta_id":    7,
+  "is_flex_capable":    true,
+  "color":              "#ee4d2d",
+  "default_modalidade": "STANDARD"
+}
 ```
 
-### 1.3.7a RPC de lookup de conexão Shopee
+**`bling_loja_id`** é a chave de mapeamento. Em geral é o mesmo valor do `shop_id` para Shopee, mas o campo é mantido separado porque outros marketplaces (ML, Amazon) usam IDs diferentes.
+
+### 1.4 Estrutura de `installed_integrations.config` para Bling
+
+```json
+{
+  "cnpj":            "13597000000XXX",
+  "company_label":   "Bling Antiga",
+  "client_id":       "...",
+  "client_secret":   "..."
+}
+```
+
+**Substitui** os hardcodes `BLING_ANTIGA_CNPJ = "13597"` e `BLING_NOVA_CNPJ = "54533"` em [bling_order_processing_service.py:23](packages/shared/nistiprint_shared/services/bling_order_processing_service.py#L23).
+
+---
+
+## 2. MIGRATION ÚNICA
+
+**Arquivo CRIAR:** `supabase/migrations/20260424100000_arquitetura_definitiva.sql`
 
 ```sql
--- Consolidado em um RPC para reduzir round-trips HTTP REST ao Supabase.
-CREATE OR REPLACE FUNCTION find_shopee_connection(
-    p_bling_integration_id BIGINT,
-    p_aggregator_store_id  TEXT
-) RETURNS TABLE (
-    marketplace_integration_id INT,
-    channel_id                 INT,
-    shopee_config              JSONB,
-    shopee_credentials         JSONB
-) AS $$
-    SELECT cc.marketplace_integration_id,
-           cc.channel_id,
-           ii.config      AS shopee_config,
-           ii.credentials AS shopee_credentials
-      FROM channel_connections cc
-      JOIN installed_integrations ii
-           ON ii.id = cc.marketplace_integration_id
-     WHERE cc.bling_integration_id = p_bling_integration_id
-       AND cc.aggregator_store_id  = p_aggregator_store_id
-       AND cc.is_active = true
+-- =============================================================
+-- 1. PEDIDOS: substituir canal_venda_id por marketplace_integration_id
+-- =============================================================
+ALTER TABLE pedidos
+    ADD COLUMN IF NOT EXISTS marketplace_integration_id INT
+        REFERENCES installed_integrations(id),
+    ADD COLUMN IF NOT EXISTS bling_integration_id INT
+        REFERENCES installed_integrations(id),
+    ADD COLUMN IF NOT EXISTS pedido_bling_id BIGINT
+        REFERENCES pedidos_bling(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS pedido_shopee_id BIGINT
+        REFERENCES pedidos_shopee(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS ix_pedidos_marketplace ON pedidos(marketplace_integration_id);
+CREATE INDEX IF NOT EXISTS ix_pedidos_bling_inst   ON pedidos(bling_integration_id);
+
+-- =============================================================
+-- 2. INSTALLED_INTEGRATIONS: índice por bling_loja_id (marketplace)
+-- =============================================================
+CREATE INDEX IF NOT EXISTS ix_install_int_bling_loja_id
+    ON installed_integrations ((config->>'bling_loja_id'))
+    WHERE is_active = true;
+
+CREATE INDEX IF NOT EXISTS ix_install_int_cnpj
+    ON installed_integrations ((config->>'cnpj'))
+    WHERE is_active = true;
+
+-- =============================================================
+-- 3. REGRAS LOGÍSTICAS: passar a apontar para marketplace
+-- =============================================================
+ALTER TABLE regras_logisticas_canal
+    ADD COLUMN IF NOT EXISTS marketplace_integration_id INT
+        REFERENCES installed_integrations(id);
+
+-- Após backfill (item 6 abaixo), tornar a nova coluna NOT NULL e dropar a antiga:
+-- ALTER TABLE regras_logisticas_canal DROP COLUMN canal_venda_id;
+
+-- =============================================================
+-- 4. FLEX RULES: já existe (vide migration 20260424000000); ajustar
+-- =============================================================
+ALTER TABLE flex_classification_rules
+    ADD COLUMN IF NOT EXISTS marketplace_integration_id INT
+        REFERENCES installed_integrations(id);
+
+CREATE INDEX IF NOT EXISTS ix_flex_rules_marketplace
+    ON flex_classification_rules(marketplace_integration_id, ativo);
+
+-- =============================================================
+-- 5. PEDIDOS_BLING / PEDIDOS_SHOPEE: garantir colunas
+-- =============================================================
+ALTER TABLE pedidos_bling
+    ADD COLUMN IF NOT EXISTS situacao_id          INT,
+    ADD COLUMN IF NOT EXISTS situacao_valor       INT,
+    ADD COLUMN IF NOT EXISTS contato              JSONB,
+    ADD COLUMN IF NOT EXISTS itens                JSONB,
+    ADD COLUMN IF NOT EXISTS transporte           JSONB,
+    ADD COLUMN IF NOT EXISTS intermediador_cnpj   TEXT,
+    ADD COLUMN IF NOT EXISTS loja_id              BIGINT,
+    ADD COLUMN IF NOT EXISTS raw_payload          JSONB,
+    ADD COLUMN IF NOT EXISTS bling_integration_id INT
+        REFERENCES installed_integrations(id);
+
+CREATE INDEX IF NOT EXISTS ix_pedidos_bling_loja_id ON pedidos_bling(loja_id);
+CREATE INDEX IF NOT EXISTS ix_pedidos_bling_inst    ON pedidos_bling(bling_integration_id);
+
+ALTER TABLE pedidos_shopee
+    ADD COLUMN IF NOT EXISTS shop_id             BIGINT,
+    ADD COLUMN IF NOT EXISTS order_sn            TEXT,
+    ADD COLUMN IF NOT EXISTS order_status        TEXT,
+    ADD COLUMN IF NOT EXISTS buyer_username      TEXT,
+    ADD COLUMN IF NOT EXISTS buyer_user_id       BIGINT,
+    ADD COLUMN IF NOT EXISTS fulfillment_flag    TEXT,
+    ADD COLUMN IF NOT EXISTS shipping_carrier    TEXT,
+    ADD COLUMN IF NOT EXISTS package_list        JSONB,
+    ADD COLUMN IF NOT EXISTS item_list           JSONB,
+    ADD COLUMN IF NOT EXISTS recipient_address   JSONB,
+    ADD COLUMN IF NOT EXISTS pay_time            TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS raw_payload         JSONB,
+    ADD COLUMN IF NOT EXISTS enriched_at         TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS marketplace_integration_id INT
+        REFERENCES installed_integrations(id);
+
+CREATE INDEX IF NOT EXISTS ix_pedidos_shopee_shop_id     ON pedidos_shopee(shop_id);
+CREATE INDEX IF NOT EXISTS ix_pedidos_shopee_order_sn    ON pedidos_shopee(order_sn);
+CREATE INDEX IF NOT EXISTS ix_pedidos_shopee_buyer_user  ON pedidos_shopee(buyer_username);
+
+-- =============================================================
+-- 6. BACKFILL canais_venda → installed_integrations (marketplace)
+-- =============================================================
+-- Para cada linha em canais_venda, criar (se não existir) installed_integration
+-- de tipo 'marketplace' com config preenchido a partir das colunas.
+-- Executar em script Python (ver seção 5.4) por requerer lookup de modules e idempotência.
+
+-- =============================================================
+-- 7. REMOVER TRIGGERS LEGADOS DE FLEX
+-- =============================================================
+DROP TRIGGER  IF EXISTS trg_calcular_is_flex ON pedidos;
+DROP FUNCTION IF EXISTS calcular_is_flex();
+
+-- O trigger fn_snapshot_channel_on_insert deve ser reescrito SEM
+-- a linha "NEW.is_flex := (NEW.channel_snapshot->>'flex')::boolean;".
+-- Recriar a função preservando o restante do snapshot.
+
+-- =============================================================
+-- 8. SEED INICIAL DE FLEX RULES (regra global Shopee)
+-- =============================================================
+-- Apenas "entrega rápida" e variações são FLEX. Xpress NUNCA.
+-- Regra global (sem marketplace_integration_id, sem canal_venda_id):
+INSERT INTO flex_classification_rules
+    (campo, operador, padrao, is_flex, modalidade, prioridade)
+VALUES
+    ('shipping_carrier',   'ILIKE_NORMALIZED', 'entrega rapida', true, 'FLEX',     10),
+    ('servico_logistico',  'ILIKE_NORMALIZED', 'entrega rapida', true, 'FLEX',     10),
+    ('shipping_carrier',   'ILIKE',            '%',              false, 'STANDARD', 9999);
+
+-- =============================================================
+-- 9. RPC PARA RESOLVER INSTÂNCIAS NO WORKER
+-- =============================================================
+
+-- 9.1 Resolve instância Bling pelo CNPJ do intermediador (ou do payload)
+CREATE OR REPLACE FUNCTION find_bling_integration_by_cnpj(p_cnpj TEXT)
+RETURNS SETOF installed_integrations AS $$
+    SELECT *
+      FROM installed_integrations ii
+      JOIN integration_modules im ON im.id = ii.module_id
+     WHERE im.tipo = 'aggregator'
+       AND im.slug = 'bling'
+       AND ii.is_active = true
+       AND (ii.config->>'cnpj' = p_cnpj
+            OR position(ii.config->>'cnpj' in p_cnpj) > 0)
+     LIMIT 1;
+$$ LANGUAGE sql STABLE;
+
+-- 9.2 Resolve instância marketplace pelo bling_loja_id
+CREATE OR REPLACE FUNCTION find_marketplace_by_bling_loja(p_loja_id TEXT)
+RETURNS SETOF installed_integrations AS $$
+    SELECT *
+      FROM installed_integrations ii
+      JOIN integration_modules im ON im.id = ii.module_id
+     WHERE im.tipo = 'marketplace'
+       AND ii.is_active = true
+       AND ii.config->>'bling_loja_id' = p_loja_id
      LIMIT 1;
 $$ LANGUAGE sql STABLE;
 ```
 
-### 1.3.7 Seed inicial de `flex_classification_rules`
-```sql
--- Regras globais Shopee: APENAS "entrega rápida" (todas variações) é FLEX.
--- Xpress NUNCA é flex.
-INSERT INTO flex_classification_rules
-    (canal_venda_id, campo, operador, padrao, is_flex, modalidade, prioridade)
-SELECT id, 'servico_logistico', 'ILIKE_NORMALIZED', 'entrega rapida', true, 'FLEX', 10
-  FROM canais_venda WHERE plataforma = 'shopee';
+---
 
-INSERT INTO flex_classification_rules
-    (canal_venda_id, campo, operador, padrao, is_flex, modalidade, prioridade)
-SELECT id, 'shipping_carrier', 'ILIKE_NORMALIZED', 'entrega rapida', true, 'FLEX', 10
-  FROM canais_venda WHERE plataforma = 'shopee';
+## 3. SERVIÇO DE CLASSIFICAÇÃO FLEX
 
--- Fallback: qualquer coisa Shopee que não caiu em regra acima vai como STANDARD
-INSERT INTO flex_classification_rules
-    (canal_venda_id, campo, operador, padrao, is_flex, modalidade, prioridade)
-SELECT id, 'shipping_carrier', 'ILIKE', '%', false, 'STANDARD', 9999
-  FROM canais_venda WHERE plataforma = 'shopee';
-```
+**Arquivo AFETADO:** [packages/shared/nistiprint_shared/services/flex_classifier_service.py](packages/shared/nistiprint_shared/services/flex_classifier_service.py)
 
-**Observação importante** (feedback do usuário):
-> "Xpress" NUNCA deve ser Flex. Não incluir em regras. A regra default fallback cuida disso.
-
-### 1.4 Serviço de classificação Flex (novo)
-
-**Arquivo CRIAR:** `packages/shared/nistiprint_shared/services/flex_classifier_service.py`
+Mudanças:
+1. Trocar parâmetro `canal_venda_id` por `marketplace_integration_id`.
+2. Adicionar `logger.info(...)` explícito quando uma regra casa.
+3. Adicionar `logger.info(...)` explícito quando cai no fallback.
 
 ```python
-"""
-Aplica regras parametrizáveis em flex_classification_rules.
-Ordem de resolução (prioridade crescente):
-  1) regras por integracao_instancia_id (match exato)
-  2) regras por canal_venda_id
-  3) fallback (primeira regra com padrão '%')
-
-Operadores:
-  - EQUALS               : campo == padrao
-  - ILIKE                : campo ILIKE padrao
-  - ILIKE_NORMALIZED     : normalize(campo) ILIKE normalize(padrao)
-                           onde normalize = lower + strip_accents
-"""
+import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional
-import unicodedata
+
+logger = logging.getLogger("flex_classifier")
 
 def _normalize(s: Optional[str]) -> str:
     if not s:
@@ -200,256 +265,369 @@ class FlexResult:
     is_flex: bool
     modalidade: str
     matched_rule_id: Optional[int]
+    motivo: str   # explicação humana p/ log
 
 def classify(
-    db,  # SupabaseDBService
-    fields: dict,                 # {'servico_logistico': ..., 'shipping_carrier': ..., 'fulfillment_flag': ...}
-    integracao_instancia_id: Optional[int] = None,
-    canal_venda_id: Optional[int] = None,
+    db,
+    fields: dict,
+    marketplace_integration_id: Optional[int] = None,
+    log_context: Optional[dict] = None,    # ex.: {'order_sn': '...', 'pedido_id': ...}
 ) -> FlexResult:
+    ctx = log_context or {}
     rules = db.table('flex_classification_rules') \
-        .select('*') \
-        .eq('ativo', True) \
-        .order('prioridade', desc=False) \
-        .execute().data
+        .select('*').eq('ativo', True) \
+        .order('prioridade', desc=False).execute().data
 
     def matches(rule, value):
-        op, pat = rule['operador'], rule['padrao']
         if value is None:
             return False
+        op, pat = rule['operador'], rule['padrao']
         if op == 'EQUALS':
             return value == pat
         if op == 'ILIKE':
-            return pat.replace('%', '').lower() in value.lower() or pat == '%'
+            return pat == '%' or pat.replace('%', '').lower() in value.lower()
         if op == 'ILIKE_NORMALIZED':
             return _normalize(pat) in _normalize(value)
         return False
 
-    # Ordem: instância > canal > global
-    for scope_id, scope_field in [
-        (integracao_instancia_id, 'integracao_instancia_id'),
-        (canal_venda_id, 'canal_venda_id'),
-    ]:
-        if scope_id is None:
-            continue
+    # 1) Regras com escopo da instância marketplace
+    if marketplace_integration_id is not None:
         for r in rules:
-            if r.get(scope_field) != scope_id:
+            if r.get('marketplace_integration_id') != marketplace_integration_id:
                 continue
             val = fields.get(r['campo'])
             if matches(r, val):
-                return FlexResult(r['is_flex'], r.get('modalidade') or 'STANDARD', r['id'])
+                motivo = (f"{r['campo']}={val!r} casou regra #{r['id']} "
+                          f"(scope=marketplace:{marketplace_integration_id})")
+                logger.info("[flex] %s %s → is_flex=%s modalidade=%s",
+                            ctx, motivo, r['is_flex'], r.get('modalidade'))
+                return FlexResult(r['is_flex'], r.get('modalidade') or 'STANDARD', r['id'], motivo)
 
-    # Fallback global (sem escopo)
+    # 2) Regras globais
     for r in rules:
-        if r.get('integracao_instancia_id') is None and r.get('canal_venda_id') is None:
+        if r.get('marketplace_integration_id') is None:
             val = fields.get(r['campo'])
             if matches(r, val):
-                return FlexResult(r['is_flex'], r.get('modalidade') or 'STANDARD', r['id'])
+                motivo = (f"{r['campo']}={val!r} casou regra global #{r['id']}")
+                logger.info("[flex] %s %s → is_flex=%s modalidade=%s",
+                            ctx, motivo, r['is_flex'], r.get('modalidade'))
+                return FlexResult(r['is_flex'], r.get('modalidade') or 'STANDARD', r['id'], motivo)
 
-    return FlexResult(False, 'STANDARD', None)
+    # 3) Default
+    motivo = (f"nenhuma regra casou para fields={fields!r} → STANDARD por default")
+    logger.info("[flex] %s %s", ctx, motivo)
+    return FlexResult(False, 'STANDARD', None, motivo)
 ```
 
-### 1.5 Novo fluxo de ingestão Bling→Shopee
+---
 
-**Arquivo AFETADO:** [bling_order_processing_service.py](../../packages/shared/nistiprint_shared/services/bling_order_processing_service.py)
+## 4. FLUXO DE INGESTÃO REESCRITO
 
-**Fluxo novo** (substitui o atual em `process_webhook` / `_save_order_to_db`):
+**Arquivo AFETADO:** [packages/shared/nistiprint_shared/services/bling_order_processing_service.py](packages/shared/nistiprint_shared/services/bling_order_processing_service.py)
 
-```
-1. Recebe payload Bling (webhook ou sync).
-2. UPSERT em pedidos_bling (RAW fiel do payload):
-   - numero, numero_loja, situacao.id/valor, contato, itens, transporte,
-     intermediador.cnpj, observacoes, raw_payload, integracao_instancia_id
-3. Detectar Shopee via channel_connections:
-   - loja_bling_id = payload.loja.id
-   - SELECT cc.*,
-            ii_shopee.config AS shopee_config,
-            ii_shopee.credentials AS shopee_credentials,
-            cv.id AS canal_venda_id
-       FROM channel_connections cc
-       JOIN installed_integrations ii_shopee
-            ON ii_shopee.id = cc.marketplace_integration_id
-       JOIN canais_venda cv ON cv.id = cc.channel_id
-      WHERE cc.bling_integration_id = <instancia Bling atual>
-        AND cc.aggregator_store_id  = :loja_bling_id::text
-        AND cc.is_active = true
-      LIMIT 1
-   - Se match: é Shopee. Extrair:
-       * integracao_shopee_id   = cc.marketplace_integration_id
-       * shop_id_shopee         = ii_shopee.config->>'shop_id' (ou credentials)
-       * canal_venda_id         = cc.channel_id
-4. Se Shopee:
-   a. Montar dict `integration` a partir de ii_shopee (config + credentials + access_token)
-      — mesmo formato já consumido por shopee.get_order_detail.
-   b. Chamar platform_drivers.shopee.get_order_detail(
-        integration=integration,
-        order_sn_list=[payload.numeroLoja])
-   c. UPSERT em pedidos_shopee com campos crus:
-      order_sn, order_status, fulfillment_flag, shipping_carrier,
-      package_list, pay_time, recipient_address, item_list, shop_id,
-      raw_payload, enriched_at=NOW()
-5. Derivação centralizada (pedidos):
-   - fields = {
-       'servico_logistico': <volumes[0].servico do Bling>,
-       'shipping_carrier':  <pedidos_shopee.shipping_carrier ou package_list[0].shipping_carrier>,
-       'fulfillment_flag':  <pedidos_shopee.fulfillment_flag>,
-     }
-   - flex = flex_classifier_service.classify(
-              db, fields,
-              integracao_instancia_id=<shopee quando aplicável, senão bling>,
-              canal_venda_id=<resolvido>)
-   - UPSERT em pedidos:
-       pedido_bling_id, pedido_shopee_id, shop_id_shopee,
-       is_flex = flex.is_flex,
-       modalidade_logistica = flex.modalidade,
-       canal_venda_id, situacao_pedido_id (mapeado), ...
-6. Chamar create_from_order passando is_flex e modalidade explicitamente.
-```
-
-**Pseudo-diff** em [bling_order_processing_service.py:~426](../../packages/shared/nistiprint_shared/services/bling_order_processing_service.py#L426) (função `_save_order_to_db`):
+### 4.1 Pseudo-código definitivo
 
 ```python
-# ANTES: _save_order_to_db escreve direto em `pedidos`
-# DEPOIS:
+import logging
+from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
+from nistiprint_shared.services import flex_classifier_service
 
-def _save_order_to_db(self, payload, integracao_bling_id):
-    pedido_bling_id = self._upsert_pedido_bling(payload, integracao_bling_id)
+logger = logging.getLogger("bling_order_processing")
 
-    pedido_shopee_id, shop_id, shopee_data = None, None, None
-    conn = self._find_channel_connection(
-        bling_integration_id=integracao_bling_id,
-        aggregator_store_id=str(payload.get('loja', {}).get('id')),
-    )
-    # conn contém: marketplace_integration_id, channel_id, shopee config/credentials
-    canal_venda_id = conn['channel_id'] if conn else None
+def process_webhook(payload: dict, bling_integration_hint: int | None = None) -> dict:
+    """
+    Pipeline linear, idempotente.
+    - payload: corpo do pedido Bling (já buscado da API com detalhes completos).
+    - bling_integration_hint: quando o caller já sabe a instância Bling (ex.: webhook
+      veio com header de identificação), evita lookup.
+    """
+    correlation = {
+        'bling_id':    payload.get('id'),
+        'numero':      payload.get('numero'),
+        'numero_loja': payload.get('numeroLoja'),
+    }
+    logger.info("[ingest] start %s", correlation)
 
-    if conn and conn.get('marketplace_integration_id'):
-        integration_shopee = self._build_shopee_integration_dict(conn)
-        shopee_data = shopee_driver.get_order_detail(
-            integration=integration_shopee,
-            order_sn_list=[payload.get('numeroLoja')],
-        )
-        pedido_shopee_id = self._upsert_pedido_shopee(
-            shopee_data,
-            shop_id=integration_shopee['shop_id'],
-        )
-        shop_id = integration_shopee['shop_id']
+    # 1. Resolver instância Bling
+    bling_inst = _resolve_bling_instance(payload, bling_integration_hint)
+    correlation['bling_inst'] = bling_inst['id']
+    logger.info("[ingest] bling_instance resolved id=%s cnpj=%s",
+                bling_inst['id'], bling_inst['config'].get('cnpj'))
 
+    # 2. UPSERT pedidos_bling (espelho do payload)
+    pedido_bling_id = _upsert_pedido_bling(payload, bling_inst['id'])
+
+    # 3. Resolver instância marketplace pela loja_id
+    loja_id = str(payload.get('loja', {}).get('id') or '')
+    marketplace_inst, pedido_shopee_id, shopee_data = None, None, None
+    if loja_id:
+        marketplace_inst = _resolve_marketplace_instance(loja_id)
+        if marketplace_inst:
+            correlation['marketplace_inst'] = marketplace_inst['id']
+            logger.info("[ingest] marketplace resolved id=%s plataforma=%s nome=%s",
+                        marketplace_inst['id'],
+                        marketplace_inst.get('plataforma_slug'),
+                        marketplace_inst.get('instance_name'))
+
+            # 4. Enriquecimento via API marketplace (apenas Shopee no MVP)
+            if marketplace_inst.get('plataforma_slug') == 'shopee':
+                shopee_data = _fetch_shopee_detail(marketplace_inst,
+                                                   payload.get('numeroLoja'))
+                pedido_shopee_id = _upsert_pedido_shopee(
+                    shopee_data,
+                    marketplace_integration_id=marketplace_inst['id'],
+                )
+        else:
+            logger.warning("[ingest] loja_id=%s sem instância marketplace mapeada", loja_id)
+
+    # 5. Classificar Flex
     flex = flex_classifier_service.classify(
-        self.supabase,
+        supabase_db,
         fields={
             'servico_logistico': _volume_servico(payload),
             'shipping_carrier':  (shopee_data or {}).get('shipping_carrier'),
             'fulfillment_flag':  (shopee_data or {}).get('fulfillment_flag'),
         },
-        integracao_instancia_id=(conn or {}).get('marketplace_integration_id') or integracao_bling_id,
-        canal_venda_id=canal_venda_id,
+        marketplace_integration_id=(marketplace_inst or {}).get('id'),
+        log_context=correlation,
     )
 
-    pedido_id = self._upsert_pedido_master(
+    # 6. UPSERT pedidos
+    pedido_id = _upsert_pedido_master(
         payload,
         pedido_bling_id=pedido_bling_id,
         pedido_shopee_id=pedido_shopee_id,
-        shop_id_shopee=shop_id,
-        canal_venda_id=canal_venda_id,
+        bling_integration_id=bling_inst['id'],
+        marketplace_integration_id=(marketplace_inst or {}).get('id'),
         is_flex=flex.is_flex,
         modalidade=flex.modalidade,
     )
+    logger.info("[ingest] pedido upserted id=%s is_flex=%s modalidade=%s",
+                pedido_id, flex.is_flex, flex.modalidade)
 
+    # 7. Encadear demanda
+    from nistiprint_shared.services import demanda_producao_service
     demanda_producao_service.create_from_order(
         pedido_id=pedido_id,
         is_flex=flex.is_flex,
         modalidade_logistica=flex.modalidade,
-        canal_venda_id=canal_venda_id,
+        marketplace_integration_id=(marketplace_inst or {}).get('id'),
     )
 
-def _find_channel_connection(self, bling_integration_id, aggregator_store_id):
-    """
-    Consulta channel_connections para mapear loja Bling → integração Shopee + canal.
-    Retorna dict com marketplace_integration_id, channel_id, shopee config/credentials,
-    ou None se não houver vínculo ativo.
-    """
-    rows = self.supabase.rpc('find_shopee_connection', {
-        'p_bling_integration_id': bling_integration_id,
-        'p_aggregator_store_id':  aggregator_store_id,
-    }).execute().data
-    return rows[0] if rows else None
+    logger.info("[ingest] done %s", correlation)
+    return {'pedido_id': pedido_id, 'is_flex': flex.is_flex, 'flex_motivo': flex.motivo}
+
+
+# ---------- helpers ----------
+
+def _resolve_bling_instance(payload, hint):
+    if hint:
+        row = supabase_db.table('installed_integrations') \
+            .select('*').eq('id', hint).single().execute().data
+        if row:
+            return row
+    cnpj = (payload.get('intermediador') or {}).get('cnpj') \
+        or (payload.get('loja') or {}).get('cnpj')
+    if not cnpj:
+        raise ValueError("Não foi possível identificar instância Bling: CNPJ ausente")
+    rows = supabase_db.rpc('find_bling_integration_by_cnpj',
+                           {'p_cnpj': cnpj}).execute().data
+    if not rows:
+        raise LookupError(f"Nenhuma installed_integration Bling ativa para CNPJ={cnpj}")
+    return rows[0]
+
+def _resolve_marketplace_instance(loja_id: str):
+    rows = supabase_db.rpc('find_marketplace_by_bling_loja',
+                           {'p_loja_id': loja_id}).execute().data
+    if not rows:
+        return None
+    inst = rows[0]
+    # Anexar slug da plataforma para conveniência do caller
+    mod = supabase_db.table('integration_modules') \
+        .select('slug').eq('id', inst['module_id']).single().execute().data
+    inst['plataforma_slug'] = (mod or {}).get('slug')
+    return inst
+
+def _fetch_shopee_detail(marketplace_inst, order_sn):
+    cfg, cred = marketplace_inst['config'], marketplace_inst.get('credentials') or {}
+    integration = {
+        'config':       cfg,
+        'credentials':  cred,
+        'access_token': marketplace_inst.get('access_token') or cred.get('access_token'),
+    }
+    return shopee_driver.get_order_detail(integration, [order_sn])
 ```
 
-### 1.6 Correções em `create_from_order`
-**Arquivo:** [demanda_producao_service.py:415](../../packages/shared/nistiprint_shared/services/demanda_producao_service.py#L415)
+### 4.2 Mudanças no driver Shopee
 
-1. Aceitar kwargs `is_flex`, `modalidade_logistica`, `canal_venda_id` explícitos.
-2. Se não vierem, **derivar** lendo `pedidos.is_flex`, `pedidos.modalidade_logistica`, `pedidos.canal_venda_id`.
-3. Passar adiante para `criar_demanda_direta` (linha 592) via kwargs (que já os consome).
+**Arquivo AFETADO:** [packages/shared/nistiprint_shared/services/platform_drivers/shopee.py](packages/shared/nistiprint_shared/services/platform_drivers/shopee.py)
 
-### 1.7 Backfill
-**Arquivo CRIAR:** `apps/ops/scripts/backfill_pedidos_refactor.py`
+Hoje `get_order_detail` ([linha 96](packages/shared/nistiprint_shared/services/platform_drivers/shopee.py#L96)) coloca tudo em `raw` e expõe poucos campos no DTO. Reescrever o `normalized_order` para incluir explicitamente:
 
 ```python
-# 1. Para cada linha em pedidos, localizar origem:
-#    - Se origem='BLING' e não tem pedido_bling_id: buscar pedidos_bling por codigo_pedido_externo, FK
-#    - Se numero_loja mapeia para Shopee: chamar get_order_detail, popular pedidos_shopee, FK
-# 2. Recalcular is_flex + modalidade via flex_classifier_service.
-# 3. Atualizar pedidos.
-# 4. Zerar entradas resolvidas em pedidos_nao_classificados.
+normalized_order = {
+    "external_id":        order.get("order_sn", ""),
+    "platform":           "shopee",
+    "shop_id":            int(integration['config'].get('shop_id') or 0) or None,
+    "order_status":       order.get("order_status"),
+    "fulfillment_flag":   order.get("fulfillment_flag"),
+    "shipping_carrier":   order.get("shipping_carrier")
+                          or _carrier_from_packages(order.get("package_list")),
+    "package_list":       order.get("package_list"),
+    "item_list":          order.get("item_list"),
+    "buyer_username":     order.get("buyer_username"),
+    "buyer_user_id":      order.get("buyer_user_id"),
+    "recipient_address":  order.get("recipient_address"),
+    "pay_time":           _ts_to_iso(order.get("pay_time")),
+    "create_time":        _ts_to_iso(order.get("create_time")),
+    "total":              float(order.get("total_amount", 0)),
+    "currency":           order.get("currency", "BRL"),
+    "raw":                order,
+}
+
+def _carrier_from_packages(pkgs):
+    if not pkgs:
+        return None
+    for p in pkgs:
+        if p.get("shipping_carrier"):
+            return p["shipping_carrier"]
+    return None
 ```
 
-### 1.8 Critério de aceitação — Parte A
-- [ ] Todo pedido novo tem `pedidos.pedido_bling_id IS NOT NULL`.
-- [ ] Todo pedido Shopee-via-Bling tem `pedidos.pedido_shopee_id IS NOT NULL`.
-- [ ] `pedidos.is_flex = true` apenas quando regra em `flex_classification_rules` casa.
-- [ ] Zero pedidos "Shopee Xpress" com `is_flex = true` (SQL check).
-- [ ] Todos "Entrega Rápida" (com ou sem acento, case) têm `is_flex = true`.
-- [ ] Sem triggers `calcular_is_flex` no banco (`\d pedidos` no psql).
-- [ ] `channel_snapshot` continua preenchido mas não sobrescreve `is_flex`.
+**Trocar `print(...)` por `logger.debug(...)`** nas linhas 64-71 e 194-201.
+
+### 4.3 Função `_upsert_pedido_shopee`
+
+```python
+def _upsert_pedido_shopee(shopee_data: dict, marketplace_integration_id: int) -> int:
+    row = {
+        'shop_id':           shopee_data.get('shop_id'),
+        'order_sn':          shopee_data.get('external_id'),
+        'order_status':      shopee_data.get('order_status'),
+        'buyer_username':    shopee_data.get('buyer_username'),
+        'buyer_user_id':     shopee_data.get('buyer_user_id'),
+        'fulfillment_flag':  shopee_data.get('fulfillment_flag'),
+        'shipping_carrier':  shopee_data.get('shipping_carrier'),
+        'package_list':      shopee_data.get('package_list'),
+        'item_list':         shopee_data.get('item_list'),
+        'recipient_address': shopee_data.get('recipient_address'),
+        'pay_time':          shopee_data.get('pay_time'),
+        'raw_payload':       shopee_data.get('raw'),
+        'enriched_at':       'now()',
+        'marketplace_integration_id': marketplace_integration_id,
+    }
+    res = supabase_db.table('pedidos_shopee') \
+        .upsert(row, on_conflict='order_sn').execute()
+    return res.data[0]['id']
+```
 
 ---
 
-## 2. PARTE B — SYNC EM LOTE DE STATUS VIA BLING
+## 5. WORKER E LOGGING
 
-### 2.1 Objetivo
-UI permite selecionar N pedidos e clicar "Atualizar Bling" → sistema busca cada `pedidos_bling.bling_id` na API Bling, atualiza `situacao_id/valor` em `pedidos_bling` e propaga para `pedidos.situacao_pedido_id` via mapping.
+### 5.1 Logger nomeado e formatter
 
-### 2.2 Endpoint novo
+**Arquivo AFETADO:** [apps/worker/worker_entrypoint.py](apps/worker/worker_entrypoint.py)
 
+Configurar formatter explícito para o worker:
+
+```python
+import logging
+LOG_FORMAT = "[%(asctime)s] %(levelname)s %(name)s %(message)s"
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+
+# Forçar nível INFO nos loggers do pipeline
+for name in ("bling_order_processing", "flex_classifier",
+             "shopee_driver", "demanda_producao"):
+    logging.getLogger(name).setLevel(logging.INFO)
+```
+
+### 5.2 Pontos de log obrigatórios
+
+| Etapa | Log |
+|---|---|
+| Início do processamento | `[ingest] start {correlation}` |
+| Resolução Bling | `[ingest] bling_instance resolved id=… cnpj=…` |
+| Upsert Bling | `[ingest] pedidos_bling upserted id=…` |
+| Resolução marketplace | `[ingest] marketplace resolved id=… plataforma=… nome=…` ou `[ingest] loja_id=… sem instância mapeada` |
+| Enriquecimento Shopee | `[shopee] order_detail fetched order_sn=… status=… shipping_carrier=… fulfillment_flag=…` |
+| Classificação Flex | `[flex] {ctx} shipping_carrier='Entrega Rápida' casou regra #10 → is_flex=true modalidade=FLEX` (já incluso em §3) |
+| Upsert pedidos | `[ingest] pedido upserted id=… is_flex=… modalidade=…` |
+| Erro qualquer | `logger.exception(...)` com stack |
+
+### 5.3 Tabela de auditoria opcional (recomendada)
+
+```sql
+CREATE TABLE IF NOT EXISTS pedido_ingest_log (
+    id BIGSERIAL PRIMARY KEY,
+    pedido_id BIGINT,
+    bling_id  BIGINT,
+    marketplace_integration_id INT,
+    is_flex BOOLEAN,
+    flex_motivo TEXT,            -- string explicativa do classificador
+    matched_rule_id INT,
+    raw_decision JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+Ao final de `process_webhook`, gravar uma linha. Permite rastrear "por que esse pedido virou Flex" diretamente no banco, sem `tail` em logs.
+
+### 5.4 Script de migração canais_venda → installed_integrations
+
+**Arquivo CRIAR:** `apps/ops/scripts/migrar_canais_para_marketplace.py`
+
+```python
+"""
+Para cada linha em canais_venda, criar (ou localizar) installed_integration
+de tipo 'marketplace' e popular config a partir das colunas + de channel_connections.
+
+Idempotente: usa instance_name como chave; se já existir, apenas atualiza config.
+Após rodar, repointa pedidos.canal_venda_id → marketplace_integration_id e zera
+canais_venda (ou deixa marcada como migrated=true se preferir manter histórico).
+"""
+# Pseudo-código:
+# 1. SELECT * FROM canais_venda WHERE ativo
+# 2. Para cada canal:
+#      cc = channel_connections WHERE channel_id=canal.id LIMIT 1
+#      module_id = lookup integration_modules WHERE slug = plataforma.slug AND tipo='marketplace'
+#      config = {
+#         'shop_id': cc.aggregator_store_id,        # quando aplicável
+#         'bling_loja_id': cc.aggregator_store_id,
+#         'horario_coleta': canal.horario_coleta,
+#         'color': canal.color,
+#         'is_flex_capable': canal.flex,
+#      }
+#      UPSERT em installed_integrations (instance_name=canal.nome, module_id, config)
+# 3. UPDATE pedidos SET marketplace_integration_id = X WHERE canal_venda_id = Y
+# 4. UPDATE regras_logisticas_canal SET marketplace_integration_id = X WHERE canal_venda_id = Y
+# 5. UPDATE flex_classification_rules SET marketplace_integration_id = X WHERE canal_venda_id = Y
+```
+
+Após validação manual, executar o `DROP COLUMN canal_venda_id` em segundo migration.
+
+---
+
+## 6. SYNC DE STATUS BLING EM LOTE
+
+### 6.1 Endpoint
 **Arquivo CRIAR:** `apps/api/routes/pedidos_sync.py`
 
 ```python
-from flask import Blueprint, request, jsonify
-from nistiprint_shared.services.bling_status_sync_service import agendar_sync_status_batch
-
-bp = Blueprint('pedidos_sync', __name__)
-
-@bp.route('/api/v2/pedidos/sync-bling-status', methods=['POST'])
-def sync_bling_status():
-    body = request.get_json() or {}
-    pedido_ids = body.get('pedido_ids') or []
-    if not pedido_ids or len(pedido_ids) > 500:
-        return jsonify({'error': 'informe 1..500 pedido_ids'}), 400
-    batch_id = agendar_sync_status_batch(pedido_ids)
-    return jsonify({'batch_id': batch_id}), 202
-
-@bp.route('/api/v2/pedidos/sync-bling-status/<batch_id>', methods=['GET'])
-def sync_bling_status_progress(batch_id):
-    from nistiprint_shared.database.supabase_db_service import supabase_db
-    row = supabase_db.table('sync_status_batches').select('*').eq('id', batch_id).single().execute()
-    return jsonify(row.data)
+POST /api/v2/pedidos/sync-bling-status   { pedido_ids: [1,2,3,...] }   → 202 { batch_id }
+GET  /api/v2/pedidos/sync-bling-status/<batch_id>                       → 200 { status, sucesso, falha }
 ```
 
-Registrar blueprint em `apps/api/app.py` (ou equivalente).
-
-### 2.3 Tabela de progresso
-
+### 6.2 Tabelas
 ```sql
--- Adicionar na migration 20260424000000_pedidos_refactor.sql:
 CREATE TABLE IF NOT EXISTS sync_status_batches (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     pedido_ids BIGINT[] NOT NULL,
     total INT NOT NULL,
     sucesso INT DEFAULT 0,
-    falha INT DEFAULT 0,
-    status TEXT DEFAULT 'PENDENTE',  -- PENDENTE, RODANDO, CONCLUIDO, ERRO
+    falha   INT DEFAULT 0,
+    status  TEXT DEFAULT 'PENDENTE',  -- PENDENTE|RODANDO|CONCLUIDO|ERRO
     iniciado_em TIMESTAMPTZ DEFAULT NOW(),
     finalizado_em TIMESTAMPTZ
 );
@@ -458,150 +636,44 @@ CREATE TABLE IF NOT EXISTS sync_status_errors (
     id BIGSERIAL PRIMARY KEY,
     batch_id UUID REFERENCES sync_status_batches(id) ON DELETE CASCADE,
     pedido_id BIGINT NOT NULL,
-    bling_id BIGINT,
-    erro TEXT,
+    bling_id  BIGINT,
+    erro      TEXT,
     tentado_em TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
-### 2.4 Serviço e task Celery
-
+### 6.3 Task Celery
 **Arquivo CRIAR:** `packages/shared/nistiprint_shared/services/bling_status_sync_service.py`
 
-```python
-import logging
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from celery import shared_task
-from nistiprint_shared.database.supabase_db_service import supabase_db
-from nistiprint_shared.services.bling.bling import bling_get_order_detail, bling_get_token
+- Agrupar pedidos por `pedidos_bling.bling_integration_id`.
+- Para cada grupo: usar token Bling da instância correspondente.
+- `ThreadPoolExecutor(max_workers=3)` com sleep de ~333ms entre disparos (rate limit conservador 3 RPS).
+- Falha individual grava em `sync_status_errors` e segue.
+- Atualizar `pedidos_bling.situacao_id/valor` e propagar para `pedidos.situacao_pedido_id` via `integration_status_mappings`.
+- Log: `[sync] batch=… pedido=… bling_id=… ok` ou `[sync] batch=… pedido=… erro=…`.
 
-logger = logging.getLogger(__name__)
+### 6.4 UI
+- Checkbox em cada linha da listagem de pedidos.
+- Botão "Atualizar status Bling" → POST + polling de progresso a cada 2s.
 
-BLING_BATCH_SIZE = 100
-BLING_RATE_LIMIT_RPS = 3   # limite conservador por app Bling
-
-def agendar_sync_status_batch(pedido_ids):
-    batch = supabase_db.table('sync_status_batches').insert({
-        'pedido_ids': pedido_ids,
-        'total': len(pedido_ids),
-        'status': 'PENDENTE',
-    }).execute().data[0]
-    sync_status_batch_task.delay(batch['id'])
-    return batch['id']
-
-@shared_task(name='services.bling_status_sync.sync_batch', bind=True, max_retries=2)
-def sync_status_batch_task(self, batch_id: str):
-    supabase_db.table('sync_status_batches').update({'status': 'RODANDO'}).eq('id', batch_id).execute()
-    batch = supabase_db.table('sync_status_batches').select('*').eq('id', batch_id).single().execute().data
-    ids = batch['pedido_ids']
-
-    pedidos = supabase_db.table('pedidos') \
-        .select('id, pedido_bling_id, pedidos_bling!inner(bling_id, integracao_instancia_id)') \
-        .in_('id', ids).execute().data
-
-    # Agrupar por instância Bling (cada uma tem token próprio + rate limit próprio)
-    por_instancia = {}
-    for p in pedidos:
-        inst = p['pedidos_bling']['integracao_instancia_id']
-        por_instancia.setdefault(inst, []).append(p)
-
-    sucesso, falha = 0, 0
-    for inst_id, lote in por_instancia.items():
-        token = bling_get_token(inst_id)
-        # Paralelizar dentro do lote, mas respeitando rate limit
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            futs = {}
-            for i, p in enumerate(lote):
-                # Spread de 1/BLING_RATE_LIMIT_RPS segundos entre disparos
-                time.sleep(max(0, (1.0/BLING_RATE_LIMIT_RPS) - 0.05))
-                futs[ex.submit(_sync_one, token, p, batch_id)] = p
-            for fut in as_completed(futs):
-                ok = fut.result()
-                if ok: sucesso += 1
-                else:  falha += 1
-                supabase_db.table('sync_status_batches').update({
-                    'sucesso': sucesso, 'falha': falha
-                }).eq('id', batch_id).execute()
-
-    supabase_db.table('sync_status_batches').update({
-        'status': 'CONCLUIDO', 'finalizado_em': 'now()'
-    }).eq('id', batch_id).execute()
-
-def _sync_one(token, p, batch_id):
-    bling_id = p['pedidos_bling']['bling_id']
-    try:
-        detail = bling_get_order_detail(token, bling_id)
-        situacao = (detail or {}).get('data', {}).get('situacao', {})
-        supabase_db.table('pedidos_bling').update({
-            'situacao_id': situacao.get('id'),
-            'situacao_valor': situacao.get('valor'),
-            'raw_payload': detail.get('data'),
-        }).eq('bling_id', bling_id).execute()
-
-        # Propaga para pedidos via mapping integration_status_mappings
-        mapping = supabase_db.table('integration_status_mappings') \
-            .select('situacao_pedido_id') \
-            .eq('plataforma', 'bling') \
-            .eq('status_externo_id', situacao.get('id')) \
-            .maybe_single().execute().data
-        if mapping:
-            supabase_db.table('pedidos').update({
-                'situacao_pedido_id': mapping['situacao_pedido_id']
-            }).eq('id', p['id']).execute()
-        return True
-    except Exception as e:
-        supabase_db.table('sync_status_errors').insert({
-            'batch_id': batch_id,
-            'pedido_id': p['id'],
-            'bling_id': bling_id,
-            'erro': str(e)[:500],
-        }).execute()
-        return False
-```
-
-**Registrar em:** `apps/worker/celery_config.py` — adicionar import do módulo às tasks do worker. **Sem beat schedule** (on-demand).
-
-### 2.5 UI
-**Arquivo AFETADO:** `apps/frontend/src/pages/Pedidos/PedidosList.tsx` (ou equivalente).
-
-- Checkbox em cada linha → seleção múltipla.
-- Botão "Atualizar status Bling" → `POST /api/v2/pedidos/sync-bling-status` com `pedido_ids`.
-- Polling no `GET /.../sync-bling-status/{batch_id}` a cada 2s até `status === 'CONCLUIDO'`.
-- Exibir progress bar `{sucesso + falha} / {total}` e notificação ao final.
-
-### 2.6 Critério de aceitação — Parte B
-- [ ] Selecionar 50 pedidos e clicar "Atualizar Bling" completa em <30s.
-- [ ] Falhas individuais registradas em `sync_status_errors` sem derrubar o lote.
-- [ ] `pedidos_bling.situacao_id` reflete valor atual do Bling para cada pedido.
-- [ ] `pedidos.situacao_pedido_id` é atualizado via mapping.
-- [ ] Nenhum side-effect em estoque, demanda, ou personalização.
+### 6.5 Aceitação
+- 50 pedidos em <30s.
+- Falhas isoladas em `sync_status_errors`.
+- Sem efeitos colaterais (estoque, demanda, IA).
 
 ---
 
-## 3. PARTE C — IA DE PERSONALIZAÇÃO EM LOTE
+## 7. IA DE PERSONALIZAÇÃO EM LOTE (POOL SUPABASE)
 
-### 3.1 Problema do pool Supabase
+### 7.1 Diagnóstico
+- Legado usava `ThreadPoolExecutor(max_workers=10)` com MySQL próprio (pool grande).
+- Novo usa `httpx` REST contra Supabase (singleton). Threads paralelas → `httpx.PoolTimeout` derruba lote.
 
-O legado ([kb/legado/services/ai_personalization_service.py:566](../../kb/legado/services/ai_personalization_service.py#L566)) usava `ThreadPoolExecutor(max_workers=10)` contra MySQL próprio — cada thread abre sua conexão, pool grande.
+### 7.2 Estratégia
+**Fan-out via Celery** — uma task por pedido. Worker Celery dedicado `-c 4` na fila `ai_personalization`. Cada worker_process tem seu próprio `SupabaseDBService`, naturalmente serializando.
 
-O novo usa **Supabase REST via `httpx`** ([packages/shared/nistiprint_shared/database/supabase_db_service.py:30](../../packages/shared/nistiprint_shared/database/supabase_db_service.py#L30)) — singleton HTTP client. Quando 10 threads batem paralelamente no REST, `httpx.PoolTimeout` dispara e o lote todo trava.
-
-### 3.2 Estratégia — fan-out via Celery (uma task por pedido)
-
-Ao invés de ThreadPool dentro do processo web, despachar **uma task Celery por pedido**. Celery respeita concorrência global do worker (`-c` flag), e cada worker_process tem seu próprio `SupabaseDBService` singleton, naturalmente serializando.
-
-**Workers Celery devem rodar com concorrência controlada:**
-```yaml
-# docker-compose ou similar
-celery -A apps.worker.celery_config worker -Q ai_personalization -c 4
-```
-Concorrência **4** é o alvo: suficiente para Gemini paralelo, baixo o bastante para não saturar httpx pool.
-
-### 3.3 Tabelas de controle
-
+### 7.3 Tabelas de controle
 ```sql
--- Acrescentar à migration 20260424000000_pedidos_refactor.sql:
 CREATE TABLE IF NOT EXISTS execucoes_ai_batch (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     criado_em TIMESTAMPTZ DEFAULT NOW(),
@@ -611,64 +683,65 @@ CREATE TABLE IF NOT EXISTS execucoes_ai_batch (
     sucesso INT DEFAULT 0,
     falha INT DEFAULT 0,
     status TEXT DEFAULT 'PENDENTE',
-    finalizado_em TIMESTAMPTZ,
-    iniciado_por TEXT
+    finalizado_em TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS execucoes_ai_item (
     id BIGSERIAL PRIMARY KEY,
     batch_id UUID REFERENCES execucoes_ai_batch(id) ON DELETE CASCADE,
     pedido_id BIGINT NOT NULL,
-    status TEXT NOT NULL,   -- 'OK' | 'ERRO' | 'IGNORADO'
+    status TEXT NOT NULL,    -- OK|ERRO|IGNORADO
     erro TEXT,
     duracao_ms INT,
     criado_em TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE OR REPLACE FUNCTION incrementar_batch_ia(
+    p_batch_id UUID, p_sucesso INT, p_falha INT
+) RETURNS VOID AS $$
+DECLARE v_total INT; v_proc INT;
+BEGIN
+    UPDATE execucoes_ai_batch
+       SET processados = processados + 1,
+           sucesso     = sucesso + p_sucesso,
+           falha       = falha + p_falha
+     WHERE id = p_batch_id
+    RETURNING total, processados INTO v_total, v_proc;
+    IF v_proc >= v_total THEN
+        UPDATE execucoes_ai_batch
+           SET status='CONCLUIDO', finalizado_em=NOW()
+         WHERE id=p_batch_id;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
 ```
 
-### 3.4 Refactor do serviço de IA
-
-**Arquivo AFETADO:** [packages/shared/nistiprint_shared/services/ai_personalization_service.py](../../packages/shared/nistiprint_shared/services/ai_personalization_service.py)
-
-Plano:
-1. **Manter** `_run_ia_for_order` (linha 854-908) — já funciona individual.
-2. **Deletar** `process_orders` atual (linhas 968-1076, pipeline 2-fases quebrado).
-3. **Deletar** `_batch_resolve_item_pedido_ids` (linhas 570-624) — resolução agora é intra-task.
-4. **Criar** duas novas Celery tasks:
+### 7.4 Tasks
+**Arquivo AFETADO:** [packages/shared/nistiprint_shared/services/ai_personalization_service.py](packages/shared/nistiprint_shared/services/ai_personalization_service.py)
 
 ```python
-@shared_task(name='services.ai_personalization.processar_batch',
-             bind=True, max_retries=0)
-def processar_batch_ia(self, batch_id: str):
-    """Orquestrador: cria uma task-filha por pedido e atualiza contadores."""
-    from nistiprint_shared.database.supabase_db_service import supabase_db
+@shared_task(name='services.ai_personalization.processar_batch')
+def processar_batch_ia(batch_id):
     batch = supabase_db.table('execucoes_ai_batch').select('*') \
         .eq('id', batch_id).single().execute().data
-    supabase_db.table('execucoes_ai_batch').update({'status': 'RODANDO'}) \
+    supabase_db.table('execucoes_ai_batch').update({'status':'RODANDO'}) \
         .eq('id', batch_id).execute()
     for pid in batch['pedido_ids']:
-        processar_pedido_ia.apply_async(
-            args=[batch_id, pid],
-            queue='ai_personalization',
-        )
-    # Esta task retorna logo; a finalização acontece via processar_pedido_ia
-    # quando processados == total.
+        processar_pedido_ia.apply_async(args=[batch_id, pid],
+                                        queue='ai_personalization')
 
 @shared_task(name='services.ai_personalization.processar_pedido',
-             bind=True, max_retries=2, default_retry_delay=30,
-             acks_late=True)
-def processar_pedido_ia(self, batch_id: str, pedido_id: int):
-    """Task isolada por pedido. Falha de um pedido não contamina outros."""
-    from nistiprint_shared.database.supabase_db_service import supabase_db
-    import time
+             bind=True, max_retries=2, default_retry_delay=30, acks_late=True)
+def processar_pedido_ia(self, batch_id, pedido_id):
+    import time, httpx
     t0 = time.monotonic()
     status, erro = 'OK', None
     try:
-        pedido = _load_pedido_com_itens(pedido_id)  # leitura única
-        resultado = _run_ia_for_order(pedido)       # reuso da função que funciona
-        _persistir_personalizacao(pedido, resultado)  # um INSERT/UPSERT sequencial
+        pedido = _load_pedido_com_itens(pedido_id)
+        resultado = _run_ia_for_order(pedido)        # função do legado, já funciona individual
+        _persistir_personalizacao(pedido, resultado)
     except httpx.PoolTimeout as e:
-        raise self.retry(exc=e)   # backoff automático do Celery
+        raise self.retry(exc=e)
     except Exception as e:
         status, erro = 'ERRO', str(e)[:500]
     finally:
@@ -677,7 +750,6 @@ def processar_pedido_ia(self, batch_id: str, pedido_id: int):
             'status': status, 'erro': erro,
             'duracao_ms': int((time.monotonic() - t0) * 1000),
         }).execute()
-        # Incrementa contadores no batch com SQL atômico
         supabase_db.rpc('incrementar_batch_ia', {
             'p_batch_id': batch_id,
             'p_sucesso': 1 if status == 'OK' else 0,
@@ -685,319 +757,172 @@ def processar_pedido_ia(self, batch_id: str, pedido_id: int):
         }).execute()
 ```
 
-### 3.5 RPC de incremento atômico (evita race condition)
-
-```sql
--- Na migration 20260424000000_pedidos_refactor.sql
-CREATE OR REPLACE FUNCTION incrementar_batch_ia(
-    p_batch_id UUID,
-    p_sucesso INT,
-    p_falha INT
-) RETURNS VOID AS $$
-DECLARE
-    v_total INT;
-    v_proc INT;
-BEGIN
-    UPDATE execucoes_ai_batch
-       SET processados = processados + 1,
-           sucesso     = sucesso + p_sucesso,
-           falha       = falha + p_falha
-     WHERE id = p_batch_id
-    RETURNING total, processados INTO v_total, v_proc;
-
-    IF v_proc >= v_total THEN
-        UPDATE execucoes_ai_batch
-           SET status = 'CONCLUIDO',
-               finalizado_em = NOW()
-         WHERE id = p_batch_id;
-    END IF;
-END;
-$$ LANGUAGE plpgsql;
-```
-
-### 3.6 Endpoint atualizado
-
-**Arquivo AFETADO:** `apps/api/routes/personalizados.py` (linha 59-111).
+### 7.5 Filas dedicadas
+**Arquivo AFETADO:** [apps/worker/celery_config.py](apps/worker/celery_config.py)
 
 ```python
-@bp.route('/api/v2/personalizados/processar', methods=['POST'])
-def processar():
-    body = request.get_json() or {}
-    pedido_ids = body.get('pedido_ids')
-    limit = body.get('limit', 100)
-    if not pedido_ids:
-        pedido_ids = _listar_pendentes(limit)
-    if not pedido_ids:
-        return jsonify({'message': 'nada a processar'}), 200
-    batch = supabase_db.table('execucoes_ai_batch').insert({
-        'pedido_ids': pedido_ids,
-        'total': len(pedido_ids),
-        'iniciado_por': g.user_email if hasattr(g, 'user_email') else None,
-    }).execute().data[0]
-    processar_batch_ia.delay(batch['id'])
-    return jsonify({'batch_id': batch['id']}), 202
-
-@bp.route('/api/v2/personalizados/processar/<batch_id>', methods=['GET'])
-def progresso(batch_id):
-    row = supabase_db.table('execucoes_ai_batch').select('*') \
-        .eq('id', batch_id).single().execute().data
-    return jsonify(row)
-```
-
-### 3.7 Configuração de fila Celery
-
-**Arquivo AFETADO:** [apps/worker/celery_config.py](../../apps/worker/celery_config.py)
-
-```python
-# Adicionar configuração de filas
 task_queues = {
-    'default': {'exchange': 'default', 'routing_key': 'default'},
-    'ai_personalization': {'exchange': 'ai', 'routing_key': 'ai.personalization'},
-    'bling_status_sync':  {'exchange': 'bling', 'routing_key': 'bling.status'},
+    'default':            {'exchange': 'default'},
+    'ai_personalization': {'exchange': 'ai'},
+    'bling_status_sync':  {'exchange': 'bling'},
 }
-
 task_routes = {
-    'services.ai_personalization.processar_batch': {'queue': 'ai_personalization'},
-    'services.ai_personalization.processar_pedido': {'queue': 'ai_personalization'},
-    'services.bling_status_sync.sync_batch': {'queue': 'bling_status_sync'},
+    'services.ai_personalization.*': {'queue': 'ai_personalization'},
+    'services.bling_status_sync.*':  {'queue': 'bling_status_sync'},
 }
 ```
 
-**docker-compose** (ou equivalente): subir **worker separado** por fila para limitar concorrência sem afetar outras tasks:
+`docker-compose.yml`:
 ```yaml
-worker-ai:
-  command: celery -A apps.worker worker -Q ai_personalization -c 4 -n ai@%h
-worker-bling:
-  command: celery -A apps.worker worker -Q bling_status_sync -c 2 -n bling@%h
-worker-default:
-  command: celery -A apps.worker worker -Q default -c 8 -n default@%h
+worker-ai:      command: celery -A apps.worker worker -Q ai_personalization -c 4
+worker-bling:   command: celery -A apps.worker worker -Q bling_status_sync -c 2
+worker-default: command: celery -A apps.worker worker -Q default            -c 8
 ```
 
-### 3.8 Hardening adicional
+### 7.6 Hardening do `SupabaseDBService`
 
-1. **Circuit breaker no `SupabaseDBService`** ([supabase_db_service.py:79](../../packages/shared/nistiprint_shared/database/supabase_db_service.py#L79)): ao capturar `httpx.PoolTimeout` 3x em janela de 30s, backoff global de 5s antes de próxima request. Protege contra avalanche.
+**Arquivo AFETADO:** [packages/shared/nistiprint_shared/database/supabase_db_service.py](packages/shared/nistiprint_shared/database/supabase_db_service.py)
 
-2. **httpx pool explícito**: passar `httpx.Limits(max_connections=20, max_keepalive_connections=10)` ao criar o client. Fica em ([supabase_db_service.py:30](../../packages/shared/nistiprint_shared/database/supabase_db_service.py#L30)):
-   ```python
-   import httpx
-   _httpx_client = httpx.Client(
-       limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
-       timeout=httpx.Timeout(30.0, connect=5.0),
-   )
-   ```
+```python
+import httpx
+_httpx_client = httpx.Client(
+    limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+    timeout=httpx.Timeout(30.0, connect=5.0),
+)
+# Passar para o supabase.create_client() via opções, se a versão suportar;
+# caso contrário, usar como cliente alternativo nas RPCs críticas.
+```
 
-3. **Batch size default = 50**. Lotes grandes (>100) são fatiados pelo endpoint em sub-batches.
-
-### 3.9 Critério de aceitação — Parte C
-- [ ] Lote de 50 pedidos com 1 deliberadamente quebrado: 49 sucessos + 1 falha, sem `PoolTimeout`.
-- [ ] `execucoes_ai_batch.status = 'CONCLUIDO'` ao final.
-- [ ] Nenhuma task retry-loop infinita (max 2 retries no pedido).
-- [ ] Request HTTP `/processar` retorna em <500ms (202 Accepted).
-- [ ] Worker Celery com `-c 4` na fila `ai_personalization` nunca excede 4 requests simultâneas ao Supabase.
+Circuit breaker simples: se 3× `PoolTimeout` em 30s, sleep global 5s antes da próxima request.
 
 ---
 
-## 4. PARTE D — CORREÇÕES PENDENTES (HERANÇA DO RELATÓRIO ANTERIOR)
+## 8. CHECKLIST POR ARQUIVO
 
-### 4.1 Consolidação
-**Arquivo AFETADO:** `packages/shared/nistiprint_shared/services/consolidacao_service.py` (verificar nome exato).
-
-1. Ao auto-criar demanda rascunho, o worker deve popular:
-   - `canal_venda_id` (primeiro pedido do grupo)
-   - `modalidade_logistica`
-   - `is_flex`
-2. Agrupamento deve particionar por `(canal_venda_id, modalidade_logistica, is_flex)` **antes** de agrupar por composição.
-3. Popular `regras_logisticas_canal` com linhas por (canal × modalidade):
-
-```sql
--- Shopee Flex: corte 11h
-INSERT INTO regras_logisticas_canal (canal_venda_id, modalidade, horario_corte, ...)
-SELECT id, 'FLEX', '11:00', ... FROM canais_venda WHERE plataforma='shopee';
--- Shopee Standard: corte 15h
-INSERT INTO regras_logisticas_canal (canal_venda_id, modalidade, horario_corte, ...)
-SELECT id, 'STANDARD', '15:00', ... FROM canais_venda WHERE plataforma='shopee';
-```
-
-4. Resolver duplicação `channel_connections` × `integracao_canais_config`: eleger `channel_connections` como fonte única; migrar dados; dropar `integracao_canais_config` após garantir que nada a usa.
-
-### 4.2 Estoque sync/async
-
-**Arquivo AFETADO:** [demanda_producao_service.py](../../packages/shared/nistiprint_shared/services/demanda_producao_service.py)
-
-**Em `finalizar_item` ([linha 1875](../../packages/shared/nistiprint_shared/services/demanda_producao_service.py#L1875)) e `finalizar_item_parcial` ([linha 1910](../../packages/shared/nistiprint_shared/services/demanda_producao_service.py#L1910)):**
-
-```
-ANTES:
-  finalizar_item(item, delta):
-    agendar_processamento_estoque('ITEM_TOTAL_PROCESSO', item, delta)  # async tudo
-    atualizar_contadores_visuais(...)                                   # sync
-
-DEPOIS:
-  finalizar_item(item, delta):
-    produto_direto = _resolver_produto_direto(item)      # MIOLO, CAPA_IMPRESSAO, etc
-    if produto_direto:
-        estoque_service.movimentar_por_delta(
-            produto_id=produto_direto.id,
-            delta=delta,
-            demanda_id=item.demanda_id,
-            item_id=item.id,
-            idempotency_key=f"direto:{item.id}",
-        )  # SYNC
-    agendar_processamento_estoque(
-        'BOM_RECURSIVO_APOS_DIRETO',
-        item, delta,
-        skip_produto_direto_id=produto_direto.id if produto_direto else None,
-    )  # ASYNC — apenas BOM recursivo
-    atualizar_contadores_visuais(...)
-```
-
-**Novo `tipo_tarefa` em `fila_processamento_estoque`:**
-- `'BOM_RECURSIVO_APOS_DIRETO'` — worker faz explosão BOM **exceto** `produto_direto_id`, que já foi baixado sync.
-
-**Em `processar_fila_estoque` ([linha 2394](../../packages/shared/nistiprint_shared/services/demanda_producao_service.py#L2394)):**
-- Quando `tipo_tarefa = 'BOM_RECURSIVO_APOS_DIRETO'` e `skip_produto_direto_id` vier setado, pular esse nó.
-- Idempotência: tabela `movimentacoes_estoque` ganha coluna `idempotency_key UNIQUE NULLABLE`. Reprocessos não duplicam.
-
-```sql
-ALTER TABLE movimentacoes_estoque
-    ADD COLUMN IF NOT EXISTS idempotency_key TEXT UNIQUE;
-```
-
-### 4.3 Tasks mortas e hardcodes
-
-1. **[redis_queue_tasks.py:40](../../packages/shared/nistiprint_shared/services/redis_queue_tasks.py#L40)** (`consumir_fila_bling`) — substituir corpo atual por chamada real a `process_bling_webhook.delay(webhook_data)`. Se a fila Redis foi abandonada em favor do webhook HTTP direto, deletar a task e seu agendamento em beat.
-
-2. **[webhook_tasks.py:182-222](../../packages/shared/nistiprint_shared/services/webhook_tasks.py#L182)** — os helpers `_process_shopee_*` e `_process_bling_*` estão como TODO. Se o fluxo real vive em `bling_order_processing_service`, deletar helpers e simplificar as tasks para apenas logar. Documentar decisão.
-
-3. **CNPJs hardcoded** (`13597`, `54533`) em `bling_order_processing_service.py`:
-   - Mover para `integracao_instancia.config.cnpj_identificador`.
-   - Função de detecção passa a ler do banco.
-
-### 4.4 Critério de aceitação — Parte D
-- [ ] Usuário aloca 10 miolos → saldo visível cai para 10 em <1s (sync).
-- [ ] BOM recursivo continua sendo processado em <30s via worker (async).
-- [ ] Nenhum pedido novo entra em `pedidos_nao_classificados` por 7 dias após deploy.
-- [ ] Demandas auto-consolidadas têm `canal_venda_id`, `modalidade_logistica`, `is_flex` preenchidos.
-
----
-
-## 5. ORDEM DE EXECUÇÃO E DEPENDÊNCIAS
-
-```
-F1 (Parte A schema + ingestão)         3-5 dias   BLOQUEIA F2, F4
-F2 (Parte B sync status)               2-3 dias   Depende de F1
-F3 (Parte C IA em lote)                3-4 dias   Independente; pode paralelizar com F2
-F4 (Parte D consolidação)              5-7 dias   Depende de F1
-F5 (Parte D estoque sync/async)        3-5 dias   Independente
-F6 (Parte D limpezas/hardcodes)        1-2 dias   Por último
-```
-
-Caminho crítico: F1 → F2/F4 → aceitação global.
-
----
-
-## 6. CHECKLIST DE IMPLEMENTAÇÃO POR ARQUIVO
-
-| Arquivo | Ação | Seção |
-|---|---|---|
-| `supabase/migrations/20260424000000_pedidos_refactor.sql` | CRIAR | 1.3, 2.3, 3.3, 3.5, 4.2 |
-| `packages/shared/nistiprint_shared/services/flex_classifier_service.py` | CRIAR | 1.4 |
-| `packages/shared/nistiprint_shared/services/bling_order_processing_service.py` | EDITAR | 1.5, 4.3 |
-| `packages/shared/nistiprint_shared/services/platform_drivers/shopee.py` | EDITAR — expor `fulfillment_flag`, `shipping_carrier`, `package_list` no DTO | 1.5 |
-| `packages/shared/nistiprint_shared/services/demanda_producao_service.py` | EDITAR | 1.6, 4.2 |
-| `packages/shared/nistiprint_shared/services/ai_personalization_service.py` | EDITAR (refactor Celery) | 3.4 |
-| `packages/shared/nistiprint_shared/services/bling_status_sync_service.py` | CRIAR | 2.4 |
-| `packages/shared/nistiprint_shared/services/redis_queue_tasks.py` | EDITAR ou DELETAR | 4.3 |
-| `packages/shared/nistiprint_shared/services/webhook_tasks.py` | EDITAR ou DELETAR helpers | 4.3 |
-| `packages/shared/nistiprint_shared/database/supabase_db_service.py` | EDITAR — httpx limits + circuit breaker | 3.8 |
-| `apps/api/routes/pedidos_sync.py` | CRIAR | 2.2 |
-| `apps/api/routes/personalizados.py` | EDITAR | 3.6 |
-| `apps/worker/celery_config.py` | EDITAR — filas e routing | 3.7 |
-| `apps/ops/scripts/backfill_pedidos_refactor.py` | CRIAR | 1.7 |
-| `apps/frontend/src/pages/Pedidos/PedidosList.tsx` (ou equivalente) | EDITAR — botão sync Bling | 2.5 |
-| `docker-compose.yml` (ou k8s) | EDITAR — workers dedicados por fila | 3.7 |
-
----
-
-## 7. RISCOS E MITIGAÇÕES
-
-| Risco | Mitigação |
+| Arquivo | Ação |
 |---|---|
-| Backfill reprocessa pedidos e atinge rate limit Shopee | Executar backfill em janelas de 100 pedidos com sleep, ou apenas para pedidos dos últimos 90 dias |
-| Pool httpx satura com Celery concorrente | Limite explícito de `max_connections=20` em `httpx.Limits` + `-c 4` no worker de IA |
-| Triggers antigos ainda ativos após migration | Conferir com `\df+` e `\d+ pedidos` no psql após migration; incluir assertion no próprio SQL |
-| Backward compat: pedidos_nao_classificados em produção | Após backfill, job de limpeza move resolvidos para arquivo; não deletar em lote |
-| "Xpress" classificado como Flex por regex frouxo | Seed de `flex_classification_rules` NÃO inclui `xpress`; fallback explícito `shipping_carrier ILIKE '%'` → STANDARD |
-| Bling v3 retorna 429 no sync em lote | `ThreadPoolExecutor(max_workers=3)` + sleep 333ms entre disparos (ver [2.4](#24-serviço-e-task-celery)) |
+| `supabase/migrations/20260424100000_arquitetura_definitiva.sql` | CRIAR (§2) |
+| `packages/shared/nistiprint_shared/services/flex_classifier_service.py` | EDITAR — `marketplace_integration_id` + logs (§3) |
+| `packages/shared/nistiprint_shared/services/bling_order_processing_service.py` | EDITAR — pipeline linear, remover hardcodes CNPJ, logs (§4) |
+| `packages/shared/nistiprint_shared/services/platform_drivers/shopee.py` | EDITAR — expor campos no DTO, trocar `print` por logger (§4.2) |
+| `packages/shared/nistiprint_shared/services/demanda_producao_service.py` | EDITAR — aceitar `marketplace_integration_id` em `create_from_order` |
+| `packages/shared/nistiprint_shared/services/bling_status_sync_service.py` | CRIAR (§6) |
+| `packages/shared/nistiprint_shared/services/ai_personalization_service.py` | EDITAR — fan-out Celery (§7.4) |
+| `packages/shared/nistiprint_shared/services/redis_queue_tasks.py` | EDITAR — chamar `process_webhook` real, remover stub `só log` |
+| `packages/shared/nistiprint_shared/services/webhook_tasks.py` | DELETAR helpers TODO ou simplificar |
+| `packages/shared/nistiprint_shared/database/supabase_db_service.py` | EDITAR — httpx limits + circuit breaker (§7.6) |
+| `apps/api/routes/pedidos_sync.py` | CRIAR (§6.1) |
+| `apps/api/routes/personalizados.py` | EDITAR — endpoint batch (§7) |
+| `apps/worker/worker_entrypoint.py` | EDITAR — formatter + níveis (§5.1) |
+| `apps/worker/celery_config.py` | EDITAR — filas e routing (§7.5) |
+| `apps/ops/scripts/migrar_canais_para_marketplace.py` | CRIAR (§5.4) |
+| `apps/ops/scripts/backfill_pedidos_e_flex.py` | CRIAR — re-classifica pedidos antigos via classifier novo |
+| `apps/frontend/src/pages/Pedidos/PedidosList.tsx` (ou equivalente) | EDITAR — UI sync Bling |
+| `docker-compose.yml` | EDITAR — workers dedicados |
 
 ---
 
-## 8. VALIDAÇÕES FINAIS (SQL DE VERIFICAÇÃO)
+## 9. ORDEM DE EXECUÇÃO
 
-Após deploy, executar:
+```
+F1. Migration arquitetura definitiva + RPCs                   1 dia
+F2. Flex classifier (marketplace_integration_id + logs)       0.5 dia
+F3. Driver Shopee (expor campos)                              0.5 dia
+F4. Pipeline bling_order_processing reescrito                 1.5 dias
+F5. Worker logging + pedido_ingest_log                        0.5 dia
+F6. Script migrar_canais + backfill                           1 dia
+F7. Sync status batch (endpoint + worker + UI)                2 dias
+F8. IA personalização batch + filas + hardening               3 dias
+F9. Limpeza: drop canais_venda, channel_connections,
+   triggers legados, hardcodes CNPJ                          0.5 dia
+                                              TOTAL ~10 dias
+```
+
+Caminho crítico: F1 → F2 → F4 → F5 → F6 → (F7 e F8 paralelos).
+
+---
+
+## 10. VALIDAÇÕES PÓS-DEPLOY
 
 ```sql
--- V1: Nenhum Xpress classificado como flex
-SELECT COUNT(*) AS xpress_flex
-FROM pedidos p
-JOIN pedidos_shopee ps ON ps.id = p.pedido_shopee_id
-WHERE ps.shipping_carrier ILIKE '%xpress%'
-  AND p.is_flex = true;
+-- V1: Nenhum pedido novo sem marketplace_integration_id (origem marketplace)
+SELECT COUNT(*) FROM pedidos
+ WHERE created_at > NOW() - INTERVAL '24 hours'
+   AND origem IN ('SHOPEE','MERCADOLIVRE','AMAZON','SHEIN','TIKTOK')
+   AND marketplace_integration_id IS NULL;
 -- Esperado: 0
 
--- V2: Todos "Entrega Rápida" são flex
-SELECT COUNT(*) AS entrega_rapida_nao_flex
-FROM pedidos p
-JOIN pedidos_shopee ps ON ps.id = p.pedido_shopee_id
-WHERE ps.shipping_carrier ILIKE '%entrega r%pida%'
-  AND p.is_flex = false;
+-- V2: Nenhum "Xpress" classificado como Flex
+SELECT COUNT(*) FROM pedidos p
+  JOIN pedidos_shopee ps ON ps.id = p.pedido_shopee_id
+ WHERE ps.shipping_carrier ILIKE '%xpress%'
+   AND p.is_flex = true;
 -- Esperado: 0
 
--- V3: Cobertura de link
-SELECT
-  COUNT(*) FILTER (WHERE origem='BLING' AND pedido_bling_id IS NULL) AS bling_sem_link,
-  COUNT(*) FILTER (WHERE origem='SHOPEE' AND pedido_shopee_id IS NULL) AS shopee_sem_link
-FROM pedidos;
--- Esperado: 0, 0
+-- V3: Todo "Entrega Rápida" é Flex
+SELECT COUNT(*) FROM pedidos p
+  JOIN pedidos_shopee ps ON ps.id = p.pedido_shopee_id
+ WHERE ps.shipping_carrier ILIKE '%entrega r%pida%'
+   AND p.is_flex = false;
+-- Esperado: 0
 
--- V4: Triggers de flex não existem mais
-SELECT tgname FROM pg_trigger WHERE tgname LIKE '%flex%' AND NOT tgisinternal;
+-- V4: Todos pedidos têm pedido_bling_id
+SELECT COUNT(*) FROM pedidos
+ WHERE pedido_bling_id IS NULL
+   AND created_at > NOW() - INTERVAL '24 hours';
+-- Esperado: 0
+
+-- V5: Todo pedido Shopee tem pedido_shopee_id e buyer_username
+SELECT COUNT(*) FROM pedidos p
+  JOIN installed_integrations ii ON ii.id = p.marketplace_integration_id
+  JOIN integration_modules im ON im.id = ii.module_id
+ WHERE im.slug = 'shopee'
+   AND (p.pedido_shopee_id IS NULL
+        OR (SELECT buyer_username FROM pedidos_shopee WHERE id=p.pedido_shopee_id) IS NULL)
+   AND p.created_at > NOW() - INTERVAL '24 hours';
+-- Esperado: 0
+
+-- V6: Triggers legados removidos
+SELECT tgname FROM pg_trigger
+ WHERE tgname LIKE '%flex%' AND NOT tgisinternal;
 -- Esperado: vazio
 
--- V5: Demandas recentes têm modalidade
-SELECT COUNT(*) AS demandas_sem_modalidade
-FROM demandas_producao
-WHERE created_at > NOW() - INTERVAL '7 days'
-  AND (modalidade_logistica IS NULL OR canal_venda_id IS NULL);
--- Esperado: 0
+-- V7: Logs explicativos auditáveis
+SELECT pedido_id, is_flex, flex_motivo
+  FROM pedido_ingest_log
+ ORDER BY id DESC LIMIT 20;
+-- Esperado: cada linha tem motivo legível, ex.:
+--    "shipping_carrier='Entrega Rápida' casou regra global #10"
 ```
 
 ---
 
-## 9. ANEXOS
+## 11. ANEXOS
 
-### 9.1 Payload Bling (referência) — [docs/tecnico/APIs/bling.md](APIs/bling.md)
-Campos críticos: `data.id`, `data.numeroLoja`, `data.loja.id`, `data.situacao.id/valor`, `data.itens[]`, `data.transporte.volumes[].servico`, `data.intermediador.cnpj`.
+### 11.1 Tabelas novas
+- `sync_status_batches`, `sync_status_errors`
+- `execucoes_ai_batch`, `execucoes_ai_item`
+- `pedido_ingest_log`
 
-### 9.2 Payload Shopee (referência) — [docs/tecnico/APIs/shopee.md](APIs/shopee.md)
-Campos críticos: `order_sn`, `order_status`, `fulfillment_flag`, `shipping_carrier` (no root **e** em `package_list[i].shipping_carrier`), `buyer_username`, `buyer_user_id`, `item_list[]`, `pay_time`, `recipient_address`.
+### 11.2 Tabelas aposentadas (drop após backfill)
+- `canais_venda`
+- `channel_connections`
+- `integracao_canais_config`
+- `canal_modalidade_mapeamento`
 
-### 9.3 Tabelas novas criadas neste plano
-- `flex_classification_rules`
-- `sync_status_batches`
-- `sync_status_errors`
-- `execucoes_ai_batch`
-- `execucoes_ai_item`
+### 11.3 RPCs novos
+- `find_bling_integration_by_cnpj(text)`
+- `find_marketplace_by_bling_loja(text)`
+- `incrementar_batch_ia(uuid, int, int)`
 
-Reutilizada (sem alteração estrutural, apenas índice): `channel_connections` para mapeamento loja Bling → integração Shopee.
+### 11.4 Triggers removidos
+- `trg_calcular_is_flex` + função `calcular_is_flex`
+- Linha de override de `is_flex` em `fn_snapshot_channel_on_insert`
 
-### 9.4 Funções/RPCs novas
-- `find_shopee_connection(bigint, text)` — SQL STABLE, lookup de conexão Shopee via channel_connections.
-- `incrementar_batch_ia(uuid, int, int)` — PL/pgSQL, contador atômico de batch IA.
-
-### 9.5 Triggers removidos
-- `trg_calcular_is_flex` (e função `calcular_is_flex`)
-- Linha de override em `fn_snapshot_channel_on_insert`
+### 11.5 Referências
+- [docs/tecnico/APIs/bling.md](APIs/bling.md) — payload Bling v3
+- [docs/tecnico/APIs/shopee.md](APIs/shopee.md) — payload Shopee v2
+- [docs/tecnico/MODELO-DADOS.md](MODELO-DADOS.md) — modelo atual
 
 ---
 

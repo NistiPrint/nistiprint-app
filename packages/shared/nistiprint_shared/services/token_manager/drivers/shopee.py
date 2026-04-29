@@ -3,6 +3,7 @@ import hashlib
 import time
 import requests
 import logging
+import os
 from datetime import datetime, timedelta
 
 logger = logging.getLogger("ShopeeDriver")
@@ -14,9 +15,9 @@ def refresh_token(integration: dict) -> dict:
     credentials = integration.get("credentials") or {}
     config = integration.get("config") or {}
     
-    # Tenta pegar de credentials ou config (fallback)
-    partner_id_raw = credentials.get("partner_id") or config.get("partner_id")
-    partner_key = credentials.get("partner_key") or config.get("partner_key")
+    # Tenta pegar de credentials, config ou environment variables (fallback)
+    partner_id_raw = credentials.get("partner_id") or config.get("partner_id") or os.getenv("SHOPEE_PARTNER_ID")
+    partner_key = credentials.get("partner_key") or config.get("partner_key") or os.getenv("SHOPEE_PARTNER_KEY")
     
     # Access/Refresh tokens
     access_token = integration.get("access_token") or credentials.get("access_token")

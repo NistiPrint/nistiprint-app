@@ -4,6 +4,7 @@ from nistiprint_shared.services.category_service import category_service
 from nistiprint_shared.services.deposito_service import deposito_service
 from nistiprint_shared.services.product_service import product_service
 from nistiprint_shared.services.conta_bling_service import conta_bling_service
+from nistiprint_shared.database.supabase_db_service import supabase_db
 
 configuracoes_bp = Blueprint('configuracoes', __name__, url_prefix='/configuracoes')
 configuracoes_api_bp = Blueprint('configuracoes_api', __name__, url_prefix='/api/v2/configuracoes')
@@ -180,6 +181,44 @@ def bling_config():
         all_bling_accounts=all_bling_accounts,
         selected_bling_account_id=selected_bling_account_id
     )
+
+@configuracoes_api_bp.route('/bling', methods=['GET', 'POST'])
+def api_bling_config():
+    """Manages the default Bling account configuration (API v2)."""
+    bling_account_config_key = 'default_bling_account_id'
+
+    if request.method == 'POST':
+        data = request.get_json()
+        default_bling_account_id = data.get('default_bling_account_id')
+        if default_bling_account_id:
+            app_config_service.set_config(bling_account_config_key, default_bling_account_id)
+            return jsonify({'success': True, 'message': 'Configuração da conta Bling padrão salva com sucesso!'})
+        else:
+            app_config_service.set_config(bling_account_config_key, '')
+            return jsonify({'success': True, 'message': 'Configuração da conta Bling padrão removida com sucesso!'})
+
+    # GET request - buscar de installed_integrations
+    selected_bling_account_id = app_config_service.get_config(bling_account_config_key)
+    
+    # Buscar integrações Bling instaladas
+    bling_integrations = supabase_db.table('installed_integrations') \
+        .select('id, instance_name') \
+        .eq('module_id', 'bling') \
+        .eq('is_active', True) \
+        .execute()
+    
+    all_bling_accounts = []
+    for integration in bling_integrations.data:
+        all_bling_accounts.append({
+            'id': integration['id'],
+            'nome': integration['instance_name']
+        })
+
+    return jsonify({
+        'success': True,
+        'selected_bling_account_id': selected_bling_account_id,
+        'all_bling_accounts': all_bling_accounts
+    })
 
 
 

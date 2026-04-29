@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from sqlalchemy.orm import sessionmaker
 from contextlib import contextmanager
 import logging
+import httpx
 
 # Generic type variable for model classes
 T = TypeVar('T')
@@ -23,13 +24,6 @@ class SupabaseDBService:
         self.supabase_url = url or os.environ.get('SUPABASE_URL')
         self.supabase_key = key or os.environ.get('SUPABASE_SERVICE_KEY')
         self.client = None
-        
-        # Part C 3.8: httpx pool explicit limits
-        import httpx
-        self._httpx_client = httpx.Client(
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
-            timeout=httpx.Timeout(30.0, connect=5.0),
-        )
 
         # Circuit breaker state
         self._pool_timeout_count = 0
@@ -38,11 +32,9 @@ class SupabaseDBService:
 
         if self.supabase_url and self.supabase_key:
             try:
-                # Use the default initialization with our custom httpx client
                 self.client: Client = create_client(
                     self.supabase_url,
-                    self.supabase_key,
-                    options={"http_client": self._httpx_client}
+                    self.supabase_key
                 )
                 logging.info("Successfully connected to Supabase")
             except Exception as e:
@@ -57,20 +49,19 @@ class SupabaseDBService:
         """
         if self.client:
             return True
-            
+
         self.supabase_url = self.supabase_url or os.environ.get('SUPABASE_URL')
         self.supabase_key = self.supabase_key or os.environ.get('SUPABASE_SERVICE_KEY')
-        
+
         if not self.supabase_url or not self.supabase_key:
             logging.error("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in environment variables")
             return False
-            
+
         try:
             from supabase import create_client
             self.client: Client = create_client(
-                self.supabase_url, 
-                self.supabase_key,
-                options={"http_client": self._httpx_client}
+                self.supabase_url,
+                self.supabase_key
             )
             logging.info("Supabase client initialized via late-binding.")
             return True

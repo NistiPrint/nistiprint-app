@@ -181,7 +181,11 @@ export default function TabelaPedidos({
                     </div>
                   </TableCell>
                   <TableCell>
-                    <CanalIcon canalNome={pedido.canal_venda_nome} />
+                    <CanalIcon 
+                      canalNome={pedido.canal_venda_nome}
+                      marketplaceSlug={pedido.marketplace_slug}
+                      marketplaceColor={pedido.marketplace_color}
+                    />
                   </TableCell>
                   <TableCell>
                     <StatusBadge
@@ -387,8 +391,9 @@ function getDemandaStatusColor(status) {
 }
 
 // Componente de Ícone do Canal com fallback para nome
-function CanalIcon({ canalNome }) {
-  const canalSlug = canalNome?.toLowerCase().replace(/\s+/g, '') || '';
+function CanalIcon({ canalNome, marketplaceSlug, marketplaceColor }) {
+  // Priorizar marketplace_slug se disponível (nova arquitetura)
+  const canalSlug = marketplaceSlug || canalNome?.toLowerCase().replace(/\s+/g, '') || '';
 
   // URLs dos ícones (mesmos usados em IntegracaoCard.jsx)
   const iconUrls = {
@@ -398,7 +403,7 @@ function CanalIcon({ canalNome }) {
     shein: 'https://app.nistiprint.com.br/assets/img/shein.svg',
   };
 
-  // Cores de fallback
+  // Cores de fallback (usar marketplaceColor se disponível)
   const colorMap = {
     shopee: 'bg-orange-500',
     amazon: 'bg-blue-600',
@@ -428,11 +433,20 @@ function CanalIcon({ canalNome }) {
     );
   }
 
-  // Fallback: exibir nome do canal
+  // Fallback: exibir nome do canal com cor do marketplace se disponível
+  const badgeColor = marketplaceColor ? { 
+    backgroundColor: marketplaceColor, 
+    color: '#fff' 
+  } : undefined;
+
   return (
     <Tooltip>
       <TooltipTrigger>
-        <Badge variant="outline" className={`text-xs ${!canalNome ? 'border-red-300 text-red-500' : ''}`}>
+        <Badge 
+          variant="outline" 
+          className={`text-xs ${!canalNome ? 'border-red-300 text-red-500' : ''}`}
+          style={badgeColor}
+        >
           {canalNome || 'Unknown'}
         </Badge>
       </TooltipTrigger>

@@ -138,6 +138,7 @@ def get_pedidos_estatisticas():
 def get_canais_venda():
     """
     Retorna lista de canais de venda disponíveis para filtros.
+    Compatibilidade legada - retorna canais_venda.
     
     Query params:
     - ativos: true/false (default: true) - Filtrar apenas canais ativos
@@ -163,6 +164,58 @@ def get_canais_venda():
         
     except Exception as e:
         logger.error(f"Erro ao buscar canais de venda: {e}")
+        return ApiResponse.error(message=str(e), status_code=500)
+
+@pedidos_gestao_bp.route('/marketplaces', methods=['GET'])
+@login_required
+def get_marketplaces():
+    """
+    Retorna lista de marketplaces disponíveis para filtros (nova arquitetura).
+    Busca de installed_integrations com tipo marketplace.
+    
+    Query params:
+    - ativos: true/false (default: true) - Filtrar apenas integrações ativas
+    """
+    try:
+        ativos = request.args.get('ativos', 'true').lower() in ('true', '1', 'yes')
+        
+        # Buscar integrações (sem nested select pois não há FK)
+        query = supabase_db.table('installed_integrations').select('id, instance_name, module_id, is_active')
+        
+        if ativos:
+            query = query.eq('is_active', True)
+        
+        integrations_result = query.execute()
+        integrations = integrations_result.data if integrations_result.data else []
+        
+        # Buscar módulos de integração separadamente
+        modules_result = supabase_db.table('integration_modules').select('id, slug, name, tipo').execute()
+        modules = {m['id']: m for m in modules_result.data} if modules_result.data else {}
+        
+        # Filtrar apenas marketplaces e formatar resposta
+        marketplaces = []
+        for integration in integrations:
+            module_id = integration.get('module_id')
+            module = modules.get(module_id)
+            if module and module.get('tipo') == 'marketplace':
+                marketplaces.append({
+                    'id': integration['id'],
+                    'nome': integration['instance_name'],
+                    'slug': module['slug'],
+                    'module_name': module['name'],
+                    'is_active': integration['is_active']
+                })
+        
+        # Ordenar por nome
+        marketplaces.sort(key=lambda x: x['nome'])
+        
+        return ApiResponse.success(data={
+            'marketplaces': marketplaces,
+            'total': len(marketplaces)
+        })
+        
+    except Exception as e:
+        logger.error(f"Erro ao buscar marketplaces: {e}")
         return ApiResponse.error(message=str(e), status_code=500)
 
 

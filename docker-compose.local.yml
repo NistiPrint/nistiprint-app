@@ -39,12 +39,17 @@ services:
       - FLASK_ENV=development
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
       - TZ=America/Sao_Paulo
     env_file:
       - .env
     depends_on:
       - redis
+    volumes:
+      - ./apps/api:/app
+      - ./packages:/app/packages
     command: python main.py
     logging:
       driver: "local"
@@ -70,6 +75,8 @@ services:
       - .env
     depends_on:
       - redis
+    volumes:
+      - ./packages:/app/packages
     command: celery -A worker_entrypoint worker --loglevel=info --concurrency=2
     logging:
       driver: "local"

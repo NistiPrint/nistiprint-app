@@ -2,22 +2,22 @@ from time import sleep
 import os
 import requests
 
-import gcp_flask.constants as constants
-from gcp_flask.utils import process_string
+from nistiprint_shared.constants import PLATFORM_X_BLING_VERSION, PLATFORM_X_CNPJ
+from nistiprint_shared.utils import process_string
 
 
 def bling_get_token(platform):
     """
     Obtém token da Bling chamando endpoint externo do token manager.
     """
-    versao = constants.PLATFORM_X_BLING_VERSION.get(str(platform).lower())
+    versao = PLATFORM_X_BLING_VERSION.get(str(platform).lower())
 
     if versao is None:
         print(f"Versão não encontrada para plataforma: {platform}")
         return None
 
     # Obter CNPJ da plataforma
-    cnpj = constants.PLATFORM_X_CNPJ.get(str(platform).lower())
+    cnpj = PLATFORM_X_CNPJ.get(str(platform).lower())
 
     if not cnpj:
         print(f"CNPJ não encontrado para plataforma: {platform}")

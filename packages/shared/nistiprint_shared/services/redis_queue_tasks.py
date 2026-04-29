@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from celery import shared_task
 import redis
-from nistiprint_shared.services.bling_order_processing_service import bling_order_processing_service
+from nistiprint_shared.services.bling_order_processing_service import process_webhook
 from nistiprint_shared.services.correlation_service import get_correlation_id, set_correlation_id, generate_correlation_id
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.utils.date_utils import get_now_iso
@@ -200,8 +200,33 @@ def consumir_fila_bling(correlation_id=None):
                 # O payload pode vir direto ou dentro de uma chave 'body' (depende de como o n8n salva)
                 data = json.loads(mensagem_str)
                 
-                logger.info(f"Iniciando processamento do webhook Bling no worker...")
-                result = bling_order_processing_service.process_webhook(data)
+                # Log raw payload for debugging
+                logger.info(f"Raw payload recebido do Redis: {mensagem_str[:500]}")
+                
+                # Validate payload has required fields
+                if not data or not isinstance(data, dict):
+                    logger.error(f"Payload inválido: não é um dicionário ou está vazio. Payload: {mensagem_str[:200]}")
+                    r.rpush(BLING_WEBHOOK_DEAD_LETTER, mensagem_str)
+                    continue
+                
+                # Extract order data - Bling webhooks nest the actual order in a 'data' field
+                order_data = data.get('data') if data.get('data') and isinstance(data.get('data'), dict) else data
+                
+                # Extract companyId from webhook wrapper for Bling instance resolution
+                company_id = data.get('companyId') if data.get('companyId') else None
+                
+                # Check for minimum required fields to avoid CNPJ errors
+                bling_id = order_data.get('id')
+                numero = order_data.get('numero')
+                numero_loja = order_data.get('numeroLoja')
+                
+                if not bling_id and not numero and not numero_loja:
+                    logger.error(f"Payload sem campos obrigatórios (id, numero, numeroLoja). Payload: {mensagem_str[:200]}")
+                    r.rpush(BLING_WEBHOOK_DEAD_LETTER, mensagem_str)
+                    continue
+                
+                logger.info(f"Iniciando processamento do webhook Bling no worker... (bling_id={bling_id}, numero={numero}, numeroLoja={numero_loja}, companyId={company_id})")
+                result = process_webhook(order_data, company_id=company_id)
                 
                 status_result = result.get('status', 'unknown')
                 msg_result = result.get('message', '')

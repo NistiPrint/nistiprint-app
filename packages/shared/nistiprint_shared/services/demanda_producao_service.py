@@ -93,7 +93,7 @@ class DemandaProducaoService:
     def create_from_order(self, order_data: Dict[str, Any], user_id='System', **kwargs) -> Dict[str, Any]:
         """
         Cria demanda a partir de um pedido (Facade).
-        Aceita is_flex, modalidade_logistica e canal_venda_id via kwargs.
+        Aceita is_flex, modalidade_logistica, canal_venda_id e marketplace_integration_id via kwargs.
         """
         return self._core.create_from_order(order_data, user_id, **kwargs)
 
