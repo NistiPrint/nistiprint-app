@@ -1,6 +1,6 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/contexts/AuthContext';
@@ -53,7 +53,7 @@ function LoginPage() {
               className="h-12 w-auto object-contain"
             />
           </div>
-          <CardTitle className="text-2xl font-bold">Nisti Print</CardTitle>
+          {/* <CardTitle className="text-2xl font-bold">Nisti Print</CardTitle> */}
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-6">

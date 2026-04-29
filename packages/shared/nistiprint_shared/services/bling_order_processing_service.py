@@ -67,7 +67,14 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
             else:
                 logger.warning("[ingest] loja_id=%s sem instância marketplace mapeada", loja_id)
 
-        # 5. Classificar Flex
+        # 5. Resolver canal_venda_id pela channel_connection ativa
+        canal_venda_id = _resolve_canal_venda_id(
+            (marketplace_inst or {}).get('id'),
+            bling_inst['id'],
+            loja_id
+        )
+
+        # 6. Classificar Flex
         flex = flex_classifier_service.classify(
             supabase_db,
             fields={
@@ -79,20 +86,33 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
             log_context=correlation,
         )
 
-        # 6. UPSERT pedidos
+        # 7. UPSERT pedidos
         pedido_id = _upsert_pedido_master(
             payload,
             pedido_bling_id=pedido_bling_id,
             pedido_shopee_id=pedido_shopee_id,
             bling_integration_id=bling_inst['id'],
             marketplace_integration_id=(marketplace_inst or {}).get('id'),
+            canal_venda_id=canal_venda_id,
             is_flex=flex.is_flex,
             modalidade=flex.modalidade,
+            shopee_data=shopee_data,
         )
         logger.info("[ingest] pedido upserted id=%s is_flex=%s modalidade=%s",
                     pedido_id, flex.is_flex, flex.modalidade)
 
-        # 7. Encadear demanda
+        # 8. Auditoria
+        _log_ingest(
+            pedido_id=pedido_id,
+            bling_id=bling_id,
+            marketplace_integration_id=(marketplace_inst or {}).get('id'),
+            is_flex=flex.is_flex,
+            flex_motivo=flex.motivo,
+            matched_rule_id=flex.matched_rule_id if hasattr(flex, 'matched_rule_id') else None,
+            raw_decision=flex.raw_decision if hasattr(flex, 'raw_decision') else None,
+        )
+
+        # 9. Encadear demanda
         demanda_producao_service.create_from_order(
             {'pedido_id': pedido_id},
             is_flex=flex.is_flex,
@@ -174,6 +194,55 @@ def _resolve_marketplace_instance(loja_id: str, bling_integration_id: int | None
     inst['plataforma_slug'] = (mod or {}).get('slug')
     return inst
 
+
+def _resolve_canal_venda_id(marketplace_integration_id, bling_integration_id, loja_id):
+    """
+    Resolve canal_venda_id pela channel_connection ativa.
+    Fallback para canais_venda legado se necessário.
+    """
+    if not marketplace_integration_id:
+        return None
+
+    try:
+        # Buscar channel_connection ativa
+        cc = supabase_db.table('channel_connections') \
+            .select('channel_id') \
+            .eq('marketplace_integration_id', marketplace_integration_id) \
+            .eq('is_active', True) \
+            .limit(1).execute().data
+        if cc:
+            return cc[0].get('channel_id')
+
+        # Fallback: buscar na tabela canais_venda (legado)
+        if loja_id:
+            cv = supabase_db.table('canais_venda') \
+                .select('id') \
+                .eq('conta_bling_id', str(loja_id)) \
+                .limit(1).execute().data
+            if cv:
+                return cv[0].get('id')
+    except Exception as e:
+        logger.warning("[ingest] Erro ao resolver canal_venda_id: %s", e)
+
+    return None
+
+
+def _log_ingest(pedido_id, bling_id, marketplace_integration_id,
+                is_flex, flex_motivo, matched_rule_id, raw_decision):
+    """Grava auditoria do ingest na tabela pedido_ingest_log."""
+    try:
+        supabase_db.table('pedido_ingest_log').insert({
+            'pedido_id': pedido_id,
+            'bling_id': bling_id,
+            'marketplace_integration_id': marketplace_integration_id,
+            'is_flex': is_flex,
+            'flex_motivo': flex_motivo,
+            'matched_rule_id': matched_rule_id,
+            'raw_decision': raw_decision,
+        }).execute()
+    except Exception as e:
+        logger.warning("[ingest] Erro ao gravar auditoria: %s", e)
+
 def _fetch_shopee_detail(marketplace_inst, order_sn):
     cfg, cred = marketplace_inst['config'], marketplace_inst.get('credentials') or {}
     integration = {
@@ -253,61 +322,142 @@ def _upsert_pedido_shopee(shopee_data: dict, marketplace_integration_id: int) ->
         .upsert(row, on_conflict='codigo_pedido').execute()
     return res.data[0]['id']
 
-def _upsert_pedido_master(payload, **kwargs):
+def _upsert_pedido_master(payload, *,
+                         pedido_bling_id, pedido_shopee_id,
+                         bling_integration_id, marketplace_integration_id,
+                         canal_venda_id,           # derivado de channel_connections
+                         is_flex, modalidade,
+                         shopee_data,              # dict ou None
+                         ):
     """
     Upsert pedido na tabela pedidos (tabela unificada).
-    
+    Popula TODOS os campos que a tela precisa exibir.
+
     Mapeamento de campos:
     - Bling numeroLoja = Marketplace order code (ex: Shopee order_sn)
     - No banco: codigo_pedido_externo (equivale a numeroLoja/order_sn)
     - Bling numero = Número interno do pedido no Bling
     - No banco: numero_pedido
     """
-    bling_numero = str(payload.get('numero', ''))
-    numero_loja = payload.get('numeroLoja')  # Equivale ao order_sn na Shopee
-    codigo_externo = numero_loja if numero_loja else bling_numero  # codigo_pedido_externo
-    
-    data = {
-        'codigo_pedido_externo': codigo_externo,
-        'numero_pedido': bling_numero,
-        'pedido_bling_id': kwargs.get('pedido_bling_id'),
-        'pedido_shopee_id': kwargs.get('pedido_shopee_id'),
-        'bling_integration_id': kwargs.get('bling_integration_id'),
-        'marketplace_integration_id': kwargs.get('marketplace_integration_id'),
-        'is_flex': kwargs.get('is_flex', False),
-        'modalidade_logistica': kwargs.get('modalidade', 'STANDARD'),
-        'cliente_nome': payload.get('contato', {}).get('nome'),
-        'informacoes_cliente': payload.get('contato', {}),
-        'data_venda': payload.get('data'),
-        'origem': 'BLING',
-        'updated_at': datetime.now(timezone.utc).isoformat(),
-        'personalizado': payload.get('has_personalized', False)
-    }
-    
-    # Mapeamento de situação para situacao_pedido_id via integration_status_mappings
-    situacao_id = payload.get('situacao', {}).get('id')
-    if situacao_id:
-        mapping_res = supabase_db.table('integration_status_mappings') \
-            .select('internal_situacao_pedido_id') \
-            .eq('module_id', 'bling') \
-            .eq('external_status_id', str(situacao_id)) \
-            .maybe_single().execute()
-        if mapping_res.data:
-            data['situacao_pedido_id'] = mapping_res.data['internal_situacao_pedido_id']
+    # Identificadores
+    bling_id      = payload.get('id')                          # ID interno Bling
+    bling_numero  = str(payload.get('numero') or '')           # número exibido
+    numero_loja   = payload.get('numeroLoja')                  # ID marketplace
+    codigo_externo = numero_loja if numero_loja else f"BLING-{bling_id}"
 
+    # Cliente (sempre do Bling — fonte canônica)
+    contato = payload.get('contato') or {}
+
+    # Datas
+    data_venda          = _clean_date(payload.get('data'))
+    data_limite_envio   = _clean_date(
+        (shopee_data or {}).get('ship_by_date')
+        or payload.get('dataPrevista')
+    )
+
+    # Logística
+    transporte = payload.get('transporte') or {}
+    volumes    = transporte.get('volumes') or []
+    servico    = volumes[0].get('servico') if volumes else None
+
+    # Status interno
+    situacao_pedido_id = _resolve_situacao_interna(
+        bling_integration_id,
+        payload.get('situacao', {}).get('id'),
+    )
+
+    data = {
+        'numero_pedido':              bling_numero,        # NÃO é unique
+        'codigo_pedido_externo':      codigo_externo,      # UNIQUE
+        'origem':                     'BLING',
+        'pedido_bling_id':            pedido_bling_id,
+        'pedido_shopee_id':           pedido_shopee_id,
+        'bling_integration_id':       bling_integration_id,
+        'marketplace_integration_id': marketplace_integration_id,
+        'canal_venda_id':             canal_venda_id,
+        'situacao_pedido_id':         situacao_pedido_id,
+        'status_original':            str(payload.get('situacao', {}).get('id') or ''),
+
+        # Cliente
+        'cliente_nome':               contato.get('nome'),
+        'cliente_documento':          contato.get('numeroDocumento'),
+        'cliente_telefone':           contato.get('telefone') or contato.get('celular'),
+        'cliente_email':              contato.get('email'),
+        'informacoes_cliente':        contato,             # JSONB completo
+
+        # Financeiro
+        'total_pedido':               _safe_float(payload.get('total')),
+        'moeda':                      'BRL',
+
+        # Datas
+        'data_venda':                 data_venda,
+        'data_limite_envio':          data_limite_envio,
+
+        # Logística / Flex
+        'servico_logistico':          servico,
+        'is_flex':                    is_flex,
+        'modalidade_logistica':       modalidade,
+
+        # Marketplace (preenchido só se houver enriquecimento)
+        'buyer_username':             (shopee_data or {}).get('buyer_username'),
+        'shipping_carrier':           (shopee_data or {}).get('shipping_carrier'),
+        'message_to_seller':          (shopee_data or {}).get('raw', {}).get('message_to_seller'),
+
+        'updated_at':                 datetime.now(timezone.utc).isoformat(),
+    }
+
+    # filtra None para não sobrescrever em update
+    data = {k: v for k, v in data.items() if v is not None}
+
+    res = supabase_db.table('pedidos').upsert(
+        data, on_conflict='codigo_pedido_externo'
+    ).execute()
+    pedido_id = res.data[0]['id'] if res.data else None
+    logger.info("[upsert_pedido_master] Pedido upserted: codigo_externo=%s, pedido_id=%s", codigo_externo, pedido_id)
+
+    # Upsert itens do pedido
+    if pedido_id:
+        _upsert_itens_pedido(pedido_id, payload.get('itens', []))
+
+    return pedido_id
+
+
+def _clean_date(date_str):
+    """Valida e limpa strings de data para evitar erros no Postgres."""
+    if not date_str or not isinstance(date_str, str):
+        return None
+    if date_str.startswith('0000') or '0000-00-00' in date_str:
+        return None
+    return date_str
+
+
+def _safe_float(value, default=0.0):
+    """Converte valores de forma segura."""
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, dict):
+        for k in ['valor', 'total', 'quantidade']:
+            if k in value:
+                return _safe_float(value[k], default)
+        return default
     try:
-        res = supabase_db.table('pedidos').upsert(data, on_conflict='codigo_pedido_externo').execute()
-        pedido_id = res.data[0]['id'] if res.data else None
-        logger.info("[upsert_pedido_master] Pedido upserted: codigo_externo=%s, pedido_id=%s", codigo_externo, pedido_id)
-        
-        # Upsert itens do pedido
-        if pedido_id:
-            _upsert_itens_pedido(pedido_id, payload.get('itens', []))
-        
-        return pedido_id
-    except Exception as e:
-        logger.error("[upsert_pedido_master] Erro ao upsert pedido codigo_externo=%s: %s", codigo_externo, e, exc_info=True)
-        raise
+        return float(str(value).replace(',', '.'))
+    except:
+        return default
+
+
+def _resolve_situacao_interna(bling_integration_id, bling_situacao_id):
+    """Mapeia status do Bling para status interno via integration_status_mappings."""
+    if not bling_situacao_id:
+        return None
+    mapping_res = supabase_db.table('integration_status_mappings') \
+        .select('internal_situacao_pedido_id') \
+        .eq('module_id', 'bling') \
+        .eq('external_status_id', str(bling_situacao_id)) \
+        .maybe_single().execute()
+    return mapping_res.data['internal_situacao_pedido_id'] if mapping_res.data else None
 
 def _volume_servico(payload):
     volumes = payload.get('transporte', {}).get('volumes', [])
@@ -316,65 +466,68 @@ def _volume_servico(payload):
 def _upsert_itens_pedido(pedido_id, itens_bling):
     """
     Upsert itens do pedido na tabela itens_pedido.
-    Mapeia itens do Bling para a estrutura unificada.
+    Usa vinculos_bling (o cadastro real de mapeamento) em vez de produtos.sku.
     """
-    logger.info("[upsert_itens_pedido] Iniciando - pedido_id=%s, itens_bling_count=%s", pedido_id, len(itens_bling) if itens_bling else 0)
-    
-    if not itens_bling:
-        logger.warning("[upsert_itens_pedido] Nenhum item para upsert no pedido_id=%s - itens_bling está vazio ou None", pedido_id)
+    if not pedido_id or not itens_bling:
         return
-    
-    if not pedido_id:
-        logger.error("[upsert_itens_pedido] pedido_id é None ou inválido - não é possível salvar itens")
-        return
-    
-    try:
-        # Primeiro deletar itens existentes deste pedido para evitar duplicatas
-        logger.info("[upsert_itens_pedido] Deletando itens existentes do pedido_id=%s", pedido_id)
-        delete_res = supabase_db.table('itens_pedido') \
-            .delete() \
-            .eq('pedido_id', pedido_id) \
-            .execute()
-        logger.info("[upsert_itens_pedido] Delete concluído para pedido_id=%s", pedido_id)
-        
-        # Inserir novos itens
-        itens_to_insert = []
-        for idx, item in enumerate(itens_bling):
-            logger.debug("[upsert_itens_pedido] Processando item %d: codigo=%s, descricao=%s, valor=%s, quantidade=%s", 
-                        idx, item.get('codigo'), item.get('descricao'), item.get('valor'), item.get('quantidade'))
-            
-            item_data = {
-                'pedido_id': pedido_id,
-                'sku_externo': item.get('codigo') or item.get('descricao'),
-                'descricao': item.get('descricao'),
-                'quantidade': float(item.get('quantidade', 0)),
-                'preco_unitario': float(item.get('valor', 0)),
-                'subtotal': float(item.get('valor', 0)) * float(item.get('quantidade', 0)),
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }
-            
-            # Tentar encontrar produto correspondente pelo SKU externo
-            if item.get('codigo'):
-                produto_res = supabase_db.table('produtos') \
-                    .select('id') \
-                    .eq('sku', item.get('codigo')) \
-                    .maybe_single().execute()
-                if produto_res.data:
-                    item_data['produto_id'] = produto_res.data['id']
-                    logger.debug("[upsert_itens_pedido] Produto encontrado: produto_id=%s para sku=%s", produto_res.data['id'], item.get('codigo'))
-            
-            itens_to_insert.append(item_data)
-        
-        # Inserir todos os itens de uma vez
-        if itens_to_insert:
-            logger.info("[upsert_itens_pedido] Inserindo %d itens para pedido_id=%s", len(itens_to_insert), pedido_id)
-            insert_res = supabase_db.table('itens_pedido').insert(itens_to_insert).execute()
-            logger.info("[upsert_itens_pedido] %d itens upserted com sucesso para pedido_id=%s", len(itens_to_insert), pedido_id)
-        else:
-            logger.warning("[upsert_itens_pedido] itens_to_insert está vazio após processamento - nenhum item inserido")
-    except Exception as e:
-        logger.error("[upsert_itens_pedido] Erro ao upsert itens do pedido_id=%s: %s", pedido_id, e, exc_info=True)
-        raise
+
+    # Deletar itens existentes deste pedido para evitar duplicatas
+    supabase_db.table('itens_pedido').delete().eq('pedido_id', pedido_id).execute()
+
+    rows = []
+    for it in itens_bling:
+        codigo = it.get('codigo')                          # SKU vendido
+        produto_bling_id = (it.get('produto') or {}).get('id')
+        produto_id = _resolve_produto_interno(codigo, produto_bling_id)
+        rows.append({
+            'pedido_id':       pedido_id,
+            'produto_id':      produto_id,
+            'sku_externo':     codigo,
+            'descricao':       it.get('descricao'),
+            'quantidade':      _safe_float(it.get('quantidade'), 1.0),
+            'preco_unitario':  _safe_float(it.get('valor')),
+            'subtotal':        _safe_float(it.get('valor')) * _safe_float(it.get('quantidade'), 1.0),
+            'updated_at':      datetime.now(timezone.utc).isoformat(),
+        })
+
+    if rows:
+        supabase_db.table('itens_pedido').insert(rows).execute()
+        logger.info("[upsert_itens_pedido] %d itens inseridos para pedido_id=%s", len(rows), pedido_id)
+
+
+def _resolve_produto_interno(codigo, produto_bling_id):
+    """
+    Resolve o produto interno usando vinculos_bling.
+    Prioridade: 1) vinculos_bling por bling_id, 2) vinculos_bling por SKU, 3) produtos.sku
+    """
+    # 1ª tentativa: vinculos_bling por bling_id
+    if produto_bling_id:
+        v = (supabase_db.table('vinculos_bling')
+             .select('produto_id')
+             .eq('codigo_bling', str(produto_bling_id))
+             .limit(1).execute().data)
+        if v:
+            return v[0]['produto_id']
+
+    # 2ª tentativa: vinculos_bling por SKU
+    if codigo:
+        v = (supabase_db.table('vinculos_bling')
+             .select('produto_id')
+             .eq('codigo_bling', str(codigo))
+             .limit(1).execute().data)
+        if v:
+            return v[0]['produto_id']
+
+    # 3ª tentativa: produtos por SKU
+    if codigo:
+        p = (supabase_db.table('produtos')
+             .select('id')
+             .eq('sku', codigo)
+             .limit(1).execute().data)
+        if p:
+            return p[0]['id']
+
+    return None
 
 
 def import_single_order_by_shop_id(shopee_order_sn: str):

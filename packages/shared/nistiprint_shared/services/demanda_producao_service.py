@@ -205,12 +205,20 @@ class DemandaProducaoService:
     # ========================================================================
 
     def get_dashboard_summary(self) -> Dict[str, Any]:
-        """Obtém resumo para o dashboard de produção."""
-        return self._report_dashboard.get_production_summary()
+        """Obtém resumo consolidado de produção para a lista de demandas."""
+        return self._report_production.get_daily_production_summary()
 
     def get_kanban_data(self, setor_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Obtém dados para o quadro Kanban."""
         return self._report_kanban.get_kanban_board(setor_id)
+
+    def get_painel_producao_setores(self, setor_id_ou_nome: Optional[int] = None) -> Dict[str, Any]:
+        """Obtém dados do painel de produção organizado por setores/colunas Kanban."""
+        return self._report_kanban.get_painel_producao_setores(setor_id_ou_nome)
+
+    def get_daily_production_summary(self) -> Dict[str, Any]:
+        """Obtém resumo diário de produção consolidado."""
+        return self._report_production.get_daily_production_summary()
 
     def get_demandas_consolidadas(self, data_inicio: str, data_fim: str) -> List[Dict[str, Any]]:
         """Obtém demandas consolidadas para relatório."""
