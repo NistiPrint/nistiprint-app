@@ -16,7 +16,7 @@ from typing import List
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-REDIS_HOST = 'redis'
+REDIS_HOST = '172.21.0.2'
 REDIS_PORT = 6379
 REDIS_DB = 0
 DEAD_LETTER_QUEUE = 'bling:webhooks:dead-letter'

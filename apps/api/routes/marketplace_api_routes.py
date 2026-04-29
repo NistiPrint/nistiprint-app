@@ -348,6 +348,23 @@ def renew_token(instance_id):
         installed_integration_service.update_installed(instance_id, {'refresh_error': str(e)})
         return jsonify({'error': str(e)}), 500
 
+@marketplace_api_bp.route('/installed/<instance_id>/config', methods=['PUT'])
+def update_integration_config(instance_id):
+    """Atualiza o config de uma integração instalada"""
+    inst = installed_integration_service.get_installed_by_id(instance_id)
+    if not inst:
+        return jsonify({'error': 'Not found'}), 404
+    
+    data = request.get_json()
+    config_update = data.get('config', {})
+    
+    # Mesclar com config existente
+    current_config = inst.config or {}
+    updated_config = {**current_config, **config_update}
+    
+    installed_integration_service.update_installed(instance_id, {'config': updated_config})
+    return jsonify({'success': True, 'config': updated_config})
+
 @marketplace_api_bp.route('/orders/list', methods=['POST'])
 def get_orders_list():
     data = request.get_json(silent=True) or {}

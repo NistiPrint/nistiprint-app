@@ -216,8 +216,9 @@ class PlatformAuthService:
         raise ValueError(f"Refresh not implemented for {module_id}")
 
     def _refresh_shopee_token(self, config: Dict, credentials: Dict, refresh_token: str) -> Dict:
-        partner_id_raw = config.get('partner_id') or credentials.get('partner_id')
-        partner_key = config.get('partner_key') or credentials.get('partner_key')
+        import os
+        partner_id_raw = config.get('partner_id') or credentials.get('partner_id') or os.getenv('SHOPEE_PARTNER_ID')
+        partner_key = config.get('partner_key') or credentials.get('partner_key') or os.getenv('SHOPEE_PARTNER_KEY')
         shop_id_raw = config.get('shop_id') or credentials.get('shop_id')
         
         if not partner_id_raw or not partner_key:

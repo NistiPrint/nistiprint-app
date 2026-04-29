@@ -129,7 +129,18 @@ export async function listarIntegracoes() {
  * @returns {Promise<Object>} Resultado da renovação
  */
 export async function renewToken(instanceId) {
-  const response = await api.post(`/marketplace/installed/${instanceId}/renew`);
+  const response = await api.post(`/api/v2/marketplace/installed/${instanceId}/renew`);
+  return response.data;
+}
+
+/**
+ * Atualiza o config de uma integração instalada
+ * @param {string} instanceId - ID da instância de integração
+ * @param {Object} config - Configurações a atualizar
+ * @returns {Promise<Object>} Resultado da atualização
+ */
+export async function updateIntegrationConfig(instanceId, config) {
+  const response = await api.put(`/api/v2/marketplace/installed/${instanceId}/config`, { config });
   return response.data;
 }
 
@@ -162,6 +173,7 @@ export default {
   listarCanais,
   listarIntegracoes,
   renewToken,
+  updateIntegrationConfig,
   syncFirestore,
   getAnaliseStatus,
 };
