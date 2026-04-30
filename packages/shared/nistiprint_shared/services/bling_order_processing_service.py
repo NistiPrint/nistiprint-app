@@ -104,7 +104,7 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
         # 8. Auditoria
         _log_ingest(
             pedido_id=pedido_id,
-            bling_id=bling_id,
+            bling_id=correlation['bling_id'],
             marketplace_integration_id=(marketplace_inst or {}).get('id'),
             is_flex=flex.is_flex,
             flex_motivo=flex.motivo,
