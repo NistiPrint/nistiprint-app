@@ -114,7 +114,7 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
 
         # 9. Encadear demanda
         demanda_producao_service.create_from_order(
-            {'pedido_id': pedido_id},
+            {'pedido_id': pedido_id, 'numeroLoja': payload.get('numeroLoja')},
             is_flex=flex.is_flex,
             modalidade_logistica=flex.modalidade,
             marketplace_integration_id=(marketplace_inst or {}).get('id'),
