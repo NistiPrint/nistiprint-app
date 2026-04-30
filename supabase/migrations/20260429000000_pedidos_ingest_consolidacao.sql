@@ -55,3 +55,20 @@ CREATE TABLE IF NOT EXISTS pedido_ingest_log (
 CREATE INDEX IF NOT EXISTS idx_pedido_ingest_log_bling_id ON pedido_ingest_log(bling_id);
 CREATE INDEX IF NOT EXISTS idx_pedido_ingest_log_pedido_id ON pedido_ingest_log(pedido_id);
 CREATE INDEX IF NOT EXISTS idx_pedido_ingest_log_created_at ON pedido_ingest_log(created_at);
+
+-- 5. Corrigir trigger fn_snapshot_channel_on_insert (usava coluna 'config' errada)
+CREATE OR REPLACE FUNCTION public.fn_snapshot_channel_on_insert()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+    v_config jsonb;
+BEGIN
+    SELECT configuracao INTO v_config
+      FROM canais_venda
+     WHERE id = NEW.canal_venda_id;
+
+    NEW.channel_snapshot := v_config;
+    RETURN NEW;
+END;
+$function$;
