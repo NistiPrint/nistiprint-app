@@ -1,5 +1,4 @@
 import logging
-import requests
 from datetime import datetime, timezone
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
@@ -39,6 +38,14 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
                 logger.info("[ingest] payload Bling atualizado via /pedidos/vendas/%s", payload.get('id'))
             else:
                 logger.warning("[ingest] falha ao buscar detalhe Bling — pipeline continua com payload do webhook")
+
+        detalhe_disponivel = bool(payload.get('itens')) or bool(payload.get('contato'))
+        if not detalhe_disponivel:
+            raise RuntimeError(
+                f"detalhe Bling indisponível para id={correlation['bling_id']} "
+                f"(token possivelmente expirado em inst={bling_inst['id']}); "
+                f"reenfileirando para reprocesso"
+            )
 
         # 2. UPSERT pedidos_bling (espelho do payload)
         pedido_bling_id = _upsert_pedido_bling(payload, bling_inst['id'])
@@ -181,20 +188,22 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
 def _fetch_bling_order_detail(bling_inst: dict, bling_order_id) -> dict | None:
     """Busca pedido detalhado no Bling. Retorna o objeto data ou None em falha.
     Token vem de credentials.access_token ou access_token na própria install."""
-    cred = bling_inst.get('credentials') or {}
-    token = bling_inst.get('access_token') or cred.get('access_token')
-    if not token or not bling_order_id:
-        logger.warning("[ingest] sem token/id para fetch detalhe Bling (inst=%s)", bling_inst.get('id'))
+    if not bling_order_id:
+        logger.warning("[ingest] sem id para fetch detalhe Bling (inst=%s)", bling_inst.get('id'))
         return None
-    url = f"https://api.bling.com.br/Api/v3/pedidos/vendas/{bling_order_id}"
     try:
-        r = requests.get(url,
-            headers={'Accept':'application/json','Authorization':f'Bearer {token}'},
-            timeout=20)
-        r.raise_for_status()
-        return r.json().get('data')
-    except requests.RequestException as e:
-        logger.error("[ingest] falha fetch detalhe Bling id=%s: %s", bling_order_id, e)
+        from nistiprint_shared.services.bling.bling_client import BlingClient
+
+        client = BlingClient.create_client_for_integration_id(int(bling_inst['id']))
+        return client.get_order(bling_order_id)
+    except Exception as e:
+        logger.error(
+            "[ingest] falha fetch detalhe Bling id=%s inst=%s: %s",
+            bling_order_id,
+            bling_inst.get('id'),
+            e,
+            exc_info=True,
+        )
         return None
 
 def _resolve_bling_instance(payload, hint, company_id=None):
@@ -494,7 +503,7 @@ def _upsert_pedido_master(payload, *,
         'cliente_documento':          contato.get('numeroDocumento'),
         'cliente_telefone':           contato.get('telefone') or contato.get('celular'),
         'cliente_email':              contato.get('email'),
-        'informacoes_cliente':        contato,             # JSONB completo
+        'informacoes_cliente':        contato or None,     # JSONB completo
 
         # Financeiro
         'total_pedido':               _safe_float(payload.get('total')),
