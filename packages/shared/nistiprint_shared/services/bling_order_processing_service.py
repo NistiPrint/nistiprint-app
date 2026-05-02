@@ -107,7 +107,10 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
             supabase_db,
             fields={
                 'servico_logistico': _volume_servico(payload),
-                'shipping_carrier':  (shopee_data or {}).get('shipping_carrier'),
+                'shipping_carrier':  _resolve_shipping_carrier(
+                    shopee_data,
+                    payload.get('numeroLoja'),
+                ),
                 'fulfillment_flag':  (shopee_data or {}).get('fulfillment_flag'),
             },
             marketplace_integration_id=(marketplace_inst or {}).get('id'),
@@ -128,6 +131,15 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
         )
         logger.info("[ingest] pedido upserted id=%s is_flex=%s modalidade=%s",
                     pedido_id, flex.is_flex, flex.modalidade)
+
+        # 7.5. Detectar e marcar pedido como personalizado
+        try:
+            _detect_and_mark_personalized(payload, pedido_id)
+        except Exception as e:
+            logger.warning(
+                "[ingest] detecção de personalizado falhou pedido_id=%s: %s",
+                pedido_id, e, exc_info=True,
+            )
 
         # 8. Auditoria
         _log_ingest(
@@ -271,6 +283,34 @@ def _log_ingest(pedido_id, bling_id, marketplace_integration_id,
     except Exception as e:
         logger.warning("[ingest] Erro ao gravar auditoria: %s", e)
 
+def _detect_and_mark_personalized(payload: dict, pedido_id: int | None = None):
+    """
+    Reaplica a regra de personalizado do fluxo legado.
+
+    O identificador já atualiza pedidos/itens unificados e os espelhos legados,
+    então aqui basta disparar o processamento e registrar falhas sem quebrar o ingest.
+    """
+    from nistiprint_shared.services.personalized_order_identifier import (
+        personalized_order_identifier,
+    )
+
+    result = personalized_order_identifier.process_order(payload)
+    if not result.get('success'):
+        logger.warning(
+            "[ingest] detector de personalizado retornou falha para pedido=%s: %s",
+            pedido_id or payload.get('numeroLoja') or payload.get('numero'),
+            result.get('error'),
+        )
+        return
+
+    personalized_items = result.get('personalized_items') or []
+    if personalized_items:
+        logger.info(
+            "[ingest] pedido=%s marcado como personalizado (%d itens)",
+            pedido_id or payload.get('numeroLoja') or payload.get('numero'),
+            len(personalized_items),
+        )
+
 def _fetch_shopee_detail(marketplace_inst, order_sn):
     cfg, cred = marketplace_inst['config'], marketplace_inst.get('credentials') or {}
     integration = {
@@ -282,6 +322,49 @@ def _fetch_shopee_detail(marketplace_inst, order_sn):
     result = shopee_driver.get_order_detail(integration, [order_sn])
     logger.info("[fetch_shopee_detail] Resultado do driver: %s", result)
     return result
+
+def _resolve_shipping_carrier(shopee_data, numero_loja):
+    """
+    Resolve o shipping_carrier preferindo o enrichment atual e caindo para o
+    espelho persistido em pedidos_shopee quando necessário.
+    """
+    if shopee_data:
+        carrier = shopee_data.get('shipping_carrier')
+        if carrier:
+            return carrier
+
+        for package in shopee_data.get('package_list') or []:
+            carrier = package.get('shipping_carrier')
+            if carrier:
+                return carrier
+
+    if not numero_loja:
+        return None
+
+    try:
+        rows = supabase_db.table('pedidos_shopee') \
+            .select('shipping_carrier, package_list') \
+            .eq('codigo_pedido', str(numero_loja)) \
+            .limit(1) \
+            .execute() \
+            .data
+
+        if rows:
+            row = rows[0]
+            if row.get('shipping_carrier'):
+                return row['shipping_carrier']
+
+            for package in row.get('package_list') or []:
+                carrier = package.get('shipping_carrier')
+                if carrier:
+                    return carrier
+    except Exception as e:
+        logger.warning(
+            "[ingest] falha ao resolver shipping_carrier fallback para order_sn=%s: %s",
+            numero_loja, e, exc_info=True,
+        )
+
+    return None
 
 def _upsert_pedido_bling(payload, bling_integration_id):
     bling_id = payload.get('id')
