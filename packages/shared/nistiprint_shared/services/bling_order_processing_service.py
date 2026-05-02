@@ -48,7 +48,15 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
         loja_id = str(payload.get('loja', {}).get('id') or '')
         marketplace_inst, pedido_shopee_id, shopee_data = None, None, None
         if loja_id:
-            marketplace_inst = _resolve_marketplace_instance(loja_id, bling_inst['id'])
+            try:
+                marketplace_inst = _resolve_marketplace_instance(loja_id, bling_inst['id'])
+            except Exception as e:
+                logger.warning(
+                    "[ingest] falha ao resolver marketplace para loja_id=%s: %s — seguindo só com dados do Bling",
+                    loja_id, e, exc_info=True,
+                )
+                marketplace_inst = None
+
             if marketplace_inst:
                 correlation['marketplace_inst'] = marketplace_inst['id']
                 logger.info("[ingest] marketplace resolved id=%s plataforma=%s nome=%s",
@@ -58,12 +66,32 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
 
                 # 4. Enriquecimento via API marketplace (apenas Shopee no MVP)
                 if marketplace_inst.get('plataforma_slug') == 'shopee':
-                    shopee_data = _fetch_shopee_detail(marketplace_inst,
-                                                       payload.get('numeroLoja'))
-                    pedido_shopee_id = _upsert_pedido_shopee(
-                        shopee_data,
-                        marketplace_integration_id=marketplace_inst['id'],
-                    )
+                    try:
+                        shopee_data = _fetch_shopee_detail(
+                            marketplace_inst,
+                            payload.get('numeroLoja'),
+                        )
+                        if shopee_data and not shopee_data.get('error'):
+                            pedido_shopee_id = _upsert_pedido_shopee(
+                                shopee_data,
+                                marketplace_integration_id=marketplace_inst['id'],
+                            )
+                        else:
+                            logger.warning(
+                                "[ingest] enriquecimento Shopee retornou erro para order_sn=%s: %s — seguindo só com dados do Bling",
+                                payload.get('numeroLoja'),
+                                (shopee_data or {}).get('error'),
+                            )
+                            shopee_data = None
+                            pedido_shopee_id = None
+                    except Exception as e:
+                        logger.warning(
+                            "[ingest] enriquecimento Shopee falhou para order_sn=%s: %s — seguindo só com dados do Bling",
+                            payload.get('numeroLoja'),
+                            e,
+                            exc_info=True,
+                        )
+                        shopee_data, pedido_shopee_id = None, None
             else:
                 logger.warning("[ingest] loja_id=%s sem instância marketplace mapeada", loja_id)
 

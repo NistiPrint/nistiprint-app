@@ -2,13 +2,17 @@
 Script genérico para reprocessar eventos Bling dos últimos X dias.
 
 Reprocessa eventos em ordem cronológica por payload.date, movendo-os de
-múltiplas filas Redis para a fila de pendentes, com opção de resetar
-tabelas transacionais.
+múltiplas filas Redis para a fila de pendentes.
+
+Suporta dois formatos de payload:
+- Com wrapper "payload" (fila processados)
+- Formato direto (filas falhas, dead_letter)
 
 Uso:
     python scripts/backfill_reprocessar_eventos_bling.py --dias 7 --filas all
-    python scripts/backfill_reprocessar_eventos_bling.py --dias 30 --filas processados,falhas --resetar-transacionais
+    python scripts/backfill_reprocessar_eventos_bling.py --dias 30 --filas processados,falhas
     python scripts/backfill_reprocessar_eventos_bling.py --dias 7 --dry-run
+    python scripts/backfill_reprocessar_eventos_bling.py --dias 7 --incluir-sem-data
 """
 import json
 import logging
@@ -20,8 +24,6 @@ import os
 
 # Adicionar path do projeto
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-from nistiprint_shared.database.supabase_db_service import supabase_db
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -52,7 +54,7 @@ def _get_redis_client():
     )
 
 
-def coletar_eventos_das_filas(filas: List[str], dias: int, dry_run: bool = False) -> List[Dict[str, Any]]:
+def coletar_eventos_das_filas(filas: List[str], dias: int, dry_run: bool = False, incluir_sem_data: bool = False) -> List[Dict[str, Any]]:
     """
     Coleta eventos das filas selecionadas, filtrando por payload.date.
 
@@ -60,6 +62,7 @@ def coletar_eventos_das_filas(filas: List[str], dias: int, dry_run: bool = False
         filas: Lista de filas para coletar (processados, falhas, dead_letter)
         dias: Número de dias para filtrar (baseado em payload.date)
         dry_run: Se True, não remove eventos das filas origem
+        incluir_sem_data: Se True, inclui eventos sem payload.date (colocados no início)
 
     Returns:
         Lista de eventos com metadata (fila_origem, payload, date)
@@ -73,6 +76,8 @@ def coletar_eventos_das_filas(filas: List[str], dias: int, dry_run: bool = False
         return []
     
     eventos = []
+    eventos_sem_data = []
+    amostras_sem_data = []
     
     # Calcular data limite
     data_limite = datetime.now(timezone.utc) - timedelta(days=dias)
@@ -98,12 +103,37 @@ def coletar_eventos_das_filas(filas: List[str], dias: int, dry_run: bool = False
                 # Parse JSON
                 data = json.loads(msg)
                 
-                # Extrair payload.date
-                payload = data.get('payload', {})
-                date_str = payload.get('date')
+                # Detectar formato: com wrapper "payload" ou direto
+                if 'payload' in data:
+                    # Formato com wrapper (processados)
+                    payload = data.get('payload', {})
+                    date_str = payload.get('date')
+                else:
+                    # Formato direto (falhas, dead_letter)
+                    payload = data
+                    date_str = data.get('date')
                 
                 if not date_str:
-                    logger.warning(f"Evento sem payload.date na fila {fila} (índice {idx}), ignorando")
+                    # Evento sem data
+                    if incluir_sem_data:
+                        eventos_sem_data.append({
+                            'fila_origem': fila,
+                            'queue_name': queue_name,
+                            'payload': payload,
+                            'date': None,
+                            'raw_message': msg,
+                            'indice_original': idx,
+                            'sem_data': True
+                        })
+                    
+                    # Coletar amostra (máximo 5)
+                    if len(amostras_sem_data) < 5:
+                        amostras_sem_data.append({
+                            'fila': fila,
+                            'indice': idx,
+                            'payload_keys': list(payload.keys()) if isinstance(payload, dict) else 'N/A',
+                            'data_keys': list(data.keys()) if isinstance(data, dict) else 'N/A'
+                        })
                     continue
                 
                 # Parse da data
@@ -123,7 +153,8 @@ def coletar_eventos_das_filas(filas: List[str], dias: int, dry_run: bool = False
                     'payload': payload,
                     'date': date_evento,
                     'raw_message': msg,
-                    'indice_original': idx
+                    'indice_original': idx,
+                    'sem_data': False
                 })
                 
             except json.JSONDecodeError:
@@ -131,13 +162,24 @@ def coletar_eventos_das_filas(filas: List[str], dias: int, dry_run: bool = False
             except Exception as e:
                 logger.error(f"Erro ao processar mensagem na fila {fila} (índice {idx}): {e}")
     
-    logger.info(f"Total de eventos coletados: {len(eventos)}")
-    return eventos
+    # Log de eventos sem data
+    if eventos_sem_data:
+        logger.warning(f"Encontrados {len(eventos_sem_data)} eventos sem payload.date")
+        if amostras_sem_data:
+            logger.warning("Amostra de eventos sem data:")
+            for amostra in amostras_sem_data:
+                logger.warning(f"  Fila {amostra['fila']} índice {amostra['indice']}: payload_keys={amostra['payload_keys']}, data_keys={amostra['data_keys']}")
+    
+    logger.info(f"Total de eventos coletados: {len(eventos)} (com data) + {len(eventos_sem_data)} (sem data)")
+    
+    # Eventos sem data vão para o início (serão processados primeiro)
+    return eventos_sem_data + eventos
 
 
 def ordenar_eventos_por_date(eventos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Ordena eventos por payload.date em ordem crescente (mais antigo primeiro).
+    Eventos sem data permanecem no início da lista.
 
     Args:
         eventos: Lista de eventos com metadata
@@ -147,13 +189,22 @@ def ordenar_eventos_por_date(eventos: List[Dict[str, Any]]) -> List[Dict[str, An
     """
     logger.info("Ordenando eventos por payload.date (crescente)")
     
-    # Ordenar por date
-    eventos_ordenados = sorted(eventos, key=lambda x: x['date'])
+    # Separar eventos com e sem data
+    com_data = [e for e in eventos if not e.get('sem_data')]
+    sem_data = [e for e in eventos if e.get('sem_data')]
+    
+    # Ordenar apenas os que têm data
+    com_data_ordenados = sorted(com_data, key=lambda x: x['date'])
+    
+    # Eventos sem data ficam no início
+    eventos_ordenados = sem_data + com_data_ordenados
     
     # Log de amostra
-    if eventos_ordenados:
-        logger.info(f"Primeiro evento: {eventos_ordenados[0]['date'].isoformat()}")
-        logger.info(f"Último evento: {eventos_ordenados[-1]['date'].isoformat()}")
+    if sem_data:
+        logger.info(f"{len(sem_data)} eventos sem data (serão processados primeiro)")
+    if com_data_ordenados:
+        logger.info(f"Primeiro evento com data: {com_data_ordenados[0]['date'].isoformat()}")
+        logger.info(f"Último evento com data: {com_data_ordenados[-1]['date'].isoformat()}")
     
     return eventos_ordenados
 
@@ -181,6 +232,13 @@ def mover_para_pendentes(eventos_ordenados: List[Dict[str, Any]], dry_run: bool 
         return stats
     
     logger.info(f"Movendo {len(eventos_ordenados)} eventos para fila pendentes")
+    
+    # Log de amostra da ordenação
+    if eventos_ordenados:
+        logger.info("Ordem de inserção (primeiros 5 eventos):")
+        for i, evento in enumerate(eventos_ordenados[:5]):
+            date_str = evento['date'].isoformat() if evento['date'] else 'SEM DATA'
+            logger.info(f"  {i+1}. {date_str} (fila: {evento['fila_origem']})")
     
     # Limpar fila pendentes (se não for dry-run)
     if not dry_run:
@@ -258,40 +316,15 @@ def remover_das_filas_origem(eventos: List[Dict[str, Any]], dry_run: bool = Fals
     return stats
 
 
-def resetar_tabelas_transacionais(dry_run: bool = False) -> bool:
-    """
-    Executa script SQL de cleanup das tabelas transacionais.
-
-    Args:
-        dry_run: Se True, apenas mostra o que seria executado
-
-    Returns:
-        True se sucesso, False se falha
-    """
-    logger.warning("ATENÇÃO: Esta operação vai TRUNCAR tabelas transacionais!")
-    
-    if dry_run:
-        logger.info("[DRY RUN] Seriam truncadas as tabelas listadas em 20260430000000_cleanup_dados_transacionais_v2.sql")
-        logger.info("Isso INCLUI: pedidos, pedidos_bling, itens_pedido, pedidos_shopee")
-        logger.info("Para executar, aplique a migration manualmente via:")
-        logger.info("  supabase db push --db-url postgresql://...")
-        return True
-    
-    logger.info("Para resetar tabelas transacionais, aplique a migration manualmente:")
-    logger.info("  supabase db push --db-url postgresql://...")
-    logger.info("Ou execute o SQL diretamente no Supabase SQL Editor")
-    return False
-
-
 def main():
     parser = argparse.ArgumentParser(description='Reprocessar eventos Bling em ordem cronológica')
     parser.add_argument('--dias', type=int, help='Número de dias para reprocessar (baseado em payload.date)')
     parser.add_argument('--filas', type=str, default='all', 
                        help='Filas para processar: all, processados, falhas, dead_letter (separadas por vírgula)')
-    parser.add_argument('--resetar-transacionais', action='store_true', 
-                       help='Resetar tabelas transacionais antes do reprocessamento')
     parser.add_argument('--dry-run', action='store_true', 
                        help='Simular sem executar mudanças')
+    parser.add_argument('--incluir-sem-data', action='store_true', 
+                       help='Incluir eventos sem payload.date (serão processados primeiro)')
     parser.add_argument('--validate', action='store_true', 
                        help='Validar sintaxe do script sem conectar ao Redis')
     args = parser.parse_args()
@@ -309,7 +342,6 @@ def main():
     logger.info("=" * 60)
     logger.info(f"Dias: {args.dias}")
     logger.info(f"Filas: {args.filas}")
-    logger.info(f"Resetar transacionais: {args.resetar_transacionais}")
     logger.info(f"Modo: {'DRY-RUN' if args.dry_run else 'EXECUÇÃO'}")
     logger.info("=" * 60)
     
@@ -329,33 +361,25 @@ def main():
     if filas_invalidas:
         logger.warning(f"Filas inválidas ignoradas: {filas_invalidas}")
     
-    # Passo 1: Resetar tabelas transacionais (opcional)
-    if args.resetar_transacionais:
-        logger.info("\n[1/4] Resetando tabelas transacionais...")
-        if not resetar_tabelas_transacionais(dry_run=args.dry_run):
-            logger.error("Falha ao resetar tabelas transacionais")
-            return
-        logger.info("Tabelas transacionais resetadas com sucesso")
-    
-    # Passo 2: Coletar eventos das filas
-    logger.info(f"\n[2/4] Coletando eventos das filas: {filas_validas}")
-    eventos = coletar_eventos_das_filas(filas_validas, args.dias, dry_run=args.dry_run)
+    # Passo 1: Coletar eventos das filas
+    logger.info(f"\n[1/3] Coletando eventos das filas: {filas_validas}")
+    eventos = coletar_eventos_das_filas(filas_validas, args.dias, dry_run=args.dry_run, incluir_sem_data=args.incluir_sem_data)
     
     if not eventos:
         logger.info("Nenhum evento encontrado para reprocessar")
         return
     
-    # Passo 3: Ordenar eventos por date
-    logger.info("\n[3/4] Ordenando eventos por payload.date...")
+    # Passo 2: Ordenar eventos por date
+    logger.info("\n[2/3] Ordenando eventos por payload.date...")
     eventos_ordenados = ordenar_eventos_por_date(eventos)
     
-    # Passo 4: Mover para pendentes
-    logger.info("\n[4/4] Movendo eventos para fila pendentes...")
+    # Passo 3: Mover para pendentes
+    logger.info("\n[3/3] Movendo eventos para fila pendentes...")
     stats = mover_para_pendentes(eventos_ordenados, dry_run=args.dry_run)
     
-    # Passo 5: Remover das filas origem (se não for dry-run)
+    # Passo 4: Remover das filas origem (se não for dry-run)
     if not args.dry_run and stats['movidos'] > 0:
-        logger.info("\n[5/5] Removendo eventos das filas origem...")
+        logger.info("\nRemovendo eventos das filas origem...")
         remover_stats = remover_das_filas_origem(eventos_ordenados, dry_run=args.dry_run)
         logger.info(f"Removidos por fila: {remover_stats}")
     
