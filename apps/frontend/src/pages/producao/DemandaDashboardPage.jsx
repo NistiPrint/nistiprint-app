@@ -5,21 +5,27 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog'
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
 } from '@/components/ui/table'
 import { useAuth } from '@/contexts/AuthContext'
 import { useLayout } from '@/contexts/LayoutContext'
@@ -28,19 +34,19 @@ import usePermissionsHook from '@/hooks/usePermissions'
 import useDebounce from '@/lib/hooks/useDebounce'
 import { supabase } from '@/lib/supabase'
 import {
-  ArrowLeft,
-  Calendar,
-  CheckCircle,
-  Flame,
-  History,
-  List,
-  Package,
-  Printer,
-  Save,
-  Search,
-  TrendingUp,
-  Truck,
-  X,
+    ArrowLeft,
+    Calendar,
+    CheckCircle,
+    Flame,
+    History,
+    List,
+    Package,
+    Printer,
+    Save,
+    Search,
+    TrendingUp,
+    Truck,
+    X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
