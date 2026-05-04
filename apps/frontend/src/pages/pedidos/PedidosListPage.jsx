@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   CheckCircle2,
+  ChevronDown,
   ClipboardList
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -11,6 +12,12 @@ import { toast } from 'sonner';
 import FiltrosPedidos from '@/components/pedidos/FiltrosPedidos';
 import GerarDemandaModal from '@/components/pedidos/GerarDemandaModal';
 import TabelaPedidos from '@/components/pedidos/TabelaPedidos';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
