@@ -19,6 +19,7 @@ import {
     CheckCircle,
     CheckSquare,
     Edit,
+    List,
     MoreVertical,
     PlayCircle,
     Printer,
