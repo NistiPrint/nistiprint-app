@@ -5,6 +5,7 @@ Endpoints para gestão de pedidos unificados.
 from flask import Blueprint, request, jsonify
 from routes.auth import login_required
 from nistiprint_shared.services.order_service import order_service
+from nistiprint_shared.services.order_reprocess_service import order_reprocess_service
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from utils.api_response import ApiResponse
 import logging
@@ -28,6 +29,28 @@ def _normalize_dt(value):
 def _timeline_key(item):
     ts = item.get('created_at') or item.get('timestamp') or item.get('started_at') or item.get('finished_at')
     return ts or ''
+
+
+def _matches_pedido_context(row, pedido_id: int, bling_id, numero_loja) -> bool:
+    if row.get('pedido_id') == pedido_id:
+        return True
+
+    payload_summary = row.get('payload_summary') or {}
+    if bling_id is not None and (
+        row.get('bling_id') == bling_id or payload_summary.get('bling_id') == bling_id
+    ):
+        return True
+
+    if numero_loja is not None:
+        numero_loja = str(numero_loja)
+        row_numero_loja = row.get('numero_loja')
+        if row_numero_loja is not None and str(row_numero_loja) == numero_loja:
+            return True
+        summary_numero_loja = payload_summary.get('numero_loja')
+        if summary_numero_loja is not None and str(summary_numero_loja) == numero_loja:
+            return True
+
+    return False
 
 
 def _collect_unique_rows(*row_lists):
@@ -425,12 +448,30 @@ def get_pedido_logs(pedido_id):
                 .execute().data or []
             )
 
+        all_candidate_ingest_rows = _collect_unique_rows(ingest_rows)
+        ingest_rows = [
+            row for row in all_candidate_ingest_rows
+            if _matches_pedido_context(row, pedido_id, bling_id, numero_loja)
+        ]
+
+        safe_task_correlation_ids = set()
+        for correlation_id in correlation_ids:
+            rows_for_correlation = [
+                row for row in all_candidate_ingest_rows
+                if row.get('correlation_id') == correlation_id
+            ]
+            if rows_for_correlation and all(
+                _matches_pedido_context(row, pedido_id, bling_id, numero_loja)
+                for row in rows_for_correlation
+            ):
+                safe_task_correlation_ids.add(correlation_id)
+
         task_rows = []
-        if correlation_ids:
+        if safe_task_correlation_ids:
             task_rows.extend(
                 supabase_db.table('task_execution_logs')
                 .select('*')
-                .in_('correlation_id', correlation_ids)
+                .in_('correlation_id', list(safe_task_correlation_ids))
                 .execute().data or []
             )
 
@@ -458,6 +499,25 @@ def get_pedido_logs(pedido_id):
         return ApiResponse.error(
             message=f"Erro ao buscar logs do pedido: {str(e)}",
             status_code=500
+        )
+
+
+@pedidos_bp.route('/<int:pedido_id>/reprocessar', methods=['POST'])
+@login_required
+def reprocessar_pedido(pedido_id):
+    try:
+        result = order_reprocess_service.reprocess_order(pedido_id)
+        if result.get('success'):
+            return ApiResponse.success(data=result, message="Pedido reenfileirado com payload original")
+        return ApiResponse.error(
+            message=result.get('error', 'Erro ao reprocessar pedido'),
+            status_code=400,
+        )
+    except Exception as e:
+        logger.error(f"Erro ao reprocessar pedido {pedido_id}: {e}")
+        return ApiResponse.error(
+            message=f"Erro ao reprocessar pedido: {str(e)}",
+            status_code=500,
         )
 
 

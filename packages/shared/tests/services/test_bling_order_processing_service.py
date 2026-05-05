@@ -53,6 +53,34 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
 
         self.assertEqual(carrier, 'Entrega Rapida')
 
+    def test_classify_flex_accepts_case_and_accent_insensitive_entrega_rapida(self):
+        result = bos._classify_flex(
+            {'shipping_carrier': 'ENTREGA RÁPIDA SPX'},
+            '2511000004',
+            'shopee',
+        )
+
+        self.assertTrue(result.is_flex)
+        self.assertEqual(result.modalidade, 'FLEX')
+
+    def test_classify_flex_requires_shopee(self):
+        result = bos._classify_flex(
+            {'shipping_carrier': 'entrega rapida'},
+            '2511000005',
+            'mercadolivre',
+        )
+
+        self.assertFalse(result.is_flex)
+        self.assertEqual(result.modalidade, 'STANDARD')
+
+    def test_start_correlation_id_always_uses_explicit_or_new_value(self):
+        with patch.object(bos, 'generate_correlation_id', return_value='novo-cid'), \
+             patch.object(bos, 'set_correlation_id') as set_correlation_id:
+            correlation_id = bos._start_correlation_id()
+
+        self.assertEqual(correlation_id, 'novo-cid')
+        set_correlation_id.assert_called_once_with('novo-cid')
+
     def test_detect_and_mark_personalized_calls_identifier(self):
         payload = {
             'numero': '12345',

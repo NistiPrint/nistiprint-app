@@ -53,15 +53,8 @@ export async function getPedidoLogs(pedidoId) {
  * @returns {Promise<Object>} Resultado da operação
  */
 export async function reprocessarPedido(pedidoId) {
-  const response = await fetch('/api/admin/orders/reprocess', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-    },
-    body: JSON.stringify({ pedido_id: pedidoId }),
-  });
-  return response.json();
+  const response = await api.post(`${BASE_URL}/${pedidoId}/reprocessar`);
+  return response.data?.data || null;
 }
 
 /**

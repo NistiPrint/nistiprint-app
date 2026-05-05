@@ -1,17 +1,18 @@
+import * as pedidoService from '@/services/pedidoService';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
-    AlertCircle,
-    Calendar,
-    CheckCircle2,
-    Clock,
-    Loader2,
-    Package,
-    RefreshCw,
-    Truck,
-    XCircle
+  AlertCircle,
+  Calendar,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  Package,
+  RefreshCw,
+  Truck,
+  XCircle
 } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
@@ -28,21 +29,12 @@ export default function PedidoTimeline({ eventos, pedidoId, onReprocess, codigoP
 
     setIsReprocessing(true);
     try {
-      const response = await fetch('/api/admin/orders/reprocess', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({ pedido_id: pedidoId }),
-      });
-
-      const data = await response.json();
-      if (data.success) {
-        toast.success(`Pedido reprocessado com sucesso. ${data.total_processed} integrações processadas.`);
+      const data = await pedidoService.reprocessarPedido(pedidoId);
+      if (data?.success) {
+        toast.success('Pedido reenfileirado com payload original.');
         if (onReprocess) onReprocess();
       } else {
-        toast.error(data.error || 'Erro ao reprocessar pedido');
+        toast.error(data?.error || 'Erro ao reprocessar pedido');
       }
     } catch (error) {
       toast.error(`Erro: ${error.message}`);
@@ -53,7 +45,7 @@ export default function PedidoTimeline({ eventos, pedidoId, onReprocess, codigoP
 
   const handleSyncShopee = async () => {
     if (!codigoPedidoExterno) {
-      toast.warning('Código do pedido externo não encontrado.');
+      toast.warning('Codigo do pedido externo nao encontrado.');
       return;
     }
 
@@ -185,7 +177,6 @@ export default function PedidoTimeline({ eventos, pedidoId, onReprocess, codigoP
           <div className="space-y-4">
             {eventos.map((evento, index) => (
               <div key={evento.id || index} className="flex gap-3">
-                {/* Linha do tempo */}
                 <div className="flex flex-col items-center">
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center border-2 bg-background ${getEventColor(evento.tipo_evento, evento.tipo)}`}>
                     {getEventIcon(evento.tipo_evento, evento.tipo)}
@@ -195,7 +186,6 @@ export default function PedidoTimeline({ eventos, pedidoId, onReprocess, codigoP
                   )}
                 </div>
 
-                {/* Conteúdo do evento */}
                 <div className="flex-1 pb-4">
                   <div className="flex items-center justify-between mb-1">
                     <span className="font-medium text-sm">
@@ -205,24 +195,24 @@ export default function PedidoTimeline({ eventos, pedidoId, onReprocess, codigoP
                       {formatarData(evento.created_at)}
                     </span>
                   </div>
-                  
+
                   {evento.status_de && evento.status_para && (
                     <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
                       <span>De: <Badge variant="outline" className="text-xs">{evento.status_de}</Badge></span>
-                      <span>→</span>
+                      <span>-&gt;</span>
                       <span>Para: <Badge variant="outline" className="text-xs">{evento.status_para}</Badge></span>
                     </div>
                   )}
-                  
+
                   {evento.metadata && (
                     <div className="text-xs text-muted-foreground mt-1">
-                      {typeof evento.metadata === 'string' 
-                        ? evento.metadata 
+                      {typeof evento.metadata === 'string'
+                        ? evento.metadata
                         : JSON.stringify(evento.metadata)
                       }
                     </div>
                   )}
-                  
+
                   {evento.tipo === 'task' && evento.metadata && (
                     <div className="text-xs text-muted-foreground mt-1 space-y-1">
                       {evento.metadata.task_type && (
@@ -235,7 +225,7 @@ export default function PedidoTimeline({ eventos, pedidoId, onReprocess, codigoP
                       )}
                     </div>
                   )}
-                  
+
                   {evento.correlation_id && (
                     <code className="text-[10px] bg-muted px-1 rounded mt-1 block text-muted-foreground">
                       Corr: {evento.correlation_id.slice(0, 8)}...

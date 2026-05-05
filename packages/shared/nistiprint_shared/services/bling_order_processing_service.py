@@ -1,15 +1,15 @@
 import logging
 import traceback
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import perf_counter
+import unicodedata
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
-from nistiprint_shared.services import flex_classifier_service
 from nistiprint_shared.services.correlation_service import (
     generate_correlation_id,
-    get_correlation_id,
     set_correlation_id,
 )
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
@@ -21,12 +21,77 @@ class BlingDetailUnavailableError(RuntimeError):
     """Erro tipado para quando o detalhe do pedido no Bling não pode ser obtido."""
 
 
-def _ensure_correlation_id() -> str:
-    correlation_id = get_correlation_id()
+@dataclass
+class FlexClassificationResult:
+    is_flex: bool
+    modalidade: str
+    motivo: str
+    matched_rule_id: int | None = None
+    raw_decision: dict | None = None
+
+
+def _start_correlation_id(correlation_id: str | None = None) -> str:
     if not correlation_id:
         correlation_id = generate_correlation_id()
-        set_correlation_id(correlation_id)
+    set_correlation_id(correlation_id)
     return correlation_id
+
+
+def _update_webhook_event(webhook_event_id: int | None, **fields):
+    if not webhook_event_id or not fields:
+        return
+
+    try:
+        supabase_db.table('webhook_events').update(fields).eq('id', webhook_event_id).execute()
+    except Exception as e:
+        logger.warning("[ingest] Erro ao atualizar webhook_events id=%s: %s", webhook_event_id, e)
+
+
+def _normalize_carrier(value: str | None) -> str:
+    if not value:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", value)
+    return "".join(char for char in nfkd if not unicodedata.combining(char)).lower().strip()
+
+
+def _classify_flex(
+    shopee_data: dict | None,
+    numero_loja: str | None,
+    marketplace_slug: str | None,
+) -> FlexClassificationResult:
+    if marketplace_slug != 'shopee':
+        return FlexClassificationResult(
+            is_flex=False,
+            modalidade='STANDARD',
+            motivo=f"plataforma={marketplace_slug!r} nao e shopee",
+            raw_decision={'marketplace_slug': marketplace_slug, 'numero_loja': numero_loja},
+        )
+
+    carrier = _resolve_shipping_carrier(shopee_data, numero_loja)
+    normalized_carrier = _normalize_carrier(carrier)
+
+    if not normalized_carrier:
+        return FlexClassificationResult(
+            is_flex=False,
+            modalidade='STANDARD',
+            motivo='shipping_carrier ausente',
+            raw_decision={'marketplace_slug': marketplace_slug, 'shipping_carrier': carrier},
+        )
+
+    if 'entrega rapida' in normalized_carrier:
+        return FlexClassificationResult(
+            is_flex=True,
+            modalidade='FLEX',
+            motivo=f"shipping_carrier={carrier!r} contem 'entrega rapida'",
+            raw_decision={'marketplace_slug': marketplace_slug, 'shipping_carrier': carrier},
+        )
+
+    return FlexClassificationResult(
+        is_flex=False,
+        modalidade='STANDARD',
+        motivo=f"shipping_carrier={carrier!r} nao contem 'entrega rapida'",
+        raw_decision={'marketplace_slug': marketplace_slug, 'shipping_carrier': carrier},
+    )
 
 
 def _build_payload_summary(payload: dict) -> dict:
@@ -147,7 +212,13 @@ def ingest_step(stage: str, ctx: dict):
             _link_pedido_correlation(ctx.get('pedido_id'), ctx['correlation_id'])
             ctx['_pedido_mapping_written'] = True
 
-def process_webhook(payload: dict, bling_integration_hint: int | None = None, company_id: str | None = None) -> dict:
+def process_webhook(
+    payload: dict,
+    bling_integration_hint: int | None = None,
+    company_id: str | None = None,
+    correlation_id: str | None = None,
+    webhook_event_id: int | None = None,
+) -> dict:
     """
     Pipeline linear, idempotente.
     - payload: corpo do pedido Bling (já buscado da API com detalhes completos).
@@ -155,7 +226,7 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
       veio com header de identificação), evita lookup.
     - company_id: ID da empresa Bling do webhook wrapper (usado para resolver instância)
     """
-    correlation_id = _ensure_correlation_id()
+    correlation_id = _start_correlation_id(correlation_id)
     pipeline_started = perf_counter()
     ingest_ctx = {
         'correlation_id': correlation_id,
@@ -163,6 +234,7 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
         'bling_integration_id': bling_integration_hint,
         'numero_loja': payload.get('numeroLoja'),
         'pedido_id': None,
+        'webhook_event_id': webhook_event_id,
         '_failure_logged': False,
     }
 
@@ -279,19 +351,12 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
 
         # 7. Classificar Flex
         with ingest_step('classify_flex', ingest_ctx):
-            flex = flex_classifier_service.classify(
-                supabase_db,
-                fields={
-                    'servico_logistico': _volume_servico(payload),
-                    'shipping_carrier':  _resolve_shipping_carrier(
-                        shopee_data,
-                        payload.get('numeroLoja'),
-                    ),
-                    'fulfillment_flag':  (shopee_data or {}).get('fulfillment_flag'),
-                },
-                marketplace_integration_id=(marketplace_inst or {}).get('id'),
-                log_context=ingest_ctx,
+            flex = _classify_flex(
+                shopee_data,
+                payload.get('numeroLoja'),
+                (marketplace_inst or {}).get('plataforma_slug'),
             )
+            ingest_ctx['flex_motivo'] = flex.motivo
 
         # 8. UPSERT pedidos
         with ingest_step('upsert_pedido', ingest_ctx):
@@ -309,6 +374,12 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
             ingest_ctx['pedido_id'] = pedido_id
             logger.info("[ingest] pedido upserted id=%s is_flex=%s modalidade=%s",
                         pedido_id, flex.is_flex, flex.modalidade)
+            _update_webhook_event(
+                webhook_event_id,
+                pedido_id=pedido_id,
+                bling_id=ingest_ctx['payload_summary'].get('bling_id'),
+                numero_loja=payload.get('numeroLoja'),
+            )
 
         # 8.5. Detectar e marcar pedido como personalizado
         with ingest_step('detect_personalizado', ingest_ctx):
@@ -356,6 +427,14 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
         )
 
         logger.info("[ingest] done %s", {'correlation_id': correlation_id, **ingest_ctx['payload_summary']})
+        _update_webhook_event(
+            webhook_event_id,
+            pedido_id=pedido_id,
+            bling_id=ingest_ctx['payload_summary'].get('bling_id'),
+            numero_loja=payload.get('numeroLoja'),
+            last_status='success',
+            last_attempt_at=datetime.now(timezone.utc).isoformat(),
+        )
         return {
             'status': 'success',
             'pedido_id': pedido_id,
@@ -364,6 +443,14 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
             'correlation_id': correlation_id,
         }
     except BlingDetailUnavailableError:
+        _update_webhook_event(
+            webhook_event_id,
+            pedido_id=ingest_ctx.get('pedido_id'),
+            bling_id=ingest_ctx.get('payload_summary', {}).get('bling_id'),
+            numero_loja=ingest_ctx.get('numero_loja'),
+            last_status='failed',
+            last_attempt_at=datetime.now(timezone.utc).isoformat(),
+        )
         raise
     except Exception as e:
         logger.error("[ingest] Erro no processamento do webhook: %s", e, exc_info=True)
@@ -379,6 +466,14 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
                 numero_loja=ingest_ctx.get('numero_loja'),
                 pedido_id=ingest_ctx.get('pedido_id'),
             )
+        _update_webhook_event(
+            webhook_event_id,
+            pedido_id=ingest_ctx.get('pedido_id'),
+            bling_id=ingest_ctx.get('payload_summary', {}).get('bling_id'),
+            numero_loja=ingest_ctx.get('numero_loja'),
+            last_status='failed',
+            last_attempt_at=datetime.now(timezone.utc).isoformat(),
+        )
         return {
             'status': 'error',
             'message': str(e),
