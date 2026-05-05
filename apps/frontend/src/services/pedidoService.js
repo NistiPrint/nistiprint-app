@@ -38,6 +38,33 @@ export async function getPedidoEventos(pedidoId) {
 }
 
 /**
+ * Busca timeline consolidada de logs do pedido
+ * @param {number} pedidoId - ID do pedido
+ * @returns {Promise<Object>} Timeline e contexto
+ */
+export async function getPedidoLogs(pedidoId) {
+  const response = await api.get(`${BASE_URL}/${pedidoId}/logs`);
+  return response.data?.data || { pedido: null, contexto: null, timeline: [] };
+}
+
+/**
+ * Reprocessa um pedido
+ * @param {number} pedidoId - ID do pedido
+ * @returns {Promise<Object>} Resultado da operação
+ */
+export async function reprocessarPedido(pedidoId) {
+  const response = await fetch('/api/admin/orders/reprocess', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({ pedido_id: pedidoId }),
+  });
+  return response.json();
+}
+
+/**
  * Atualiza o status de um pedido
  * @param {number} pedidoId - ID do pedido
  * @param {number} situacaoPedidoId - Novo status ID
@@ -106,8 +133,10 @@ export default {
   getPedidoDetalhe,
   getPedidoDemandas,
   getPedidoEventos,
+  getPedidoLogs,
   updatePedidoStatus,
   imprimirPedido,
+  reprocessarPedido,
   copiarNumeroPedido,
   formatarPedido
 };

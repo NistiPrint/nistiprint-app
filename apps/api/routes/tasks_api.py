@@ -2,12 +2,96 @@
 Task Management API Endpoints
 Provides endpoints for monitoring and managing async task execution logs
 """
+from datetime import datetime
 from flask import Blueprint, request, jsonify
 from routes.auth import login_required, admin_required
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.utils.date_utils import get_now_iso
 
 tasks_api_bp = Blueprint('tasks_api', __name__, url_prefix='/api/v2/tasks')
+admin_worker_logs_bp = Blueprint('admin_worker_logs', __name__)
+
+
+def _parse_iso_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except ValueError:
+            return None
+    return None
+
+
+def _sort_key(item):
+    for key in ('created_at', 'started_at', 'finished_at', 'last_failed_at'):
+        dt = _parse_iso_datetime(item.get(key))
+        if dt:
+            return dt
+    return datetime.min
+
+
+def _normalize_ingest_log(row):
+    payload_summary = row.get('payload_summary') or {}
+    return {
+        'id': f"ingest-{row.get('id')}",
+        'source': 'pedido_ingest_log',
+        'entity': 'pedido',
+        'timestamp': row.get('created_at'),
+        'stage': row.get('stage'),
+        'status': row.get('status'),
+        'message': row.get('message'),
+        'duration_ms': row.get('duration_ms'),
+        'correlation_id': row.get('correlation_id'),
+        'bling_integration_id': row.get('bling_integration_id'),
+        'numero_loja': row.get('numero_loja'),
+        'pedido_id': row.get('pedido_id'),
+        'bling_id': row.get('bling_id'),
+        'payload_summary': payload_summary,
+        'raw': row,
+    }
+
+
+def _normalize_task_log(row):
+    metadata = row.get('metadata') or {}
+    return {
+        'id': f"task-{row.get('id')}",
+        'source': 'task_execution_logs',
+        'entity': 'task',
+        'timestamp': row.get('started_at') or row.get('created_at') or row.get('finished_at'),
+        'stage': row.get('task_name') or row.get('task_type'),
+        'status': row.get('status'),
+        'message': row.get('error_message') or metadata.get('result') or metadata.get('kwargs'),
+        'duration_ms': row.get('duration_ms'),
+        'correlation_id': row.get('correlation_id'),
+        'task_name': row.get('task_name'),
+        'task_type': row.get('task_type'),
+        'pedido_id': None,
+        'bling_id': metadata.get('bling_id'),
+        'numero_loja': metadata.get('numero_loja'),
+        'payload_summary': metadata,
+        'raw': row,
+    }
+
+
+def _dedupe_by_identity(items):
+    seen = set()
+    result = []
+    for item in items:
+        key = (
+            item.get('source'),
+            item.get('id'),
+            item.get('timestamp'),
+            item.get('stage'),
+            item.get('status'),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 @tasks_api_bp.route('/execution-logs', methods=['GET'])
@@ -51,6 +135,88 @@ def list_task_execution_logs():
             'success': True,
             'data': response.data or [],
             'count': len(response.data) if response.data else 0
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@admin_worker_logs_bp.route('/api/v2/admin/worker-logs', methods=['GET'])
+@admin_required
+def list_admin_worker_logs():
+    """
+    Busca logs de ingest e de task execution para troubleshooting.
+
+    Query parameters:
+    - since: início do intervalo ISO
+    - until: fim do intervalo ISO
+    - q: texto livre
+    - status: filtro por status
+    - stage: filtro por stage/task_name
+    - bling_id: filtro por id do pedido Bling
+    - numero_loja: filtro por numeroLoja/codigo_pedido
+    - correlation_id: filtro por correlation_id
+    - page: página atual (default 1)
+    - per_page: itens por página (default 50)
+    """
+    try:
+        since = request.args.get('since')
+        until = request.args.get('until')
+        q = (request.args.get('q') or '').strip()
+        status = request.args.get('status')
+        stage = request.args.get('stage')
+        bling_id = request.args.get('bling_id')
+        numero_loja = request.args.get('numero_loja')
+        correlation_id = request.args.get('correlation_id')
+        page = max(1, int(request.args.get('page', 1)))
+        per_page = max(1, min(int(request.args.get('per_page', 50)), 200))
+        offset = (page - 1) * per_page
+
+        ingest_query = supabase_db.table('pedido_ingest_log').select('*')
+        task_query = supabase_db.table('task_execution_logs').select('*')
+
+        if since:
+            ingest_query = ingest_query.gte('created_at', since)
+            task_query = task_query.gte('created_at', since)
+        if until:
+            ingest_query = ingest_query.lte('created_at', until)
+            task_query = task_query.lte('created_at', until)
+        if status:
+            status_norm = status.strip()
+            ingest_query = ingest_query.eq('status', status_norm.lower())
+            task_query = task_query.eq('status', status_norm.upper())
+        if stage:
+            ingest_query = ingest_query.ilike('stage', f'%{stage}%')
+            task_query = task_query.ilike('task_name', f'%{stage}%')
+        if bling_id:
+            ingest_query = ingest_query.eq('bling_id', bling_id)
+        if numero_loja:
+            ingest_query = ingest_query.eq('numero_loja', str(numero_loja))
+        if correlation_id:
+            ingest_query = ingest_query.eq('correlation_id', correlation_id)
+            task_query = task_query.eq('correlation_id', correlation_id)
+        if q:
+            ingest_query = ingest_query.or_(f"message.ilike.%{q}%,stage.ilike.%{q}%")
+            task_query = task_query.or_(f"error_message.ilike.%{q}%,task_name.ilike.%{q}%")
+
+        ingest_rows = ingest_query.order('created_at', desc=True).execute().data or []
+        task_rows = task_query.order('created_at', desc=True).execute().data or []
+
+        merged = [_normalize_ingest_log(row) for row in ingest_rows] + [_normalize_task_log(row) for row in task_rows]
+        merged = _dedupe_by_identity(merged)
+        merged.sort(key=_sort_key, reverse=True)
+
+        total = len(merged)
+        items = merged[offset:offset + per_page]
+
+        return jsonify({
+            'success': True,
+            'data': items,
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': total,
+                'pages': (total + per_page - 1) // per_page if total else 0,
+            }
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

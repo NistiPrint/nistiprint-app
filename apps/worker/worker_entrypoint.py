@@ -89,6 +89,10 @@ def get_default_schedules():
             'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
             'schedule': 30,  # 30 segundos
         },
+        'drain-bling-webhook-failures': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.drain_bling_webhook_failures',
+            'schedule': 300,  # 5 minutos
+        },
         'processar-eventos-producao-periodic': {
             'task': 'tasks.eventos_tasks.process_eventos_producao',
             'schedule': 10,  # 10 segundos

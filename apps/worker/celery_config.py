@@ -63,6 +63,11 @@ celery_app.conf.update(
             'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
             'schedule': 30,  # A cada 30 segundos
         },
+        # Drenar falhas do Bling de volta para pendentes, respeitando retry_count
+        'drain-bling-webhook-failures': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.drain_bling_webhook_failures',
+            'schedule': 300,  # A cada 5 minutos
+        },
         # NOVO: Processar eventos de produção (Event Sourcing) a cada 10 segundos
         'processar-eventos-producao-periodic': {
             'task': 'tasks.eventos_tasks.process_eventos_producao',

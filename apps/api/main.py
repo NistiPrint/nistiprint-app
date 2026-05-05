@@ -59,7 +59,7 @@ from routes.relatorios import relatorios_api_bp
 from routes.uom_conversions import uom_conversions_bp, uom_conversions_api_bp
 from routes.demanda_producao_web import demanda_producao_bp
 from routes.demanda_producao_api import demanda_producao_api_bp
-from routes.tasks_api import tasks_api_bp
+from routes.tasks_api import tasks_api_bp, admin_worker_logs_bp
 from routes.task_schedules_api import task_schedules_api_bp
 from routes.usuarios_setores import usuarios_setores_bp, usuarios_setores_api_bp
 from routes.notifications import notifications_bp
@@ -203,6 +203,7 @@ def create_app():
     app.register_blueprint(demanda_producao_bp)
     app.register_blueprint(demanda_producao_api_bp, url_prefix='/api/v2/demanda_producao')
     app.register_blueprint(tasks_api_bp)
+    app.register_blueprint(admin_worker_logs_bp)
     app.register_blueprint(task_schedules_api_bp)
     app.register_blueprint(usuarios_setores_bp)
     app.register_blueprint(usuarios_setores_api_bp, url_prefix='/api/v2/usuarios-setores')

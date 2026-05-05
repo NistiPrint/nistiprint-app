@@ -17,15 +17,13 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         bling_client_cls.create_client_for_integration_id.assert_called_once_with(77)
         bling_client.get_order.assert_called_once_with(123)
 
-    def test_process_webhook_fails_when_detail_is_missing(self):
+    def test_process_webhook_raises_when_detail_is_missing(self):
         payload = {'id': 999, 'numero': '1', 'numeroLoja': 'ABC'}
 
         with patch.object(bos, '_resolve_bling_instance', return_value={'id': 12, 'config': {}}), \
-             patch.object(bos, '_fetch_bling_order_detail', return_value=None):
-            result = bos.process_webhook(payload)
-
-        self.assertEqual(result['status'], 'error')
-        self.assertIn('detalhe Bling indispon', result['message'])
+             patch.object(bos, '_fetch_bling_order_detail', side_effect=bos.BlingDetailUnavailableError('detalhe ausente')):
+            with self.assertRaises(bos.BlingDetailUnavailableError):
+                bos.process_webhook(payload)
 
     def test_resolve_shipping_carrier_uses_fresh_shopee_data(self):
         shopee_data = {
