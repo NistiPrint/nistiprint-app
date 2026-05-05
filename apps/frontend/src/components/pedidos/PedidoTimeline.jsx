@@ -1,4 +1,5 @@
 import * as pedidoService from '@/services/pedidoService';
+import { formatAppDateTime } from '@/lib/dateTime';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -108,15 +109,7 @@ export default function PedidoTimeline({ eventos, pedidoId, onReprocess, codigoP
   };
 
   const formatarData = (dataISO) => {
-    if (!dataISO) return '-';
-    const data = new Date(dataISO);
-    return data.toLocaleDateString('pt-BR', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+    return formatAppDateTime(dataISO);
   };
 
   if (!eventos || eventos.length === 0) {

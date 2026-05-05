@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Printer, Loader2, AlertTriangle } from 'lucide-react'
 import { api } from '@/services/api'
 import { toast } from 'sonner'
+import { formatAppDate } from '@/lib/dateTime'
 
 /**
  * Componente de Template de Impressão (Stamp Cards)
@@ -394,11 +395,7 @@ function formatCurrency(value) {
 
 function formatDate(dateStr) {
   if (!dateStr) return ''
-  try {
-    return new Date(dateStr).toLocaleDateString('pt-BR')
-  } catch {
-    return ''
-  }
+  return formatAppDate(dateStr, { fallback: '' })
 }
 
 function getPlatformIcon(plataforma) {

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
+import { formatAppDate } from '@/lib/dateTime';
 
 /**
  * Cabeçalho da página de detalhe do pedido
@@ -121,7 +122,7 @@ export default function PedidoHeader({
             <span>•</span>
             <span className="text-sm">
               {pedido.datas?.venda
-                ? new Date(pedido.datas.venda).toLocaleDateString('pt-BR')
+                ? formatAppDate(pedido.datas.venda)
                 : '-'}
             </span>
           </div>

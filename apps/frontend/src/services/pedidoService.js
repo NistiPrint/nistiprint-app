@@ -4,6 +4,7 @@
  */
 
 import api from './api';
+import { formatAppDate } from '@/lib/dateTime';
 
 const BASE_URL = '/pedidos';
 
@@ -114,10 +115,10 @@ export function formatarPedido(pedido) {
       currency: pedido.financeiro?.moeda || 'BRL'
     }).format(pedido.financeiro?.total || 0),
     dataVendaFormatada: pedido.datas?.venda 
-      ? new Date(pedido.datas.venda).toLocaleDateString('pt-BR')
+      ? formatAppDate(pedido.datas.venda)
       : '-',
     dataLimiteEnvioFormatada: pedido.datas?.limite_envio
-      ? new Date(pedido.datas.limite_envio).toLocaleDateString('pt-BR')
+      ? formatAppDate(pedido.datas.limite_envio)
       : null
   };
 }

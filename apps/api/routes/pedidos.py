@@ -59,6 +59,8 @@ def _collect_unique_rows(*row_lists):
     result = []
     for rows in row_lists:
         for row in rows or []:
+            if not row or not isinstance(row, dict):
+                continue
             key = row.get('id')
             if key is None:
                 key = (

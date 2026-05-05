@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import * as pedidoService from '@/services/pedidoService';
+import { formatAppDateTime } from '@/lib/dateTime';
 import {
   AlertCircle,
   CheckCircle2,
@@ -49,10 +50,7 @@ function statusIcon(status) {
 }
 
 function formatTimestamp(value) {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString('pt-BR');
+  return formatAppDateTime(value, { fallback: value ? String(value) : '-' });
 }
 
 function toInlineJson(value) {

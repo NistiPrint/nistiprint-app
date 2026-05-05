@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { formatAppDate, formatAppDateInput } from '@/lib/dateTime';
 
 export default function GerarDemandaModal({
   open,
@@ -23,7 +24,7 @@ export default function GerarDemandaModal({
 }) {
   const [dados, setDados] = useState({
     nome_demanda: '',
-    data_entrega: new Date().toISOString().split('T')[0],
+    data_entrega: formatAppDateInput(),
     horario_coleta: horarioColetaInicial,
     observacoes: '',
   });
@@ -53,7 +54,7 @@ export default function GerarDemandaModal({
     if (!dados.nome_demanda) {
       setDados(prev => ({
         ...prev,
-        nome_demanda: `Demanda - ${qtd} pedido(s) - ${new Date().toLocaleDateString('pt-BR')}`
+        nome_demanda: `Demanda - ${qtd} pedido(s) - ${formatAppDate(new Date())}`
       }));
     }
   };

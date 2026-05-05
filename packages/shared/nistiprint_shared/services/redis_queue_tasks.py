@@ -6,7 +6,6 @@
 
 import json
 import logging
-from datetime import datetime
 from celery import shared_task
 import redis
 from nistiprint_shared.services.bling_order_processing_service import (
@@ -419,7 +418,7 @@ def consumir_fila_bling(correlation_id=None):
                     log_data = {
                         'payload': data,
                         'result': result,
-                        'processed_at': datetime.utcnow().isoformat()
+                        'processed_at': get_now_iso()
                     }
                     r.rpush(BLING_WEBHOOK_PROCESSADOS, json.dumps(log_data))
                     r.ltrim(BLING_WEBHOOK_PROCESSADOS, -100, -1)

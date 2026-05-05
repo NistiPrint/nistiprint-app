@@ -1,21 +1,13 @@
-from datetime import datetime
-import pytz
-from constants import APP_TIMEZONE
-
-def get_now():
-    """Retorna o datetime atual no fuso horário da aplicação."""
-    tz = pytz.timezone(APP_TIMEZONE)
-    return datetime.now(tz)
-
-def get_now_iso():
-    """Retorna o datetime atual em formato ISO com fuso horário."""
-    return get_now().isoformat()
-
-def get_today():
-    """Retorna a data atual no fuso horário da aplicação."""
-    return get_now().date()
-
-
-
-
-
+from nistiprint_shared.utils.date_utils import (  # noqa: F401
+    APP_TZ,
+    UTC,
+    ensure_aware,
+    get_now,
+    get_now_iso,
+    get_today,
+    get_utc_now,
+    get_utc_now_iso,
+    to_app_timezone,
+    unix_to_app_datetime,
+    unix_to_app_iso,
+)

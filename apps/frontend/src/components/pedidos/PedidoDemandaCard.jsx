@@ -11,6 +11,7 @@ import {
   Package
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { formatAppDate } from '@/lib/dateTime';
 
 /**
  * Card que exibe demandas vinculadas a um pedido
@@ -133,7 +134,7 @@ export default function PedidoDemandaCard({ pedidoId, demandas = [], onRefresh }
                 {demanda.data_entrega && (
                   <div className="flex items-center gap-1">
                     <Calendar className="w-3 h-3" />
-                    <span>Entrega: {new Date(demanda.data_entrega).toLocaleDateString('pt-BR')}</span>
+                    <span>Entrega: {formatAppDate(demanda.data_entrega)}</span>
                   </div>
                 )}
                 {demanda.horario_coleta && (

@@ -5,15 +5,13 @@ import requests
 import logging
 import os
 from typing import List, Dict, Optional
+from nistiprint_shared.utils.date_utils import unix_to_app_iso
 
 logger = logging.getLogger("shopee_driver")
 
 def _ts_to_iso(ts: Optional[int]) -> Optional[str]:
     """Convert Unix timestamp to ISO 8601 string."""
-    if not ts:
-        return None
-    import datetime
-    return datetime.datetime.fromtimestamp(ts).isoformat() + "Z"
+    return unix_to_app_iso(ts)
 
 def _carrier_from_packages(pkgs: Optional[List]) -> Optional[str]:
     """Extract shipping_carrier from package_list if available."""
@@ -235,8 +233,7 @@ def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[D
         # Converter timestamp Unix para ISO 8601
         create_time_iso = ""
         if "create_time" in order:
-            import datetime
-            create_time_iso = datetime.datetime.fromtimestamp(order["create_time"]).isoformat() + "Z"
+            create_time_iso = unix_to_app_iso(order["create_time"]) or ""
 
         normalized_order = {
             "external_id": order.get("order_sn", ""),

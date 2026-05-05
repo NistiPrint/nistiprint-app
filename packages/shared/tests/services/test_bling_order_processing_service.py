@@ -81,6 +81,11 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         self.assertEqual(correlation_id, 'novo-cid')
         set_correlation_id.assert_called_once_with('novo-cid')
 
+    def test_clean_shopee_ship_by_date_converts_unix_epoch_to_iso(self):
+        result = bos._clean_shopee_ship_by_date(1778122799)
+
+        self.assertEqual(result, '2026-05-06T23:59:59-03:00')
+
     def test_detect_and_mark_personalized_calls_identifier(self):
         payload = {
             'numero': '12345',
@@ -133,6 +138,40 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         self.assertEqual(pedido_id, 321)
         upsert_data = table.upsert.call_args.args[0]
         self.assertNotIn('informacoes_cliente', upsert_data)
+
+    def test_upsert_pedido_master_uses_shopee_ship_by_date_for_deadline(self):
+        payload = {
+            'id': 1,
+            'numero': '123',
+            'numeroLoja': '456',
+            'total': 10,
+            'data': '2026-05-02',
+            'situacao': {'id': 2},
+            'contato': {'nome': 'Cliente'},
+            'itens': [],
+        }
+
+        table = MagicMock()
+        table.upsert.return_value.execute.return_value.data = [{'id': 321}]
+
+        with patch.object(bos.supabase_db, 'table', return_value=table), \
+             patch.object(bos, '_resolve_situacao_interna', return_value=42), \
+             patch.object(bos, '_upsert_itens_pedido'), \
+             patch.object(bos.logger, 'info'):
+            bos._upsert_pedido_master(
+                payload,
+                pedido_bling_id=11,
+                pedido_shopee_id=None,
+                bling_integration_id=22,
+                marketplace_integration_id=None,
+                canal_venda_id=None,
+                is_flex=False,
+                modalidade=None,
+                shopee_data={'ship_by_date': 1778122799},
+            )
+
+        upsert_data = table.upsert.call_args.args[0]
+        self.assertEqual(upsert_data['data_limite_envio'], '2026-05-06T23:59:59-03:00')
 
 
 if __name__ == '__main__':

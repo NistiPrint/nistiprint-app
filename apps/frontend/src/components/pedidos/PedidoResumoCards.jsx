@@ -9,6 +9,7 @@ import {
   Calendar,
   Zap
 } from 'lucide-react';
+import { formatAppDate } from '@/lib/dateTime';
 
 /**
  * Cards de resumo do pedido (3 colunas)
@@ -81,7 +82,7 @@ export default function PedidoResumoCards({ pedido }) {
             <Calendar className="w-4 h-4 text-muted-foreground" />
             <span className="font-medium">
               {datas?.limite_envio 
-                ? new Date(datas.limite_envio).toLocaleDateString('pt-BR')
+                ? formatAppDate(datas.limite_envio)
                 : 'Não definido'
               }
             </span>
