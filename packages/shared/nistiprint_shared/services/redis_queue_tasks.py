@@ -194,10 +194,67 @@ def _serialize_queue_item(data: dict) -> str:
 def _extract_order_context(data: dict):
     order_data = data.get('data') if data.get('data') and isinstance(data.get('data'), dict) else data
     company_id = data.get('companyId') if data.get('companyId') else None
+    webhook_event_id = data.get('webhook_event_id')
     bling_id = order_data.get('id')
     numero = order_data.get('numero')
     numero_loja = order_data.get('numeroLoja')
-    return order_data, company_id, bling_id, numero, numero_loja
+    return order_data, company_id, webhook_event_id, bling_id, numero, numero_loja
+
+
+def _insert_webhook_event(
+    raw_payload: dict,
+    *,
+    company_id: str | None,
+    bling_id,
+    numero_loja,
+    correlation_id: str,
+) -> int | None:
+    try:
+        response = supabase_db.table('webhook_events').insert({
+            'source': 'bling',
+            'company_id': company_id,
+            'bling_id': bling_id,
+            'numero_loja': str(numero_loja) if numero_loja is not None else None,
+            'raw_payload': raw_payload,
+            'correlation_id': correlation_id,
+            'last_status': 'pending',
+            'last_attempt_at': get_now_iso(),
+            'attempt_count': 1,
+        }).execute()
+        return response.data[0]['id'] if response.data else None
+    except Exception as e:
+        logger.error("Erro ao inserir webhook_events: %s", e)
+        return None
+
+
+def _update_webhook_event(webhook_event_id: int | None, **fields):
+    if not webhook_event_id or not fields:
+        return
+
+    try:
+        supabase_db.table('webhook_events').update(fields).eq('id', webhook_event_id).execute()
+    except Exception as e:
+        logger.error("Erro ao atualizar webhook_events id=%s: %s", webhook_event_id, e)
+
+
+def _increment_webhook_event_attempt(webhook_event_id: int | None):
+    if not webhook_event_id:
+        return
+
+    try:
+        response = supabase_db.table('webhook_events') \
+            .select('attempt_count') \
+            .eq('id', webhook_event_id) \
+            .single().execute()
+        current_attempt_count = int((response.data or {}).get('attempt_count') or 0)
+        _update_webhook_event(
+            webhook_event_id,
+            attempt_count=current_attempt_count + 1,
+            last_status='pending',
+            last_attempt_at=get_now_iso(),
+        )
+    except Exception as e:
+        logger.error("Erro ao incrementar tentativa em webhook_events id=%s: %s", webhook_event_id, e)
 
 
 def _mark_failure_payload(data: dict, *, error_type: str, message: str) -> dict:
@@ -253,6 +310,9 @@ def drain_bling_webhook_failures(correlation_id=None):
 
         data['requeued_at'] = get_now_iso()
         data['last_queue'] = 'pendentes'
+        webhook_event_id = data.get('webhook_event_id')
+        if webhook_event_id:
+            _increment_webhook_event_attempt(webhook_event_id)
         r.rpush(BLING_WEBHOOK_QUEUE, _serialize_queue_item(data))
         moved += 1
 
@@ -301,7 +361,7 @@ def consumir_fila_bling(correlation_id=None):
                     continue
                 
                 # Extract order data - Bling webhooks nest the actual order in a 'data' field
-                order_data, company_id, bling_id, numero, numero_loja = _extract_order_context(data)
+                order_data, company_id, webhook_event_id, bling_id, numero, numero_loja = _extract_order_context(data)
                 
                 # Check for minimum required fields to avoid CNPJ errors
                 if not bling_id and not numero and not numero_loja:
@@ -313,14 +373,38 @@ def consumir_fila_bling(correlation_id=None):
                     )
                     continue
                 
-                logger.info(f"Iniciando processamento do webhook Bling no worker... (bling_id={bling_id}, numero={numero}, numeroLoja={numero_loja}, companyId={company_id})")
+                webhook_correlation_id = generate_correlation_id()
+                if not webhook_event_id:
+                    webhook_event_id = _insert_webhook_event(
+                        data,
+                        company_id=company_id,
+                        bling_id=bling_id,
+                        numero_loja=numero_loja,
+                        correlation_id=webhook_correlation_id,
+                    )
+                    if webhook_event_id:
+                        data['webhook_event_id'] = webhook_event_id
+                else:
+                    _update_webhook_event(
+                        webhook_event_id,
+                        last_status='pending',
+                        last_attempt_at=get_now_iso(),
+                    )
+
+                logger.info(f"Iniciando processamento do webhook Bling no worker... (bling_id={bling_id}, numero={numero}, numeroLoja={numero_loja}, companyId={company_id}, webhook_event_id={webhook_event_id})")
                 try:
-                    result = process_webhook(order_data, company_id=company_id)
+                    result = process_webhook(
+                        order_data,
+                        company_id=company_id,
+                        correlation_id=webhook_correlation_id,
+                        webhook_event_id=webhook_event_id,
+                    )
                 except BlingDetailUnavailableError as e:
                     result = {
                         'status': 'error',
                         'message': str(e),
                         'error_type': 'bling_detail_unavailable',
+                        'correlation_id': webhook_correlation_id,
                     }
 
                 status_result = result.get('status', 'unknown')
@@ -344,7 +428,9 @@ def consumir_fila_bling(correlation_id=None):
                     # Falha real no processamento (ex: erro de API ou Banco)
                     logger.error(f"Falha ao processar webhook: {msg_result}")
                     failed_payload = _mark_failure_payload(data, error_type=error_type, message=msg_result or 'processing_error')
-                    failed_payload['correlation_id'] = result.get('correlation_id') or correlation_id
+                    failed_payload['correlation_id'] = result.get('correlation_id') or webhook_correlation_id
+                    if webhook_event_id:
+                        failed_payload['webhook_event_id'] = webhook_event_id
                     retry_count = int(failed_payload.get('retry_count') or 0)
                     if retry_count >= BLING_WEBHOOK_MAX_RETRIES:
                         _move_failure_to_dead_letter(
