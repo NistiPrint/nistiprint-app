@@ -48,7 +48,7 @@ celery_app.conf.update(
     task_serializer='json',
     accept_content=['json'],
     result_serializer='json',
-    timezone='UTC',
+    timezone='America/Sao_Paulo',
     enable_utc=True,
     
     # Agendamento de tarefas periódicas

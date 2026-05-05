@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ArrowUpRight, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { formatAppDate, formatAppDateTime } from '@/lib/dateTime';
 
 export default function TabelaPedidos({
   pedidos,
@@ -27,28 +28,12 @@ export default function TabelaPedidos({
 
   // Formatador de data
   const formatarData = (dataStr) => {
-    if (!dataStr) return '-';
-    const date = new Date(dataStr);
-    if (isNaN(date.getTime())) return '-';
-    return date.toLocaleDateString('pt-BR');
+    return formatAppDate(dataStr);
   };
 
   // Formatador de data/hora para "Enviar Até"
   const formatarDataHora = (dataStr) => {
-    if (!dataStr) return '-';
-    try {
-      const date = new Date(dataStr);
-      if (isNaN(date.getTime())) return '-';
-      return date.toLocaleDateString('pt-BR', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-    } catch {
-      return '-';
-    }
+    return formatAppDateTime(dataStr);
   };
 
   if (loading) {

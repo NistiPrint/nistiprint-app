@@ -1,12 +1,12 @@
 import logging
 import json
 import unicodedata
-from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from nistiprint_shared.services.platform_api_service import platform_api_service
 from nistiprint_shared.services.order_service import order_service
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso
 
 logger = logging.getLogger("OrderSyncService")
 
@@ -152,7 +152,7 @@ class OrderSyncService:
 
             # Data real de envio (ship_by_date) - CRÍTICO para Shopee
             ship_by_date_raw = raw_order.get('ship_by_date')
-            data_prevista = datetime.fromtimestamp(ship_by_date_raw, tz=timezone.utc).isoformat() if ship_by_date_raw else None
+            data_prevista = unix_to_app_iso(ship_by_date_raw) if ship_by_date_raw else None
             data_prevista = clean_date(data_prevista)
 
             # Identificação FLEX (Entrega Rápida)
@@ -384,7 +384,7 @@ class OrderSyncService:
                 # 1. Marcar item no modelo unificado (itens_pedido)
                 supabase_db.table('itens_pedido').update({
                     'personalizado': True,
-                    'updated_at': datetime.utcnow().isoformat()
+                    'updated_at': get_now_iso()
                 }).eq('pedido_id', pedido_id).eq('descricao', descricao).execute()
 
                 marked_count += 1
@@ -432,7 +432,7 @@ class OrderSyncService:
                 if product_check.data and not product_check.data[0].get('personalizado'):
                     supabase_db.table('produtos').update({
                         'personalizado': True,
-                        'updated_at': datetime.utcnow().isoformat()
+                        'updated_at': get_now_iso()
                     }).eq('id', internal_product_id).execute()
 
                     logger.info(
@@ -458,20 +458,20 @@ class OrderSyncService:
                 'codigo_pedido': order_sn,
                 'status_pedido': raw_order.get('order_status'),
                 'valor_total': float(raw_order.get('total_amount', 0)),
-                'data_criacao': datetime.fromtimestamp(raw_order.get('create_time'), tz=timezone.utc).isoformat() if raw_order.get('create_time') else None,
+                'data_criacao': unix_to_app_iso(raw_order.get('create_time')) if raw_order.get('create_time') else None,
                 'data_envio': data_envio,
                 'endereco_entrega': raw_order.get('recipient_address'),
                 'itens_pedido': raw_order.get('item_list'),
                 'informacoes_comprador': {'username': raw_order.get('buyer_username')},
                 'mensagem': raw_order.get('message_to_seller', ''),
                 'shipping_carrier': raw_order.get('shipping_carrier', ''),
-                'updated_at': datetime.utcnow().isoformat()
+                'updated_at': get_now_iso()
             }
             res = supabase_db.table('pedidos_shopee').select('id').eq('codigo_pedido', order_sn).execute()
             if res.data:
                 supabase_db.table('pedidos_shopee').update(payload).eq('id', res.data[0]['id']).execute()
             else:
-                payload['created_at'] = datetime.utcnow().isoformat()
+                payload['created_at'] = get_now_iso()
                 supabase_db.table('pedidos_shopee').insert(payload).execute()
         except: pass
 

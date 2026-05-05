@@ -3,7 +3,6 @@ import json
 import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from time import perf_counter
 import unicodedata
 
@@ -14,6 +13,7 @@ from nistiprint_shared.services.correlation_service import (
     set_correlation_id,
 )
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
+from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso
 
 logger = logging.getLogger("bling_order_processing")
 
@@ -478,7 +478,7 @@ def process_webhook(
             bling_id=ingest_ctx['payload_summary'].get('bling_id'),
             numero_loja=payload.get('numeroLoja'),
             last_status='success',
-            last_attempt_at=datetime.now(timezone.utc).isoformat(),
+            last_attempt_at=get_now_iso(),
         )
         return {
             'status': 'success',
@@ -494,7 +494,7 @@ def process_webhook(
             bling_id=ingest_ctx.get('payload_summary', {}).get('bling_id'),
             numero_loja=ingest_ctx.get('numero_loja'),
             last_status='failed',
-            last_attempt_at=datetime.now(timezone.utc).isoformat(),
+            last_attempt_at=get_now_iso(),
         )
         raise
     except Exception as e:
@@ -517,7 +517,7 @@ def process_webhook(
             bling_id=ingest_ctx.get('payload_summary', {}).get('bling_id'),
             numero_loja=ingest_ctx.get('numero_loja'),
             last_status='failed',
-            last_attempt_at=datetime.now(timezone.utc).isoformat(),
+            last_attempt_at=get_now_iso(),
         )
         return {
             'status': 'error',
@@ -745,7 +745,7 @@ def _upsert_pedido_bling(payload, bling_integration_id):
         'loja_id': payload.get('loja', {}).get('id'),
         'raw_payload': payload,
         'bling_integration_id': bling_integration_id,
-        'updated_at': datetime.now(timezone.utc).isoformat()
+        'updated_at': get_now_iso()
     }
     
     res = supabase_db.table('pedidos_bling').upsert(data, on_conflict='bling_id').execute()
@@ -822,9 +822,9 @@ def _upsert_pedido_master(payload, *,
 
     # Datas
     data_venda          = _clean_date(payload.get('data'))
-    data_limite_envio   = _clean_date(
-        (shopee_data or {}).get('ship_by_date')
-        or payload.get('dataPrevista')
+    data_limite_envio = (
+        _clean_shopee_ship_by_date((shopee_data or {}).get('ship_by_date'))
+        or _clean_date(payload.get('dataPrevista'))
     )
 
     # Logística
@@ -875,7 +875,7 @@ def _upsert_pedido_master(payload, *,
         'shipping_carrier':           (shopee_data or {}).get('shipping_carrier'),
         'message_to_seller':          (shopee_data or {}).get('raw', {}).get('message_to_seller'),
 
-        'updated_at':                 datetime.now(timezone.utc).isoformat(),
+        'updated_at':                 get_now_iso(),
     }
 
     # filtra None para não sobrescrever em update
@@ -901,6 +901,13 @@ def _clean_date(date_str):
     if date_str.startswith('0000') or '0000-00-00' in date_str:
         return None
     return date_str
+
+
+def _clean_shopee_ship_by_date(value):
+    """
+    Converte ship_by_date da Shopee (unix epoch) para ISO no timezone da aplicacao.
+    """
+    return unix_to_app_iso(value)
 
 
 def _safe_float(value, default=0.0):
@@ -959,7 +966,7 @@ def _upsert_itens_pedido(pedido_id, itens_bling):
             'quantidade':      _safe_float(it.get('quantidade'), 1.0),
             'preco_unitario':  _safe_float(it.get('valor')),
             'subtotal':        _safe_float(it.get('valor')) * _safe_float(it.get('quantidade'), 1.0),
-            'updated_at':      datetime.now(timezone.utc).isoformat(),
+            'updated_at':      get_now_iso(),
         })
 
     if rows:
