@@ -14,6 +14,139 @@ logger = logging.getLogger("PedidosAPI")
 pedidos_bp = Blueprint('pedidos', __name__, url_prefix='/api/v2/pedidos')
 
 
+def _normalize_dt(value):
+    if not value:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return value.isoformat()
+    except Exception:
+        return str(value)
+
+
+def _timeline_key(item):
+    ts = item.get('created_at') or item.get('timestamp') or item.get('started_at') or item.get('finished_at')
+    return ts or ''
+
+
+def _collect_unique_rows(*row_lists):
+    seen = set()
+    result = []
+    for rows in row_lists:
+        for row in rows or []:
+            key = row.get('id')
+            if key is None:
+                key = (
+                    row.get('source'),
+                    row.get('stage'),
+                    row.get('status'),
+                    row.get('created_at') or row.get('timestamp'),
+                    row.get('message'),
+                )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(row)
+    return result
+
+
+def _normalize_evento_pedido(row):
+    return {
+        'id': f"event-{row.get('id')}",
+        'source': 'eventos_pedido',
+        'entity': 'pedido',
+        'created_at': row.get('created_at'),
+        'stage': row.get('tipo_evento'),
+        'status': 'info',
+        'message': row.get('descricao'),
+        'correlation_id': row.get('metadata', {}).get('correlation_id') if isinstance(row.get('metadata'), dict) else None,
+        'metadata': row.get('metadata') or {},
+        'raw': row,
+    }
+
+
+def _normalize_ingest_log(row):
+    return {
+        'id': f"ingest-{row.get('id')}",
+        'source': 'pedido_ingest_log',
+        'entity': 'pedido',
+        'created_at': row.get('created_at'),
+        'stage': row.get('stage'),
+        'status': row.get('status'),
+        'message': row.get('message'),
+        'duration_ms': row.get('duration_ms'),
+        'correlation_id': row.get('correlation_id'),
+        'bling_integration_id': row.get('bling_integration_id'),
+        'numero_loja': row.get('numero_loja'),
+        'bling_id': row.get('bling_id'),
+        'payload_summary': row.get('payload_summary') or {},
+        'raw': row,
+    }
+
+
+def _normalize_task_log(row):
+    metadata = row.get('metadata') or {}
+    return {
+        'id': f"task-{row.get('id')}",
+        'source': 'task_execution_logs',
+        'entity': 'task',
+        'created_at': row.get('started_at') or row.get('created_at') or row.get('finished_at'),
+        'stage': row.get('task_name') or row.get('task_type'),
+        'status': row.get('status'),
+        'message': row.get('error_message') or metadata.get('result') or metadata.get('kwargs'),
+        'duration_ms': row.get('duration_ms'),
+        'correlation_id': row.get('correlation_id'),
+        'payload_summary': metadata,
+        'raw': row,
+    }
+
+
+def _resolve_pedido_log_context(pedido: dict):
+    correlation_ids = set()
+
+    try:
+        corr_rows = supabase_db.table('entity_correlation_mapping') \
+            .select('correlation_id') \
+            .eq('entity_type', 'pedido') \
+            .eq('entity_id', pedido.get('id')) \
+            .execute().data or []
+        correlation_ids.update(row.get('correlation_id') for row in corr_rows if row.get('correlation_id'))
+    except Exception as e:
+        logger.warning("Erro ao buscar entity_correlation_mapping para pedido %s: %s", pedido.get('id'), e)
+
+    try:
+        ingest_corrs = supabase_db.table('pedido_ingest_log') \
+            .select('correlation_id') \
+            .eq('pedido_id', pedido.get('id')) \
+            .execute().data or []
+        correlation_ids.update(row.get('correlation_id') for row in ingest_corrs if row.get('correlation_id'))
+    except Exception as e:
+        logger.warning("Erro ao buscar correlation_ids em pedido_ingest_log para pedido %s: %s", pedido.get('id'), e)
+
+    bling_id = None
+    numero_loja = pedido.get('codigo_pedido_externo')
+
+    pedido_bling_id = pedido.get('pedido_bling_id')
+    if pedido_bling_id:
+        try:
+            pb = supabase_db.table('pedidos_bling') \
+                .select('bling_id, numero_loja') \
+                .eq('id', pedido_bling_id) \
+                .single().execute().data
+            if pb:
+                bling_id = pb.get('bling_id')
+                numero_loja = pb.get('numero_loja') or numero_loja
+        except Exception as e:
+            logger.warning("Erro ao buscar pedidos_bling para pedido %s: %s", pedido.get('id'), e)
+
+    return {
+        'correlation_ids': sorted(correlation_ids),
+        'bling_id': bling_id,
+        'numero_loja': numero_loja,
+    }
+
+
 @pedidos_bp.route('/<int:pedido_id>', methods=['GET'])
 @login_required
 def get_pedido_detalhe(pedido_id):
@@ -234,6 +367,96 @@ def get_pedido_detalhe(pedido_id):
         traceback.print_exc()
         return ApiResponse.error(
             message=f"Erro ao buscar detalhes do pedido: {str(e)}",
+            status_code=500
+        )
+
+
+@pedidos_bp.route('/<int:pedido_id>/logs', methods=['GET'])
+@login_required
+def get_pedido_logs(pedido_id):
+    """
+    Retorna a timeline consolidada do pedido:
+    - eventos_pedido
+    - pedido_ingest_log
+    - task_execution_logs
+    """
+    try:
+        pedido_response = supabase_db.table('pedidos').select('*').eq('id', pedido_id).single().execute()
+        pedido = pedido_response.data
+        if not pedido:
+            return ApiResponse.error(message=f"Pedido {pedido_id} não encontrado", status_code=404)
+
+        context = _resolve_pedido_log_context(pedido)
+        correlation_ids = context['correlation_ids']
+        bling_id = context['bling_id']
+        numero_loja = context['numero_loja']
+
+        eventos_rows = supabase_db.table('eventos_pedido') \
+            .select('*') \
+            .eq('pedido_id', pedido_id) \
+            .order('created_at', desc=True) \
+            .execute().data or []
+
+        ingest_rows = []
+        base_ingest_query = supabase_db.table('pedido_ingest_log').select('*').eq('pedido_id', pedido_id)
+        ingest_rows.extend(base_ingest_query.execute().data or [])
+
+        if correlation_ids:
+            ingest_rows.extend(
+                supabase_db.table('pedido_ingest_log')
+                .select('*')
+                .in_('correlation_id', correlation_ids)
+                .execute().data or []
+            )
+
+        if bling_id:
+            ingest_rows.extend(
+                supabase_db.table('pedido_ingest_log')
+                .select('*')
+                .eq('bling_id', bling_id)
+                .execute().data or []
+            )
+
+        if numero_loja:
+            ingest_rows.extend(
+                supabase_db.table('pedido_ingest_log')
+                .select('*')
+                .eq('numero_loja', str(numero_loja))
+                .execute().data or []
+            )
+
+        task_rows = []
+        if correlation_ids:
+            task_rows.extend(
+                supabase_db.table('task_execution_logs')
+                .select('*')
+                .in_('correlation_id', correlation_ids)
+                .execute().data or []
+            )
+
+        normalized = _collect_unique_rows(
+            [_normalize_evento_pedido(row) for row in eventos_rows],
+            [_normalize_ingest_log(row) for row in ingest_rows],
+            [_normalize_task_log(row) for row in task_rows],
+        )
+        normalized.sort(key=_timeline_key, reverse=True)
+
+        return ApiResponse.success(data={
+            'pedido': {
+                'id': pedido.get('id'),
+                'numero_pedido': pedido.get('numero_pedido'),
+                'codigo_pedido_externo': pedido.get('codigo_pedido_externo'),
+                'pedido_bling_id': pedido.get('pedido_bling_id'),
+                'bling_integration_id': pedido.get('bling_integration_id'),
+            },
+            'contexto': context,
+            'timeline': normalized,
+        })
+
+    except Exception as e:
+        logger.error(f"Erro ao buscar logs do pedido {pedido_id}: {e}")
+        return ApiResponse.error(
+            message=f"Erro ao buscar logs do pedido: {str(e)}",
             status_code=500
         )
 

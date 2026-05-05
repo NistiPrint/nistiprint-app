@@ -1,12 +1,13 @@
 import PedidoDemandaCard from '@/components/pedidos/PedidoDemandaCard';
 import PedidoHeader from '@/components/pedidos/PedidoHeader';
+import PedidoLogsModal from '@/components/pedidos/PedidoLogsModal';
 import PedidoIntegracoesCard from '@/components/pedidos/PedidoIntegracoesCard';
 import PedidoItensList from '@/components/pedidos/PedidoItensList';
 import PedidoResumoCards from '@/components/pedidos/PedidoResumoCards';
 import PedidoTimeline from '@/components/pedidos/PedidoTimeline';
 import * as pedidoService from '@/services/pedidoService';
 import { Loader2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -21,13 +22,10 @@ export default function PedidoDetalhePage() {
   const [demandas, setDemandas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [isLogsOpen, setIsLogsOpen] = useState(false);
+  const [isReprocessing, setIsReprocessing] = useState(false);
 
-  useEffect(() => {
-    carregarPedido();
-    carregarDemandas();
-  }, [id]);
-
-  async function carregarPedido() {
+  const carregarPedido = useCallback(async () => {
     setLoading(true);
     setError(null);
     
@@ -46,16 +44,21 @@ export default function PedidoDetalhePage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [id]);
 
-  async function carregarDemandas() {
+  const carregarDemandas = useCallback(async () => {
     try {
       const dados = await pedidoService.getPedidoDemandas(parseInt(id));
       setDemandas(dados.demandas || []);
     } catch (err) {
       console.error('Erro ao carregar demandas:', err);
     }
-  }
+  }, [id]);
+
+  useEffect(() => {
+    carregarPedido();
+    carregarDemandas();
+  }, [carregarPedido, carregarDemandas]);
 
   function handleBack() {
     console.log('Voltando para lista de pedidos...');
@@ -69,6 +72,30 @@ export default function PedidoDetalhePage() {
 
   function handleShare() {
     toast.info('Funcionalidade de compartilhamento em desenvolvimento');
+  }
+
+  function handleOpenLogs() {
+    setIsLogsOpen(true);
+  }
+
+  async function handleReprocess() {
+    if (!pedido?.id) return;
+
+    setIsReprocessing(true);
+    try {
+      const result = await pedidoService.reprocessarPedido(pedido.id);
+      if (result.success) {
+        toast.success(result.message || 'Pedido reprocessado com sucesso');
+        await carregarPedido();
+        await carregarDemandas();
+      } else {
+        toast.error(result.error || result.message || 'Erro ao reprocessar pedido');
+      }
+    } catch (err) {
+      toast.error(err.message || 'Erro ao reprocessar pedido');
+    } finally {
+      setIsReprocessing(false);
+    }
   }
 
   if (loading) {
@@ -118,6 +145,9 @@ export default function PedidoDetalhePage() {
           onBack={handleBack}
           onPrint={handlePrint}
           onShare={handleShare}
+          onOpenLogs={handleOpenLogs}
+          onReprocess={handleReprocess}
+          isReprocessing={isReprocessing}
         />
 
         {/* Cards de Resumo */}
@@ -153,6 +183,13 @@ export default function PedidoDetalhePage() {
           </div>
         </div>
       </div>
+
+      <PedidoLogsModal
+        open={isLogsOpen}
+        onOpenChange={setIsLogsOpen}
+        pedidoId={pedido?.id}
+        pedido={pedido}
+      />
     </div>
   );
 }

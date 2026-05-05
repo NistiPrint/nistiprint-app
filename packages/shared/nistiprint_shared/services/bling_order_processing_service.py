@@ -1,11 +1,151 @@
 import logging
+import traceback
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from time import perf_counter
+
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
 from nistiprint_shared.services import flex_classifier_service
+from nistiprint_shared.services.correlation_service import (
+    generate_correlation_id,
+    get_correlation_id,
+    set_correlation_id,
+)
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 
 logger = logging.getLogger("bling_order_processing")
+
+
+class BlingDetailUnavailableError(RuntimeError):
+    """Erro tipado para quando o detalhe do pedido no Bling não pode ser obtido."""
+
+
+def _ensure_correlation_id() -> str:
+    correlation_id = get_correlation_id()
+    if not correlation_id:
+        correlation_id = generate_correlation_id()
+        set_correlation_id(correlation_id)
+    return correlation_id
+
+
+def _build_payload_summary(payload: dict) -> dict:
+    total = payload.get('total')
+    if total is None and isinstance(payload.get('valor'), (int, float, str)):
+        total = payload.get('valor')
+
+    situacao = payload.get('situacao') or {}
+    loja = payload.get('loja') or {}
+
+    return {
+        'bling_id': payload.get('id'),
+        'numero': payload.get('numero'),
+        'numero_loja': payload.get('numeroLoja'),
+        'total': total,
+        'situacao_id': situacao.get('id') or payload.get('situacao_id'),
+        'loja_id': loja.get('id'),
+    }
+
+
+def _write_ingest_log(
+    *,
+    correlation_id: str,
+    stage: str,
+    status: str,
+    message: str | None,
+    duration_ms: int | None,
+    payload_summary: dict | None,
+    bling_integration_id: int | None = None,
+    numero_loja: str | None = None,
+    pedido_id: int | None = None,
+):
+    row = {
+        'correlation_id': correlation_id,
+        'bling_integration_id': bling_integration_id,
+        'numero_loja': numero_loja,
+        'stage': stage,
+        'status': status,
+        'message': message,
+        'duration_ms': duration_ms,
+        'payload_summary': payload_summary,
+        'pedido_id': pedido_id,
+    }
+
+    try:
+        supabase_db.table('pedido_ingest_log').insert(row).execute()
+    except Exception as e:
+        logger.warning("[ingest] Erro ao gravar pedido_ingest_log stage=%s: %s", stage, e)
+
+
+def _link_pedido_correlation(pedido_id: int | None, correlation_id: str):
+    if not pedido_id or not correlation_id:
+        return
+
+    try:
+        supabase_db.table('entity_correlation_mapping').upsert(
+            {
+                'entity_type': 'pedido',
+                'entity_id': pedido_id,
+                'correlation_id': correlation_id,
+            },
+            on_conflict='entity_type,entity_id,correlation_id',
+        ).execute()
+    except Exception as e:
+        logger.warning(
+            "[ingest] Erro ao registrar entity_correlation_mapping pedido_id=%s correlation_id=%s: %s",
+            pedido_id,
+            correlation_id,
+            e,
+        )
+
+
+@contextmanager
+def ingest_step(stage: str, ctx: dict):
+    """
+    Registra uma linha em pedido_ingest_log para cada etapa do pipeline.
+
+    O próprio bloco pode enriquecer `ctx` com `status`, `message`, `pedido_id`
+    e `payload_summary`. Em caso de erro, o traceback é persistido em `message`.
+    """
+    started = perf_counter()
+    ctx['status'] = 'success'
+    ctx['message'] = None
+    try:
+        yield ctx
+    except Exception as exc:
+        ctx['status'] = 'failed'
+        ctx['message'] = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        ctx['_failure_logged'] = True
+        _write_ingest_log(
+            correlation_id=ctx['correlation_id'],
+            stage=stage,
+            status=ctx['status'],
+            message=ctx['message'],
+            duration_ms=int((perf_counter() - started) * 1000),
+            payload_summary=ctx.get('payload_summary'),
+            bling_integration_id=ctx.get('bling_integration_id'),
+            numero_loja=ctx.get('numero_loja'),
+            pedido_id=ctx.get('pedido_id'),
+        )
+        if ctx.get('pedido_id') and not ctx.get('_pedido_mapping_written'):
+            _link_pedido_correlation(ctx.get('pedido_id'), ctx['correlation_id'])
+            ctx['_pedido_mapping_written'] = True
+        raise
+    else:
+        _write_ingest_log(
+            correlation_id=ctx['correlation_id'],
+            stage=stage,
+            status=ctx.get('status', 'success'),
+            message=ctx.get('message'),
+            duration_ms=int((perf_counter() - started) * 1000),
+            payload_summary=ctx.get('payload_summary'),
+            bling_integration_id=ctx.get('bling_integration_id'),
+            numero_loja=ctx.get('numero_loja'),
+            pedido_id=ctx.get('pedido_id'),
+        )
+        if ctx.get('pedido_id') and not ctx.get('_pedido_mapping_written'):
+            _link_pedido_correlation(ctx.get('pedido_id'), ctx['correlation_id'])
+            ctx['_pedido_mapping_written'] = True
 
 def process_webhook(payload: dict, bling_integration_hint: int | None = None, company_id: str | None = None) -> dict:
     """
@@ -15,187 +155,253 @@ def process_webhook(payload: dict, bling_integration_hint: int | None = None, co
       veio com header de identificação), evita lookup.
     - company_id: ID da empresa Bling do webhook wrapper (usado para resolver instância)
     """
+    correlation_id = _ensure_correlation_id()
+    pipeline_started = perf_counter()
+    ingest_ctx = {
+        'correlation_id': correlation_id,
+        'payload_summary': _build_payload_summary(payload),
+        'bling_integration_id': bling_integration_hint,
+        'numero_loja': payload.get('numeroLoja'),
+        'pedido_id': None,
+        '_failure_logged': False,
+    }
+
+    _write_ingest_log(
+        correlation_id=correlation_id,
+        stage='received',
+        status='success',
+        message='webhook recebido',
+        duration_ms=0,
+        payload_summary=ingest_ctx['payload_summary'],
+        bling_integration_id=bling_integration_hint,
+        numero_loja=payload.get('numeroLoja'),
+    )
+
     try:
-        correlation = {
-            'bling_id':    payload.get('id'),
-            'numero':      payload.get('numero'),
-            'numero_loja': payload.get('numeroLoja'),
-        }
-        logger.info("[ingest] start %s", correlation)
-
         # 1. Resolver instância Bling
-        bling_inst = _resolve_bling_instance(payload, bling_integration_hint, company_id)
-        correlation['bling_inst'] = bling_inst['id']
-        logger.info("[ingest] bling_instance resolved id=%s cnpj=%s",
-                    bling_inst['id'], bling_inst['config'].get('cnpj'))
+        with ingest_step('resolve_bling_instance', ingest_ctx):
+            bling_inst = _resolve_bling_instance(payload, bling_integration_hint, company_id)
+            ingest_ctx['bling_integration_id'] = bling_inst['id']
+            logger.info("[ingest] bling_instance resolved id=%s cnpj=%s",
+                        bling_inst['id'], bling_inst['config'].get('cnpj'))
 
-        # 1.5. Buscar detalhe completo do pedido na API do Bling
+        # 2. Buscar detalhe completo do pedido na API do Bling
         # O webhook é apenas um aviso de alteração, precisamos dos dados atualizados
-        if payload.get('id'):
-            detalhe = _fetch_bling_order_detail(bling_inst, payload['id'])
-            if detalhe:
+        with ingest_step('fetch_bling', ingest_ctx):
+            if payload.get('id'):
+                detalhe = _fetch_bling_order_detail(bling_inst, payload['id'])
                 payload = detalhe
+                ingest_ctx['payload_summary'] = _build_payload_summary(payload)
                 logger.info("[ingest] payload Bling atualizado via /pedidos/vendas/%s", payload.get('id'))
-            else:
-                logger.warning("[ingest] falha ao buscar detalhe Bling — pipeline continua com payload do webhook")
 
-        detalhe_disponivel = bool(payload.get('itens')) or bool(payload.get('contato'))
-        if not detalhe_disponivel:
-            raise RuntimeError(
-                f"detalhe Bling indisponível para id={correlation['bling_id']} "
-                f"(token possivelmente expirado em inst={bling_inst['id']}); "
-                f"reenfileirando para reprocesso"
-            )
+            detalhe_disponivel = bool(payload.get('itens')) or bool(payload.get('contato'))
+            if not detalhe_disponivel:
+                raise BlingDetailUnavailableError(
+                    f"detalhe Bling indisponível para id={ingest_ctx['payload_summary'].get('bling_id')} "
+                    f"(inst={bling_inst['id']})"
+                )
 
-        # 2. UPSERT pedidos_bling (espelho do payload)
-        pedido_bling_id = _upsert_pedido_bling(payload, bling_inst['id'])
-        logger.info("[ingest] pedidos_bling upserted id=%s", pedido_bling_id)
+        # 3. UPSERT pedidos_bling (espelho do payload)
+        with ingest_step('upsert_bling', ingest_ctx):
+            pedido_bling_id = _upsert_pedido_bling(payload, bling_inst['id'])
+            logger.info("[ingest] pedidos_bling upserted id=%s", pedido_bling_id)
 
-        # 3. Resolver instância marketplace pela loja_id
+        # 4. Resolver instância marketplace pela loja_id
         loja_id = str(payload.get('loja', {}).get('id') or '')
         marketplace_inst, pedido_shopee_id, shopee_data = None, None, None
         if loja_id:
-            try:
-                marketplace_inst = _resolve_marketplace_instance(loja_id, bling_inst['id'])
-            except Exception as e:
-                logger.warning(
-                    "[ingest] falha ao resolver marketplace para loja_id=%s: %s — seguindo só com dados do Bling",
-                    loja_id, e, exc_info=True,
-                )
-                marketplace_inst = None
+            with ingest_step('resolve_marketplace', ingest_ctx):
+                try:
+                    marketplace_inst = _resolve_marketplace_instance(loja_id, bling_inst['id'])
+                except Exception as e:
+                    ingest_ctx['status'] = 'warning'
+                    ingest_ctx['message'] = f"falha ao resolver marketplace para loja_id={loja_id}: {e}"
+                    logger.warning(
+                        "[ingest] falha ao resolver marketplace para loja_id=%s: %s — seguindo só com dados do Bling",
+                        loja_id, e, exc_info=True,
+                    )
+                    marketplace_inst = None
 
-            if marketplace_inst:
-                correlation['marketplace_inst'] = marketplace_inst['id']
-                logger.info("[ingest] marketplace resolved id=%s plataforma=%s nome=%s",
-                            marketplace_inst['id'],
-                            marketplace_inst.get('plataforma_slug'),
-                            marketplace_inst.get('instance_name'))
+                if marketplace_inst:
+                    logger.info("[ingest] marketplace resolved id=%s plataforma=%s nome=%s",
+                                marketplace_inst['id'],
+                                marketplace_inst.get('plataforma_slug'),
+                                marketplace_inst.get('instance_name'))
 
-                # 4. Enriquecimento via API marketplace (apenas Shopee no MVP)
-                if marketplace_inst.get('plataforma_slug') == 'shopee':
-                    try:
-                        shopee_data = _fetch_shopee_detail(
-                            marketplace_inst,
-                            payload.get('numeroLoja'),
-                        )
-                        if shopee_data and not shopee_data.get('error'):
-                            pedido_shopee_id = _upsert_pedido_shopee(
-                                shopee_data,
-                                marketplace_integration_id=marketplace_inst['id'],
-                            )
-                        else:
-                            logger.warning(
-                                "[ingest] enriquecimento Shopee retornou erro para order_sn=%s: %s — seguindo só com dados do Bling",
-                                payload.get('numeroLoja'),
-                                (shopee_data or {}).get('error'),
-                            )
-                            shopee_data = None
-                            pedido_shopee_id = None
-                    except Exception as e:
-                        logger.warning(
-                            "[ingest] enriquecimento Shopee falhou para order_sn=%s: %s — seguindo só com dados do Bling",
-                            payload.get('numeroLoja'),
-                            e,
-                            exc_info=True,
-                        )
-                        shopee_data, pedido_shopee_id = None, None
-            else:
-                logger.warning("[ingest] loja_id=%s sem instância marketplace mapeada", loja_id)
+                    # 5. Enriquecimento via API marketplace (apenas Shopee no MVP)
+                    if marketplace_inst.get('plataforma_slug') == 'shopee':
+                        with ingest_step('enrich_shopee', ingest_ctx):
+                            try:
+                                shopee_data = _fetch_shopee_detail(
+                                    marketplace_inst,
+                                    payload.get('numeroLoja'),
+                                )
+                                if shopee_data and not shopee_data.get('error'):
+                                    pedido_shopee_id = _upsert_pedido_shopee(
+                                        shopee_data,
+                                        marketplace_integration_id=marketplace_inst['id'],
+                                    )
+                                else:
+                                    ingest_ctx['status'] = 'warning'
+                                    ingest_ctx['message'] = (
+                                        f"enriquecimento Shopee retornou erro para order_sn={payload.get('numeroLoja')}: "
+                                        f"{(shopee_data or {}).get('error')}"
+                                    )
+                                    logger.warning(
+                                        "[ingest] enriquecimento Shopee retornou erro para order_sn=%s: %s — seguindo só com dados do Bling",
+                                        payload.get('numeroLoja'),
+                                        (shopee_data or {}).get('error'),
+                                    )
+                                    shopee_data = None
+                                    pedido_shopee_id = None
+                            except Exception as e:
+                                ingest_ctx['status'] = 'warning'
+                                ingest_ctx['message'] = f"enriquecimento Shopee falhou para order_sn={payload.get('numeroLoja')}: {e}"
+                                logger.warning(
+                                    "[ingest] enriquecimento Shopee falhou para order_sn=%s: %s — seguindo só com dados do Bling",
+                                    payload.get('numeroLoja'),
+                                    e,
+                                    exc_info=True,
+                                )
+                                shopee_data, pedido_shopee_id = None, None
+                else:
+                    ingest_ctx['status'] = 'warning'
+                    ingest_ctx['message'] = f"loja_id={loja_id} sem instância marketplace mapeada"
+                    logger.warning("[ingest] loja_id=%s sem instância marketplace mapeada", loja_id)
 
-        # 5. Resolver canal_venda_id pela channel_connection ativa
-        canal_venda_id = _resolve_canal_venda_id(
-            (marketplace_inst or {}).get('id'),
-            bling_inst['id'],
-            loja_id
-        )
-
-        # 6. Classificar Flex
-        flex = flex_classifier_service.classify(
-            supabase_db,
-            fields={
-                'servico_logistico': _volume_servico(payload),
-                'shipping_carrier':  _resolve_shipping_carrier(
-                    shopee_data,
-                    payload.get('numeroLoja'),
-                ),
-                'fulfillment_flag':  (shopee_data or {}).get('fulfillment_flag'),
-            },
-            marketplace_integration_id=(marketplace_inst or {}).get('id'),
-            log_context=correlation,
-        )
-
-        # 7. UPSERT pedidos
-        pedido_id = _upsert_pedido_master(
-            payload,
-            pedido_bling_id=pedido_bling_id,
-            pedido_shopee_id=pedido_shopee_id,
-            bling_integration_id=bling_inst['id'],
-            marketplace_integration_id=(marketplace_inst or {}).get('id'),
-            canal_venda_id=canal_venda_id,
-            is_flex=flex.is_flex,
-            modalidade=flex.modalidade,
-            shopee_data=shopee_data,
-        )
-        logger.info("[ingest] pedido upserted id=%s is_flex=%s modalidade=%s",
-                    pedido_id, flex.is_flex, flex.modalidade)
-
-        # 7.5. Detectar e marcar pedido como personalizado
-        try:
-            _detect_and_mark_personalized(payload, pedido_id)
-        except Exception as e:
-            logger.warning(
-                "[ingest] detecção de personalizado falhou pedido_id=%s: %s",
-                pedido_id, e, exc_info=True,
+        # 6. Resolver canal_venda_id pela channel_connection ativa
+        with ingest_step('resolve_canal_venda', ingest_ctx):
+            canal_venda_id = _resolve_canal_venda_id(
+                (marketplace_inst or {}).get('id'),
+                bling_inst['id'],
+                loja_id
             )
 
-        # 8. Auditoria
-        _log_ingest(
+        # 7. Classificar Flex
+        with ingest_step('classify_flex', ingest_ctx):
+            flex = flex_classifier_service.classify(
+                supabase_db,
+                fields={
+                    'servico_logistico': _volume_servico(payload),
+                    'shipping_carrier':  _resolve_shipping_carrier(
+                        shopee_data,
+                        payload.get('numeroLoja'),
+                    ),
+                    'fulfillment_flag':  (shopee_data or {}).get('fulfillment_flag'),
+                },
+                marketplace_integration_id=(marketplace_inst or {}).get('id'),
+                log_context=ingest_ctx,
+            )
+
+        # 8. UPSERT pedidos
+        with ingest_step('upsert_pedido', ingest_ctx):
+            pedido_id = _upsert_pedido_master(
+                payload,
+                pedido_bling_id=pedido_bling_id,
+                pedido_shopee_id=pedido_shopee_id,
+                bling_integration_id=bling_inst['id'],
+                marketplace_integration_id=(marketplace_inst or {}).get('id'),
+                canal_venda_id=canal_venda_id,
+                is_flex=flex.is_flex,
+                modalidade=flex.modalidade,
+                shopee_data=shopee_data,
+            )
+            ingest_ctx['pedido_id'] = pedido_id
+            logger.info("[ingest] pedido upserted id=%s is_flex=%s modalidade=%s",
+                        pedido_id, flex.is_flex, flex.modalidade)
+
+        # 8.5. Detectar e marcar pedido como personalizado
+        with ingest_step('detect_personalizado', ingest_ctx):
+            try:
+                _detect_and_mark_personalized(payload, pedido_id)
+            except Exception as e:
+                ingest_ctx['status'] = 'warning'
+                ingest_ctx['message'] = f"detecção de personalizado falhou pedido_id={pedido_id}: {e}"
+                logger.warning(
+                    "[ingest] detecção de personalizado falhou pedido_id=%s: %s",
+                    pedido_id, e, exc_info=True,
+                )
+
+        # 9. Auditoria
+        with ingest_step('upsert_auditoria', ingest_ctx):
+            _log_ingest(
+                pedido_id=pedido_id,
+                bling_id=ingest_ctx['payload_summary']['bling_id'],
+                marketplace_integration_id=(marketplace_inst or {}).get('id'),
+                is_flex=flex.is_flex,
+                flex_motivo=flex.motivo,
+                matched_rule_id=flex.matched_rule_id if hasattr(flex, 'matched_rule_id') else None,
+                raw_decision=flex.raw_decision if hasattr(flex, 'raw_decision') else None,
+            )
+
+        # 10. Encadear demanda
+        with ingest_step('create_demanda', ingest_ctx):
+            demanda_producao_service.create_from_order(
+                {'pedido_id': pedido_id, 'numeroLoja': payload.get('numeroLoja')},
+                is_flex=flex.is_flex,
+                modalidade_logistica=flex.modalidade,
+                marketplace_integration_id=(marketplace_inst or {}).get('id'),
+            )
+
+        _write_ingest_log(
+            correlation_id=correlation_id,
+            stage='done',
+            status='success',
+            message=f"pedido_id={pedido_id}",
+            duration_ms=int((perf_counter() - pipeline_started) * 1000),
+            payload_summary=ingest_ctx['payload_summary'],
+            bling_integration_id=ingest_ctx.get('bling_integration_id'),
+            numero_loja=payload.get('numeroLoja'),
             pedido_id=pedido_id,
-            bling_id=correlation['bling_id'],
-            marketplace_integration_id=(marketplace_inst or {}).get('id'),
-            is_flex=flex.is_flex,
-            flex_motivo=flex.motivo,
-            matched_rule_id=flex.matched_rule_id if hasattr(flex, 'matched_rule_id') else None,
-            raw_decision=flex.raw_decision if hasattr(flex, 'raw_decision') else None,
         )
 
-        # 9. Encadear demanda
-        demanda_producao_service.create_from_order(
-            {'pedido_id': pedido_id, 'numeroLoja': payload.get('numeroLoja')},
-            is_flex=flex.is_flex,
-            modalidade_logistica=flex.modalidade,
-            marketplace_integration_id=(marketplace_inst or {}).get('id'),
-        )
-
-        logger.info("[ingest] done %s", correlation)
+        logger.info("[ingest] done %s", {'correlation_id': correlation_id, **ingest_ctx['payload_summary']})
         return {
             'status': 'success',
             'pedido_id': pedido_id,
             'is_flex': flex.is_flex,
-            'flex_motivo': flex.motivo
+            'flex_motivo': flex.motivo,
+            'correlation_id': correlation_id,
         }
+    except BlingDetailUnavailableError:
+        raise
     except Exception as e:
         logger.error("[ingest] Erro no processamento do webhook: %s", e, exc_info=True)
+        if not ingest_ctx.get('_failure_logged'):
+            _write_ingest_log(
+                correlation_id=correlation_id,
+                stage='failed',
+                status='failed',
+                message=''.join(traceback.format_exception(type(e), e, e.__traceback__)),
+                duration_ms=int((perf_counter() - pipeline_started) * 1000),
+                payload_summary=ingest_ctx.get('payload_summary'),
+                bling_integration_id=ingest_ctx.get('bling_integration_id'),
+                numero_loja=ingest_ctx.get('numero_loja'),
+                pedido_id=ingest_ctx.get('pedido_id'),
+            )
         return {
             'status': 'error',
             'message': str(e),
-            'pedido_id': None
+            'pedido_id': ingest_ctx.get('pedido_id'),
+            'correlation_id': correlation_id,
+            'error_type': 'processing_error',
         }
 
 
 # ---------- helpers ----------
 
-def _fetch_bling_order_detail(bling_inst: dict, bling_order_id) -> dict | None:
-    """Busca pedido detalhado no Bling. Retorna o objeto data ou None em falha.
-    Token vem de credentials.access_token ou access_token na própria install."""
+def _fetch_bling_order_detail(bling_inst: dict, bling_order_id) -> dict:
+    """Busca pedido detalhado no Bling e falha de forma explícita se não houver detalhe."""
     if not bling_order_id:
-        logger.warning("[ingest] sem id para fetch detalhe Bling (inst=%s)", bling_inst.get('id'))
-        return None
-    try:
-        from nistiprint_shared.services.bling.bling_client import BlingClient
+        raise BlingDetailUnavailableError(
+            f"sem id para fetch detalhe Bling (inst={bling_inst.get('id')})"
+        )
 
+    from nistiprint_shared.services.bling.bling_client import BlingClient
+
+    try:
         client = BlingClient.create_client_for_integration_id(int(bling_inst['id']))
-        return client.get_order(bling_order_id)
+        detalhe = client.get_order(bling_order_id)
     except Exception as e:
         logger.error(
             "[ingest] falha fetch detalhe Bling id=%s inst=%s: %s",
@@ -204,7 +410,16 @@ def _fetch_bling_order_detail(bling_inst: dict, bling_order_id) -> dict | None:
             e,
             exc_info=True,
         )
-        return None
+        raise BlingDetailUnavailableError(
+            f"falha ao buscar detalhe Bling id={bling_order_id} inst={bling_inst.get('id')}"
+        ) from e
+
+    if not detalhe or not (detalhe.get('itens') or detalhe.get('contato')):
+        raise BlingDetailUnavailableError(
+            f"detalhe Bling indisponível para id={bling_order_id} inst={bling_inst.get('id')}"
+        )
+
+    return detalhe
 
 def _resolve_bling_instance(payload, hint, company_id=None):
     if hint:
