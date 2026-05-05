@@ -9,6 +9,7 @@ from nistiprint_shared.services.order_reprocess_service import order_reprocess_s
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from utils.api_response import ApiResponse
 import logging
+import json
 
 logger = logging.getLogger("PedidosAPI")
 
@@ -90,20 +91,54 @@ def _normalize_evento_pedido(row):
 
 
 def _normalize_ingest_log(row):
+    stage = row.get('stage')
+    if not stage:
+        return None
+
+    payload_summary = row.get('payload_summary') or {}
+    status = row.get('status')
+    message = row.get('message')
+
+    if not message:
+        if stage == 'received':
+            message = f"processando webhook: {json.dumps(payload_summary, ensure_ascii=False, separators=(',', ':'))}"
+        elif stage == 'fetch_bling':
+            message = f"buscando bling: resposta {json.dumps(payload_summary, ensure_ascii=False, separators=(',', ':'))}"
+        elif stage == 'resolve_marketplace':
+            message = f"identificando marketplace: {'sim' if status == 'success' else 'não'}"
+        elif stage == 'enrich_shopee':
+            message = f"buscando marketplace: {'resposta recebida' if status == 'success' else 'sem resposta válida'}"
+        elif stage == 'classify_flex':
+            message = 'classificando flex'
+        elif stage == 'resolve_canal_venda':
+            message = 'resolvendo canal de venda'
+        elif stage == 'upsert_bling':
+            message = 'salvando espelho bling'
+        elif stage == 'upsert_pedido':
+            message = 'atualizando pedido'
+        elif stage == 'detect_personalizado':
+            message = 'detectando personalizado'
+        elif stage == 'upsert_auditoria':
+            message = 'gravando auditoria'
+        elif stage == 'create_demanda':
+            message = 'criando demanda'
+        elif stage == 'resolve_bling_instance':
+            message = f"identificando bling: integration_id={row.get('bling_integration_id') or '-'}"
+
     return {
         'id': f"ingest-{row.get('id')}",
         'source': 'pedido_ingest_log',
         'entity': 'pedido',
         'created_at': row.get('created_at'),
-        'stage': row.get('stage'),
-        'status': row.get('status'),
-        'message': row.get('message'),
+        'stage': stage,
+        'status': status,
+        'message': message,
         'duration_ms': row.get('duration_ms'),
         'correlation_id': row.get('correlation_id'),
         'bling_integration_id': row.get('bling_integration_id'),
         'numero_loja': row.get('numero_loja'),
         'bling_id': row.get('bling_id'),
-        'payload_summary': row.get('payload_summary') or {},
+        'payload_summary': payload_summary,
         'raw': row,
     }
 
@@ -480,6 +515,7 @@ def get_pedido_logs(pedido_id):
             [_normalize_ingest_log(row) for row in ingest_rows],
             [_normalize_task_log(row) for row in task_rows],
         )
+        normalized = [row for row in normalized if row]
         normalized.sort(key=_timeline_key, reverse=True)
 
         return ApiResponse.success(data={

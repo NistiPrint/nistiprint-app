@@ -55,6 +55,18 @@ function formatTimestamp(value) {
   return date.toLocaleString('pt-BR');
 }
 
+function toInlineJson(value) {
+  if (!value || typeof value !== 'object' || Object.keys(value).length === 0) {
+    return '';
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
 function buildCopyText({ pedido, contexto, timeline }) {
   const header = [
     `Pedido: ${pedido?.numero_pedido || pedido?.id || '-'}`,
@@ -65,14 +77,16 @@ function buildCopyText({ pedido, contexto, timeline }) {
   ];
 
   const body = (timeline || []).map((entry) => {
-    const parts = [
+    const line = [
       formatTimestamp(entry.created_at || entry.timestamp),
       entry.stage || entry.task_name || entry.source || '-',
       normalizeStatus(entry.status) || '-',
       entry.message || '',
       entry.duration_ms != null ? `${entry.duration_ms}ms` : '',
+      toInlineJson(entry.payload_summary),
     ].filter(Boolean);
-    return parts.join(' | ');
+
+    return line.join(' | ');
   });
 
   return [...header, ...body].join('\n');
@@ -127,126 +141,129 @@ export default function PedidoLogsModal({ open, onOpenChange, pedidoId, pedido }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl max-h-[88vh] overflow-hidden">
-        <DialogHeader className="pr-10">
-          <DialogTitle className="flex items-center gap-2">
-            <Filter className="h-5 w-5" />
-            Logs do Pedido
-          </DialogTitle>
-          <DialogDescription className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline">Bling ID: {blingId}</Badge>
-            <Badge variant="outline">NumeroLoja: {numeroLoja}</Badge>
-            {correlationIds.length > 0 ? (
-              correlationIds.map((cid) => (
-                <Badge key={cid} variant="secondary" className="font-mono">
-                  {cid.slice(0, 8)}...
-                </Badge>
-              ))
-            ) : (
-              <Badge variant="secondary">Sem correlation_id</Badge>
-            )}
-          </DialogDescription>
-        </DialogHeader>
+      <DialogContent className="w-[96vw] max-w-[1500px] h-[92vh] overflow-hidden p-0">
+        <div className="flex h-full flex-col">
+          <DialogHeader className="border-b px-6 py-4">
+            <DialogTitle className="flex items-center gap-2">
+              <Filter className="h-5 w-5" />
+              Logs do Pedido
+            </DialogTitle>
+            <DialogDescription className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">Bling ID: {blingId}</Badge>
+              <Badge variant="outline">NumeroLoja: {numeroLoja}</Badge>
+              {correlationIds.length > 0 ? (
+                correlationIds.map((cid) => (
+                  <Badge key={cid} variant="secondary" className="font-mono">
+                    {cid.slice(0, 8)}...
+                  </Badge>
+                ))
+              ) : (
+                <Badge variant="secondary">Sem correlation_id</Badge>
+              )}
+            </DialogDescription>
+          </DialogHeader>
 
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap gap-2">
-              {FILTERS.map((item) => (
-                <Button
-                  key={item.value}
-                  type="button"
-                  variant={filter === item.value ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setFilter(item.value)}
-                >
-                  {item.label}
-                </Button>
-              ))}
-            </div>
-
-            <div className="flex gap-2">
-              <Button type="button" variant="outline" size="sm" onClick={handleCopyLog} disabled={!filteredLogs.length}>
-                <Copy className="mr-2 h-4 w-4" />
-                Copiar log
-              </Button>
-              <Button type="button" variant="outline" size="sm" onClick={loadLogs} disabled={loading}>
-                {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-                Atualizar
-              </Button>
-            </div>
-          </div>
-
-          <div className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
-            Timeline reversa de ingest e execucao. Use os filtros para isolar falhas e avisos.
-          </div>
-
-          <ScrollArea className="h-[62vh] pr-4">
-            {loading ? (
-              <div className="flex items-center justify-center py-16">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-              </div>
-            ) : filteredLogs.length === 0 ? (
-              <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
-                Nenhum log encontrado para este filtro.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {filteredLogs.map((entry, index) => (
-                  <div key={entry.id || `${entry.source}-${index}`} className="rounded-lg border bg-background p-4 shadow-sm">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-medium">
-                            {formatTimestamp(entry.created_at || entry.timestamp)}
-                          </span>
-                          <Badge variant="outline" className="capitalize">
-                            {entry.stage || entry.task_name || entry.source || '-'}
-                          </Badge>
-                          <Badge variant={statusVariant(entry.status)} className="gap-1 capitalize">
-                            {statusIcon(entry.status)}
-                            {normalizeStatus(entry.status) || 'unknown'}
-                          </Badge>
-                          {entry.duration_ms != null && (
-                            <Badge variant="secondary">{entry.duration_ms} ms</Badge>
-                          )}
-                        </div>
-                        <div className="text-sm leading-6 text-foreground">
-                          {entry.message || 'Sem mensagem'}
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                        {entry.correlation_id && (
-                          <Badge variant="secondary" className="font-mono">
-                            Corr: {String(entry.correlation_id).slice(0, 8)}...
-                          </Badge>
-                        )}
-                        {entry.bling_id != null && <Badge variant="outline">Bling {entry.bling_id}</Badge>}
-                        {entry.numero_loja && <Badge variant="outline">{entry.numero_loja}</Badge>}
-                      </div>
-                    </div>
-
-                    {entry.payload_summary && Object.keys(entry.payload_summary).length > 0 && (
-                      <pre className="mt-3 overflow-x-auto rounded-md bg-muted p-3 text-xs text-muted-foreground">
-                        {JSON.stringify(entry.payload_summary, null, 2)}
-                      </pre>
-                    )}
-
-                    {entry.raw && entry.source === 'task_execution_logs' && (
-                      <pre className="mt-3 overflow-x-auto rounded-md bg-muted/60 p-3 text-[11px] text-muted-foreground">
-                        {JSON.stringify({
-                          task_name: entry.raw.task_name,
-                          task_type: entry.raw.task_type,
-                          status: entry.raw.status,
-                          error_message: entry.raw.error_message,
-                        }, null, 2)}
-                      </pre>
-                    )}
-                  </div>
+          <div className="flex flex-col gap-3 px-6 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-2">
+                {FILTERS.map((item) => (
+                  <Button
+                    key={item.value}
+                    type="button"
+                    variant={filter === item.value ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setFilter(item.value)}
+                  >
+                    {item.label}
+                  </Button>
                 ))}
               </div>
-            )}
-          </ScrollArea>
+
+              <div className="flex gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={handleCopyLog} disabled={!filteredLogs.length}>
+                  <Copy className="mr-2 h-4 w-4" />
+                  Copiar log
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={loadLogs} disabled={loading}>
+                  {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                  Atualizar
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
+              Exibicao objetiva por etapa. Cada linha mostra horario, etapa, status, duracao, mensagem e contexto.
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 px-6 pb-6">
+            <ScrollArea className="h-full rounded-lg border">
+              {loading ? (
+                <div className="flex items-center justify-center py-16">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : filteredLogs.length === 0 ? (
+                <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
+                  Nenhum log encontrado para este filtro.
+                </div>
+              ) : (
+                <div className="min-w-[1200px] divide-y">
+                  {filteredLogs.map((entry, index) => {
+                    const inlineJson = toInlineJson(entry.payload_summary);
+
+                    return (
+                      <div key={entry.id || `${entry.source}-${index}`} className="px-4 py-3">
+                        <div className="grid grid-cols-[180px_180px_130px_90px_1fr] gap-3 items-start">
+                          <div className="text-sm font-medium whitespace-nowrap">
+                            {formatTimestamp(entry.created_at || entry.timestamp)}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant="outline" className="capitalize">
+                              {entry.stage || entry.task_name || entry.source || '-'}
+                            </Badge>
+                            {entry.correlation_id && (
+                              <Badge variant="secondary" className="font-mono">
+                                {String(entry.correlation_id).slice(0, 8)}...
+                              </Badge>
+                            )}
+                          </div>
+
+                          <div>
+                            <Badge variant={statusVariant(entry.status)} className="gap-1 capitalize">
+                              {statusIcon(entry.status)}
+                              {normalizeStatus(entry.status) || 'unknown'}
+                            </Badge>
+                          </div>
+
+                          <div className="text-sm text-muted-foreground whitespace-nowrap">
+                            {entry.duration_ms != null ? `${entry.duration_ms} ms` : '-'}
+                          </div>
+
+                          <div className="space-y-1 min-w-0">
+                            <div className="text-sm leading-6 break-words">
+                              {entry.message || 'Sem mensagem'}
+                            </div>
+
+                            <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                              {entry.bling_id != null && <span>Bling {entry.bling_id}</span>}
+                              {entry.numero_loja && <span>{entry.numero_loja}</span>}
+                            </div>
+
+                            {inlineJson && (
+                              <div className="rounded-md bg-muted px-3 py-2 text-xs leading-5 text-muted-foreground break-all whitespace-pre-wrap">
+                                {inlineJson}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </ScrollArea>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

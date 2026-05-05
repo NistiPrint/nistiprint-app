@@ -1,4 +1,5 @@
 import logging
+import json
 import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -112,6 +113,27 @@ def _build_payload_summary(payload: dict) -> dict:
     }
 
 
+def _compact(value) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str, separators=(',', ':'))
+    except Exception:
+        return str(value)
+
+
+def _set_stage_details(ctx: dict, message: str | None, details=None):
+    ctx['message'] = message
+    ctx['_stage_payload_summary'] = details if isinstance(details, dict) else None
+
+
+def _consume_stage_payload_summary(ctx: dict):
+    stage_payload = ctx.pop('_stage_payload_summary', None)
+    return stage_payload or ctx.get('payload_summary')
+
+
 def _write_ingest_log(
     *,
     correlation_id: str,
@@ -187,7 +209,7 @@ def ingest_step(stage: str, ctx: dict):
             status=ctx['status'],
             message=ctx['message'],
             duration_ms=int((perf_counter() - started) * 1000),
-            payload_summary=ctx.get('payload_summary'),
+            payload_summary=_consume_stage_payload_summary(ctx),
             bling_integration_id=ctx.get('bling_integration_id'),
             numero_loja=ctx.get('numero_loja'),
             pedido_id=ctx.get('pedido_id'),
@@ -203,7 +225,7 @@ def ingest_step(stage: str, ctx: dict):
             status=ctx.get('status', 'success'),
             message=ctx.get('message'),
             duration_ms=int((perf_counter() - started) * 1000),
-            payload_summary=ctx.get('payload_summary'),
+            payload_summary=_consume_stage_payload_summary(ctx),
             bling_integration_id=ctx.get('bling_integration_id'),
             numero_loja=ctx.get('numero_loja'),
             pedido_id=ctx.get('pedido_id'),
@@ -242,7 +264,7 @@ def process_webhook(
         correlation_id=correlation_id,
         stage='received',
         status='success',
-        message='webhook recebido',
+        message=f"processando webhook: {_compact(ingest_ctx['payload_summary'])}",
         duration_ms=0,
         payload_summary=ingest_ctx['payload_summary'],
         bling_integration_id=bling_integration_hint,
@@ -254,6 +276,15 @@ def process_webhook(
         with ingest_step('resolve_bling_instance', ingest_ctx):
             bling_inst = _resolve_bling_instance(payload, bling_integration_hint, company_id)
             ingest_ctx['bling_integration_id'] = bling_inst['id']
+            _set_stage_details(
+                ingest_ctx,
+                f"identificando bling: resposta {_compact({'bling_integration_id': bling_inst['id'], 'company_id': company_id, 'cnpj': (bling_inst.get('config') or {}).get('cnpj')})}",
+                {
+                    'bling_integration_id': bling_inst['id'],
+                    'company_id': company_id,
+                    'cnpj': (bling_inst.get('config') or {}).get('cnpj'),
+                },
+            )
             logger.info("[ingest] bling_instance resolved id=%s cnpj=%s",
                         bling_inst['id'], bling_inst['config'].get('cnpj'))
 
@@ -264,6 +295,11 @@ def process_webhook(
                 detalhe = _fetch_bling_order_detail(bling_inst, payload['id'])
                 payload = detalhe
                 ingest_ctx['payload_summary'] = _build_payload_summary(payload)
+                _set_stage_details(
+                    ingest_ctx,
+                    f"buscando bling: resposta {_compact(ingest_ctx['payload_summary'])}",
+                    ingest_ctx['payload_summary'],
+                )
                 logger.info("[ingest] payload Bling atualizado via /pedidos/vendas/%s", payload.get('id'))
 
             detalhe_disponivel = bool(payload.get('itens')) or bool(payload.get('contato'))
@@ -276,6 +312,15 @@ def process_webhook(
         # 3. UPSERT pedidos_bling (espelho do payload)
         with ingest_step('upsert_bling', ingest_ctx):
             pedido_bling_id = _upsert_pedido_bling(payload, bling_inst['id'])
+            _set_stage_details(
+                ingest_ctx,
+                f"salvando espelho bling: resposta {_compact({'pedido_bling_id': pedido_bling_id, 'bling_id': payload.get('id'), 'bling_integration_id': bling_inst['id']})}",
+                {
+                    'pedido_bling_id': pedido_bling_id,
+                    'bling_id': payload.get('id'),
+                    'bling_integration_id': bling_inst['id'],
+                },
+            )
             logger.info("[ingest] pedidos_bling upserted id=%s", pedido_bling_id)
 
         # 4. Resolver instância marketplace pela loja_id
@@ -588,19 +633,16 @@ def _resolve_canal_venda_id(marketplace_integration_id, bling_integration_id, lo
 
 def _log_ingest(pedido_id, bling_id, marketplace_integration_id,
                 is_flex, flex_motivo, matched_rule_id, raw_decision):
-    """Grava auditoria do ingest na tabela pedido_ingest_log."""
-    try:
-        supabase_db.table('pedido_ingest_log').insert({
-            'pedido_id': pedido_id,
-            'bling_id': bling_id,
-            'marketplace_integration_id': marketplace_integration_id,
-            'is_flex': is_flex,
-            'flex_motivo': flex_motivo,
-            'matched_rule_id': matched_rule_id,
-            'raw_decision': raw_decision,
-        }).execute()
-    except Exception as e:
-        logger.warning("[ingest] Erro ao gravar auditoria: %s", e)
+    """Retorna o resumo da auditoria para ser anexado ao log estruturado."""
+    return {
+        'pedido_id': pedido_id,
+        'bling_id': bling_id,
+        'marketplace_integration_id': marketplace_integration_id,
+        'is_flex': is_flex,
+        'flex_motivo': flex_motivo,
+        'matched_rule_id': matched_rule_id,
+        'raw_decision': raw_decision,
+    }
 
 def _detect_and_mark_personalized(payload: dict, pedido_id: int | None = None):
     """
