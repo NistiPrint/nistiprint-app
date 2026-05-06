@@ -78,6 +78,22 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
+Preparação do diretório de log no host:
+
+```bash
+sudo mkdir -p /var/log/nistiprint
+sudo chown nistiprint:nistiprint /var/log/nistiprint
+sudo chmod 755 /var/log/nistiprint
+```
+
+Variáveis esperadas em `/opt/nistiprint/.env`:
+
+```ini
+WORKER_LOG_LEVEL=INFO
+WORKER_LOG_FILE=/var/log/nistiprint/worker.log
+WORKER_LOG_BACKUP_COUNT=30
+```
+
 ### `nistiprint-beat.service`
 ```ini
 [Unit]
@@ -237,7 +253,7 @@ docker restart nistiprint-redis nistiprint-n8n nginx-proxy-manager
 | Problema | Verificação |
 |---|---|
 | API responde 502 / connection refused | `systemctl status nistiprint-api` e `journalctl -u nistiprint-api -n 50` |
-| Worker não processa filas | `journalctl -u nistiprint-worker -f`; checar Redis: `docker exec nistiprint-redis redis-cli ping` |
+| Worker não processa filas | `journalctl -u nistiprint-worker -f` e `tail -f /var/log/nistiprint/worker.log`; checar Redis: `docker exec nistiprint-redis redis-cli ping` |
 | Webhooks não chegam | Logs n8n: `docker logs --tail 100 nistiprint-n8n` |
 | Frontend abre em branco | `journalctl -u caddy -n 30`; conferir `apps/frontend/dist/index.html` |
 | SSL expirado | NPM (`:81`) → Certificates → Renew |

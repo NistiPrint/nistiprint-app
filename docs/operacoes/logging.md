@@ -11,7 +11,7 @@ A aplicação usa o **journald** (systemd) para os processos no host (API, Worke
 | Componente | Onde | Como ler |
 |---|---|---|
 | API (Flask + gunicorn) | journald | `journalctl -u nistiprint-api` |
-| Worker (Celery) | journald | `journalctl -u nistiprint-worker` |
+| Worker (Celery) | journald + arquivo rotacionado | `journalctl -u nistiprint-worker` e `tail -f /var/log/nistiprint/worker.log` |
 | Beat (Celery scheduler) | journald | `journalctl -u nistiprint-beat` |
 | Caddy (frontend) | journald | `journalctl -u caddy` |
 | Redis | docker | `docker logs nistiprint-redis` |
@@ -71,6 +71,22 @@ Task tasks.process_bling_webhook[abc-123] received
 Task tasks.process_bling_webhook[abc-123] succeeded in 1.42s
 ```
 
+O mesmo fluxo também fica persistido em arquivo:
+
+```bash
+tail -f /var/log/nistiprint/worker.log
+tail -n 200 /var/log/nistiprint/worker.log
+ls -lh /var/log/nistiprint/worker.log*
+```
+
+Variáveis relevantes do worker:
+
+```ini
+WORKER_LOG_LEVEL=INFO
+WORKER_LOG_FILE=/var/log/nistiprint/worker.log
+WORKER_LOG_BACKUP_COUNT=30
+```
+
 ### Acompanhar uma task específica
 ```bash
 # Pegue o task_id (UUID) e filtre
@@ -99,7 +115,21 @@ sudo -u nistiprint /opt/nistiprint/.venv/bin/celery \
 
 ## 4. Retenção e rotação
 
-`journald` aplica rotação automaticamente. Padrão Ubuntu: até **10% do disco** ou **4GB**, o que for menor. Para ajustar:
+O worker agora grava em dois destinos:
+- `journald` para troubleshooting rápido com `journalctl`
+- arquivo com rotação diária em `/var/log/nistiprint/worker.log`
+
+### Arquivo do worker
+
+- Rotação: diária, à meia-noite
+- Retenção padrão: `30` arquivos
+- Arquivos esperados: `worker.log`, `worker.log.2026-05-06`, etc.
+
+Se o diretório `/var/log/nistiprint` não estiver gravável pelo user `nistiprint`, o worker continua emitindo em `journald` e registra o fallback no startup.
+
+### journald
+
+`journald` também aplica rotação automaticamente. Padrão Ubuntu: até **10% do disco** ou **4GB**, o que for menor. Para ajustar:
 
 ```bash
 sudo nano /etc/systemd/journald.conf
@@ -163,7 +193,7 @@ alias logs-all='journalctl -u nistiprint-api -u nistiprint-worker -u nistiprint-
 |---|---|
 | `503` do NPM | `docker logs --tail 30 nginx-proxy-manager` |
 | API retorna 500 | `journalctl -u nistiprint-api -p err -n 50` |
-| Worker travado / sem consumir fila | `journalctl -u nistiprint-worker -f` + `docker exec nistiprint-redis redis-cli LLEN celery` |
+| Worker travado / sem consumir fila | `journalctl -u nistiprint-worker -f` ou `tail -f /var/log/nistiprint/worker.log` + `docker exec nistiprint-redis redis-cli LLEN celery` |
 | Task disparada nunca executa | confira se Beat está vivo: `systemctl status nistiprint-beat` |
 | Frontend abre em branco | `journalctl -u caddy -n 30` |
 
@@ -175,4 +205,4 @@ Para ambientes com múltiplos servidores ou maior auditoria, considere:
 - **Grafana Loki** — barato, integra direto com journald via `promtail`
 - **Better Stack / Logtail** — SaaS, sem infra adicional
 
-Hoje (servidor único) o `journalctl` é suficiente.
+Hoje (servidor único), `journalctl` continua sendo o caminho mais rápido e o arquivo rotacionado cobre auditoria e consulta posterior.
