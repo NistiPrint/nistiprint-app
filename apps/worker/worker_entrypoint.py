@@ -99,7 +99,7 @@ def get_default_schedules():
         },
         'renew-shopee-tokens': {
             'task': 'tasks.token_renewal_tasks.renew_shopee_tokens',
-            'schedule': 7200,  # 6 horas
+            'schedule': 7200,  # 2 horas
         },
     }
 
@@ -114,6 +114,7 @@ celery_app = Celery(
         'tasks.pedidos_fetch_tasks',  # Fetch Em Andamento (rede de segurança)
         'tasks.consolidation_tasks',  # Tarefas de consolidação
         'tasks.auto_consolidation_tasks',  # Auto-consolidação de pedidos
+        'tasks.token_renewal_tasks',  # Renovação agendada de tokens Shopee
         'nistiprint_shared.services.personalizados_tasks',  # Processamento de personalização IA (shared)
     ]
 )
