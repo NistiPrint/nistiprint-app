@@ -338,11 +338,8 @@ def trigger_sync(instance_id):
 
 @marketplace_api_bp.route('/installed/<instance_id>/renew', methods=['POST'])
 def renew_token(instance_id):
-    inst = installed_integration_service.get_installed_by_id(instance_id)
     try:
-        tokens = platform_auth_service.refresh_access_token(inst.module_id, inst.to_dict())
-        update = {'credentials': {**(inst.credentials or {}), 'access_token': tokens.get('access_token'), 'refresh_token': tokens.get('refresh_token'), 'expires_in': tokens.get('expires_in')}, 'access_token': tokens.get('access_token'), 'refresh_token': tokens.get('refresh_token'), 'expires_at': (datetime.utcnow() + timedelta(seconds=tokens.get('expires_in', 0))).isoformat(), 'refresh_error': None}
-        installed_integration_service.update_installed(instance_id, update)
+        installed_integration_service.renew_integration_token(instance_id, execution_mode='manual')
         return jsonify({'status': 'success'})
     except Exception as e:
         installed_integration_service.update_installed(instance_id, {'refresh_error': str(e)})

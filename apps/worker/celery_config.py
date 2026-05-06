@@ -73,10 +73,10 @@ celery_app.conf.update(
             'task': 'tasks.eventos_tasks.process_eventos_producao',
             'schedule': 10, # A cada 10 segundos
         },
-        # NOVO: Renovação automática de tokens Shopee (a cada 6 horas)
+        # NOVO: Renovação automática de tokens Shopee (a cada 2 horas)
         'renew-shopee-tokens': {
             'task': 'tasks.token_renewal_tasks.renew_shopee_tokens',
-            'schedule': 7200,  # 6 horas (em segundos)
+            'schedule': 7200,  # 2 horas (em segundos)
         },
 
     },

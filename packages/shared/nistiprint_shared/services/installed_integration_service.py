@@ -2,10 +2,11 @@
 Service for managing installed integration instances
 """
 from typing import List, Dict, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import requests
 from google.cloud import secretmanager
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.platform_auth_service import platform_auth_service
 
 
 class InstalledIntegrationService:
@@ -234,6 +235,57 @@ class InstalledIntegrationService:
         except Exception as e:
             print(f"Error updating installed integration {instance_id}: {e}")
             return False
+
+    def renew_integration_token(self, instance_id: str, execution_mode: str = 'manual') -> Dict:
+        """
+        Renova o token de uma integração instalada usando o mesmo fluxo da UI.
+        """
+        inst = self.get_installed_by_id(instance_id)
+        if not inst:
+            raise ValueError("Integração não encontrada")
+
+        now = datetime.utcnow()
+        tokens = platform_auth_service.refresh_access_token(inst.module_id, inst.to_dict())
+        expires_in = tokens.get('expires_in')
+
+        merged_credentials = {
+            **(inst.credentials or {}),
+            'access_token': tokens.get('access_token'),
+            'refresh_token': tokens.get('refresh_token'),
+        }
+        if expires_in is not None:
+            merged_credentials['expires_in'] = expires_in
+
+        update_data = {
+            'credentials': merged_credentials,
+            'access_token': tokens.get('access_token'),
+            'refresh_token': tokens.get('refresh_token'),
+            'last_refresh_attempt': now.isoformat(),
+            'refresh_error': None,
+        }
+        if expires_in is not None:
+            update_data['expires_at'] = (now + timedelta(seconds=expires_in)).isoformat()
+
+        if not self.update_installed(instance_id, update_data):
+            raise RuntimeError(f"Falha ao atualizar integração {instance_id} após renovar token")
+
+        try:
+            self.log_table.insert({
+                'integration_id': instance_id,
+                'status': 'success',
+                'message': 'Token refreshed successfully',
+                'execution_mode': execution_mode,
+                'created_at': now.isoformat()
+            }).execute()
+        except Exception as log_error:
+            print(f"Failed to write refresh success log for integration {instance_id}: {log_error}")
+
+        return {
+            'access_token': tokens.get('access_token'),
+            'refresh_token': tokens.get('refresh_token'),
+            'expires_in': expires_in,
+            'expires_at': update_data.get('expires_at'),
+        }
 
     def uninstall(self, instance_id: str) -> bool:
         """Uninstall an integration by setting is_active to False"""
