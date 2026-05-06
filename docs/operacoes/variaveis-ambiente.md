@@ -85,6 +85,9 @@ Este documento descreve todas as variáveis de ambiente necessárias para operar
 | Variável | Descrição | Exemplo | Padrão |
 |----------|-----------|---------|--------|
 | `LOG_LEVEL` | Nível de log | `INFO`, `DEBUG`, `ERROR` | `INFO` |
+| `WORKER_LOG_LEVEL` | Nível do logger do worker Celery | `INFO`, `DEBUG`, `WARNING` | `INFO` |
+| `WORKER_LOG_FILE` | Caminho do arquivo de log rotacionado do worker | `/var/log/nistiprint/worker.log` | `/var/log/nistiprint/worker.log` |
+| `WORKER_LOG_BACKUP_COUNT` | Quantidade de arquivos diários mantidos | `30` | `30` |
 
 ---
 
@@ -182,6 +185,9 @@ BLING_ID_LOJA=12345
 # ===========================================
 LOG_LEVEL=INFO
 LOG_FILE=/var/log/webhooks.log
+WORKER_LOG_LEVEL=INFO
+WORKER_LOG_FILE=/var/log/nistiprint/worker.log
+WORKER_LOG_BACKUP_COUNT=30
 ```
 
 ---
