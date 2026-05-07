@@ -905,9 +905,10 @@ def _clean_date(date_str):
 
 def _clean_shopee_ship_by_date(value):
     """
-    Converte ship_by_date da Shopee (unix epoch) para ISO no timezone da aplicacao.
+    Retorna ship_by_date da Shopee já convertido para ISO pelo driver.
+    O driver Shopee já converte o timestamp Unix para ISO no timezone da aplicação.
     """
-    return unix_to_app_iso(value)
+    return value
 
 
 def _safe_float(value, default=0.0):
