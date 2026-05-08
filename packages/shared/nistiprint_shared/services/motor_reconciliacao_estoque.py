@@ -479,44 +479,68 @@ class MotorReconciliacaoEstoque:
                         saldo_info = await self._get_saldo_disponivel(produto_id)
                         saldo_disponivel = Decimal(str(saldo_info.get('quantidade_disponivel', 0) or 0))
 
-                        qtd_usar_estoque = min(saldo_disponivel, delta)
-                        qtd_faltante = delta - qtd_usar_estoque
+                        # Estágio finalizados_qtd é PRODUÇÃO de produto acabado:
+                        # gera apenas a entrada (PROD_ACAB) e explode BOM para consumir insumos.
+                        # Os demais estágios são CONSUMO de intermediários: tentam estoque primeiro,
+                        # produzem JIT o restante, e SEMPRE consomem o total (CONS_INT espelhando o JIT).
+                        is_producao_acabado = (estagio == 'finalizados_qtd')
 
-                        # Definir tipo de consumo e produção baseado no estágio
-                        tipo_consumo = 'CONS_INT'
-                        tipo_producao = 'PROD_INT'
-
-                        # A regra de finalização dispara PROD_ACAB
-                        if estagio == 'finalizados_qtd':
-                            tipo_producao = 'PROD_ACAB'
-
-                        # Consome do estoque (se tiver)
-                        if qtd_usar_estoque > 0:
+                        if is_producao_acabado:
+                            # PROD_ACAB sempre +delta (entra no estoque do acabado)
                             movimentos.append(Movimento(
                                 produto_id=produto_id,
-                                tipo=tipo_consumo,
-                                quantidade=-qtd_usar_estoque,
-                                motivo=f'Consumo {estagio} demanda {demanda_id}',
+                                tipo='PROD_ACAB',
+                                quantidade=+delta,
+                                motivo=f'Produção produto acabado {estagio} demanda {demanda_id}',
                                 estagio=estagio,
                                 deposito_id=deposito_padrao
                             ))
-
-                        # Produz compensatório (se faltar)
-                        if qtd_faltante > 0:
-                            movimentos.append(Movimento(
-                                produto_id=produto_id,
-                                tipo=tipo_producao,
-                                quantidade=+qtd_faltante,
-                                motivo=f'Auto-produção JIT {estagio} demanda {demanda_id}',
-                                estagio=estagio,
-                                deposito_id=deposito_padrao
-                            ))
-
-                            # Recursivo: explode BOM do componente faltante
+                            # Explode BOM para consumir intermediários/MPs do acabado
                             movimentos_bom = await self._explodir_bom_consumo(
-                                produto_id, qtd_faltante, demanda_id, user_id, deposito_padrao
+                                produto_id, delta, demanda_id, user_id, deposito_padrao
                             )
                             movimentos.extend(movimentos_bom)
+                        else:
+                            # Estágios de CONSUMO de intermediário
+                            qtd_usar_estoque = min(saldo_disponivel, delta)
+                            qtd_faltante = delta - qtd_usar_estoque
+
+                            # 1. Consome do estoque (parte coberta)
+                            if qtd_usar_estoque > 0:
+                                movimentos.append(Movimento(
+                                    produto_id=produto_id,
+                                    tipo='CONS_INT',
+                                    quantidade=-qtd_usar_estoque,
+                                    motivo=f'Consumo {estagio} demanda {demanda_id}',
+                                    estagio=estagio,
+                                    deposito_id=deposito_padrao
+                                ))
+
+                            # 2. Faltante: produz JIT, consome espelhado e explode BOM
+                            if qtd_faltante > 0:
+                                # 2.a Entrada virtual JIT
+                                movimentos.append(Movimento(
+                                    produto_id=produto_id,
+                                    tipo='PROD_INT',
+                                    quantidade=+qtd_faltante,
+                                    motivo=f'Auto-produção JIT {estagio} demanda {demanda_id}',
+                                    estagio=estagio,
+                                    deposito_id=deposito_padrao
+                                ))
+                                # 2.b Saída espelhada (esse JIT só existe pra alocação à demanda)
+                                movimentos.append(Movimento(
+                                    produto_id=produto_id,
+                                    tipo='CONS_INT',
+                                    quantidade=-qtd_faltante,
+                                    motivo=f'Consumo JIT {estagio} demanda {demanda_id}',
+                                    estagio=estagio,
+                                    deposito_id=deposito_padrao
+                                ))
+                                # 2.c Recursão: explode BOM do componente faltante
+                                movimentos_bom = await self._explodir_bom_consumo(
+                                    produto_id, qtd_faltante, demanda_id, user_id, deposito_padrao
+                                )
+                                movimentos.extend(movimentos_bom)
 
                     else:
                         # Produto sem BOM (Matéria-prima ou Base): consome direto (pode ir negativo)

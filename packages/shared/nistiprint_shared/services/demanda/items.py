@@ -317,23 +317,10 @@ class DemandaItemsService:
 
         supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
 
-        # 2. ESTOQUE SYNC (Produtos Diretos: Miolo/Capa)
-        produto_direto = self._resolver_produto_direto(item_original)
-        if produto_direto:
-            try:
-                estoque_service.movimentar_por_delta(
-                    produto_id=produto_direto['id'],
-                    delta=-float(total_qty),
-                    demanda_id=demanda_id,
-                    item_id=item_id,
-                    idempotency_key=f"direto:finalizar:{item_id}"
-                )
-                logger.info(f"Baixa síncrona de estoque realizada para produto {produto_direto['id']} (item {item_id})")
-            except Exception as e:
-                logger.error(f"Erro na baixa síncrona de estoque (produto_direto): {e}")
-
-        # 3. ESTOQUE ASYNC (Restante da BOM recursiva)
-        # O ConsolidadorDeEstoque processará assincronamente via Celery
+        # 2. ESTOQUE: TUDO via motor de reconciliação (produto direto + BOM recursivo).
+        # A baixa síncrona anterior só registrava em movimentacoes_estoque, não no
+        # ledger demanda_estoque_processado, o que causava dupla baixa quando o motor
+        # processasse o evento. Centralizado no motor para evitar inconsistências.
         try:
             import uuid
             correlation_id = str(uuid.uuid4())
@@ -343,8 +330,8 @@ class DemandaItemsService:
                     'demanda_id': demanda_id,
                     'estagio': 'finalizados_qtd',
                     'quantidade_reportada': float(total_qty),
-                    'tipo_evento': 'BOM_RECURSIVO_APOS_DIRETO',
-                    'skip_produto_id': produto_direto['id'] if produto_direto else None,
+                    'tipo_evento': 'LIQUIDACAO',
+                    'skip_produto_id': None,
                     'processado': False,
                     'correlation_id': correlation_id,
                     'usuario_id': user_id if isinstance(user_id, int) else None,
@@ -397,22 +384,11 @@ class DemandaItemsService:
 
         supabase_db.execute_with_retry(self.itens_table.update(updates).eq('id', item_id))
 
-        # 2. ESTOQUE SYNC (Produtos Diretos: Miolo/Capa)
-        if delta_real > 0:
-            produto_direto = self._resolver_produto_direto(item_original)
-            if produto_direto:
-                try:
-                    estoque_service.movimentar_por_delta(
-                        produto_id=produto_direto['id'],
-                        delta=-float(delta_real),
-                        demanda_id=demanda_id,
-                        item_id=item_id,
-                        idempotency_key=f"direto:finalizar_parcial:{item_id}:{new_finalizados}"
-                    )
-                except Exception as e:
-                    logger.error(f"Erro na baixa síncrona de estoque parcial: {e}")
-
-        # 3. ESTOQUE ASYNC (Restante da BOM)
+        # 2. ESTOQUE: TUDO via motor de reconciliação (produto direto + BOM recursivo).
+        # Antes existia uma "baixa síncrona" do produto direto via movimentar_por_delta,
+        # mas ela só registrava em movimentacoes_estoque (não no ledger
+        # demanda_estoque_processado), causando dupla baixa quando o motor rodasse depois.
+        # Agora a única fonte de verdade é o motor, disparado pelo evento de LIQUIDACAO.
         try:
             import uuid
             correlation_id = str(uuid.uuid4())
@@ -422,8 +398,8 @@ class DemandaItemsService:
                     'demanda_id': demanda_id,
                     'estagio': 'finalizados_qtd',
                     'quantidade_reportada': float(delta_real),
-                    'tipo_evento': 'BOM_RECURSIVO_APOS_DIRETO',
-                    'skip_produto_id': produto_direto['id'] if produto_direto else None,
+                    'tipo_evento': 'LIQUIDACAO',
+                    'skip_produto_id': None,
                     'processado': False,
                     'correlation_id': correlation_id,
                     'usuario_id': user_id if isinstance(user_id, int) else None,
