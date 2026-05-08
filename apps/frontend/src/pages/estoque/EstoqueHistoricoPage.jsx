@@ -65,7 +65,28 @@ function EstoqueHistoricoPage() {
         };
       }
       groups[ref].items.push(mov);
+      // Manter sempre a data mais antiga do grupo como "início"
+      if (new Date(mov.data_movimentacao) < new Date(groups[ref].firstData)) {
+        groups[ref].firstData = mov.data_movimentacao;
+      }
     });
+
+    // Pós-processamento: identifica a entrada raiz (produção principal) e o motivo do grupo.
+    // A entrada raiz é a ENTRADA cuja motivação NÃO é gerada pela explosão de BOM
+    // (ou seja, não tem "JIT", "Auto-produção" ou "Consumo componente"), com fallback para
+    // a entrada cronologicamente mais antiga.
+    Object.values(groups).forEach(group => {
+      const entradas = group.items.filter(m => m.tipo_movimento === 'ENTRADA' && m.quantidade > 0);
+      const isDerivado = (motivo = '') =>
+        /JIT|auto-produ[cç][aã]o|consumo componente|consumo jit/i.test(motivo);
+      const raiz =
+        entradas.find(m => !isDerivado(m.motivo || '')) ||
+        entradas.slice().sort((a, b) => new Date(a.data_movimentacao) - new Date(b.data_movimentacao))[0] ||
+        null;
+      group.entradaRaiz = raiz;
+      if (raiz?.motivo) group.motivo = raiz.motivo;
+    });
+
     return Object.values(groups).sort((a, b) => new Date(b.firstData) - new Date(a.firstData));
   }, [movimentacoes]);
 
@@ -198,17 +219,18 @@ function EstoqueHistoricoPage() {
                               {hasRef ? <Package className="h-4 w-4 text-primary" /> : <Box className="h-4 w-4 text-gray-400" />}
                               <div>
                                 <span className="font-bold text-sm">
-                                  {group.correlation_id 
+                                  {group.correlation_id
                                     ? (() => {
-                                        // Para produção com correlation_id, mostra o nome do produto principal
-                                        const entradaPrincipal = group.items.find(m => m.tipo_movimento === 'ENTRADA' && m.quantidade > 0);
-                                        if (entradaPrincipal) {
-                                          return `PRODUÇÃO: ${entradaPrincipal.produtos?.nome || 'Produto ' + entradaPrincipal.produto_id}`;
+                                        // Usa a entrada-raiz já identificada no agrupamento
+                                        // (a produção que originou a cadeia, não o JIT intermediário).
+                                        const raiz = group.entradaRaiz;
+                                        if (raiz) {
+                                          return `PRODUÇÃO: ${raiz.produtos?.nome || 'Produto ' + raiz.produto_id}`;
                                         }
                                         return 'PRODUÇÃO';
                                       })()
-                                    : hasRef 
-                                      ? `DEMANDA: ${group.ref}` 
+                                    : hasRef
+                                      ? `DEMANDA: ${group.ref}`
                                       : 'MOVIMENTAÇÃO AVULSA'}
                                 </span>
                                 <p className="text-xs text-muted-foreground truncate max-w-md">{group.motivo}</p>

@@ -638,6 +638,7 @@ class MotorReconciliacaoEstoque:
 
                 # Produz compensatório
                 if qtd_faltante > 0:
+                    # 1. Entrada virtual (PROD_INT JIT) — produz a quantidade faltante
                     movimentos.append(Movimento(
                         produto_id=comp_id,
                         tipo='PROD_INT',
@@ -647,7 +648,18 @@ class MotorReconciliacaoEstoque:
                         deposito_id=deposito_padrao
                     ))
 
-                    # Recursão
+                    # 2. Saída espelhada (CONS_INT) — esse JIT só existe para virar o pai;
+                    #    sem essa saída, o saldo do componente ficaria positivo indevidamente.
+                    movimentos.append(Movimento(
+                        produto_id=comp_id,
+                        tipo='CONS_INT',
+                        quantidade=-qtd_faltante,
+                        motivo=f'Consumo JIT de {comp_id} para produção {produto_id} demanda {demanda_id}',
+                        estagio=f'bom_{produto_id}',
+                        deposito_id=deposito_padrao
+                    ))
+
+                    # 3. Recursão: explode o BOM do componente JIT para consumir suas MPs
                     movimentos_rec = await self._explodir_bom_consumo(
                         comp_id, qtd_faltante, demanda_id, user_id, deposito_padrao,
                         profundidade + 1, max_profundidade
