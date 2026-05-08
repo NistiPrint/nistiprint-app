@@ -160,8 +160,33 @@ class DemandaProducaoService:
         return self._items.finalizar_item_parcial(demanda_id, item_id, quantidade, user_id)
 
     def estornar_finalizacao_item(self, demanda_id, item_id, quantidade, user_id='System'):
-        """Estorna finalização de um item."""
-        return self._items.estornar_finalizacao_item(demanda_id, item_id, quantidade, user_id)
+        """
+        Estorna finalização de um item (alias de reverter_finalizacao_item).
+        O parâmetro `quantidade` é ignorado: a reversão é total no fluxo atual.
+        """
+        return self._items.reverter_finalizacao_item(demanda_id, item_id, user_id)
+
+    def atualizar_progresso_item(self, demanda_id: str, item_id: str,
+                                 quantities_to_update: Dict[str, float],
+                                 user_id: str = 'System'):
+        """Atualiza o progresso (capas/miolos) de um item da demanda."""
+        return self._items.atualizar_progresso_item(demanda_id, item_id, quantities_to_update, user_id)
+
+    def reverter_finalizacao_item(self, demanda_id, item_id, user_id='System'):
+        """Reverte a finalização (total) de um item, voltando o status para 'Em Andamento'."""
+        return self._items.reverter_finalizacao_item(demanda_id, item_id, user_id)
+
+    def registrar_saida_item_distribuida(self, distributions, product_id, user_id='System', transaction=None):
+        """
+        Registra a saída distribuída de um produto entre múltiplos itens de demanda
+        (usado pela ControleProducaoPage ao alocar estoque para várias demandas).
+        """
+        return self._items.registrar_saida_item_distribuida(distributions, product_id, user_id, transaction)
+
+    def registrar_retirada_expedicao(self, demanda_id: str, item_id: str, quantidade: int,
+                                     user_id: str = 'System') -> Dict[str, Any]:
+        """Registra a retirada pela expedição (Setor 4)."""
+        return self._items.registrar_retirada_expedicao(demanda_id, item_id, quantidade, user_id)
 
     # ========================================================================
     # MÉTODOS STATUS (demanda.status)
@@ -175,42 +200,262 @@ class DemandaProducaoService:
         """Avalia e atualiza automaticamente o status da demanda com base nos itens."""
         return self._status.auto_atualizar_status_demanda(demanda_id)
 
+    def finalizar_demanda_completa(self, demanda_id, user_id='System'):
+        """Finaliza a demanda inteira (todos os itens marcados como concluídos)."""
+        return self._status.finalizar_demanda_completa(demanda_id, user_id)
+
+    def publicar_demanda(self, demanda_id: str, user_id: str = 'System') -> Dict[str, Any]:
+        """
+        Publica uma demanda (transiciona para 'EM_PRODUCAO').
+        Wrapper sobre transicionar_status mantendo compatibilidade com a rota /publicar.
+        """
+        return self._status.transicionar_status(demanda_id, 'EM_PRODUCAO', user_id)
+
     # ========================================================================
     # MÉTODOS COLLECTIONS (demanda.collections)
     # ========================================================================
 
-    def registrar_coleta(self, demanda_id: str, quantidade: int, ponto_coleta_id: Optional[int] = None, 
+    def registrar_coleta(self, demanda_id: str, quantidade: int, ponto_coleta_id: Optional[int] = None,
                          observacoes: Optional[str] = None, user_id: str = 'System') -> Dict[str, Any]:
-        """Registra a coleta (física/saída) de uma quantidade da demanda."""
-        return self._collections.registrar_coleta(demanda_id, quantidade, ponto_coleta_id, observacoes, user_id)
+        """
+        Registra a coleta (física/saída) de uma quantidade da demanda.
+        Atualmente delega para registrar_coleta_parcial; ponto_coleta_id e observacoes
+        ainda não são persistidos (TODO: estender o método parcial para suportá-los).
+        """
+        if ponto_coleta_id or observacoes:
+            logger.info(
+                f"registrar_coleta: ponto_coleta_id={ponto_coleta_id} e/ou observacoes ignorados "
+                "(não suportados em registrar_coleta_parcial)"
+            )
+        return self._collections.registrar_coleta_parcial(demanda_id, quantidade, user_id)
 
     def registrar_saida_item_producao(self, item_id: int, quantidade: int, user_id: str = 'System') -> Dict[str, Any]:
-        """Registra a saída física de unidades produzidas de um item."""
-        return self._collections.registrar_saida_item_producao(item_id, quantidade, user_id)
+        """
+        Registra a saída física de unidades produzidas de um item.
+        Implementado via registrar_retirada_expedicao (busca demanda_id pelo item).
+        """
+        resp = supabase_db.execute_with_retry(
+            supabase_db.table('itens_demanda').select('demanda_id').eq('id', item_id).limit(1)
+        )
+        if not resp.data:
+            raise ValueError(f"Item {item_id} não encontrado")
+        demanda_id = resp.data[0]['demanda_id']
+        return self._items.registrar_retirada_expedicao(demanda_id, item_id, quantidade, user_id)
+
+    def get_coletas_da_demanda(self, demanda_id: str) -> List[Dict[str, Any]]:
+        """Retorna o histórico de coletas registradas para uma demanda."""
+        return self._collections.get_coletas_da_demanda(demanda_id)
+
+    def get_historico_coletas_global(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Retorna o histórico global de coletas (limite configurável)."""
+        return self._collections.get_historico_coletas_global(limit)
+
+    def marcar_como_coletado(self, demanda_id, user_id='System'):
+        """Marca uma demanda como coletada (consome saldo restante)."""
+        return self._collections.marcar_como_coletado(demanda_id, user_id)
+
+    def registrar_coleta_parcial(self, demanda_id: str, quantidade_coletar: int,
+                                 user_id: str = 'System') -> Dict[str, Any]:
+        """Registra coleta parcial de uma demanda."""
+        return self._collections.registrar_coleta_parcial(demanda_id, quantidade_coletar, user_id)
+
+    def marcar_lote_como_coletado(self, demanda_ids, user_id='System'):
+        """Marca múltiplas demandas como coletadas em lote."""
+        return self._collections.marcar_lote_como_coletado(demanda_ids, user_id)
 
     # ========================================================================
     # MÉTODOS ALOCAÇÃO ESTOQUE (demanda_alocacao.*)
     # ========================================================================
 
     def processar_reserva_inteligente(self, demanda_id, itens_payload, user_id):
-        """Calcula e executa reserva de estoque (V2)."""
-        return self._alocacao_estoque.processar_reserva_inteligente_v2(demanda_id, itens_payload, user_id)
+        """
+        Calcula e executa reserva de estoque para uma demanda.
+        Delega para processar_alocacao_de_demanda no serviço de alocação.
+        """
+        return self._alocacao_estoque.processar_alocacao_de_demanda(demanda_id, itens_payload, user_id)
 
     def processar_fila_estoque(self, limit=10):
         """Processa a fila de tarefas de estoque."""
-        return self._alocacao_queue.processar_proxima_tarefa(limit)
+        return self._alocacao_estoque.processar_fila_estoque(limit=limit)
+
+    def processar_alocacao_avulsa_otimizado(self, product_id, campo, quantidade, user_id, sincrono=False):
+        """
+        Processa alocação avulsa (entrada de produção via ControleProducaoPage).
+        Delega para o serviço especializado de alocação de estoque.
+        """
+        return self._alocacao_estoque.processar_alocacao_avulsa_otimizado(
+            product_id, campo, quantidade, user_id, sincrono
+        )
+
+    def agendar_processamento_estoque(self, demanda_id, item_id, campo, incremento,
+                                      user_id='System', correlation_id=None,
+                                      created_at=None, produto_id=None,
+                                      forcar_sincrono=False):
+        """Agenda processamento de estoque na fila legada (compatibilidade)."""
+        return self._alocacao_estoque.agendar_processamento_estoque(
+            demanda_id, item_id, campo, incremento, user_id,
+            correlation_id, created_at, produto_id, forcar_sincrono
+        )
+
+    def processar_insumos_por_bom_recursivo(self, produto_id, quantidade, correlation_id,
+                                            user_id, tipo_operacao='CONSUMO_BOM',
+                                            retroactive_date=None,
+                                            item_id_referencia=None,
+                                            qtd_a_produzir_forcada=None):
+        """
+        Processa insumos por BOM recursivo. Em modo síncrono, chama o motor
+        de reconciliação diretamente para explodir o BOM e aplicar movimentos.
+        Usado pela ControleProducaoPage e ordem_producao_service em fluxos síncronos.
+        """
+        return self._alocacao_estoque.processar_insumos_por_bom_recursivo(
+            produto_id=produto_id,
+            quantidade=quantidade,
+            correlation_id=correlation_id,
+            user_id=user_id,
+            tipo_operacao=tipo_operacao,
+            retroactive_date=retroactive_date,
+            item_id_referencia=item_id_referencia,
+            qtd_a_produzir_forcada=qtd_a_produzir_forcada,
+        )
+
+    def alocar_producao_automatica(self, produto_id, quantidade: float,
+                                   user_id: str = 'System') -> Dict[str, Any]:
+        """
+        Distribui automaticamente uma quantidade produzida (entrega de OP) entre
+        as demandas ativas que precisam do produto, em ordem de prioridade
+        (data_entrega ascendente). Para cada demanda, consome o saldo pendente
+        do produto via associar_saida_a_demanda.
+
+        Retorna um resumo {alocado_total, restante, distribuicoes}.
+        """
+        try:
+            qtd_disponivel = float(quantidade)
+            if qtd_disponivel <= 0:
+                return {'alocado_total': 0, 'restante': 0, 'distribuicoes': []}
+
+            demandas = self.get_demandas_ativas_por_item(produto_id) or []
+            # Ordenar por data de entrega (mais urgente primeiro)
+            demandas.sort(key=lambda d: d.get('data_entrega') or '9999-12-31')
+
+            distribuicoes = []
+            for demanda in demandas:
+                if qtd_disponivel <= 0:
+                    break
+                demanda_id = demanda['id']
+                # Buscar itens dessa demanda que usam o produto
+                itens_map = self._core.get_items_for_multiple_demandas([str(demanda_id)])
+                itens = itens_map.get(str(demanda_id), [])
+                for item in itens:
+                    if qtd_disponivel <= 0:
+                        break
+                    # Identificar a coluna pertinente conforme o produto
+                    if str(item.get('id_produto_miolo')) == str(produto_id):
+                        campo = 'miolos_prontos_retirada_qtd'
+                    elif str(item.get('produto_id')) == str(produto_id):
+                        campo = 'capas_produzidas_qtd'
+                    else:
+                        continue
+                    saldo_pendente = max(
+                        0,
+                        (item.get('quantidade_total') or 0) - (item.get(campo) or 0)
+                    )
+                    if saldo_pendente <= 0:
+                        continue
+                    a_alocar = min(qtd_disponivel, saldo_pendente)
+                    try:
+                        self._items.registrar_producao_incremental(
+                            demanda_id=demanda_id,
+                            item_id=item['id'],
+                            producao_incremental={campo: a_alocar},
+                            user_id=user_id,
+                            origem_tipo=3,  # produção entregue de OP
+                        )
+                        qtd_disponivel -= a_alocar
+                        distribuicoes.append({
+                            'demanda_id': demanda_id,
+                            'item_id': item['id'],
+                            'campo': campo,
+                            'quantidade': a_alocar,
+                        })
+                    except Exception as e:
+                        logger.error(
+                            f"alocar_producao_automatica: falha alocando {a_alocar} para "
+                            f"item {item['id']} (demanda {demanda_id}): {e}"
+                        )
+
+            return {
+                'alocado_total': float(quantidade) - qtd_disponivel,
+                'restante': qtd_disponivel,
+                'distribuicoes': distribuicoes,
+            }
+        except Exception as e:
+            logger.error(f"alocar_producao_automatica falhou: {e}")
+            return {'alocado_total': 0, 'restante': float(quantidade), 'distribuicoes': [], 'error': str(e)}
+
+    def associar_saida_a_demanda(self, demanda_id: str, product_id: str, quantity: int,
+                                 user_id: str = 'System') -> Dict[str, Any]:
+        """
+        Associa uma saída de estoque (de um produto intermediário) a um item de demanda.
+        Encontra o item da demanda que tem o produto e incrementa a coluna de pool
+        correspondente (capas_impressas_qtd / capas_produzidas_qtd / miolos_prontos_retirada_qtd).
+        Delega o consumo de estoque para o motor de reconciliação via registrar_producao_incremental.
+        """
+        # Localiza o item da demanda associado ao produto
+        itens_table = supabase_db.table('itens_demanda')
+        # Busca por produto_id direto (capa) ou id_produto_miolo (miolo)
+        resp_capa = supabase_db.execute_with_retry(
+            itens_table.select('*').eq('demanda_id', demanda_id).eq('produto_id', product_id).limit(1)
+        )
+        item = resp_capa.data[0] if resp_capa.data else None
+        campo = None
+        if item:
+            campo = 'capas_produzidas_qtd'  # default p/ produto principal de capa
+        else:
+            resp_miolo = supabase_db.execute_with_retry(
+                itens_table.select('*').eq('demanda_id', demanda_id).eq('id_produto_miolo', product_id).limit(1)
+            )
+            item = resp_miolo.data[0] if resp_miolo.data else None
+            if item:
+                campo = 'miolos_prontos_retirada_qtd'
+
+        if not item or not campo:
+            logger.warning(
+                f"associar_saida_a_demanda: item não encontrado para produto {product_id} "
+                f"na demanda {demanda_id}"
+            )
+            return {'success': False, 'message': 'Item não encontrado'}
+
+        # Reaproveita registrar_producao_incremental para passar pelo motor
+        return self._items.registrar_producao_incremental(
+            demanda_id=demanda_id,
+            item_id=item['id'],
+            producao_incremental={campo: quantity},
+            user_id=user_id,
+            origem_tipo=2,  # 2 = saída avulsa associada
+        )
 
     # ========================================================================
     # MÉTODOS REPORTING (demanda_reporting.*)
     # ========================================================================
+
+    def get_demandas_by_status(self, status_list, product_id=None) -> List[Dict[str, Any]]:
+        """
+        Busca demandas por status (uma string ou lista). Aceita filtro opcional por produto.
+        Delega para o serviço de reporting/dashboard.
+        """
+        return self._report_dashboard.get_demandas_by_status(status_list, product_id=product_id)
 
     def get_dashboard_summary(self) -> Dict[str, Any]:
         """Obtém resumo consolidado de produção para a lista de demandas."""
         return self._report_production.get_daily_production_summary()
 
     def get_kanban_data(self, setor_id: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Obtém dados para o quadro Kanban."""
-        return self._report_kanban.get_kanban_board(setor_id)
+        """Obtém dados para o quadro Kanban (alias de get_painel_producao_setores)."""
+        painel = self._report_kanban.get_painel_producao_setores(setor_id)
+        # Manter retorno List para compatibilidade legada
+        if isinstance(painel, dict):
+            return painel.get('itens') or painel.get('demandas') or []
+        return painel or []
 
     def get_painel_producao_setores(self, setor_id_ou_nome: Optional[int] = None) -> Dict[str, Any]:
         """Obtém dados do painel de produção organizado por setores/colunas Kanban."""
@@ -221,8 +466,92 @@ class DemandaProducaoService:
         return self._report_production.get_daily_production_summary()
 
     def get_demandas_consolidadas(self, data_inicio: str, data_fim: str) -> List[Dict[str, Any]]:
-        """Obtém demandas consolidadas para relatório."""
-        return self._report_production.get_consolidated_report(data_inicio, data_fim)
+        """
+        Obtém demandas consolidadas para relatório no intervalo de datas.
+        Atualmente derivado de get_all_demandas + filtro por data_entrega
+        (TODO: implementar versão otimizada em demanda_reporting/production.py).
+        """
+        try:
+            todas = self._report_production.get_all_demandas()
+            return [
+                d for d in todas
+                if data_inicio <= (d.get('data_entrega') or '') <= data_fim
+            ]
+        except Exception as e:
+            logger.error(f"get_demandas_consolidadas falhou: {e}")
+            return []
+
+    def get_consolidado_producao(self, trilha=None, sku=None) -> Dict[str, Any]:
+        """Consolidado de produção (totais por produto/trilha)."""
+        return self._report_production.get_consolidado_producao(trilha=trilha, sku=sku)
+
+    def get_consolidado_agrupado_por_sku(self, trilha=None) -> Dict[str, Any]:
+        """Consolidado de produção agrupado por SKU."""
+        return self._report_production.get_consolidado_agrupado_por_sku(trilha=trilha)
+
+    def get_prioritized_demandas(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Demandas priorizadas (não concluídas), ordenadas por critérios de prioridade."""
+        return self._report_dashboard.get_prioritized_demandas(limit=limit)
+
+    def get_demandas_ativas_por_item(self, produto_id, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Lista demandas em status ativos que contêm o produto informado.
+        Wrapper sobre get_demandas_by_status com filtro por produto.
+        """
+        return self._report_dashboard.get_demandas_by_status(
+            ['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL'],
+            product_id=produto_id,
+        )
+
+    def get_pending_items_by_miolo(self, miolo_id) -> List[Dict[str, Any]]:
+        """
+        Lista demandas ativas que tenham itens com o miolo informado, retornando
+        os itens pendentes de cada uma.
+        Construído sobre get_demandas_by_status + get_items_for_multiple_demandas.
+        """
+        try:
+            demandas_ativas = self._report_dashboard.get_demandas_by_status(
+                ['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL']
+            )
+            if not demandas_ativas:
+                return []
+
+            demanda_ids = [str(d['id']) for d in demandas_ativas]
+            itens_map = self._core.get_items_for_multiple_demandas(demanda_ids)
+
+            resultado = []
+            for demanda in demandas_ativas:
+                itens = itens_map.get(str(demanda['id']), [])
+                itens_filtrados = [
+                    i for i in itens
+                    if str(i.get('id_produto_miolo')) == str(miolo_id)
+                    and (i.get('miolos_prontos_retirada_qtd') or 0) < (i.get('quantidade_total') or 0)
+                ]
+                if itens_filtrados:
+                    resultado.append({**demanda, 'itens_pendentes': itens_filtrados})
+            return resultado
+        except Exception as e:
+            logger.error(f"get_pending_items_by_miolo({miolo_id}) falhou: {e}")
+            return []
+
+    def get_stock_history_for_item(self, item_id) -> List[Dict[str, Any]]:
+        """
+        Histórico de estoque de um item de demanda específico.
+        Lê o ledger 'demanda_estoque_processado' (registrado pelo motor de reconciliação)
+        e retorna em ordem cronológica reversa.
+        """
+        try:
+            response = supabase_db.execute_with_retry(
+                supabase_db.table('demanda_estoque_processado')
+                .select('*')
+                .eq('item_id', item_id)
+                .order('created_at', desc=True)
+                .limit(500)
+            )
+            return response.data or []
+        except Exception as e:
+            logger.error(f"get_stock_history_for_item({item_id}) falhou: {e}")
+            return []
 
 
 # Instância única singleton
