@@ -195,18 +195,21 @@ class DemandaItemsService:
 
         # 3. Disparar Reconciliação Determinística (Novo Motor)
         # Ao invés de inserir na fila legada, disparamos o evento de reconciliação
+        # IMPORTANTE: a coluna eventos_producao_v2.demanda_id é INTEGER (FK p/
+        # demandas_producao.id). Se o caller passar o código alfanumérico
+        # ('260508SYS9BRCV') o INSERT falha por type mismatch — usamos a FK INT do item.
+        demanda_id_int = item.get('demanda_id')
         try:
             import uuid
             correlation_id = str(uuid.uuid4())
-            
+
             # Registrar evento de produção para o motor (E7 - Liquidação ou SINAL)
             # Para este caso de atualização de progresso geral, assumimos LIQUIDACAO (ou SINAL, dependendo do estágio)
             evento = {
-                'item_demanda_id': item_id,
-                'demanda_id': demanda_id,
+                'item_demanda_id': int(item_id),
+                'demanda_id': int(demanda_id_int) if demanda_id_int is not None else None,
                 'estagio': 'progresso_item_atualizado',
                 'quantidade_reportada': float(updates.get('finalizados_qtd', item.get('finalizados_qtd', 0))),
-                'quantidade_efetiva': float(updates.get('finalizados_qtd', item.get('finalizados_qtd', 0))),
                 'tipo_evento': 'LIQUIDACAO',
                 'processado': False,
                 'correlation_id': correlation_id,
@@ -214,6 +217,8 @@ class DemandaItemsService:
             }
             try:
                 supabase_db.table('eventos_producao_v2').insert(evento).execute()
+                print(f"[atualizar_progresso_item] Evento LIQUIDACAO inserido "
+                      f"(item={item_id}, demanda={demanda_id_int}, corr={correlation_id})")
             except Exception as event_error:
                 # Erros do Realtime (ex: StreamIDTooLowError) não devem interromper o fluxo principal
                 # O evento pode não ter sido inserido, mas a atualização visual já foi persistida
@@ -230,20 +235,23 @@ class DemandaItemsService:
                     )
                 else:
                     # Outros erros devem ser tratados como críticos
-                    raise event_error
+                    raise
 
             # NOTA: O processamento do estoque é feito assincronamente pelo ConsolidadorDeEstoque
             # via Celery (tasks.eventos_tasks.process_eventos_producao)
         except Exception as e:
+            import traceback
             print(f"ERRO CRÍTICO na reconciliação de estoque do item {item_id}: {e}")
+            traceback.print_exc()
             system_log_service.log(
                 category='PRODUCAO',
                 message=f"Falha na reconciliação de estoque: {str(e)}",
                 severity='ERROR',
                 action='atualizar_progresso_item',
                 reference_id=item_id,
-                metadata={'item_id': item_id, 'updates': updates}
+                metadata={'item_id': item_id, 'updates': updates, 'demanda_id': demanda_id, 'demanda_id_int': demanda_id_int}
             )
+            raise
 
         # --- AUTOMATIZAÇÃO DE STATUS ---
         if updates.get('status_item') == 'Concluído':
@@ -294,13 +302,18 @@ class DemandaItemsService:
             raise ValueError(f"Item {item_id} não encontrado")
 
         item_original = response.data[0]
-        
+
         # Check if already finalized to avoid duplicate work/events
         if item_original.get('status_item') == 'Concluído':
              self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
              return self._process_item_dict(item_original)
 
         total_qty = item_original['quantidade']
+        # IMPORTANTE: o `demanda_id` recebido pode ser o CÓDIGO alfanumérico
+        # (ex: '260508SYS9BRCV', VARCHAR em demandas_producao.demanda_id), mas a coluna
+        # eventos_producao_v2.demanda_id é INTEGER (FK para demandas_producao.id).
+        # Usamos a FK numérica que já está no item (itens_demanda.demanda_id).
+        demanda_id_int = item_original.get('demanda_id')
 
         # 1. VISIBILIDADE IMEDIATA: Atualizar todas as colunas no dashboard para o Total
         updates = {
@@ -325,26 +338,43 @@ class DemandaItemsService:
             import uuid
             correlation_id = str(uuid.uuid4())
             try:
-                supabase_db.table('eventos_producao_v2').insert({
-                    'item_demanda_id': item_id,
-                    'demanda_id': demanda_id,
+                evento_payload = {
+                    'item_demanda_id': int(item_id),
+                    'demanda_id': int(demanda_id_int) if demanda_id_int is not None else None,
                     'estagio': 'finalizados_qtd',
                     'quantidade_reportada': float(total_qty),
                     'tipo_evento': 'LIQUIDACAO',
-                    'skip_produto_id': None,
                     'processado': False,
                     'correlation_id': correlation_id,
                     'usuario_id': user_id if isinstance(user_id, int) else None,
                     'created_at': get_now_iso()
-                }).execute()
+                }
+                supabase_db.table('eventos_producao_v2').insert(evento_payload).execute()
+                print(f"[finalizar_item] Evento LIQUIDACAO inserido em eventos_producao_v2 "
+                      f"(item={item_id}, demanda={demanda_id_int}, qty={total_qty}, corr={correlation_id})")
             except Exception as event_error:
                 error_str = str(event_error)
                 if 'StreamID' in error_str or 'Realtime' in error_str:
                     print(f"AVISO: Erro do Realtime ao inserir evento de finalização (não crítico): {event_error}")
                 else:
-                    raise event_error
+                    # Erro real (tipo, RLS, FK quebrada, etc.) - re-raise para visibilidade
+                    raise
         except Exception as e:
-            print(f"ERRO ao registrar evento de finalização do item {item_id}: {e}")
+            # CRÍTICO: se o evento não for inserido, o estoque NUNCA será reconciliado.
+            # Antes só fazia print e o erro era engolido. Agora logamos com stack trace
+            # e re-levantamos para que a API retorne 500 ao frontend.
+            import traceback
+            print(f"ERRO CRÍTICO ao registrar evento de finalização do item {item_id}: {e}")
+            traceback.print_exc()
+            system_log_service.log(
+                category='ESTOQUE',
+                message=f"Falha ao inserir evento LIQUIDACAO em eventos_producao_v2: {e}",
+                severity='ERROR',
+                action='finalizar_item',
+                reference_id=str(item_id),
+                metadata={'item_id': item_id, 'demanda_id': demanda_id, 'demanda_id_int': demanda_id_int}
+            )
+            raise
 
         self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
 
@@ -357,6 +387,8 @@ class DemandaItemsService:
 
         item_original = response.data[0]
         total_qty = item_original['quantidade']
+        # IMPORTANTE: ver explicação em finalizar_item — usamos a FK INT do item.
+        demanda_id_int = item_original.get('demanda_id')
 
         # 1. VISIBILIDADE IMEDIATA (Atualização das colunas visuais)
         def get_new_val(field):
@@ -389,35 +421,44 @@ class DemandaItemsService:
         # mas ela só registrava em movimentacoes_estoque (não no ledger
         # demanda_estoque_processado), causando dupla baixa quando o motor rodasse depois.
         # Agora a única fonte de verdade é o motor, disparado pelo evento de LIQUIDACAO.
-        try:
-            import uuid
-            correlation_id = str(uuid.uuid4())
+        if delta_real > 0:
             try:
-                supabase_db.table('eventos_producao_v2').insert({
-                    'item_demanda_id': item_id,
-                    'demanda_id': demanda_id,
-                    'estagio': 'finalizados_qtd',
-                    'quantidade_reportada': float(delta_real),
-                    'tipo_evento': 'LIQUIDACAO',
-                    'skip_produto_id': None,
-                    'processado': False,
-                    'correlation_id': correlation_id,
-                    'usuario_id': user_id if isinstance(user_id, int) else None,
-                    'created_at': get_now_iso()
-                }).execute()
-            except Exception as event_error:
-                error_str = str(event_error)
-                if 'StreamID' in error_str or 'Realtime' in error_str:
-                    print(f"AVISO: Erro do Realtime ao inserir evento de finalização parcial (não crítico): {event_error}")
-                else:
-                    raise event_error
-        except Exception as e:
-            print(f"ERRO ao registrar evento de finalização parcial do item {item_id}: {e}")
-
-        if updates.get('status_item') == 'Concluído':
-            self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
-
-        return self._process_item_dict({**item_original, **updates})
+                import uuid
+                correlation_id = str(uuid.uuid4())
+                try:
+                    evento_payload = {
+                        'item_demanda_id': int(item_id),
+                        'demanda_id': int(demanda_id_int) if demanda_id_int is not None else None,
+                        'estagio': 'finalizados_qtd',
+                        'quantidade_reportada': float(delta_real),
+                        'tipo_evento': 'LIQUIDACAO',
+                        'processado': False,
+                        'correlation_id': correlation_id,
+                        'usuario_id': user_id if isinstance(user_id, int) else None,
+                        'created_at': get_now_iso()
+                    }
+                    supabase_db.table('eventos_producao_v2').insert(evento_payload).execute()
+                    print(f"[finalizar_item_parcial] Evento LIQUIDACAO inserido "
+                          f"(item={item_id}, demanda={demanda_id_int}, delta={delta_real}, corr={correlation_id})")
+                except Exception as event_error:
+                    error_str = str(event_error)
+                    if 'StreamID' in error_str or 'Realtime' in error_str:
+                        print(f"AVISO: Erro do Realtime ao inserir evento de finalização parcial (não crítico): {event_error}")
+                    else:
+                        raise
+            except Exception as e:
+                import traceback
+                print(f"ERRO CRÍTICO ao registrar evento de finalização parcial do item {item_id}: {e}")
+                traceback.print_exc()
+                system_log_service.log(
+                    category='ESTOQUE',
+                    message=f"Falha ao inserir evento LIQUIDACAO parcial: {e}",
+                    severity='ERROR',
+                    action='finalizar_item_parcial',
+                    reference_id=str(item_id),
+                    metadata={'item_id': item_id, 'demanda_id': demanda_id, 'demanda_id_int': demanda_id_int, 'delta': float(delta_real)}
+                )
+                raise
 
         if updates.get('status_item') == 'Concluído':
             self._verificar_e_finalizar_demanda_automatica(demanda_id, user_id)
@@ -620,53 +661,63 @@ class DemandaItemsService:
 
         # DISPARAR EVENTO DE EXPEDIÇÃO (Event Sourcing)
         # O ConsolidadorDeEstoque processará assincronamente via Celery
+        # IMPORTANTE: usamos a FK INT do item, não o demanda_id alfanumérico da URL.
+        demanda_id_int = item.get('demanda_id')
         try:
             import uuid
             correlation_id = str(uuid.uuid4())
-            
+
+            base_payload = {
+                'item_demanda_id': int(item_id),
+                'demanda_id': int(demanda_id_int) if demanda_id_int is not None else None,
+                'quantidade_reportada': float(quantidade),
+                'tipo_evento': 'SINAL',
+                'processado': False,
+                'correlation_id': correlation_id,
+                'usuario_id': user_id if isinstance(user_id, int) else None,
+                'created_at': get_now_iso()
+            }
+
             # Registrar evento para expedição de capas
             try:
                 supabase_db.table('eventos_producao_v2').insert({
-                    'item_demanda_id': item_id,
-                    'demanda_id': demanda_id,
+                    **base_payload,
                     'estagio': 'expedicao_capas_retiradas_qtd',
-                    'quantidade_reportada': float(quantidade),
-                    'tipo_evento': 'SINAL',
-                    'processado': False,
-                    'correlation_id': correlation_id,
-                    'usuario_id': user_id if isinstance(user_id, int) else None,
-                    'created_at': get_now_iso()
                 }).execute()
             except Exception as event_error:
-                # Erros do Realtime não devem interromper o fluxo principal
                 error_str = str(event_error)
                 if 'StreamID' in error_str or 'Realtime' in error_str:
                     print(f"AVISO: Erro do Realtime ao inserir evento de expedição de capas (não crítico): {event_error}")
                 else:
-                    raise event_error
+                    raise
 
             # Registrar evento para expedição de miolos
             try:
                 supabase_db.table('eventos_producao_v2').insert({
-                    'item_demanda_id': item_id,
-                    'demanda_id': demanda_id,
+                    **base_payload,
                     'estagio': 'expedicao_miolos_retirados_qtd',
-                    'quantidade_reportada': float(quantidade),
-                    'tipo_evento': 'SINAL',
-                    'processado': False,
-                    'correlation_id': correlation_id,
-                    'usuario_id': user_id if isinstance(user_id, int) else None,
-                    'created_at': get_now_iso()
                 }).execute()
             except Exception as event_error:
-                # Erros do Realtime não devem interromper o fluxo principal
                 error_str = str(event_error)
                 if 'StreamID' in error_str or 'Realtime' in error_str:
                     print(f"AVISO: Erro do Realtime ao inserir evento de expedição de miolos (não crítico): {event_error}")
                 else:
-                    raise event_error
+                    raise
+            print(f"[registrar_retirada_expedicao] 2 eventos SINAL inseridos "
+                  f"(item={item_id}, demanda={demanda_id_int}, qty={quantidade}, corr={correlation_id})")
         except Exception as e:
-            print(f"ERRO ao registrar evento de expedição do item {item_id}: {e}")
+            import traceback
+            print(f"ERRO CRÍTICO ao registrar evento de expedição do item {item_id}: {e}")
+            traceback.print_exc()
+            system_log_service.log(
+                category='ESTOQUE',
+                message=f"Falha ao inserir eventos SINAL de expedição: {e}",
+                severity='ERROR',
+                action='registrar_retirada_expedicao',
+                reference_id=str(item_id),
+                metadata={'item_id': item_id, 'demanda_id': demanda_id, 'demanda_id_int': demanda_id_int, 'quantidade': quantidade}
+            )
+            raise
 
         # Verificar se a demanda deve ser finalizada automaticamente
         if updates.get('status_item') == 'Concluído':
