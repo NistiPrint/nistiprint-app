@@ -918,32 +918,40 @@ class MotorReconciliacaoEstoque:
                 .eq('id', item_id)\
                 .single()\
                 .execute()
-            
+
             if response.data:
                 status = response.data.get('status_processamento')
                 updated_at = response.data.get('updated_at')
-                
-                # Se está PROCESSANDO há mais de 5 minutos, assume lock perdido e libera
+
+                # Se está PROCESSANDO há mais de 5 minutos, assume lock perdido e libera.
+                # IMPORTANTE: o nome `timezone` precisa ser importado diretamente do módulo
+                # `datetime` — `datetime.timezone.utc` falha porque `datetime` aqui é a
+                # CLASSE datetime.datetime (que não tem o atributo `timezone`).
                 if status == 'PROCESSANDO' and updated_at:
-                    from datetime import datetime, timedelta
+                    from datetime import datetime, timedelta, timezone
                     try:
-                        updated_dt = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
-                        if updated_dt < datetime.now(datetime.timezone.utc) - timedelta(minutes=5):
-                            print(f"[LOCK] Timeout detectado para item {item_id}, liberando lock...")
+                        # Aceita formato ISO com 'Z' ou com offset numérico
+                        iso_str = updated_at.replace('Z', '+00:00') if isinstance(updated_at, str) else str(updated_at)
+                        updated_dt = datetime.fromisoformat(iso_str)
+                        # Se o timestamp veio sem timezone, assume UTC para comparar
+                        if updated_dt.tzinfo is None:
+                            updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+                        if updated_dt < datetime.now(timezone.utc) - timedelta(minutes=5):
+                            print(f"[LOCK] Timeout detectado para item {item_id} (preso desde {updated_at}), liberando lock...")
                             supabase_db.table('itens_demanda')\
                                 .update({'status_processamento': 'PENDENTE'})\
                                 .eq('id', item_id)\
                                 .execute()
                     except Exception as e:
-                        print(f"[LOCK] Erro ao verificar timeout: {e}")
-            
+                        print(f"[LOCK] Erro ao verificar timeout do item {item_id}: {e}")
+
             # Tenta adquirir lock
             response = supabase_db.table('itens_demanda')\
                 .update({'status_processamento': 'PROCESSANDO'})\
                 .eq('id', item_id)\
                 .neq('status_processamento', 'PROCESSANDO')\
                 .execute()
-            
+
             return len(response.data) > 0
         except Exception as e:
             print(f"ERRO ao adquirir lock para item {item_id}: {e}")
