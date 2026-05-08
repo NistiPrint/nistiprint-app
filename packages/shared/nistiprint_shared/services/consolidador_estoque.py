@@ -24,6 +24,18 @@ class ConsolidadorDeEstoque:
     Processador de eventos de produção para reconciliação de estoque.
     """
 
+    # Tipos de evento que disparam reconciliação completa do item.
+    # - LIQUIDACAO: nome canônico, deve ser preferido em código novo.
+    # - BOM_RECURSIVO_APOS_DIRETO: usado por finalizar_item / finalizar_item_parcial
+    #   para sinalizar que a baixa síncrona do produto direto foi feita e o restante
+    #   da BOM precisa ser processado pelo motor.
+    # - FINALIZACAO: alias legado eventualmente usado em fluxos antigos.
+    LIQUIDATION_EVENT_TYPES = {
+        'LIQUIDACAO',
+        'BOM_RECURSIVO_APOS_DIRETO',
+        'FINALIZACAO',
+    }
+
     def __init__(self):
         self.eventos_table = supabase_db.table('eventos_producao_v2')
         self.itens_table = supabase_db.table('itens_demanda')
@@ -63,9 +75,14 @@ class ConsolidadorDeEstoque:
         # 3. Processar cada item
         for item_id, eventos_item in eventos_por_item.items():
             try:
-                # Verifica se há evento de LIQUIDACAO (finalização)
-                tem_liquidacao = any(e.get('tipo_evento') == 'LIQUIDACAO' for e in eventos_item)
-                
+                # Verifica se há algum evento que dispara reconciliação completa.
+                # Aceita LIQUIDACAO, BOM_RECURSIVO_APOS_DIRETO e FINALIZACAO (ver
+                # LIQUIDATION_EVENT_TYPES para a lista canônica).
+                tem_liquidacao = any(
+                    e.get('tipo_evento') in self.LIQUIDATION_EVENT_TYPES
+                    for e in eventos_item
+                )
+
                 if tem_liquidacao:
                     # Executa reconciliação completa do item
                     await self._reconciliar_item(item_id, eventos_item)
