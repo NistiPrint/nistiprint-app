@@ -102,6 +102,78 @@ class DemandaStatusService:
         except Exception as e:
             print(f"Erro ao baixar estoque da demanda {demanda_id}: {e}")
 
+    # Status válidos (canônicos) e seus aliases legados
+    _STATUS_VALIDOS = {
+        'AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL', 'CONCLUIDO', 'CANCELADO',
+        'Pendente', 'Em Produção', 'Em Andamento', 'Concluído', 'Cancelado',
+    }
+
+    def transicionar_status(self, demanda_id: str, novo_status: str, user_id: str = 'System') -> Dict[str, Any]:
+        """
+        Altera o status de uma demanda com validação básica.
+        Não valida o grafo de transições (qualquer status válido é aceito);
+        para transições mais rígidas, ver auto_atualizar_status_demanda.
+        """
+        if novo_status not in self._STATUS_VALIDOS:
+            raise ValueError(f"Status inválido: {novo_status}. Válidos: {sorted(self._STATUS_VALIDOS)}")
+
+        updates = {'status': novo_status}
+        if novo_status in ('CONCLUIDO', 'Concluído'):
+            updates['data_conclusao'] = get_now_iso()
+
+        return self._core.update_demanda_details(demanda_id, updates, user_id)
+
+    def auto_atualizar_status_demanda(self, demanda_id: str) -> str:
+        """
+        Avalia o estado dos itens e atualiza o status da demanda automaticamente.
+        Retorna o novo status aplicado (ou o atual se nenhuma mudança foi necessária).
+        """
+        try:
+            demanda_res = supabase_db.execute_with_retry(
+                self.demandas_table.select("status").eq('id', demanda_id)
+            )
+            if not demanda_res.data:
+                return ''
+            status_atual = demanda_res.data[0]['status']
+            if status_atual in ('CONCLUIDO', 'Concluído', 'CANCELADO', 'Cancelado'):
+                return status_atual
+
+            itens_res = supabase_db.execute_with_retry(
+                self.itens_table.select("status_item, finalizados_qtd, quantidade_total")
+                .eq('demanda_id', demanda_id)
+            )
+            itens = itens_res.data or []
+            if not itens:
+                return status_atual
+
+            todos_concluidos = all(i.get('status_item') == 'Concluído' for i in itens)
+            algum_progresso = any(
+                (i.get('finalizados_qtd') or 0) > 0
+                or i.get('status_item') in ('Em Andamento', 'Fechando', 'EM_PRODUCAO')
+                for i in itens
+            )
+            algum_finalizado_parcial = any(
+                0 < (i.get('finalizados_qtd') or 0) < (i.get('quantidade_total') or 0)
+                for i in itens
+            )
+
+            if todos_concluidos:
+                novo = 'CONCLUIDO'
+            elif algum_finalizado_parcial:
+                novo = 'COLETA_PARCIAL'
+            elif algum_progresso:
+                novo = 'EM_PRODUCAO'
+            else:
+                novo = status_atual
+
+            if novo != status_atual:
+                self.transicionar_status(demanda_id, novo, 'System')
+                return novo
+            return status_atual
+        except Exception as e:
+            print(f"Erro em auto_atualizar_status_demanda({demanda_id}): {e}")
+            return ''
+
     def finalizar_demanda_completa(self, demanda_id, user_id='System'):
         # 1. Finalizar cada item individualmente (isso dispara estoque, cascatas e logs)
         try:
