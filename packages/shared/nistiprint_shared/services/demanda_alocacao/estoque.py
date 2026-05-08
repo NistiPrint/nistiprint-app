@@ -38,23 +38,29 @@ class DemandaAlocacaoEstoqueService:
         """
         Registra um evento de produção na tabela eventos_producao_v2.
         Este é o único ponto de entrada para processamento de estoque.
-        
+
         Args:
             item_id: ID do item de demanda
-            demanda_id: ID da demanda de produção
+            demanda_id: ID da demanda de produção. Pode vir como INT (FK para
+                demandas_producao.id) OU como CÓDIGO alfanumérico (ex:
+                '260508SYS9BRCV', valor da coluna demandas_producao.demanda_id).
+                Resolvemos para INT antes do INSERT, pois eventos_producao_v2.demanda_id
+                é INTEGER e tentar inserir uma string alfanumérica falha por type mismatch.
             estagio: Estágio da produção (ex: 'finalizados_qtd', 'capas_impressas_qtd')
             quantidade: Quantidade reportada
             tipo_evento: 'SINAL' para etapas intermediárias, 'LIQUIDACAO' para finalização
             user_id: ID do usuário
-            
+
         Returns:
             dict: Evento registrado
         """
         try:
+            demanda_id_int = self._resolver_demanda_id_int(demanda_id, item_id)
+
             cid = str(uuid.uuid4())
             evento = {
-                'item_demanda_id': item_id,
-                'demanda_id': demanda_id,
+                'item_demanda_id': int(item_id) if item_id is not None else None,
+                'demanda_id': demanda_id_int,
                 'estagio': estagio,
                 'quantidade_reportada': float(quantidade),
                 'tipo_evento': tipo_evento,
@@ -66,8 +72,44 @@ class DemandaAlocacaoEstoqueService:
             supabase_db.table('eventos_producao_v2').insert(evento).execute()
             return evento
         except Exception as e:
+            import traceback
             print(f"Erro ao registrar evento de produção: {e}")
-            raise e
+            traceback.print_exc()
+            raise
+
+    def _resolver_demanda_id_int(self, demanda_id, item_id=None):
+        """
+        Garante que o demanda_id seja a chave numérica (PK INT em demandas_producao.id).
+
+        Aceita:
+        - int / str numérica → retorna int direto
+        - str alfanumérica (código demanda_id) → busca em demandas_producao
+        - None → tenta resolver via item_id (FK em itens_demanda.demanda_id)
+        """
+        if demanda_id is None and item_id is not None:
+            try:
+                res = self.itens_table.select('demanda_id').eq('id', int(item_id)).execute()
+                if res.data:
+                    return int(res.data[0]['demanda_id'])
+            except Exception:
+                pass
+            return None
+
+        if isinstance(demanda_id, int):
+            return demanda_id
+
+        s = str(demanda_id).strip()
+        if s.isdigit():
+            return int(s)
+
+        # Código alfanumérico — resolver via demandas_producao
+        try:
+            res = self.demandas_table.select('id').eq('demanda_id', s).execute()
+            if res.data:
+                return int(res.data[0]['id'])
+        except Exception:
+            pass
+        return None
 
     def get_item_by_id(self, item_id):
         """Busca um item de demanda pelo ID."""
