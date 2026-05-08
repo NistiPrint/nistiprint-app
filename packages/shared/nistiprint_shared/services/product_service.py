@@ -1278,7 +1278,11 @@ class ProductService:
             'preco_venda': float(variant_data.get('preco') or variant_data.get('price') or variant_data.get('preco_venda') or parent.get('preco_venda') or 0),
             'estoque_minimo': int(variant_data.get('stock_min') or variant_data.get('estoque_minimo') or 0),
             'estoque_maximo': int(variant_data.get('stock_max') or variant_data.get('estoque_maximo') or 0),
-            'tipo_material': variant_data.get('material_type') or parent.get('tipo_material') or 'produto_acabado',
+            # Defesa em profundidade: o default seguro eh 'materia_prima'.
+            # 'produto_acabado' foi o fallback historico e gerou variacoes
+            # classificadas erradas (a guarda de BOM as rejeita). O trigger
+            # trg_validar_tipo_produto_variacao tambem auto-corrige no banco.
+            'tipo_material': variant_data.get('material_type') or parent.get('tipo_material') or 'materia_prima',
             'unidade_medida_id': variant_data.get('unit_of_measure_id') or variant_data.get('unidade_medida_id') or parent.get('unidade_medida_id'),
 
             # New fields for product formats and inheritance

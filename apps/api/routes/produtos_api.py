@@ -109,10 +109,20 @@ def api_editar(produto_id):
             'material_type': data.get('material_type'), 'cost_price': float(data.get('cost_price') or 0),
             'stock_min': data.get('stock_min'), 'stock_max': data.get('stock_max'),
             'requires_personalization': data.get('requires_personalization'), 'status': data.get('status'),
-            'formato': data.get('formato'), 'setor_responsavel_id': data.get('setor_responsavel_id'),
-            'parent_id': data.get('parent_id'), 'herdar_dados_pai': data.get('herdar_dados_pai'),
-            'herdar_bom_pai': data.get('herdar_bom_pai'), 'tags': [{'tag_id': tid} for tid in data.get('tags', []) if tid]
+            'setor_responsavel_id': data.get('setor_responsavel_id'),
+            'herdar_dados_pai': data.get('herdar_dados_pai'),
+            'herdar_bom_pai': data.get('herdar_bom_pai'),
+            'tags': [{'tag_id': tid} for tid in data.get('tags', []) if tid]
         }
+        # Campos que mudam a NATUREZA do produto: so incluir se o cliente
+        # enviou explicitamente. Sem isso, editar uma variacao via UI sem
+        # reenviar parent_id/formato sobrescrevia esses campos com None,
+        # transformando a variacao em produto raiz orfao e disparando
+        # "Produtos do tipo 'variacao' devem ter um produto pai associado".
+        if 'parent_id' in data:
+            dados['parent_id'] = data['parent_id']
+        if 'formato' in data:
+            dados['formato'] = data['formato']
         if not dados['sku'] or not dados['name']: return jsonify({'error': 'SKU e Nome são obrigatórios'}), 400
         p_atualizado = product_service.update(produto_id, dados)
         return jsonify({'success': True, 'message': 'Produto atualizado!', 'produto': p_atualizado})
