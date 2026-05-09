@@ -103,65 +103,104 @@ class ConsolidadorDeEstoque:
     async def _reconciliar_item(self, item_id: int, eventos: List[Dict]):
         """
         Executa reconciliação de estoque para um item.
-        Usa lock para evitar processamento concorrente do mesmo item.
+
+        Lock atômico via compare-and-set em itens_demanda.status_processamento:
+            UPDATE ... SET status='PROCESSANDO' WHERE id=X AND status<>'PROCESSANDO'
+            RETURNING id
+        Se zero linhas retornadas, outro worker ja pegou — pula.
+
+        Tambem faz claim atômico dos eventos (UPDATE processado=true ... WHERE
+        processado=false RETURNING id) ANTES de chamar o motor, para que dois
+        workers nao processem o mesmo evento simultaneamente.
 
         Args:
             item_id: ID do item de demanda
             eventos: Lista de eventos do item
         """
-        # 1. Verificar lock (evita processamento concorrente)
-        lock_response = self.itens_table.select('status_processamento').eq('id', item_id).execute()
-        if not lock_response.data:
-            raise ValueError(f"Item {item_id} não encontrado")
-        
-        status_proc = lock_response.data[0].get('status_processamento')
-        if status_proc == 'PROCESSANDO':
-            # Item já está sendo processado por outra execução
-            print(f"⚠ Item {item_id} já está PROCESSANDO, pulando...")
-            return
-        
-        # 2. Obter demanda_id
+        # 1. Obter demanda_id antes do lock (precisamos para chamar motor)
         demanda_id = eventos[0].get('demanda_id')
         if not demanda_id:
             item_response = self.itens_table.select('demanda_id').eq('id', item_id).execute()
             if item_response.data:
                 demanda_id = item_response.data[0].get('demanda_id')
-        
+
         if not demanda_id:
             raise ValueError(f"Não foi possível determinar demanda_id para item {item_id}")
-        
+
+        # 2. Lock atômico: tenta marcar como PROCESSANDO somente se nao estiver.
+        # Compare-and-set evita race entre dois workers concorrentes.
         try:
-            # 3. Marcar item como PROCESSANDO (lock)
-            self.itens_table.update({'status_processamento': 'PROCESSANDO'}).eq('id', item_id).execute()
-            
+            claim_response = self.itens_table \
+                .update({'status_processamento': 'PROCESSANDO'}) \
+                .eq('id', item_id) \
+                .neq('status_processamento', 'PROCESSANDO') \
+                .execute()
+        except Exception as e:
+            print(f"ERRO ao adquirir lock do item {item_id}: {e}")
+            return
+
+        if not claim_response.data:
+            # Outro worker ja esta processando este item.
+            print(f"⚠ Item {item_id} já está PROCESSANDO em outro worker, pulando...")
+            return
+
+        # 3. Claim atômico dos eventos: marca como processado=true APENAS
+        # os que ainda estao processado=false (evita double-consume).
+        # Se outro worker ja pegou esses eventos, recebemos 0 e abortamos
+        # (liberando o lock que acabamos de obter).
+        evento_ids = [e['id'] for e in eventos]
+        try:
+            claim_eventos = self.eventos_table \
+                .update({'processado': True}) \
+                .in_('id', evento_ids) \
+                .eq('processado', False) \
+                .execute()
+            eventos_claimados = claim_eventos.data or []
+        except Exception as e:
+            # Erro no claim — libera lock e propaga
+            self.itens_table.update({'status_processamento': 'PENDENTE'}).eq('id', item_id).execute()
+            raise
+
+        if not eventos_claimados:
+            # Outro worker ja consumiu todos os eventos. Libera lock.
+            print(f"⚠ Eventos do item {item_id} ja consumidos por outro worker, liberando lock.")
+            self.itens_table.update({'status_processamento': 'PENDENTE'}).eq('id', item_id).execute()
+            return
+
+        try:
             # 4. Executa reconciliação usando o motor.
-            # acquire_lock=False: o consolidador ja setou status_processamento
-            # acima (linha "Marcar item como PROCESSANDO"). Sem isso, o motor
-            # vê PROCESSANDO posto pelo proprio consolidador e desiste com
-            # "Item ja esta sendo processado por outra transacao".
+            # acquire_lock=False: o consolidador ja gerencia o lock (compare-and-set
+            # acima). Sem isso, o motor veria PROCESSANDO posto pelo proprio
+            # consolidador e desistiria com erro espurio.
             resultado = await motor_reconciliacao_estoque.reconcile_item(
                 item_id=item_id,
                 demanda_id=demanda_id,
                 user_id='System',
                 acquire_lock=False,
             )
-            
+
             if not resultado.sucesso:
                 raise Exception(f"Falha na reconciliação: {resultado.erros}")
-            
-            # 5. Marcar eventos como processados
-            evento_ids = [e['id'] for e in eventos]
-            self.eventos_table.update({'processado': True}).in_('id', evento_ids).execute()
-            
-            # 6. Liberar lock do item
+
+            # 5. Liberar lock do item (sucesso)
             self.itens_table.update({'status_processamento': 'PROCESSADO'}).eq('id', item_id).execute()
-            
+
             print(f"✓ Item {item_id} reconciliado: {len(resultado.movimentos)} movimentações")
-            
+
         except Exception as e:
-            # Em caso de erro, liberar lock do item
+            # Em caso de erro: reverter claim dos eventos (volta processado=false)
+            # para que possam ser retentados em proxima execucao, e liberar lock.
+            try:
+                claimed_ids = [ev['id'] for ev in eventos_claimados]
+                if claimed_ids:
+                    self.eventos_table \
+                        .update({'processado': False}) \
+                        .in_('id', claimed_ids) \
+                        .execute()
+            except Exception as rollback_err:
+                print(f"AVISO: falha ao reverter claim de eventos {claimed_ids}: {rollback_err}")
             self.itens_table.update({'status_processamento': 'PENDENTE'}).eq('id', item_id).execute()
-            raise e
+            raise
 
     async def _processar_sinais(self, eventos: List[Dict]):
         """

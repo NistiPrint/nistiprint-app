@@ -504,9 +504,13 @@ class MotorReconciliacaoEstoque:
                                 estagio=estagio,
                                 deposito_id=deposito_padrao
                             ))
-                            # Explode BOM para consumir intermediários/MPs do acabado
+                            # Explode BOM para consumir intermediários/MPs do acabado.
+                            # Passa estagio_pai=estagio para que componentes consumidos
+                            # do estoque fiquem no MESMO bloco do PROD_ACAB na view
+                            # consolidada (somente JITs abrem sub-blocos jit_<comp_id>).
                             movimentos_bom = await self._explodir_bom_consumo(
-                                produto_id, delta, demanda_id, user_id, deposito_padrao
+                                produto_id, delta, demanda_id, user_id, deposito_padrao,
+                                estagio_pai=estagio,
                             )
                             movimentos.extend(movimentos_bom)
                         else:
@@ -525,15 +529,20 @@ class MotorReconciliacaoEstoque:
                                     deposito_id=deposito_padrao
                                 ))
 
-                            # 2. Faltante: produz JIT, consome espelhado e explode BOM
+                            # 2. Faltante: produz JIT, consome espelhado e explode BOM.
+                            # Toda a sub-arvore JIT (PROD_INT + CONS_INT espelhado +
+                            # filhos da BOM) compartilha o estagio jit_<produto_id>
+                            # para que a view consolidada mostre um bloco unico
+                            # "Produção JIT de N x <produto>" com seus insumos dentro.
                             if qtd_faltante > 0:
+                                estagio_jit = f'jit_{produto_id}'
                                 # 2.a Entrada virtual JIT
                                 movimentos.append(Movimento(
                                     produto_id=produto_id,
                                     tipo='PROD_INT',
                                     quantidade=+qtd_faltante,
                                     motivo=f'Auto-produção JIT {estagio} demanda {demanda_id}',
-                                    estagio=estagio,
+                                    estagio=estagio_jit,
                                     deposito_id=deposito_padrao
                                 ))
                                 # 2.b Saída espelhada (esse JIT só existe pra alocação à demanda)
@@ -542,12 +551,13 @@ class MotorReconciliacaoEstoque:
                                     tipo='CONS_INT',
                                     quantidade=-qtd_faltante,
                                     motivo=f'Consumo JIT {estagio} demanda {demanda_id}',
-                                    estagio=estagio,
+                                    estagio=estagio_jit,
                                     deposito_id=deposito_padrao
                                 ))
-                                # 2.c Recursão: explode BOM do componente faltante
+                                # 2.c Recursão: filhos da BOM do JIT herdam o sub-bloco.
                                 movimentos_bom = await self._explodir_bom_consumo(
-                                    produto_id, qtd_faltante, demanda_id, user_id, deposito_padrao
+                                    produto_id, qtd_faltante, demanda_id, user_id, deposito_padrao,
+                                    estagio_pai=estagio_jit,
                                 )
                                 movimentos.extend(movimentos_bom)
 
@@ -616,10 +626,26 @@ class MotorReconciliacaoEstoque:
         user_id: str,
         deposito_padrao: int,
         profundidade: int = 0,
-        max_profundidade: int = 10
+        max_profundidade: int = 10,
+        estagio_pai: Optional[str] = None,
     ) -> List[Movimento]:
         """
         Explosão recursiva de BOM para produção compensatória.
+
+        Estrategia de "estagio" para agrupamento na UI:
+            - CONS_INT/CONS_MP de componentes consumidos do estoque ficam no
+              estagio do BLOCO PAI (estagio_pai). Se nao houver pai (chamada
+              de finalizados_qtd), usa f'bom_{produto_id}'.
+            - PROD_INT JIT, CONS_INT espelhado e os recursivos abrem um
+              SUB-BLOCO proprio: f'jit_{comp_id}'. Assim cada produto JIT
+              vira uma linha distinta na view consolidada.
+
+        Exemplo (Caderno = Capa Pronta + Miolo, ambos JIT):
+            - estagio finalizados_qtd : PROD_ACAB Caderno + CONS_INT Capa Pronta
+                                        + CONS_INT Miolo (do "bloco direto")
+            - estagio jit_capa_pronta : PROD_INT Capa Pronta, CONS_INT espelhado
+                                        Capa Pronta, e seus filhos (CONS_INT/MP)
+            - estagio jit_miolo       : analogo para Miolo
         """
         if profundidade >= max_profundidade:
             print(f"AVISO: Atingida profundidade máxima {max_profundidade} na explosão de BOM")
@@ -627,9 +653,13 @@ class MotorReconciliacaoEstoque:
 
         movimentos: List[Movimento] = []
 
+        # Estagio do bloco "atual" (onde caem os CONS_INT/CONS_MP diretos):
+        # se foi chamado a partir do alvo da reconciliacao (estagio_pai None),
+        # usa "bom_<produto_id>"; senao, usa o estagio_pai.
+        estagio_corrente = estagio_pai or f'bom_{produto_id}'
+
         # Obter componentes do produto
         componentes = await self._get_componentes_bom(produto_id)
-
         if not componentes:
             return movimentos
 
@@ -651,62 +681,65 @@ class MotorReconciliacaoEstoque:
             tem_bom = len(sub_componentes) > 0
 
             if tem_bom:
-                # Produto tem BOM: prioriza estoque e produz recursivamente se faltar
+                # Produto tem BOM: prioriza estoque e produz recursivamente se faltar.
                 saldo_info = await self._get_saldo_disponivel(comp_id)
                 saldo_disponivel = Decimal(str(saldo_info.get('quantidade_disponivel', 0) or 0))
 
                 qtd_usar_estoque = min(saldo_disponivel, qtd_necessaria)
                 qtd_faltante = qtd_necessaria - qtd_usar_estoque
 
-                # Consome do estoque
+                # Consumo do estoque cai no BLOCO PAI (estagio_corrente).
                 if qtd_usar_estoque > 0:
                     movimentos.append(Movimento(
                         produto_id=comp_id,
                         tipo='CONS_INT',
                         quantidade=-qtd_usar_estoque,
                         motivo=f'Consumo componente para produção {produto_id} demanda {demanda_id}',
-                        estagio=f'bom_{produto_id}',
+                        estagio=estagio_corrente,
                         deposito_id=deposito_padrao
                     ))
 
-                # Produz compensatório
+                # Falta -> abre SUB-BLOCO proprio do JIT do componente.
                 if qtd_faltante > 0:
-                    # 1. Entrada virtual (PROD_INT JIT) — produz a quantidade faltante
+                    estagio_jit = f'jit_{comp_id}'
+
+                    # 1. PROD_INT JIT
                     movimentos.append(Movimento(
                         produto_id=comp_id,
                         tipo='PROD_INT',
                         quantidade=+qtd_faltante,
                         motivo=f'Auto-produção JIT {comp_id} para {produto_id} demanda {demanda_id}',
-                        estagio=f'bom_{produto_id}',
+                        estagio=estagio_jit,
                         deposito_id=deposito_padrao
                     ))
 
-                    # 2. Saída espelhada (CONS_INT) — esse JIT só existe para virar o pai;
-                    #    sem essa saída, o saldo do componente ficaria positivo indevidamente.
+                    # 2. CONS_INT espelhado (JIT eh consumido imediatamente para virar o pai)
                     movimentos.append(Movimento(
                         produto_id=comp_id,
                         tipo='CONS_INT',
                         quantidade=-qtd_faltante,
                         motivo=f'Consumo JIT de {comp_id} para produção {produto_id} demanda {demanda_id}',
-                        estagio=f'bom_{produto_id}',
+                        estagio=estagio_jit,
                         deposito_id=deposito_padrao
                     ))
 
-                    # 3. Recursão: explode o BOM do componente JIT para consumir suas MPs
+                    # 3. Recursao: filhos da BOM do JIT compartilham o mesmo
+                    # sub-bloco (estagio_jit), permanecendo agrupados na UI.
                     movimentos_rec = await self._explodir_bom_consumo(
                         comp_id, qtd_faltante, demanda_id, user_id, deposito_padrao,
-                        profundidade + 1, max_profundidade
+                        profundidade + 1, max_profundidade,
+                        estagio_pai=estagio_jit,
                     )
                     movimentos.extend(movimentos_rec)
 
             else:
-                # Produto sem BOM (Matéria-prima/Folha): consome direto (pode negativo)
+                # Materia-prima / folha: consome no BLOCO PAI (estagio_corrente).
                 movimentos.append(Movimento(
                     produto_id=comp_id,
                     tipo='CONS_MP',
                     quantidade=-qtd_necessaria,
                     motivo=f'Consumo componente folha {comp_id} para produção {produto_id} demanda {demanda_id}',
-                    estagio=f'bom_{produto_id}',
+                    estagio=estagio_corrente,
                     deposito_id=deposito_padrao
                 ))
 
