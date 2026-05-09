@@ -466,6 +466,20 @@ class MotorReconciliacaoEstoque:
                 return ReconciliacaoResultado(False, item_id, demanda_id, correlation_id, erros=['Produto pai não encontrado'])
             produto_pai_id = response.data[0]['produto_id']
 
+            # IMPORTANTE: quando ha delta em finalizados_qtd, este eh o UNICO
+            # estagio que deve gerar movimentos. Os demais estagios (E1-E6)
+            # ganham valor visual via cascata feita em finalizar_item/
+            # finalizar_item_parcial, mas NAO sao consumos independentes —
+            # representam apenas o avanco visual da producao do mesmo item.
+            # A producao fisica (PROD_ACAB do produto pai + BOM recursiva
+            # com PROD_INT/CONS_INT/CONS_MP de capa pronta, miolo, MPs) ja
+            # cobre todos os componentes necessarios. Processar os estagios
+            # intermediarios produziria multiplos PROD_INT do mesmo produto
+            # (uma vez por estagio + uma vez na recursao da BOM), inflando
+            # 1 caderno em ~9 miolos + 8 capas e por ai vai.
+            if deltas.get('finalizados_qtd', Decimal('0')) > Decimal('0'):
+                deltas = {'finalizados_qtd': deltas['finalizados_qtd']}
+
             # Processar cada estágio com delta
             for estagio, delta in deltas.items():
                 # Identificar produtos associados ao estágio
