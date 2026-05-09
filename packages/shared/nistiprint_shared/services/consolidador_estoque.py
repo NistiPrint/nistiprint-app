@@ -134,11 +134,16 @@ class ConsolidadorDeEstoque:
             # 3. Marcar item como PROCESSANDO (lock)
             self.itens_table.update({'status_processamento': 'PROCESSANDO'}).eq('id', item_id).execute()
             
-            # 4. Executa reconciliação usando o motor
+            # 4. Executa reconciliação usando o motor.
+            # acquire_lock=False: o consolidador ja setou status_processamento
+            # acima (linha "Marcar item como PROCESSANDO"). Sem isso, o motor
+            # vê PROCESSANDO posto pelo proprio consolidador e desiste com
+            # "Item ja esta sendo processado por outra transacao".
             resultado = await motor_reconciliacao_estoque.reconcile_item(
                 item_id=item_id,
                 demanda_id=demanda_id,
-                user_id='System'
+                user_id='System',
+                acquire_lock=False,
             )
             
             if not resultado.sucesso:

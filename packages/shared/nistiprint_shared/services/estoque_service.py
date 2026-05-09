@@ -595,6 +595,70 @@ class EstoqueService:
             results.append(m)
         return results
 
+    def get_movimentacoes_consolidadas(self, produto_id: Any = None, deposito_id: Any = None,
+                                        demanda_id: Any = None, item_demanda_id: Any = None,
+                                        data_inicio: datetime = None, data_fim: datetime = None,
+                                        tipo_bloco: str = None, limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Busca movimentacoes agrupadas por (correlation_id, estagio) via
+        view_movimentacoes_consolidadas. Cada linha eh um bloco logico:
+            - tipo_bloco='FINALIZACAO' -> "Finalizacao de N x produto"
+            - tipo_bloco='JIT'         -> "Producao JIT de N x produto"
+            - tipo_bloco='CONSUMO'     -> consumo direto de estoque
+
+        Filtros sao aplicados sobre os movimentos crus (em movimentos jsonb)
+        quando relevantes (produto_id, deposito_id) por meio de pos-processing,
+        pois jsonb_path nao eh trivial via PostgREST.
+        """
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        query = supabase_db.table('view_movimentacoes_consolidadas').select('*')
+
+        if demanda_id is not None:
+            try:
+                query = query.eq('demanda_id_int', int(demanda_id))
+            except (TypeError, ValueError):
+                # Se vier o codigo alfanumerico (demanda_id VARCHAR), filtra por ele
+                query = query.eq('demanda_codigo', str(demanda_id))
+        if item_demanda_id is not None:
+            try:
+                query = query.eq('item_demanda_id', int(item_demanda_id))
+            except (TypeError, ValueError):
+                pass
+        if tipo_bloco:
+            query = query.eq('tipo_bloco', tipo_bloco)
+        if data_inicio:
+            query = query.gte('data_inicio', data_inicio.isoformat())
+        if data_fim:
+            query = query.lte('data_inicio', data_fim.isoformat())
+
+        query = query.order('data_inicio', desc=True).limit(limit)
+        response = query.execute()
+        rows = response.data or []
+
+        # Filtros por produto_id/deposito_id incidem sobre o conteudo jsonb
+        # "movimentos". Aplicamos em Python (volume tipico baixo, < 1k linhas).
+        if produto_id is not None or deposito_id is not None:
+            try:
+                pid = int(produto_id) if produto_id is not None else None
+            except (TypeError, ValueError):
+                pid = None
+            try:
+                did = int(deposito_id) if deposito_id is not None else None
+            except (TypeError, ValueError):
+                did = None
+
+            filtered = []
+            for row in rows:
+                movs = row.get('movimentos') or []
+                if pid is not None and not any(m.get('produto_id') == pid for m in movs):
+                    continue
+                if did is not None and not any(m.get('deposito_id') == did for m in movs):
+                    continue
+                filtered.append(row)
+            rows = filtered
+
+        return rows
+
     def get_alertas_estoque(self, filter_by_sector_id: str = None) -> List[Dict[str, Any]]:
         """Busca produtos com estoque abaixo do nível mínimo ou com risco de ruptura."""
         query = self.saldos_table.select("*, produtos(nome, sku)")

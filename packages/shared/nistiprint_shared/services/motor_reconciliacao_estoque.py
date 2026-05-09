@@ -163,7 +163,8 @@ class MotorReconciliacaoEstoque:
 
         return self._deposito_padrao_id
 
-    async def reconcile_item(self, item_id: int, demanda_id: int, user_id: str = 'System') -> ReconciliacaoResultado:
+    async def reconcile_item(self, item_id: int, demanda_id: int, user_id: str = 'System',
+                             acquire_lock: bool = True) -> ReconciliacaoResultado:
         """
         Orquestra reconciliação completa de um item.
         Chamado APENAS na finalização (E7).
@@ -172,6 +173,11 @@ class MotorReconciliacaoEstoque:
             item_id: ID do item de demanda
             demanda_id: ID da demanda de produção
             user_id: ID do usuário que disparou a reconciliação
+            acquire_lock: Se True (default), o motor adquire/libera o lock no
+                campo itens_demanda.status_processamento. Quando o caller (ex:
+                ConsolidadorDeEstoque) ja gerencia o lock, deve passar False
+                para evitar double-lock — o motor encontraria PROCESSANDO posto
+                pelo proprio caller e desistiria com erro espurio.
 
         Returns:
             ReconciliacaoResultado com detalhes das movimentações.
@@ -179,16 +185,18 @@ class MotorReconciliacaoEstoque:
         correlation_id = str(uuid.uuid4())
 
         try:
-            # 1. Adquirir lock para prevenir concorrência
-            lock_adquirido = await self._adquirir_lock_item(item_id)
-            if not lock_adquirido:
-                return ReconciliacaoResultado(
-                    sucesso=False,
-                    item_id=item_id,
-                    demanda_id=demanda_id,
-                    correlation_id=correlation_id,
-                    erros=['Item já está sendo processado por outra transação']
-                )
+            # 1. Adquirir lock para prevenir concorrência (apenas se o caller
+            #    nao gerenciar o lock externamente).
+            if acquire_lock:
+                lock_adquirido = await self._adquirir_lock_item(item_id)
+                if not lock_adquirido:
+                    return ReconciliacaoResultado(
+                        sucesso=False,
+                        item_id=item_id,
+                        demanda_id=demanda_id,
+                        correlation_id=correlation_id,
+                        erros=['Item já está sendo processado por outra transação']
+                    )
 
             try:
                 # 2. Ler intenção (estado visual atual do item)
@@ -225,8 +233,9 @@ class MotorReconciliacaoEstoque:
                 return resultado
 
             finally:
-                # Liberar lock
-                await self._liberar_lock_item(item_id)
+                # Liberar lock apenas se o motor o adquiriu nesta chamada.
+                if acquire_lock:
+                    await self._liberar_lock_item(item_id)
 
         except Exception as e:
             print(f"ERRO CRÍTICO na reconciliação do item {item_id}: {e}")

@@ -5,8 +5,16 @@
 # ===========================================
 
 import os
+import logging
 from celery import Celery
 from celery.schedules import crontab
+
+# Silencia logs INFO de bibliotecas HTTP (httpx, httpcore, hpack, urllib3) e
+# do Supabase REST. O worker fazia centenas de requests por reconciliacao e
+# cada uma virava uma linha INFO no log, escondendo as mensagens importantes
+# (erros do motor, status de itens reconciliados etc).
+for _noisy_logger in ("httpx", "httpcore", "hpack", "urllib3", "postgrest", "supabase"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 
 # Configuração do broker Redis
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0')
