@@ -135,6 +135,68 @@ def api_historico():
         print(f'Erro na API do histórico de movimentações: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
+@estoque_api_bp.route('/historico-consolidado', methods=['GET'])
+def api_historico_consolidado():
+    """
+    Histórico de movimentações agrupadas por (correlation_id, estagio).
+    Cada bloco representa um evento de negócio: FINALIZACAO, JIT ou CONSUMO.
+
+    Query params:
+        produto_id, deposito_id, demanda_id, item_demanda_id, tipo_bloco
+        data_inicio, data_fim (YYYY-MM-DD), limit (default 200)
+    """
+    try:
+        from datetime import datetime
+        produto_id = request.args.get('produto_id') or None
+        deposito_id = request.args.get('deposito_id') or None
+        demanda_id = request.args.get('demanda_id') or None
+        item_demanda_id = request.args.get('item_demanda_id') or None
+        tipo_bloco = request.args.get('tipo_bloco') or None
+        data_inicio_str = request.args.get('data_inicio')
+        data_fim_str = request.args.get('data_fim')
+        limit = int(request.args.get('limit', 200))
+
+        data_inicio = datetime.strptime(data_inicio_str, '%Y-%m-%d') if data_inicio_str else None
+        data_fim = datetime.strptime(data_fim_str, '%Y-%m-%d') if data_fim_str else None
+
+        # Trata "all"/vazio como não filtrar
+        if produto_id == 'all':
+            produto_id = None
+        if deposito_id == 'all':
+            deposito_id = None
+        if tipo_bloco == 'all':
+            tipo_bloco = None
+
+        blocos = estoque_service.get_movimentacoes_consolidadas(
+            produto_id=produto_id,
+            deposito_id=deposito_id,
+            demanda_id=demanda_id,
+            item_demanda_id=item_demanda_id,
+            tipo_bloco=tipo_bloco,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            limit=limit,
+        )
+
+        depositos = deposito_service.get_all()
+
+        return jsonify({
+            'blocos': blocos,
+            'depositos': depositos,
+            'filtros': {
+                'produto_id': produto_id,
+                'deposito_id': deposito_id,
+                'demanda_id': demanda_id,
+                'item_demanda_id': item_demanda_id,
+                'tipo_bloco': tipo_bloco,
+                'data_inicio': data_inicio_str or '',
+                'data_fim': data_fim_str or '',
+            },
+        })
+    except Exception as e:
+        print(f'Erro na API do histórico consolidado: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
 @estoque_api_bp.route('/movimentar', methods=['GET', 'POST'])
 @login_required
 def api_movimentar():
