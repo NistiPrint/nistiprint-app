@@ -17,6 +17,7 @@ from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
 from nistiprint_shared.services.pedidos_bling_import_service import run_fetch_pedidos_em_andamento
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
+from nistiprint_shared.services.integration_resolution_service import integration_resolution_service
 from nistiprint_shared.services.celery_app import celery_app
 from utils.api_response import ApiResponse
 import logging
@@ -178,36 +179,11 @@ def get_marketplaces():
     """
     try:
         ativos = request.args.get('ativos', 'true').lower() in ('true', '1', 'yes')
-        
-        # Buscar integrações (sem nested select pois não há FK)
-        query = supabase_db.table('installed_integrations').select('id, instance_name, module_id, is_active')
-        
-        if ativos:
-            query = query.eq('is_active', True)
-        
-        integrations_result = query.execute()
-        integrations = integrations_result.data if integrations_result.data else []
-        
-        # Buscar módulos de integração separadamente
-        modules_result = supabase_db.table('integration_modules').select('id, slug, name, tipo').execute()
-        modules = {m['id']: m for m in modules_result.data} if modules_result.data else {}
-        
-        # Filtrar apenas marketplaces e formatar resposta
-        marketplaces = []
-        for integration in integrations:
-            module_id = integration.get('module_id')
-            module = modules.get(module_id)
-            if module and module.get('tipo') == 'marketplace':
-                marketplaces.append({
-                    'id': integration['id'],
-                    'nome': integration['instance_name'],
-                    'slug': module['slug'],
-                    'module_name': module['name'],
-                    'is_active': integration['is_active']
-                })
-        
-        # Ordenar por nome
-        marketplaces.sort(key=lambda x: x['nome'])
+        marketplaces = integration_resolution_service.get_marketplace_options()
+        if not ativos:
+            pass
+        else:
+            marketplaces = [item for item in marketplaces if item.get('is_active', True)]
         
         return ApiResponse.success(data={
             'marketplaces': marketplaces,

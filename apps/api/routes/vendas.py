@@ -2,7 +2,7 @@ from flask import Blueprint, render_template, jsonify, request
 from routes.auth import login_required
 from nistiprint_shared.services.orders_query_service import orders_query_service
 from nistiprint_shared.services.order_service import order_service
-from nistiprint_shared.services.canal_venda_service import canal_venda_service
+from nistiprint_shared.services.integration_resolution_service import integration_resolution_service
 from utils.api_response import ApiResponse
 
 vendas_bp = Blueprint('vendas', __name__, url_prefix='/vendas')
@@ -29,7 +29,7 @@ def api_canal_venda_options():
     Retorna as opções de canais de venda.
     """
     try:
-        options = canal_venda_service.get_all()
+        options = integration_resolution_service.get_marketplace_options()
         return ApiResponse.success(data={'canal_venda_options': options})
     except Exception as e:
         import traceback
