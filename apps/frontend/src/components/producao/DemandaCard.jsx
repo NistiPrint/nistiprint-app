@@ -57,7 +57,6 @@ const DemandaCard = React.memo(({
   handlePrintDemand,
   isSelected,
   onSelect,
-  isMainLine,
   isLateral
 }) => {
   const navigate = useNavigate();
@@ -68,12 +67,10 @@ const DemandaCard = React.memo(({
   const diasRest = diasRestantes(demanda.data_entrega);
   const urgente = isUrgente(demanda.data_entrega, demanda.horario_coleta);
   const timeRemainingObj = calculateTimeRemaining(demanda.horario_coleta, demanda.data_entrega);
-  const deadlineFinalObj = calculateTimeRemaining(demanda.deadline_final, demanda.data_entrega);
   
   const actionRequired = checkActionRequired(demanda, userSetor?.nome || userSetor);
 
   const priorityScore = demanda.manual_priority_score || 0;
-  const isFlex = demanda.is_flex === true;
   const modalidadeLogistica = demanda.modalidade_logistica || 'STANDARD';
   const classificacaoCliente = demanda.classificacao_cliente || 'B2C';
   const hasObservacoes = Boolean(demanda.observacoes && demanda.observacoes.trim());
@@ -428,6 +425,9 @@ const DemandaCard = React.memo(({
                       {demanda.origem_demanda === 'AUTOMATICA' ? <Bot className="h-3 w-3" /> : <Edit className="h-3 w-3" />}
                       {demanda.origem_demanda === 'AUTOMATICA' ? 'Automatica' : 'Manual'}
                     </Badge>
+                  )}
+                  {isLateral && (
+                    <Badge variant="outline">Trilha lateral</Badge>
                   )}
                   {demanda.empresa_cliente_nome && (
                     <Badge variant="secondary">Empresa: {demanda.empresa_cliente_nome}</Badge>
