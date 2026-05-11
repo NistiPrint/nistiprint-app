@@ -30,6 +30,7 @@ import {
     PlayCircle,
     Printer,
     ShoppingCart,
+    StickyNote,
     Trash2,
     Truck
 } from 'lucide-react';
@@ -75,6 +76,7 @@ const DemandaCard = React.memo(({
   const isFlex = demanda.is_flex === true;
   const modalidadeLogistica = demanda.modalidade_logistica || 'STANDARD';
   const classificacaoCliente = demanda.classificacao_cliente || 'B2C';
+  const hasObservacoes = Boolean(demanda.observacoes && demanda.observacoes.trim());
 
   // Verifica se é entrega expressa (substitui o is_flex)
   const isExpress = modalidadeLogistica === 'EXPRESS';
@@ -84,6 +86,7 @@ const DemandaCard = React.memo(({
   
   const isEmergency = priorityScore >= 100 || isExpress || (isLastChance && urgente);
   const isNext = priorityScore >= 50 && priorityScore < 100;
+  const showCriticalBadge = priorityScore >= 100 || (isLastChance && urgente);
 
   const totalItens = demanda.total_itens || demanda.total_quantidade || 1;
   // itens_prontos_para_retirar = unidades completas (capa + miolo) no buffer de prontos
@@ -281,36 +284,10 @@ const DemandaCard = React.memo(({
               </div>
               
               <div className="flex flex-wrap gap-1.5">
-                {/* Origem da demanda */}
-                {demanda.origem_demanda === 'AUTOMATICA' && (
-                  <Badge className="bg-blue-100 text-blue-700 border-blue-300 text-[10px] px-1.5 h-5 gap-1">
-                    <Bot className="h-3 w-3" />
-                    Automática
-                  </Badge>
-                )}
-                {demanda.origem_demanda === 'MANUAL' && (
-                  <Badge className="bg-gray-100 text-gray-700 border-gray-300 text-[10px] px-1.5 h-5 gap-1">
-                    <Edit className="h-3 w-3" />
-                    Manual
-                  </Badge>
-                )}
-
-                {isExpress && <Badge className="bg-purple-600 text-white border-none text-[10px] px-1.5 h-5">EXPRESS</Badge>}
-                {isEmergency && <Badge className="bg-red-600 text-white border-none animate-pulse text-[10px] px-1.5 h-5">PRIORIDADE MÁXIMA</Badge>}
-                {isLastChance && urgente && <Badge className="bg-orange-600 text-white border-none text-[10px] px-1.5 h-5">⚠️ ÚLTIMA CHANCE</Badge>}
+                <Badge variant="outline" className="text-[10px] px-1.5 h-5 border-gray-300 text-gray-600">{demanda.status}</Badge>
+                {showCriticalBadge && <Badge className="bg-red-600 text-white border-none text-[10px] px-1.5 h-5">PRIORIDADE MAXIMA</Badge>}
+                {isLastChance && urgente && <Badge className="bg-orange-600 text-white border-none text-[10px] px-1.5 h-5">ULTIMA CHANCE</Badge>}
                 {urgente && <Badge variant="destructive" className="text-[10px] px-1.5 h-5">URGENTE</Badge>}
-                {isLateral && (() => {
-                  const tipo = (demanda.tipo_demanda || '').toUpperCase();
-                  const modalidade = (demanda.modalidade_logistica || '').toUpperCase();
-                  return (
-                    tipo === 'B2B' || 
-                    tipo === 'EMPRESAS' ||
-                    modalidade === 'FULFILLMENT' || 
-                    tipo === 'ESTOQUE_INTERNO' || 
-                    tipo === 'INTERNO' ||
-                    diasRest > 3
-                  );
-                })() && <Badge className="bg-teal-600 text-white border-none text-[10px] px-1.5 h-5">LATERAL</Badge>}
                 {modalidadeLogistica && modalidadeLogistica !== 'STANDARD' && (
                   <Badge className="bg-blue-100 text-blue-800 border-none text-[10px] px-1.5 h-5">
                     {modalidadeLogistica === 'EXPRESS' ? 'EXPRESS' :
@@ -324,7 +301,12 @@ const DemandaCard = React.memo(({
                      classificacaoCliente === 'INTERNO' ? 'INTERNO' : classificacaoCliente}
                   </Badge>
                 )}
-                <Badge variant="outline" className="text-[10px] px-1.5 h-5 border-gray-300 text-gray-600">{demanda.status}</Badge>
+                {hasObservacoes && (
+                  <Badge variant="outline" className="text-[10px] px-1.5 h-5 border-amber-200 text-amber-700 bg-amber-50 gap-1">
+                    <StickyNote className="h-3 w-3" />
+                    Obs.
+                  </Badge>
+                )}
               </div>
             </div>
           </div>
@@ -431,6 +413,29 @@ const DemandaCard = React.memo(({
           <div className="px-4 pb-4 pt-2 border-t border-gray-50 bg-gray-50/50 animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
               <div className="md:col-span-8">
+                {hasObservacoes && (
+                  <div className="mb-4 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    <div className="mb-1 flex items-center gap-1.5 font-bold">
+                      <StickyNote className="h-3.5 w-3.5" />
+                      Observacoes
+                    </div>
+                    <p className="whitespace-pre-wrap leading-relaxed">{demanda.observacoes}</p>
+                  </div>
+                )}
+                <div className="mb-4 flex flex-wrap gap-2 text-xs">
+                  {demanda.origem_demanda && (
+                    <Badge variant="outline" className="gap-1">
+                      {demanda.origem_demanda === 'AUTOMATICA' ? <Bot className="h-3 w-3" /> : <Edit className="h-3 w-3" />}
+                      {demanda.origem_demanda === 'AUTOMATICA' ? 'Automatica' : 'Manual'}
+                    </Badge>
+                  )}
+                  {demanda.empresa_cliente_nome && (
+                    <Badge variant="secondary">Empresa: {demanda.empresa_cliente_nome}</Badge>
+                  )}
+                  {demanda.empresa_responsavel_nome && (
+                    <Badge variant="secondary">Contato: {demanda.empresa_responsavel_nome}</Badge>
+                  )}
+                </div>
                 <ProgressBars />
               </div>
               <div className="md:col-span-4 flex flex-col items-center justify-center border-l border-gray-100 pl-4">

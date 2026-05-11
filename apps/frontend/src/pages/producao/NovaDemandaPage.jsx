@@ -81,11 +81,11 @@ const formSchema = z.object({
         path: ['empresa_cliente_nome'],
       });
     }
-    if (!data.empresa_responsavel_id) {
+    if (!data.empresa_responsavel_nome) {
         ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: "Responsável é obrigatório para demandas B2B.",
-            path: ['empresa_responsavel_id'],
+            path: ['empresa_responsavel_nome'],
         });
     }
   }
@@ -96,7 +96,6 @@ function NovaDemandaPage() {
   const isEditing = !!id;
   const navigate = useNavigate();
   const [channels, setChannels] = useState([]);
-  const [users, setUsers] = useState([]);
   const [loadingInitialData, setLoadingInitialData] = useState(true);
   const [loadingSubmit, setLoadingSubmit] = useState(false);
 
@@ -158,16 +157,13 @@ function NovaDemandaPage() {
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
-        const [channelsRes, usersRes] = await Promise.all([
+        const [channelsRes] = await Promise.all([
           fetch('/api/v2/cadastros/canal-venda?active_only=true'),
-          fetch('/api/v2/usuarios-setores/usuario'),
         ]);
 
         const channelsData = await channelsRes.json();
-        const usersData = await usersRes.json();
 
         setChannels(channelsData.canais || []);
-        setUsers(usersData.usuarios || []);
 
         // If editing, fetch demand details
         if (isEditing) {
@@ -406,13 +402,6 @@ function NovaDemandaPage() {
   const onSubmit = async (data, isDraft = false) => {
     setLoadingSubmit(true);
     try {
-      if (data.classificacao_cliente === 'B2B' && data.empresa_responsavel_id) {
-          const selectedUser = users.find(u => String(u.id) === String(data.empresa_responsavel_id));
-          if (selectedUser) {
-              data.empresa_responsavel_nome = selectedUser.nome;
-          }
-      }
-
       if (data.data_finalizacao_prevista) {
         data.data_finalizacao_prevista = new Date(data.data_finalizacao_prevista).toISOString();
       }
@@ -691,24 +680,13 @@ function NovaDemandaPage() {
                   />
                   <FormField
                     control={form.control}
-                    name="empresa_responsavel_id"
+                    name="empresa_responsavel_nome"
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Responsável</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value}>
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Selecione" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            {users.map(user => (
-                              <SelectItem key={user.id} value={String(user.id)}>
-                                {user.nome}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <FormControl>
+                          <Input placeholder="Nome do contato na empresa" {...field} />
+                        </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}

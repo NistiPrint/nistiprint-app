@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2 } from 'lucide-react';
+import { CalendarDays, Clock, Loader2, PackageCheck, Store } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { formatAppDate, formatAppDateInput } from '@/lib/dateTime';
 
@@ -50,14 +50,14 @@ export default function GerarDemandaModal({
   };
 
   // Auto-preencher nome da demanda
-  const handleQuantidadeChange = (qtd) => {
+  useEffect(() => {
     if (!dados.nome_demanda) {
       setDados(prev => ({
         ...prev,
-        nome_demanda: `Demanda - ${qtd} pedido(s) - ${formatAppDate(new Date())}`
+        nome_demanda: `Demanda - ${quantidadePedidos} pedido(s) - ${formatAppDate(new Date())}`
       }));
     }
-  };
+  }, [quantidadePedidos, dados.nome_demanda]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -70,6 +70,30 @@ export default function GerarDemandaModal({
         </DialogHeader>
 
         <div className="space-y-4 py-4">
+          <div className="rounded-md border bg-muted/30 p-3">
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="flex items-center gap-2">
+                <PackageCheck className="h-4 w-4 text-muted-foreground" />
+                <span className="font-medium">{quantidadePedidos} pedido(s)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Store className="h-4 w-4 text-muted-foreground" />
+                <span className="truncate font-medium">{canalVendaNome || 'Canal selecionado'}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <CalendarDays className="h-4 w-4 text-muted-foreground" />
+                <span>{dados.data_entrega ? formatAppDate(new Date(`${dados.data_entrega}T00:00:00`)) : '-'}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Clock className="h-4 w-4 text-muted-foreground" />
+                <span>{dados.horario_coleta || 'Sem horario'}</span>
+              </div>
+            </div>
+            <div className="mt-3 border-t pt-2 text-xs text-muted-foreground">
+              Plataforma/B2C com modalidade inferida pelas regras do canal.
+            </div>
+          </div>
+
           <div className="space-y-2">
             <Label htmlFor="nome-demanda">
               Nome da Demanda
