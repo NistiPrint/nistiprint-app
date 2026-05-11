@@ -683,7 +683,7 @@ function NovaDemandaPage() {
                     name="empresa_responsavel_nome"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Responsável</FormLabel>
+                        <FormLabel>Contato Responsável</FormLabel>
                         <FormControl>
                           <Input placeholder="Nome do contato na empresa" {...field} />
                         </FormControl>
