@@ -237,6 +237,7 @@ function DemandaListPage() {
       // Regras para Lateral (Normalizadas para evitar erros de case):
       const tipo = (demanda.tipo_demanda || '').toUpperCase();
       const modalidade = (demanda.modalidade_logistica || '').toUpperCase();
+      const isOperationalNow = diffDays <= 3 || modalidade === 'EXPRESS' || (demanda.manual_priority_score || 0) >= 50;
 
       // 1. B2B (ou legado 'Empresas')
       // 2. Fulfillment
@@ -249,7 +250,7 @@ function DemandaListPage() {
         tipo === 'ESTOQUE_INTERNO' || 
         tipo === 'INTERNO';
 
-      if (isLateralByNature || diffDays > 3) {
+      if (!isOperationalNow && (isLateralByNature || diffDays > 3)) {
         lateral.push(demanda)
       } else {
         main.push(demanda)
