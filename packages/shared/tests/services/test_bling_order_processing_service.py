@@ -5,6 +5,34 @@ from nistiprint_shared.services import bling_order_processing_service as bos
 
 
 class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
+    def test_resolve_bling_instance_prefers_cached_company_id_alias(self):
+        payload = {'id': 999}
+
+        with patch.object(
+            bos.integration_resolution_service,
+            'resolve_bling_by_company_id',
+            return_value={'id': 55, 'config': {'company_ids': ['abc']}},
+        ) as cached_lookup, \
+             patch.object(bos.supabase_db, 'rpc') as rpc_mock:
+            result = bos._resolve_bling_instance(payload, hint=None, company_id='abc')
+
+        self.assertEqual(result['id'], 55)
+        cached_lookup.assert_called_once_with('abc')
+        rpc_mock.assert_not_called()
+
+    def test_resolve_marketplace_instance_prefers_cached_shop_alias(self):
+        with patch.object(
+            bos.integration_resolution_service,
+            'resolve_marketplace_by_shop_id',
+            return_value={'id': 77, 'module_id': 'shopee', 'plataforma_slug': 'shopee'},
+        ) as cached_lookup, \
+             patch.object(bos.supabase_db, 'rpc') as rpc_mock:
+            result = bos._resolve_marketplace_instance('204047801', bling_integration_id=12)
+
+        self.assertEqual(result['id'], 77)
+        cached_lookup.assert_called_once_with('204047801', bling_integration_id=12)
+        rpc_mock.assert_not_called()
+
     @patch('nistiprint_shared.services.bling.bling_client.BlingClient')
     def test_fetch_bling_order_detail_uses_bling_client(self, bling_client_cls):
         bling_client = MagicMock()

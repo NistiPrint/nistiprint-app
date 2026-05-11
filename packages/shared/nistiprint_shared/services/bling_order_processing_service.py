@@ -12,6 +12,9 @@ from nistiprint_shared.services.correlation_service import (
     generate_correlation_id,
     set_correlation_id,
 )
+from nistiprint_shared.services.integration_resolution_service import (
+    integration_resolution_service,
+)
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso
 
@@ -570,6 +573,10 @@ def _resolve_bling_instance(payload, hint, company_id=None):
     
     # Try company_id first (from webhook wrapper)
     if company_id:
+        cached = integration_resolution_service.resolve_bling_by_company_id(company_id)
+        if cached:
+            return cached
+
         rows = supabase_db.rpc('find_bling_integration_by_company_id',
                                {'p_company_id': company_id}).execute().data
         if rows:
@@ -580,6 +587,10 @@ def _resolve_bling_instance(payload, hint, company_id=None):
         or (payload.get('loja') or {}).get('cnpj')
     if not cnpj:
         raise ValueError("Não foi possível identificar instância Bling: CNPJ ausente e company_id não fornecido")
+    cached = integration_resolution_service.resolve_bling_by_cnpj(cnpj)
+    if cached:
+        return cached
+
     rows = supabase_db.rpc('find_bling_integration_by_cnpj',
                            {'p_cnpj': cnpj}).execute().data
     if not rows:
@@ -587,6 +598,13 @@ def _resolve_bling_instance(payload, hint, company_id=None):
     return rows[0]
 
 def _resolve_marketplace_instance(loja_id: str, bling_integration_id: int | None = None):
+    cached = integration_resolution_service.resolve_marketplace_by_shop_id(
+        loja_id,
+        bling_integration_id=bling_integration_id,
+    )
+    if cached:
+        return cached
+
     rows = supabase_db.rpc('find_marketplace_by_bling_loja',
                            {'p_loja_id': loja_id, 'p_bling_integration_id': bling_integration_id}).execute().data
     if not rows:

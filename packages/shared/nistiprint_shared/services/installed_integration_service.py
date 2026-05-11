@@ -7,6 +7,7 @@ import requests
 from google.cloud import secretmanager
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.platform_auth_service import platform_auth_service
+from nistiprint_shared.services.integration_resolution_service import integration_resolution_service
 
 
 class InstalledIntegrationService:
@@ -222,6 +223,7 @@ class InstalledIntegrationService:
         installation_data = installation.to_dict()
         response = self.table.insert(installation_data).execute()
         if response.data:
+            integration_resolution_service.invalidate()
             return str(response.data[0]['id'])
         return None
 
@@ -231,6 +233,8 @@ class InstalledIntegrationService:
 
         try:
             response = self.table.update(update_data).eq('id', instance_id).execute()
+            if response.data:
+                integration_resolution_service.invalidate()
             return len(response.data) > 0
         except Exception as e:
             print(f"Error updating installed integration {instance_id}: {e}")
@@ -294,6 +298,8 @@ class InstalledIntegrationService:
                 'is_active': False,
                 'updated_at': datetime.utcnow().isoformat()
             }).eq('id', instance_id).execute()
+            if response.data:
+                integration_resolution_service.invalidate()
             return len(response.data) > 0
         except Exception as e:
             print(f"Error uninstalling integration {instance_id}: {e}")
