@@ -26,8 +26,13 @@ class PlatformApiService:
             "shopee": "nistiprint_shared.services.platform_drivers.shopee",
             "mercadolivre": "nistiprint_shared.services.platform_drivers.mercadolivre",
             "amazon": "nistiprint_shared.services.platform_drivers.amazon",
+            "amazonfba_classic": "nistiprint_shared.services.platform_drivers.amazon",
+            "amazon_fulfillment": "nistiprint_shared.services.platform_drivers.amazon_fulfillment",
             "shein": "nistiprint_shared.services.platform_drivers.shein",
-            "tiktok": "nistiprint_shared.services.platform_drivers.tiktok"
+            "tiktok": "nistiprint_shared.services.platform_drivers.tiktok",
+            "tiktokshop": "nistiprint_shared.services.platform_drivers.tiktok",
+            "kwai": "nistiprint_shared.services.platform_drivers.kwai",
+            "lojaintegrada": "nistiprint_shared.services.platform_drivers.lojaintegrada"
         }
 
     def _get_driver(self, module_id: str):

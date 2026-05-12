@@ -23,7 +23,18 @@ logger = logging.getLogger("IntegracaoCanalService")
 class IntegracaoCanalService:
     """Serviço para gestão de vínculos de integração."""
 
-    MARKETPLACE_MODULES = {'shopee', 'amazon', 'mercadolivre', 'shein', 'tiktok', 'tiktokshop'}
+    MARKETPLACE_MODULES = {
+        'shopee',
+        'amazon',
+        'amazonfba_classic',
+        'amazon_fulfillment',
+        'mercadolivre',
+        'shein',
+        'tiktok',
+        'tiktokshop',
+        'kwai',
+        'lojaintegrada',
+    }
 
     def __init__(self):
         # Tabela principal (nova arquitetura)
@@ -355,13 +366,17 @@ class IntegracaoCanalService:
         if 'shopee' in store_name_lower:
             return 'shopee'
         elif 'amazon' in store_name_lower:
-            return 'amazon'
+            return 'amazonfba_classic'
         elif 'mercado livre' in store_name_lower or 'mercadolivre' in store_name_lower:
             return 'mercadolivre'
         elif 'shein' in store_name_lower:
             return 'shein'
         elif 'tiktok' in store_name_lower:
             return 'tiktokshop'
+        elif 'kwai' in store_name_lower:
+            return 'kwai'
+        elif 'loja integrada' in store_name_lower or 'lojaintegrada' in store_name_lower:
+            return 'lojaintegrada'
         else:
             return None
 

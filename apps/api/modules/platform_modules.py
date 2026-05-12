@@ -69,69 +69,79 @@ def get_shopee_module_definition():
     )
 
 
-def get_amazon_module_definition():
-    """Get the module definition for Amazon integration"""
+def get_amazon_fba_classic_module_definition():
+    """Get the module definition for Amazon FBA Classic integration"""
     return IntegrationModule(
-        id="amazon",
-        name="Amazon Integration",
-        description="Official integration for connecting Amazon marketplace to your inventory and order management system.",
+        id="amazonfba_classic",
+        name="Amazon FBA Classic",
+        description="Integração com Amazon FBA (Fulfillment by Amazon) para gerenciamento de pedidos e estoque fulfillment.",
         version="1.0.0",
         author="NistiPrint Team",
         icon_url="https://app.nistiprint.com.br/assets/img/amazon.svg",
         category="Marketplace",
-        tags=["amazon", "e-commerce", "orders", "inventory"],
+        tags=["amazon", "fba", "fulfillment", "orders", "inventory"],
+        tipo="MARKETPLACE",
         auth_flow="oauth2",
         config_schema={
-            "title": "Amazon Configuration",
+            "title": "Configuração Amazon FBA Classic",
             "type": "object",
             "required": ["seller_id", "mws_auth_token", "aws_access_key", "secret_key", "marketplace_id"],
             "properties": {
                 "seller_id": {
                     "type": "string",
                     "title": "Seller ID",
-                    "description": "Your Amazon Seller ID"
+                    "description": "Seu Amazon Seller ID"
                 },
                 "mws_auth_token": {
                     "type": "string",
                     "title": "MWS Auth Token",
-                    "description": "Your Amazon MWS Authorization Token"
+                    "description": "Seu Amazon MWS Authorization Token"
                 },
                 "aws_access_key": {
                     "type": "string",
                     "title": "AWS Access Key",
-                    "description": "Your AWS Access Key ID"
+                    "description": "Seu AWS Access Key ID"
                 },
                 "secret_key": {
                     "type": "string",
                     "title": "Secret Key",
-                    "description": "Your AWS Secret Access Key"
+                    "description": "Seu AWS Secret Access Key"
                 },
                 "marketplace_id": {
                     "type": "string",
                     "title": "Marketplace ID",
-                    "description": "Amazon Marketplace ID (e.g., A1AM78C64UM0Y8 for Brazil)"
+                    "description": "Amazon Marketplace ID (ex: A1AM78C64UM0Y8 para Brasil)",
+                    "default": "A1AM78C64UM0Y8"
+                },
+                "region": {
+                    "type": "string",
+                    "title": "Região",
+                    "enum": ["us-east-1", "eu-west-1", "ap-northeast-1"],
+                    "default": "us-east-1"
                 }
             }
         },
         auth_config={
             "oauth_authorization_url": "https://sellercentral.amazon.com/apps/authorize/confirm",
             "oauth_token_url": "https://api.amazon.com/auth/o2/token",
-            "scopes": ["selling_partner_api::notifications", "selling_partner_api::orders"]
+            "scopes": ["selling_partner_api::notifications", "selling_partner_api::orders", "selling_partner_api::fba_inventory"]
         },
         data_mapping_spec={
+            "test_endpoint": "/orders/v0/orders",
             "order_fields": {
                 "order_id": "AmazonOrderId",
-                "customer_name": "BuyerName",
+                "customer_name": "BuyerInfo.BuyerName",
                 "shipping_address": "ShippingAddress",
                 "order_date": "PurchaseDate",
                 "status": "OrderStatus",
-                "items": "OrderItems"
+                "items": "OrderItems",
+                "fulfillment_channel": "FulfillmentChannel"
             },
             "product_fields": {
                 "sku": "SellerSKU",
-                "name": "ItemName",
-                "price": "Price",
-                "quantity": "Quantity"
+                "name": "Title",
+                "price": "ItemPrice.Amount",
+                "quantity": "QuantityOrdered"
             }
         }
     )
@@ -268,19 +278,175 @@ def get_tiktok_shop_module_definition():
         icon_url="https://app.nistiprint.com.br/assets/img/tiktok.svg",
         category="Marketplace",
         tags=["tiktok", "e-commerce", "orders", "inventory"],
+        tipo="MARKETPLACE",
         auth_flow="oauth2",
         config_schema={
             "title": "TikTok Shop Configuration",
             "type": "object",
-            "required": ["app_key", "app_secret"],
+            "required": ["app_key", "app_secret", "shop_id"],
             "properties": {
                 "app_key": { "type": "string", "title": "App Key" },
-                "app_secret": { "type": "string", "title": "App Secret" }
+                "app_secret": { "type": "string", "title": "App Secret" },
+                "shop_id": { "type": "string", "title": "Shop ID / Shop Cipher" }
             }
         },
         auth_config={
             "oauth_authorization_url": "https://auth.tiktok-shops.com/oauth/authorize",
             "oauth_token_url": "https://auth.tiktok-shops.com/api/v2/token/get"
+        },
+        data_mapping_spec={
+            "test_endpoint": "/api/orders/list"
+        }
+    )
+
+def get_kwai_module_definition():
+    """Get the module definition for Kwai integration"""
+    return IntegrationModule(
+        id="kwai",
+        name="Kwai",
+        description="Integração oficial com Kwai Shop para sincronização de pedidos e produtos.",
+        version="1.0.0",
+        author="NistiPrint Team",
+        icon_url="https://app.nistiprint.com.br/assets/img/kwai.svg",
+        category="Marketplace",
+        tags=["kwai", "e-commerce", "orders", "inventory"],
+        tipo="MARKETPLACE",
+        auth_flow="oauth2",
+        config_schema={
+            "title": "Configuração Kwai Shop",
+            "type": "object",
+            "required": ["app_key", "app_secret"],
+            "properties": {
+                "app_key": {
+                    "type": "string",
+                    "title": "App Key",
+                    "description": "Chave do aplicativo Kwai"
+                },
+                "app_secret": {
+                    "type": "string",
+                    "title": "App Secret",
+                    "description": "Segredo do aplicativo Kwai"
+                },
+                "region": {
+                    "type": "string",
+                    "title": "Região",
+                    "enum": ["BR", "US", "MX"],
+                    "default": "BR"
+                }
+            }
+        },
+        auth_config={
+            "oauth_authorization_url": "https://open.kwaishope.com.br/oauth2/authorize",
+            "oauth_token_url": "https://open.kwaishope.com.br/oauth2/token",
+            "scopes": ["orders", "products", "shop_info"]
+        },
+        data_mapping_spec={
+            "test_endpoint": "/api/v1/shop/info",
+            "order_fields": {
+                "order_id": "order_sn",
+                "customer_name": "receiver_name",
+                "shipping_address": "receiver_address",
+                "order_date": "create_time",
+                "status": "order_status",
+                "items": "items"
+            },
+            "product_fields": {
+                "sku": "sku",
+                "name": "product_name",
+                "price": "price",
+                "quantity": "stock"
+            }
+        }
+    )
+
+def get_amazon_fulfillment_module_definition():
+    """Get the module definition for Amazon Fulfillment integration"""
+    return IntegrationModule(
+        id="amazon_fulfillment",
+        name="Amazon Fulfillment",
+        description="Integração com Amazon Fulfillment Services para gerenciamento avançado de logística e estoque.",
+        version="1.0.0",
+        author="NistiPrint Team",
+        icon_url="https://app.nistiprint.com.br/assets/img/amazon.svg",
+        category="Marketplace",
+        tags=["amazon", "fulfillment", "logistics", "inventory", "shipping"],
+        tipo="MARKETPLACE",
+        auth_flow="oauth2",
+        config_schema={
+            "title": "Configuração Amazon Fulfillment",
+            "type": "object",
+            "required": ["seller_id", "mws_auth_token", "aws_access_key", "secret_key", "marketplace_id"],
+            "properties": {
+                "seller_id": {
+                    "type": "string",
+                    "title": "Seller ID",
+                    "description": "Seu Amazon Seller ID"
+                },
+                "mws_auth_token": {
+                    "type": "string",
+                    "title": "MWS Auth Token",
+                    "description": "Seu Amazon MWS Authorization Token"
+                },
+                "aws_access_key": {
+                    "type": "string",
+                    "title": "AWS Access Key",
+                    "description": "Seu AWS Access Key ID"
+                },
+                "secret_key": {
+                    "type": "string",
+                    "title": "Secret Key",
+                    "description": "Seu AWS Secret Access Key"
+                },
+                "marketplace_id": {
+                    "type": "string",
+                    "title": "Marketplace ID",
+                    "description": "Amazon Marketplace ID (ex: A1AM78C64UM0Y8 para Brasil)",
+                    "default": "A1AM78C64UM0Y8"
+                },
+                "region": {
+                    "type": "string",
+                    "title": "Região",
+                    "enum": ["us-east-1", "eu-west-1", "ap-northeast-1"],
+                    "default": "us-east-1"
+                },
+                "fulfillment_centers": {
+                    "type": "array",
+                    "title": "Centros de Fulfillment",
+                    "description": "Lista de centros de fulfillment ativos",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        auth_config={
+            "oauth_authorization_url": "https://sellercentral.amazon.com/apps/authorize/confirm",
+            "oauth_token_url": "https://api.amazon.com/auth/o2/token",
+            "scopes": ["selling_partner_api::notifications", "selling_partner_api::orders", "selling_partner_api::fba_inventory", "selling_partner_api::fba_outbound"]
+        },
+        data_mapping_spec={
+            "test_endpoint": "/fba/inventory/v1/summaries",
+            "order_fields": {
+                "order_id": "AmazonOrderId",
+                "customer_name": "BuyerInfo.BuyerName",
+                "shipping_address": "ShippingAddress",
+                "order_date": "PurchaseDate",
+                "status": "OrderStatus",
+                "items": "OrderItems",
+                "fulfillment_channel": "FulfillmentChannel"
+            },
+            "product_fields": {
+                "sku": "SellerSKU",
+                "name": "Title",
+                "price": "ItemPrice.Amount",
+                "quantity": "QuantityOrdered"
+            },
+            "inventory_fields": {
+                "sku": "sellerSku",
+                "fn_sku": "fnSku",
+                "total_quantity": "totalQuantity",
+                "fulfillable_quantity": "fulfillableQuantity"
+            }
         }
     )
 
@@ -293,8 +459,9 @@ def get_loja_integrada_module_definition():
         version="1.0.0",
         author="NistiPrint Team",
         icon_url="https://app.nistiprint.com.br/assets/img/lojaintegrada.svg",
-        category="E-commerce",
-        tags=["lojaintegrada", "api", "orders"],
+        category="Marketplace",
+        tags=["lojaintegrada", "e-commerce", "api", "orders", "inventory"],
+        tipo="MARKETPLACE",
         auth_flow="api_key",
         config_schema={
             "title": "Configuração Loja Integrada",
@@ -304,6 +471,9 @@ def get_loja_integrada_module_definition():
                 "api_key": { "type": "string", "title": "Chave da API" },
                 "app_key": { "type": "string", "title": "Chave do Aplicativo" }
             }
+        },
+        data_mapping_spec={
+            "test_endpoint": "/v1/sistema"
         }
     )
 
@@ -318,6 +488,8 @@ def get_bling_module_definition():
         icon_url="https://app.nistiprint.com.br/assets/img/bling.svg",
         category="ERP",
         tags=["bling", "erp", "orders", "inventory", "nfe"],
+        tipo="ERP",
+        is_aggregator=True,
         auth_flow="oauth2",
         config_schema={
             "title": "Configuração Bling V3",
@@ -376,10 +548,12 @@ def get_all_platform_modules():
     return [
         get_bling_module_definition(),
         get_shopee_module_definition(),
-        get_amazon_module_definition(),
+        get_amazon_fba_classic_module_definition(),
+        get_amazon_fulfillment_module_definition(),
         get_mercado_livre_module_definition(),
         get_shein_module_definition(),
         get_tiktok_shop_module_definition(),
+        get_kwai_module_definition(),
         get_loja_integrada_module_definition()
     ]
 
