@@ -166,7 +166,8 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         table = MagicMock()
         table.upsert.return_value.execute.return_value.data = [{'id': 321}]
 
-        with patch.object(bos.supabase_db, 'table', return_value=table):
+        with patch.object(bos, '_find_existing_pedido_bling_for_update', return_value=None), \
+             patch.object(bos.supabase_db, 'table', return_value=table):
             pedido_bling_id = bos._upsert_pedido_bling(payload, bling_integration_id=22)
 
         self.assertEqual(pedido_bling_id, 321)
@@ -187,12 +188,90 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         table = MagicMock()
         table.upsert.return_value.execute.return_value.data = [{'id': 321}]
 
-        with patch.object(bos.supabase_db, 'table', return_value=table):
+        with patch.object(bos, '_find_existing_pedido_bling_for_update', return_value=None), \
+             patch.object(bos.supabase_db, 'table', return_value=table):
             pedido_bling_id = bos._upsert_pedido_bling(payload, bling_integration_id=22)
 
         self.assertEqual(pedido_bling_id, 321)
         upsert_data = table.upsert.call_args.args[0]
         self.assertEqual(upsert_data['loja_id'], 204047801)
+
+    def test_upsert_pedido_bling_updates_legacy_row_instead_of_inserting_duplicate(self):
+        payload = {
+            'id': 19860,
+            'numero': '457127',
+            'numeroLoja': '2605127CMVM5MX',
+            'loja': {'id': 204047801},
+            'situacao': {'id': 24},
+            'contato': {'nome': 'Cliente'},
+            'itens': [],
+        }
+
+        select_table = MagicMock()
+        select_table.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        select_table.select.return_value.is_.return_value.eq.return_value.limit.return_value.execute.return_value.data = [{'id': 19860}]
+
+        update_table = MagicMock()
+        update_table.update.return_value.eq.return_value.execute.return_value.data = [{'id': 19860}]
+
+        def side_effect(name):
+            self.assertEqual(name, 'pedidos_bling')
+            return side_effect.tables.pop(0)
+
+        side_effect.tables = [select_table, select_table, update_table]
+
+        with patch.object(bos.supabase_db, 'table', side_effect=side_effect):
+            pedido_bling_id = bos._upsert_pedido_bling(payload, bling_integration_id=1)
+
+        self.assertEqual(pedido_bling_id, 19860)
+        update_data = update_table.update.call_args.args[0]
+        self.assertEqual(update_data['bling_integration_id'], 1)
+        self.assertEqual(update_data['loja_id'], 204047801)
+        update_table.update.return_value.eq.assert_called_once_with('id', 19860)
+
+    def test_resolve_canal_venda_id_uses_store_link_without_marketplace_installation(self):
+        table = MagicMock()
+        table.select.return_value.eq.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {'channel_id': 31}
+        ]
+
+        with patch.object(bos.supabase_db, 'table', return_value=table):
+            canal_id = bos._resolve_canal_venda_id(
+                marketplace_integration_id=None,
+                bling_integration_id=1,
+                loja_id='203792892',
+            )
+
+        self.assertEqual(canal_id, 31)
+
+    def test_process_webhook_materializes_minimal_payload_but_returns_retryable_error(self):
+        payload = {
+            'id': 25794098552,
+            'numero': 457226,
+            'numeroLoja': '76d9a774-9f9b-426a-bae6-eb3935972cbb',
+            'loja': {'id': 203792892},
+            'situacao': {'id': 6},
+            'total': 49.9,
+        }
+
+        with patch.object(bos, '_resolve_bling_instance', return_value={'id': 1, 'config': {}}), \
+             patch.object(bos, '_fetch_bling_order_detail', side_effect=bos.BlingDetailUnavailableError('offline')), \
+             patch.object(bos, '_upsert_pedido_bling', return_value=19861), \
+             patch.object(bos, '_resolve_marketplace_instance', return_value=None), \
+             patch.object(bos, '_resolve_canal_venda_id', return_value=31), \
+             patch.object(bos, '_upsert_pedido_master', return_value=16741), \
+             patch.object(bos, '_detect_and_mark_personalized'), \
+             patch.object(bos, '_log_ingest'), \
+             patch.object(bos.demanda_producao_service, 'create_from_order'), \
+             patch.object(bos, '_write_ingest_log'), \
+             patch.object(bos, '_update_webhook_event'), \
+             patch.object(bos.logger, 'info'), \
+             patch.object(bos.logger, 'warning'):
+            result = bos.process_webhook(payload, company_id='company-1')
+
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['error_type'], 'bling_detail_unavailable')
+        self.assertEqual(result['pedido_id'], 16741)
 
     def test_enqueue_bling_order_preserves_full_order_payload(self):
         full_order = {
@@ -230,7 +309,8 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         table = MagicMock()
         table.upsert.return_value.execute.return_value.data = [{'id': 321}]
 
-        with patch.object(bos.supabase_db, 'table', return_value=table), \
+        with patch.object(bos, '_find_existing_pedido_master_for_update', return_value=None), \
+             patch.object(bos.supabase_db, 'table', return_value=table), \
              patch.object(bos, '_resolve_situacao_interna', return_value=42), \
              patch.object(bos, '_upsert_itens_pedido'), \
              patch.object(bos.logger, 'info'):
@@ -247,8 +327,8 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
             )
 
         self.assertEqual(pedido_id, 321)
-        upsert_data = table.upsert.call_args.args[0]
-        self.assertNotIn('informacoes_cliente', upsert_data)
+        insert_data = table.insert.call_args.args[0]
+        self.assertNotIn('informacoes_cliente', insert_data)
 
     def test_upsert_pedido_master_uses_shopee_ship_by_date_for_deadline(self):
         payload = {
@@ -265,7 +345,8 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         table = MagicMock()
         table.upsert.return_value.execute.return_value.data = [{'id': 321}]
 
-        with patch.object(bos.supabase_db, 'table', return_value=table), \
+        with patch.object(bos, '_find_existing_pedido_master_for_update', return_value=None), \
+             patch.object(bos.supabase_db, 'table', return_value=table), \
              patch.object(bos, '_resolve_situacao_interna', return_value=42), \
              patch.object(bos, '_upsert_itens_pedido'), \
              patch.object(bos.logger, 'info'):
@@ -281,8 +362,43 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
                 shopee_data={'ship_by_date': 1778122799},
             )
 
-        upsert_data = table.upsert.call_args.args[0]
-        self.assertEqual(upsert_data['data_limite_envio'], '2026-05-06T23:59:59-03:00')
+        insert_data = table.insert.call_args.args[0]
+        self.assertEqual(insert_data['data_limite_envio'], '2026-05-06T23:59:59-03:00')
+
+    def test_upsert_pedido_master_updates_existing_by_pedido_bling_id(self):
+        payload = {
+            'id': 1,
+            'numero': '123',
+            'numeroLoja': '456',
+            'total': 10,
+            'data': '2026-05-02',
+            'situacao': {'id': 2},
+            'contato': {'nome': 'Cliente'},
+            'itens': [],
+        }
+
+        table = MagicMock()
+        table.update.return_value.eq.return_value.execute.return_value.data = [{'id': 321}]
+
+        with patch.object(bos, '_find_existing_pedido_master_for_update', return_value={'id': 321}), \
+             patch.object(bos.supabase_db, 'table', return_value=table), \
+             patch.object(bos, '_resolve_situacao_interna', return_value=42), \
+             patch.object(bos, '_upsert_itens_pedido'), \
+             patch.object(bos.logger, 'info'):
+            pedido_id = bos._upsert_pedido_master(
+                payload,
+                pedido_bling_id=11,
+                pedido_shopee_id=None,
+                bling_integration_id=22,
+                marketplace_integration_id=None,
+                canal_venda_id=None,
+                is_flex=False,
+                modalidade=None,
+                shopee_data=None,
+            )
+
+        self.assertEqual(pedido_id, 321)
+        table.update.return_value.eq.assert_called_once_with('id', 321)
 
 
 if __name__ == '__main__':

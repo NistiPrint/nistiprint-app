@@ -11,6 +11,12 @@ ALTER TABLE public.pedidos_bling
     DROP CONSTRAINT IF EXISTS pedidos_bling_bling_id_key;
 
 ALTER TABLE public.pedidos_bling
+    DROP CONSTRAINT IF EXISTS pedidos_bling_numero_pedido_key;
+
+ALTER TABLE public.pedidos_bling
+    DROP CONSTRAINT IF EXISTS unique_numero_pedido;
+
+ALTER TABLE public.pedidos_bling
     ADD CONSTRAINT pedidos_bling_bling_integration_bling_id_key
     UNIQUE (bling_integration_id, bling_id);
 
