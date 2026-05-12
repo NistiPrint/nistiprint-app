@@ -130,6 +130,22 @@ class ReconciliacaoResultado:
         }
 
 
+def _normalizar_produto_id(produto_id: Any) -> Optional[int]:
+    """Converte IDs de produto para int e rejeita valores nulos serializados."""
+    if produto_id is None:
+        return None
+
+    if isinstance(produto_id, str):
+        produto_id = produto_id.strip()
+        if not produto_id or produto_id.lower() in {'none', 'null', 'undefined'}:
+            return None
+
+    try:
+        return int(produto_id)
+    except (TypeError, ValueError):
+        return None
+
+
 # ============================================================
 # MOTOR DE RECONCILIAÇÃO
 # ============================================================
@@ -464,7 +480,15 @@ class MotorReconciliacaoEstoque:
             response = supabase_db.table('itens_demanda').select('produto_id').eq('id', item_id).execute()
             if not response.data:
                 return ReconciliacaoResultado(False, item_id, demanda_id, correlation_id, erros=['Produto pai não encontrado'])
-            produto_pai_id = response.data[0]['produto_id']
+            produto_pai_id = _normalizar_produto_id(response.data[0].get('produto_id'))
+            if produto_pai_id is None:
+                return ReconciliacaoResultado(
+                    True,
+                    item_id,
+                    demanda_id,
+                    correlation_id,
+                    metadata={'ignored': True, 'reason': 'item_sem_produto_mapeado'}
+                )
 
             # IMPORTANTE: quando ha delta em finalizados_qtd, este eh o UNICO
             # estagio que deve gerar movimentos. Os demais estagios (E1-E6)
@@ -490,6 +514,10 @@ class MotorReconciliacaoEstoque:
                     continue
 
                 for produto_id in produtos_ids:
+                    produto_id = _normalizar_produto_id(produto_id)
+                    if produto_id is None:
+                        continue
+
                     # Obter tipo do produto
                     tipo_produto = await self._get_tipo_produto(produto_id)
 
@@ -780,7 +808,11 @@ class MotorReconciliacaoEstoque:
             response = supabase_db.table('itens_demanda').select('produto_id').eq('id', item_id).execute()
             if not response.data:
                 return []
-            produto_pai_id = response.data[0]['produto_id']
+            produto_pai_id = _normalizar_produto_id(response.data[0].get('produto_id'))
+
+        produto_pai_id = _normalizar_produto_id(produto_pai_id)
+        if produto_pai_id is None:
+            return []
 
         # Se o estágio não existe na config ou não tem config_key, assume o produto pai (ex: finalizados)
         if not stage_config or not stage_config.get('config_key'):
@@ -806,7 +838,9 @@ class MotorReconciliacaoEstoque:
 
         matching_ids = []
         for comp in componentes:
-            comp_id = comp['componente_id']
+            comp_id = _normalizar_produto_id(comp.get('componente_id'))
+            if comp_id is None:
+                continue
             prod_info = product_service.get_by_id(str(comp_id))
             if prod_info and str(prod_info.get('categoria_id')) == str(target_category_id):
                 matching_ids.append(comp_id)
@@ -824,6 +858,10 @@ class MotorReconciliacaoEstoque:
 
     async def _get_tipo_produto(self, produto_id: int) -> str:
         """Obtém o tipo de produto (MATERIA_PRIMA, INTERMEDIARIO, PRODUTO_ACABADO)."""
+        produto_id = _normalizar_produto_id(produto_id)
+        if produto_id is None:
+            return 'MATERIA_PRIMA'
+
         response = self.produtos_table\
             .select('tipo_produto')\
             .eq('id', produto_id)\
@@ -836,6 +874,10 @@ class MotorReconciliacaoEstoque:
 
     async def _get_componentes_bom(self, produto_id: int) -> List[Dict[str, Any]]:
         """Obtém componentes da BOM de um produto."""
+        produto_id = _normalizar_produto_id(produto_id)
+        if produto_id is None:
+            return []
+
         response = supabase_db.table('ficha_tecnica')\
             .select('componente_id, quantidade_necessaria')\
             .eq('produto_pai_id', produto_id)\
@@ -845,6 +887,10 @@ class MotorReconciliacaoEstoque:
 
     async def _get_saldo_disponivel(self, produto_id: int) -> Dict[str, Any]:
         """Obtém saldo disponível de um produto."""
+        produto_id = _normalizar_produto_id(produto_id)
+        if produto_id is None:
+            return {'quantidade_disponivel': 0}
+
         return estoque_service.get_saldo_atual(produto_id)
 
     async def _persistir_via_rpc(self,

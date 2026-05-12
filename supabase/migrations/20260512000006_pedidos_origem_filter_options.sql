@@ -190,31 +190,31 @@ BEGIN
     RETURN QUERY
     SELECT
         p.id::BIGINT AS id,
-        p.numero_pedido,
-        p.codigo_pedido_externo,
+        p.numero_pedido::VARCHAR,
+        p.codigo_pedido_externo::VARCHAR,
         p.data_venda::TIMESTAMPTZ AS data_venda,
-        p.cliente_nome,
-        p.cliente_documento,
+        p.cliente_nome::VARCHAR,
+        p.cliente_documento::VARCHAR,
         p.canal_venda_id,
-        cv.nome AS canal_venda_nome,
+        cv.nome::VARCHAR AS canal_venda_nome,
         p.marketplace_integration_id,
-        ii.instance_name AS marketplace_nome,
-        im.slug AS marketplace_slug,
-        CASE
+        ii.instance_name::VARCHAR AS marketplace_nome,
+        im.slug::VARCHAR AS marketplace_slug,
+        (CASE
             WHEN im.slug = 'shopee' THEN '#EE4D2D'
             WHEN im.slug = 'mercadolivre' THEN '#FFF159'
             WHEN im.slug = 'amazon' THEN '#FF9900'
             WHEN im.slug = 'shein' THEN '#FF6B6B'
             ELSE '#007bff'
-        END AS marketplace_color,
+        END)::VARCHAR AS marketplace_color,
         p.situacao_pedido_id,
-        sp.nome AS situacao_nome,
-        sp.cor_status AS situacao_cor,
+        sp.nome::VARCHAR AS situacao_nome,
+        sp.cor_status::VARCHAR AS situacao_cor,
         p.is_flex,
         p.personalizado AS is_personalizado,
         v.demanda_id::BIGINT,
-        v.demanda_status,
-        v.demanda_numero,
+        v.demanda_numero::VARCHAR,
+        v.demanda_status::VARCHAR,
         v.total_demandas::BIGINT,
         p.data_limite_envio,
         p.total_pedido,
@@ -222,7 +222,7 @@ BEGIN
             SELECT 1 FROM public.demandas_pedidos dp
             WHERE dp.pedido_id = p.id
         ) AS tem_demanda,
-        p.origem,
+        p.origem::VARCHAR,
         p.created_at::TIMESTAMPTZ AS created_at
     FROM public.pedidos p
     LEFT JOIN public.canais_venda cv ON p.canal_venda_id = cv.id
