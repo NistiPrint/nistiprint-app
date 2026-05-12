@@ -37,6 +37,7 @@ function PedidosListPage() {
     search: '',
     status_id: null,
     canal_venda_id: null,
+    origem_pedido_key: null,
     has_demanda: null, // true, false, null
     is_flex: null,     // true, false, null - Filtro para pedidos Flex
     is_personalizado: null, // true, false, null - Filtro para pedidos personalizados
@@ -215,6 +216,7 @@ function PedidosListPage() {
       search: '',
       status_id: null,
       canal_venda_id: null,
+      origem_pedido_key: null,
       has_demanda: null,
       is_flex: null,
       is_personalizado: null,

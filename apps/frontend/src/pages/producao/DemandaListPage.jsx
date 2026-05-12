@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAuth } from '@/contexts/AuthContext'
 import { useLayout } from '@/contexts/LayoutContext'
-import { usePermissions } from '@/contexts/PermissionsContext'
 import useDebounce from '@/lib/hooks/useDebounce'
 import { useRealtimeDemandas } from '@/lib/hooks/useRealtimeDemandas'
 import { CheckSquare, Factory, RefreshCw, Truck, X } from 'lucide-react'
@@ -19,10 +18,15 @@ import PartialCollectionModal from '@/components/producao/PartialCollectionModal
 
 function DemandaListPage() {
   const { user } = useAuth()
-  const { canExecuteAction } = usePermissions()
   const { setIsLeftSidebarOpen } = useLayout()
   const userSetor =
     user?.setor_nome || (user?.is_admin ? 'Administrador' : null)
+  const normalizedUserSetor = (userSetor || '').trim().toLowerCase()
+  const canUseAdminDemandActions = user?.is_admin === true || normalizedUserSetor === 'administrativo'
+  const canUseExpeditionDemandActions =
+    canUseAdminDemandActions ||
+    normalizedUserSetor === 'expedição' ||
+    normalizedUserSetor === 'expedicao'
 
   // Collapse sidebar on mount for this specific page, restore on unmount
   useEffect(() => {
@@ -305,20 +309,20 @@ function DemandaListPage() {
   }
 
   const handleFinalizeDemand = useCallback(async (id) => {
-    if (!canExecuteAction(userSetor, 'finalize_item')) return toast.error('Sem permissão')
+    if (!canUseExpeditionDemandActions) return toast.error('Sem permissão')
     if (!window.confirm('Finalizar demanda?')) return
     try {
       const res = await fetch(`/api/v2/demanda_producao/${id}/finalizar_demanda`, { method: 'POST' })
       if (res.ok) { toast.success('Finalizada!'); refresh(); }
     } catch (e) { toast.error(e.message) }
-  }, [userSetor, refresh])
+  }, [canUseExpeditionDemandActions, refresh])
 
   const handleCollectDemand = useCallback(async (id) => {
-    if (!canExecuteAction(userSetor, 'collect_demand')) return toast.error('Sem permissão')
+    if (!canUseExpeditionDemandActions) return toast.error('Sem permissão')
     
     setSelectedDemandIdForCollection(id);
     setIsPartialCollectionModalOpen(true);
-  }, [userSetor])
+  }, [canUseExpeditionDemandActions])
 
   const handleConfirmPartialCollection = async (demandaId, quantity) => {
     try {
@@ -342,7 +346,7 @@ function DemandaListPage() {
   };
 
   const handleBatchCollect = async () => {
-    if (!canExecuteAction(userSetor, 'collect_demand')) return toast.error('Sem permissão')
+    if (!canUseExpeditionDemandActions) return toast.error('Sem permissão')
     if (!window.confirm(`Marcar ${selectedDemandIds.length} demandas como coletadas?`)) return
     
     try {
@@ -374,22 +378,22 @@ function DemandaListPage() {
   }
 
   const handlePublishDemand = useCallback(async (id) => {
-    if (!['Administrador', 'Administrativo', 'CPD'].includes(userSetor)) return toast.error('Sem permissão')
+    if (!canUseAdminDemandActions) return toast.error('Sem permissão')
     if (!window.confirm('Publicar demanda?')) return
     try {
       const res = await fetch(`/api/v2/demanda_producao/${id}/publicar`, { method: 'POST' })
       if (res.ok) { toast.success('Publicada!'); refresh(); }
     } catch (e) { toast.error(e.message) }
-  }, [userSetor, refresh])
+  }, [canUseAdminDemandActions, refresh])
 
   const handleDeleteDemand = useCallback(async (id) => {
-    if (!canExecuteAction(userSetor, 'delete_demand')) return toast.error('Sem permissão')
+    if (!canUseAdminDemandActions) return toast.error('Sem permissão')
     if (!window.confirm('Deletar permanentemente?')) return
     try {
       const res = await fetch(`/api/v2/demanda_producao/${id}`, { method: 'DELETE' })
       if (res.ok) { toast.success('Deletada!'); refresh(); }
     } catch (e) { toast.error(e.message) }
-  }, [userSetor, refresh])
+  }, [canUseAdminDemandActions, refresh])
 
   const handlePrintDemand = useCallback(async (id) => {
     if (!window.confirm('Enviar todos os itens para impressão?')) return
@@ -514,6 +518,7 @@ function DemandaListPage() {
                     handleDeleteDemand={handleDeleteDemand}
                     handlePublishDemand={handlePublishDemand}
                     handlePrintDemand={handlePrintDemand}
+                    isAdmin={user?.is_admin === true}
                     isSelected={selectedDemandIds.includes(demanda.id)}
                     onSelect={handleSelectDemand}
                     isMainLine={true}
@@ -548,6 +553,7 @@ function DemandaListPage() {
                     handleDeleteDemand={handleDeleteDemand}
                     handlePublishDemand={handlePublishDemand}
                     handlePrintDemand={handlePrintDemand}
+                    isAdmin={user?.is_admin === true}
                     isSelected={selectedDemandIds.includes(demanda.id)}
                     onSelect={handleSelectDemand}
                     isLateral={true}

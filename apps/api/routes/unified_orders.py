@@ -41,6 +41,7 @@ def get_unified_orders_advanced():
     Query params:
     - status_id: Filtrar por status do pedido
     - canal_venda_id: Filtrar por canal de venda
+    - origem_pedido_key: Filtrar por origem estavel (canal:<id>, marketplace:<id>, bling_loja:<loja_id>)
     - has_demanda: true/false (pedidos com/sem demanda)
     - is_flex: true/false (pedidos de entrega rápida)
     - delivery_start: Data início do período de entrega
@@ -57,6 +58,7 @@ def get_unified_orders_advanced():
         # Parâmetros de filtro
         status_id = request.args.get('status_id', type=int)
         canal_venda_id = request.args.get('canal_venda_id', type=int)
+        origem_pedido_key = request.args.get('origem_pedido_key')
         has_demanda = request.args.get('has_demanda')
         is_flex = request.args.get('is_flex')
         delivery_start = request.args.get('delivery_start')
@@ -105,6 +107,8 @@ def get_unified_orders_advanced():
             pedido_date_start = None
         if not pedido_date_end:
             pedido_date_end = None
+        if not origem_pedido_key:
+            origem_pedido_key = None
 
         # Chamar função RPC (usa nome novo para evitar conflito) com retry
         max_retries = 3
@@ -113,6 +117,7 @@ def get_unified_orders_advanced():
                 result = supabase_db.rpc('list_pedidos_filtrados', {
                     'p_situacao_pedido_id': status_id,
                     'p_canal_venda_id': canal_venda_id,
+                    'p_origem_pedido_key': origem_pedido_key,
                     'p_has_demanda': has_demanda,
                     'p_is_flex': is_flex,
                     'p_is_personalizado': is_personalizado,
@@ -189,9 +194,14 @@ def get_unified_orders_advanced():
         count_result = supabase_db.rpc('list_pedidos_filtrados', {
             'p_situacao_pedido_id': status_id,
             'p_canal_venda_id': canal_venda_id,
+            'p_origem_pedido_key': origem_pedido_key,
             'p_has_demanda': has_demanda,
+            'p_is_flex': is_flex,
+            'p_is_personalizado': is_personalizado,
             'p_delivery_start_date': delivery_start,
             'p_delivery_end_date': delivery_end,
+            'p_pedido_date_start': pedido_date_start,
+            'p_pedido_date_end': pedido_date_end,
             'p_search_term': search,
             'p_limit': 10000,
             'p_offset': 0
