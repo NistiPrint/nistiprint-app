@@ -10,7 +10,6 @@ export default function FiltrosContextuais({ onFiltroContextual }) {
   const [horarioAtual, setHorarioAtual] = useState('');
   const [loading, setLoading] = useState(true);
 
-  // Buscar canais próximos e contagens ao montar
   useEffect(() => {
     const carregarDados = async () => {
       try {
@@ -48,7 +47,6 @@ export default function FiltrosContextuais({ onFiltroContextual }) {
     carregarDados();
   }, []);
 
-  // Handler para clique em filtro contextual
   const handleFiltrarCanal = (canal) => {
     onFiltroContextual?.({
       tipo: 'canal',
@@ -79,14 +77,13 @@ export default function FiltrosContextuais({ onFiltroContextual }) {
         <CardContent className="py-4">
           <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
             <Clock className="h-4 w-4 animate-pulse" />
-            <span>Carregando próximas coletas...</span>
+            <span>Carregando proximas coletas...</span>
           </div>
         </CardContent>
       </Card>
     );
   }
 
-  // Se não houver canais próximos, exibir mensagem informativa
   if (canaisProximos.length === 0) {
     return (
       <Card className="mb-4 border-dashed">
@@ -94,9 +91,9 @@ export default function FiltrosContextuais({ onFiltroContextual }) {
           <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
             <Clock className="h-4 w-4" />
             <span>
-              Nenhum canal com horário de coleta configurado. Configure em{' '}
+              Nenhuma origem com horario de coleta configurado. Configure em{' '}
               <a href="/cadastros/canal-venda" className="text-primary underline">
-                Canais de Venda
+                Origens da venda
               </a>
             </span>
           </div>
@@ -110,14 +107,14 @@ export default function FiltrosContextuais({ onFiltroContextual }) {
       <CardContent className="py-4">
         <div className="flex items-center gap-2 mb-3">
           <Clock className="h-4 w-4 text-primary" />
-          <span className="text-sm font-medium">Próximas Coletas</span>
+          <span className="text-sm font-medium">Proximas coletas</span>
           {horarioAtual && (
             <Badge variant="outline" className="text-xs">
               {horarioAtual}
             </Badge>
           )}
         </div>
-        
+
         <div className="flex flex-wrap gap-2">
           {canaisProximos.map((canal, index) => {
             const contagem = contagens[canal.id];
@@ -127,8 +124,8 @@ export default function FiltrosContextuais({ onFiltroContextual }) {
               <div
                 key={canal.id}
                 className={`flex items-center gap-2 p-3 rounded-md border transition-all ${
-                  index === 0 
-                    ? 'border-orange-300 bg-orange-50' 
+                  index === 0
+                    ? 'border-orange-300 bg-orange-50'
                     : 'border-border bg-muted/50'
                 }`}
                 style={{
@@ -136,19 +133,17 @@ export default function FiltrosContextuais({ onFiltroContextual }) {
                   borderLeftWidth: canal.color ? '3px' : undefined,
                 }}
               >
-                {/* Indicador de prioridade */}
                 {index === 0 && (
                   <Badge className="bg-orange-500 text-white text-xs h-5">
                     <Zap className="h-3 w-3 mr-0.5" />
-                    Próxima
+                    Proxima
                   </Badge>
                 )}
 
-                {/* Informações do canal */}
                 <div className="flex items-center gap-2">
                   <div className="text-sm">
                     <span className="font-medium">{canal.nome}</span>
-                    <span className="text-muted-foreground mx-1">•</span>
+                    <span className="text-muted-foreground mx-1">-</span>
                     <span className="text-orange-600 font-medium">
                       {canal.horario_coleta || '--:--'}
                     </span>
@@ -168,7 +163,6 @@ export default function FiltrosContextuais({ onFiltroContextual }) {
                   )}
                 </div>
 
-                {/* Ações de filtro */}
                 <div className="flex items-center gap-1 ml-2">
                   <Button
                     variant="outline"

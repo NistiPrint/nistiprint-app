@@ -14,7 +14,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Database, FileSpreadsheet, Loader2, Upload, Calendar, Clock } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { toast } from 'sonner';
 
 export default function ImportModal({
   open,
@@ -143,10 +142,10 @@ export default function ImportModal({
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="canal">Canal de Venda</Label>
+                    <Label htmlFor="canal">Origem da venda</Label>
                     <Select value={canal} onValueChange={setCanal}>
                       <SelectTrigger>
-                        <SelectValue placeholder="Selecione o canal" />
+                        <SelectValue placeholder="Selecione a origem" />
                       </SelectTrigger>
                       <SelectContent>
                         {channels.map((c) => (
@@ -157,7 +156,7 @@ export default function ImportModal({
                       </SelectContent>
                     </Select>
                     <p className="text-xs text-muted-foreground">
-                      {channels.length === 0 ? 'Carregando canais...' : `${channels.length} canal(is) disponível(is)`}
+                      {channels.length === 0 ? 'Carregando origens...' : `${channels.length} origem(ns) disponivel(is)`}
                     </p>
                   </div>
                 </div>
