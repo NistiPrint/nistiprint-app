@@ -337,7 +337,16 @@ def process_webhook(
         # O webhook é apenas um aviso de alteração, precisamos dos dados atualizados
         with ingest_step('fetch_bling', ingest_ctx):
             if payload.get('id'):
-                detalhe = _fetch_bling_order_detail(bling_inst, payload['id'])
+                try:
+                    detalhe = _fetch_bling_order_detail(bling_inst, payload['id'])
+                except BlingDetailUnavailableError as e:
+                    ingest_ctx['status'] = 'warning'
+                    ingest_ctx['message'] = (
+                        f"detalhe Bling indisponivel; seguindo com payload original minimo: {e}"
+                    )
+                    ingest_ctx['detail_unavailable'] = True
+                    ingest_ctx['detail_unavailable_message'] = str(e)
+                    detalhe = original_payload
                 payload = _preserve_original_bling_fields(detalhe, original_payload)
                 ingest_ctx['payload_summary'] = _build_payload_summary(payload)
                 _set_stage_details(
@@ -348,7 +357,8 @@ def process_webhook(
                 logger.info("[ingest] payload Bling atualizado via /pedidos/vendas/%s", payload.get('id'))
 
             detalhe_disponivel = bool(payload.get('itens')) or bool(payload.get('contato'))
-            if not detalhe_disponivel:
+            payload_minimo = bool(payload.get('id') and payload.get('numero') and payload.get('numeroLoja'))
+            if not detalhe_disponivel and not payload_minimo:
                 raise BlingDetailUnavailableError(
                     f"detalhe Bling indisponível para id={ingest_ctx['payload_summary'].get('bling_id')} "
                     f"(inst={bling_inst['id']})"
@@ -504,11 +514,21 @@ def process_webhook(
                 marketplace_integration_id=(marketplace_inst or {}).get('id'),
             )
 
+        detail_unavailable = bool(ingest_ctx.get('detail_unavailable'))
+        final_status = 'failed' if detail_unavailable else 'success'
+        final_stage_status = 'warning' if detail_unavailable else 'success'
+        final_message = (
+            f"pedido_id={pedido_id}; detalhe Bling indisponivel para reprocessamento posterior: "
+            f"{ingest_ctx.get('detail_unavailable_message')}"
+            if detail_unavailable
+            else f"pedido_id={pedido_id}"
+        )
+
         _write_ingest_log(
             correlation_id=correlation_id,
             stage='done',
-            status='success',
-            message=f"pedido_id={pedido_id}",
+            status=final_stage_status,
+            message=final_message,
             duration_ms=int((perf_counter() - pipeline_started) * 1000),
             payload_summary=ingest_ctx['payload_summary'],
             bling_integration_id=ingest_ctx.get('bling_integration_id'),
@@ -522,15 +542,17 @@ def process_webhook(
             pedido_id=pedido_id,
             bling_id=ingest_ctx['payload_summary'].get('bling_id'),
             numero_loja=payload.get('numeroLoja'),
-            last_status='success',
+            last_status=final_status,
             last_attempt_at=get_now_iso(),
         )
         return {
-            'status': 'success',
+            'status': 'error' if detail_unavailable else 'success',
+            'message': final_message,
             'pedido_id': pedido_id,
             'is_flex': flex.is_flex,
             'flex_motivo': flex.motivo,
             'correlation_id': correlation_id,
+            'error_type': 'bling_detail_unavailable' if detail_unavailable else None,
         }
     except BlingDetailUnavailableError:
         _update_webhook_event(
@@ -664,10 +686,20 @@ def _resolve_canal_venda_id(marketplace_integration_id, bling_integration_id, lo
     Resolve canal_venda_id pela channel_connection ativa.
     Fallback para canais_venda legado se necessário.
     """
-    if not marketplace_integration_id:
-        return None
-
     try:
+        if loja_id and bling_integration_id:
+            cc = supabase_db.table('channel_connections') \
+                .select('channel_id') \
+                .eq('aggregator_store_id', str(loja_id)) \
+                .eq('bling_integration_id', bling_integration_id) \
+                .eq('is_active', True) \
+                .limit(1).execute().data
+            if cc:
+                return cc[0].get('channel_id')
+
+        if not marketplace_integration_id:
+            return None
+
         # Buscar channel_connection ativa
         cc = supabase_db.table('channel_connections') \
             .select('channel_id') \
@@ -811,12 +843,57 @@ def _upsert_pedido_bling(payload, bling_integration_id):
 
     if loja_id not in (None, ''):
         data['loja_id'] = loja_id
+
+    existing = _find_existing_pedido_bling_for_update(
+        bling_id=bling_id,
+        numero_pedido=data['numero_pedido'],
+        bling_integration_id=bling_integration_id,
+    )
+    if existing:
+        res = supabase_db.table('pedidos_bling').update(data).eq('id', existing['id']).execute()
+        return res.data[0]['id'] if res.data else existing['id']
     
     res = supabase_db.table('pedidos_bling').upsert(
         data,
         on_conflict='bling_integration_id,bling_id',
     ).execute()
     return res.data[0]['id'] if res.data else None
+
+
+def _find_existing_pedido_bling_for_update(bling_id, numero_pedido, bling_integration_id):
+    """
+    Reaproveita espelhos legados antes do modelo multi-Bling.
+    A tabela ainda pode conter linhas com bling_integration_id nulo ou unique global
+    em numero_pedido; criar uma nova linha nesse caso bloqueia o pipeline.
+    """
+    filters = [
+        ('bling_integration_id', bling_integration_id, 'bling_id', bling_id),
+        ('bling_integration_id', None, 'bling_id', bling_id),
+    ]
+
+    for first_key, first_value, second_key, second_value in filters:
+        query = supabase_db.table('pedidos_bling').select('id')
+        if first_value is None:
+            query = query.is_(first_key, 'null')
+        else:
+            query = query.eq(first_key, first_value)
+        rows = query.eq(second_key, second_value).limit(1).execute().data
+        if rows:
+            return rows[0]
+
+    if numero_pedido:
+        rows = (
+            supabase_db.table('pedidos_bling')
+            .select('id')
+            .eq('numero_pedido', str(numero_pedido))
+            .limit(1)
+            .execute()
+            .data
+        )
+        if rows:
+            return rows[0]
+
+    return None
 
 def _upsert_pedido_shopee(shopee_data: dict, marketplace_integration_id: int) -> int:
     """
@@ -948,10 +1025,17 @@ def _upsert_pedido_master(payload, *,
     # filtra None para não sobrescrever em update
     data = {k: v for k, v in data.items() if v is not None}
 
-    res = supabase_db.table('pedidos').upsert(
-        data, on_conflict='codigo_pedido_externo'
-    ).execute()
-    pedido_id = res.data[0]['id'] if res.data else None
+    existing_pedido = _find_existing_pedido_master_for_update(
+        pedido_bling_id=pedido_bling_id,
+        bling_integration_id=bling_integration_id,
+        codigo_pedido_externo=codigo_externo,
+    )
+    if existing_pedido:
+        res = supabase_db.table('pedidos').update(data).eq('id', existing_pedido['id']).execute()
+        pedido_id = res.data[0]['id'] if res.data else existing_pedido['id']
+    else:
+        res = supabase_db.table('pedidos').insert(data).execute()
+        pedido_id = res.data[0]['id'] if res.data else None
     logger.info("[upsert_pedido_master] Pedido upserted: codigo_externo=%s, pedido_id=%s", codigo_externo, pedido_id)
 
     # Upsert itens do pedido
@@ -959,6 +1043,52 @@ def _upsert_pedido_master(payload, *,
         _upsert_itens_pedido(pedido_id, payload.get('itens', []))
 
     return pedido_id
+
+
+def _find_existing_pedido_master_for_update(
+    *,
+    pedido_bling_id,
+    bling_integration_id,
+    codigo_pedido_externo,
+):
+    if pedido_bling_id:
+        rows = (
+            supabase_db.table('pedidos')
+            .select('id')
+            .eq('pedido_bling_id', pedido_bling_id)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if rows:
+            return rows[0]
+
+    if bling_integration_id and codigo_pedido_externo:
+        rows = (
+            supabase_db.table('pedidos')
+            .select('id')
+            .eq('bling_integration_id', bling_integration_id)
+            .eq('codigo_pedido_externo', str(codigo_pedido_externo))
+            .limit(1)
+            .execute()
+            .data
+        )
+        if rows:
+            return rows[0]
+
+    if codigo_pedido_externo:
+        rows = (
+            supabase_db.table('pedidos')
+            .select('id')
+            .eq('codigo_pedido_externo', str(codigo_pedido_externo))
+            .limit(1)
+            .execute()
+            .data
+        )
+        if rows:
+            return rows[0]
+
+    return None
 
 
 def _clean_date(date_str):
