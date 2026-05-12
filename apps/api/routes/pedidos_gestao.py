@@ -195,6 +195,28 @@ def get_marketplaces():
         return ApiResponse.error(message=str(e), status_code=500)
 
 
+@pedidos_gestao_bp.route('/origens', methods=['GET'])
+@login_required
+def get_origens_pedidos():
+    """
+    Retorna origens realmente existentes para filtro de pedidos.
+
+    Cada item usa key estavel: canal:<id>, marketplace:<id> ou bling_loja:<loja_id>.
+    """
+    try:
+        result = supabase_db.rpc('get_pedidos_origem_options').execute()
+        origens = result.data if result.data else []
+
+        return ApiResponse.success(data={
+            'origens': origens,
+            'total': len(origens)
+        })
+
+    except Exception as e:
+        logger.error(f"Erro ao buscar origens de pedidos: {e}")
+        return ApiResponse.error(message=str(e), status_code=500)
+
+
 @pedidos_gestao_bp.route('/status-opcoes', methods=['GET'])
 @login_required
 def get_status_opcoes():

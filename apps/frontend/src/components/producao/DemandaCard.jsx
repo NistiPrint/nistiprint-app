@@ -55,12 +55,13 @@ const DemandaCard = React.memo(({
   handleDeleteDemand,
   handlePublishDemand,
   handlePrintDemand,
+  isAdmin = false,
   isSelected,
   onSelect,
   isLateral
 }) => {
   const navigate = useNavigate();
-  const { canEditField, canExecuteAction } = usePermissions();
+  const { canEditField } = usePermissions();
   const [isExpanded, setIsExpanded] = useState(false);
   const [showPedidosOrigem, setShowPedidosOrigem] = useState(false);
 
@@ -74,6 +75,11 @@ const DemandaCard = React.memo(({
   const modalidadeLogistica = demanda.modalidade_logistica || 'STANDARD';
   const classificacaoCliente = demanda.classificacao_cliente || 'B2C';
   const hasObservacoes = Boolean(demanda.observacoes && demanda.observacoes.trim());
+  const setorNome = (userSetor?.nome || userSetor || '').trim().toLowerCase();
+  const isAdministrativo = setorNome === 'administrativo';
+  const isExpedicao = setorNome === 'expedição' || setorNome === 'expedicao';
+  const canUseAdminDemandActions = isAdmin || isAdministrativo;
+  const canUseExpeditionDemandActions = canUseAdminDemandActions || isExpedicao;
 
   // Verifica se é entrega expressa (substitui o is_flex)
   const isExpress = modalidadeLogistica === 'EXPRESS';
@@ -332,7 +338,7 @@ const DemandaCard = React.memo(({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {demanda.status !== 'Rascunho' && (
+                {canUseAdminDemandActions && demanda.status !== 'Rascunho' && (
                   <>
                     <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleFieldUpdate(demanda.id, 'manual_priority_score', 100); }} className="text-red-600">
                       <ArrowUpCircle className="w-4 h-4 mr-2" /> Prioridade Máxima
@@ -352,30 +358,32 @@ const DemandaCard = React.memo(({
                 <DropdownMenuItem onClick={(e) => { e.stopPropagation(); navigate(`/producao/demanda/${demanda.id}/dashboard`); }}>
                   <PlayCircle className="mr-2 h-4 w-4" /> Abrir Dashboard
                 </DropdownMenuItem>
-                {canExecuteAction(userSetor, 'delete_demand') && (
+                {canUseAdminDemandActions && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); navigate(`/producao/demanda/${demanda.id}/editar`); }}>
                     <Edit className="mr-2 h-4 w-4" /> Editar
                   </DropdownMenuItem>
                 )}
-                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handlePrintDemand(demanda.id); }}>
+                {canUseAdminDemandActions && (
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handlePrintDemand(demanda.id); }}>
                     <Printer className="mr-2 h-4 w-4" /> Imprimir Tudo
-                </DropdownMenuItem>
-                {demanda.status === 'Rascunho' && (
+                  </DropdownMenuItem>
+                )}
+                {canUseAdminDemandActions && demanda.status === 'Rascunho' && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handlePublishDemand(demanda.id); }} className="text-green-600">
                     <PlayCircle className="mr-2 h-4 w-4" /> Publicar
                   </DropdownMenuItem>
                 )}
-                {canExecuteAction(userSetor, 'finalize_item') && (
+                {canUseExpeditionDemandActions && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleFinalizeDemand(demanda.id); }}>
                     <CheckCircle className="mr-2 h-4 w-4" /> Finalizar
                   </DropdownMenuItem>
                 )}
-                {canExecuteAction(userSetor, 'collect_demand') && (
+                {canUseExpeditionDemandActions && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleCollectDemand(demanda.id); }}>
                     <Truck className="mr-2 h-4 w-4" /> Coletar
                   </DropdownMenuItem>
                 )}
-                {canExecuteAction(userSetor, 'delete_demand') && (
+                {canUseAdminDemandActions && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDeleteDemand(demanda.id); }} className="text-red-600">
                     <Trash2 className="mr-2 h-4 w-4" /> Deletar
                   </DropdownMenuItem>

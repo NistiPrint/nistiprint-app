@@ -83,7 +83,7 @@ function DateRangeFilter({ title, description, icon, startValue, endValue, onCha
 }
 
 export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltros }) {
-  const [canais, setCanais] = useState([]);
+  const [origens, setOrigens] = useState([]);
   const [statusList, setStatusList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filtrosAbertos, setFiltrosAbertos] = useState(false);
@@ -91,16 +91,16 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
   useEffect(() => {
     const carregarDados = async () => {
       try {
-        const [marketplacesRes, statusRes] = await Promise.all([
-          fetch('/api/v2/pedidos/marketplaces?ativos=true'),
+        const [origensRes, statusRes] = await Promise.all([
+          fetch('/api/v2/pedidos/origens'),
           fetch('/api/v2/pedidos/status-opcoes')
         ]);
 
-        const marketplacesData = await marketplacesRes.json();
+        const origensData = await origensRes.json();
         const statusData = await statusRes.json();
 
-        if (marketplacesData.success) {
-          setCanais(marketplacesData.data.marketplaces || []);
+        if (origensData.success) {
+          setOrigens(origensData.data.origens || []);
         }
         if (statusData.success) {
           setStatusList(statusData.data.status || []);
@@ -119,7 +119,7 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
     const active = [];
     if (filtros.search) active.push('Busca');
     if (filtros.status_id) active.push('Status');
-    if (filtros.canal_venda_id) active.push('Origem');
+    if (filtros.origem_pedido_key || filtros.canal_venda_id) active.push('Origem');
     if (filtros.has_demanda !== null) active.push('Demanda');
     if (filtros.delivery_start || filtros.delivery_end) active.push('Prazo de envio');
     if (filtros.pedido_date_start || filtros.pedido_date_end) active.push('Data do pedido');
@@ -148,13 +148,16 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
     switch (filtroContextual.tipo) {
       case 'canal':
         novosFiltros.canal_venda_id = filtroContextual.canal_venda_id;
+        novosFiltros.origem_pedido_key = `canal:${filtroContextual.canal_venda_id}`;
         break;
       case 'flex':
         novosFiltros.canal_venda_id = filtroContextual.canal_venda_id;
+        novosFiltros.origem_pedido_key = `canal:${filtroContextual.canal_venda_id}`;
         novosFiltros.is_flex = true;
         break;
       case 'sem_demanda':
         novosFiltros.canal_venda_id = filtroContextual.canal_venda_id;
+        novosFiltros.origem_pedido_key = `canal:${filtroContextual.canal_venda_id}`;
         novosFiltros.has_demanda = false;
         break;
       default:
@@ -249,9 +252,12 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
             <div className="space-y-2">
               <Label>Origem da venda</Label>
               <Select
-                value={filtros.canal_venda_id?.toString() || 'all'}
+                value={filtros.origem_pedido_key || (filtros.canal_venda_id ? `canal:${filtros.canal_venda_id}` : 'all')}
                 onValueChange={(value) =>
-                  onFiltroChange({ canal_venda_id: value === 'all' ? null : parseInt(value) })
+                  onFiltroChange({
+                    origem_pedido_key: value === 'all' ? null : value,
+                    canal_venda_id: null
+                  })
                 }
                 disabled={loading}
               >
@@ -265,9 +271,14 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
                       <Loader2 className="h-4 w-4 animate-spin" />
                     </div>
                   ) : (
-                    canais.map((canal) => (
-                      <SelectItem key={canal.id} value={canal.id.toString()}>
-                        {canal.nome}
+                    origens.map((origem) => (
+                      <SelectItem key={origem.key} value={origem.key}>
+                        <div className="flex items-center justify-between gap-3">
+                          <span>{origem.nome}</span>
+                          {origem.total !== undefined && origem.total !== null && (
+                            <span className="text-xs text-muted-foreground">{origem.total}</span>
+                          )}
+                        </div>
                       </SelectItem>
                     ))
                   )}
