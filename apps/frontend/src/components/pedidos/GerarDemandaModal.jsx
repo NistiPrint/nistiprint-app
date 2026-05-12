@@ -78,7 +78,7 @@ export default function GerarDemandaModal({
               </div>
               <div className="flex items-center gap-2">
                 <Store className="h-4 w-4 text-muted-foreground" />
-                <span className="truncate font-medium">{canalVendaNome || 'Canal selecionado'}</span>
+                <span className="truncate font-medium">{canalVendaNome || 'Origem selecionada'}</span>
               </div>
               <div className="flex items-center gap-2">
                 <CalendarDays className="h-4 w-4 text-muted-foreground" />
@@ -90,7 +90,7 @@ export default function GerarDemandaModal({
               </div>
             </div>
             <div className="mt-3 border-t pt-2 text-xs text-muted-foreground">
-              Plataforma/B2C com modalidade inferida pelas regras do canal.
+              Plataforma/B2C com modalidade inferida pelas regras da origem.
             </div>
           </div>
 
@@ -109,11 +109,11 @@ export default function GerarDemandaModal({
           {canalVendaId && (
             <div className="space-y-2">
               <Label htmlFor="canal-venda">
-                Canal de Venda
+                Origem da venda
               </Label>
               <Input
                 id="canal-venda"
-                value={canalVendaNome || `Canal ID: ${canalVendaId}`}
+                value={canalVendaNome || `Origem ID: ${canalVendaId}`}
                 disabled
                 className="bg-muted"
               />

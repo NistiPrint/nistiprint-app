@@ -308,6 +308,34 @@ VALUES
     true,
     now(),
     now()
+),
+(
+    'magazineluiza',
+    'magazineluiza',
+    'Magazine Luiza',
+    'Integracao com Magazine Luiza para vinculacao de lojas Bling, pedidos e canais de venda.',
+    '1.0.0',
+    'NistiPrint Team',
+    'https://app.nistiprint.com.br/assets/img/magazineluiza.svg',
+    'Marketplace',
+    ARRAY['magazineluiza', 'magalu', 'e-commerce', 'orders', 'inventory'],
+    'api_key',
+    '{
+        "title": "Configuracao Magazine Luiza",
+        "type": "object",
+        "required": ["api_key"],
+        "properties": {
+            "api_key": {"type": "string", "title": "Chave da API"},
+            "seller_id": {"type": "string", "title": "Seller ID"}
+        }
+    }'::jsonb,
+    '{}'::jsonb,
+    '{"test_endpoint": "/orders"}'::jsonb,
+    'MARKETPLACE',
+    false,
+    true,
+    now(),
+    now()
 )
 ON CONFLICT (id) DO UPDATE SET
     slug = EXCLUDED.slug,

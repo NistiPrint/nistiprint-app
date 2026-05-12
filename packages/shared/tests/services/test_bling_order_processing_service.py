@@ -1,7 +1,9 @@
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
 from nistiprint_shared.services import bling_order_processing_service as bos
+from nistiprint_shared.services import pedidos_bling_import_service as import_service
 
 
 class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
@@ -131,6 +133,87 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
             bos._detect_and_mark_personalized(payload, pedido_id=99)
 
         process_order.assert_called_once_with(payload)
+
+    def test_preserve_original_bling_fields_keeps_loja_id_from_original_payload(self):
+        original_payload = {
+            'id': 19860,
+            'numero': '100',
+            'numeroLoja': 'ABC123',
+            'loja': {'id': 204047801},
+        }
+        detail_payload = {
+            'id': 19860,
+            'contato': {'nome': 'Cliente'},
+            'itens': [],
+        }
+
+        merged = bos._preserve_original_bling_fields(detail_payload, original_payload)
+
+        self.assertEqual(merged['loja']['id'], 204047801)
+        self.assertEqual(merged['numeroLoja'], 'ABC123')
+        self.assertEqual(merged['numero'], '100')
+
+    def test_upsert_pedido_bling_does_not_null_loja_id_when_missing_from_payload(self):
+        payload = {
+            'id': 19860,
+            'numero': '100',
+            'numeroLoja': 'ABC123',
+            'situacao': {'id': 15},
+            'contato': {'nome': 'Cliente'},
+            'itens': [],
+        }
+
+        table = MagicMock()
+        table.upsert.return_value.execute.return_value.data = [{'id': 321}]
+
+        with patch.object(bos.supabase_db, 'table', return_value=table):
+            pedido_bling_id = bos._upsert_pedido_bling(payload, bling_integration_id=22)
+
+        self.assertEqual(pedido_bling_id, 321)
+        upsert_data = table.upsert.call_args.args[0]
+        self.assertNotIn('loja_id', upsert_data)
+
+    def test_upsert_pedido_bling_persists_loja_id_from_bling_payload(self):
+        payload = {
+            'id': 19860,
+            'numero': '100',
+            'numeroLoja': 'ABC123',
+            'loja': {'id': 204047801},
+            'situacao': {'id': 15},
+            'contato': {'nome': 'Cliente'},
+            'itens': [],
+        }
+
+        table = MagicMock()
+        table.upsert.return_value.execute.return_value.data = [{'id': 321}]
+
+        with patch.object(bos.supabase_db, 'table', return_value=table):
+            pedido_bling_id = bos._upsert_pedido_bling(payload, bling_integration_id=22)
+
+        self.assertEqual(pedido_bling_id, 321)
+        upsert_data = table.upsert.call_args.args[0]
+        self.assertEqual(upsert_data['loja_id'], 204047801)
+
+    def test_enqueue_bling_order_preserves_full_order_payload(self):
+        full_order = {
+            'id': 19860,
+            'numero': '100',
+            'numeroLoja': 'ABC123',
+            'loja': {'id': 204047801},
+            'contato': {'nome': 'Cliente'},
+        }
+        redis_client = MagicMock()
+
+        with patch.object(import_service, '_get_redis_client', return_value=redis_client):
+            result = import_service._enqueue_bling_order_to_redis(
+                full_order,
+                {'bling_company_id': 'company-1'},
+            )
+
+        self.assertTrue(result['success'])
+        queued_payload = json.loads(redis_client.rpush.call_args.args[1])
+        self.assertEqual(queued_payload['data']['loja']['id'], 204047801)
+        self.assertEqual(queued_payload['data']['contato']['nome'], 'Cliente')
 
     def test_upsert_pedido_master_does_not_overwrite_cliente_with_empty_json(self):
         payload = {

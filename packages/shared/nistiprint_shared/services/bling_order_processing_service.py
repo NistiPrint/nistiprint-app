@@ -112,8 +112,49 @@ def _build_payload_summary(payload: dict) -> dict:
         'numero_loja': payload.get('numeroLoja'),
         'total': total,
         'situacao_id': situacao.get('id') or payload.get('situacao_id'),
-        'loja_id': loja.get('id'),
+        'loja_id': _extract_bling_loja_id(payload),
     }
+
+
+def _extract_bling_loja_id(payload: dict | None):
+    if not isinstance(payload, dict):
+        return None
+
+    loja = payload.get('loja') if isinstance(payload.get('loja'), dict) else {}
+    loja_id = loja.get('id')
+    if loja_id not in (None, ''):
+        return loja_id
+
+    for key in ('loja_id', 'shop_id', 'bling_loja_id'):
+        value = payload.get(key)
+        if value not in (None, ''):
+            return value
+
+    return None
+
+
+def _preserve_original_bling_fields(detail_payload: dict, original_payload: dict) -> dict:
+    """
+    O detalhe do Bling e o webhook/listagem podem ter formatos diferentes.
+    Nunca descartamos identificadores de origem que vieram no payload original.
+    """
+    if not isinstance(detail_payload, dict):
+        return original_payload
+
+    merged = dict(detail_payload)
+    original_loja_id = _extract_bling_loja_id(original_payload)
+    detail_loja_id = _extract_bling_loja_id(detail_payload)
+
+    if original_loja_id and not detail_loja_id:
+        loja = merged.get('loja') if isinstance(merged.get('loja'), dict) else {}
+        merged['loja'] = {**loja, 'id': original_loja_id}
+
+    if original_payload.get('numeroLoja') and not merged.get('numeroLoja'):
+        merged['numeroLoja'] = original_payload.get('numeroLoja')
+    if original_payload.get('numero') and not merged.get('numero'):
+        merged['numero'] = original_payload.get('numero')
+
+    return merged
 
 
 def _compact(value) -> str:
@@ -253,6 +294,7 @@ def process_webhook(
     """
     correlation_id = _start_correlation_id(correlation_id)
     pipeline_started = perf_counter()
+    original_payload = dict(payload or {})
     ingest_ctx = {
         'correlation_id': correlation_id,
         'payload_summary': _build_payload_summary(payload),
@@ -296,7 +338,7 @@ def process_webhook(
         with ingest_step('fetch_bling', ingest_ctx):
             if payload.get('id'):
                 detalhe = _fetch_bling_order_detail(bling_inst, payload['id'])
-                payload = detalhe
+                payload = _preserve_original_bling_fields(detalhe, original_payload)
                 ingest_ctx['payload_summary'] = _build_payload_summary(payload)
                 _set_stage_details(
                     ingest_ctx,
@@ -327,7 +369,7 @@ def process_webhook(
             logger.info("[ingest] pedidos_bling upserted id=%s", pedido_bling_id)
 
         # 4. Resolver instância marketplace pela loja_id
-        loja_id = str(payload.get('loja', {}).get('id') or '')
+        loja_id = str(_extract_bling_loja_id(payload) or '')
         marketplace_inst, pedido_shopee_id, shopee_data = None, None, None
         if loja_id:
             with ingest_step('resolve_marketplace', ingest_ctx):
@@ -749,6 +791,8 @@ def _upsert_pedido_bling(payload, bling_integration_id):
     bling_id = payload.get('id')
     if not bling_id:
         return None
+
+    loja_id = _extract_bling_loja_id(payload)
     
     data = {
         'bling_id': bling_id,
@@ -760,11 +804,13 @@ def _upsert_pedido_bling(payload, bling_integration_id):
         'itens': payload.get('itens'),
         'transporte': payload.get('transporte'),
         'intermediador_cnpj': payload.get('intermediador', {}).get('cnpj'),
-        'loja_id': payload.get('loja', {}).get('id'),
         'raw_payload': payload,
         'bling_integration_id': bling_integration_id,
         'updated_at': get_now_iso()
     }
+
+    if loja_id not in (None, ''):
+        data['loja_id'] = loja_id
     
     res = supabase_db.table('pedidos_bling').upsert(
         data,

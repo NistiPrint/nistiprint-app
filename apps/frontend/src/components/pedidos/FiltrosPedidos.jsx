@@ -5,10 +5,82 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { ChevronDown, ChevronUp, Filter, Loader2, Sparkles, X, Zap } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { CalendarRange, ChevronDown, ChevronUp, Filter, Loader2, Search, Sparkles, Store, Truck, X, Zap } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 
 import FiltrosContextuais from './FiltrosContextuais';
+
+const toISODate = (date) => {
+  const copy = new Date(date);
+  copy.setMinutes(copy.getMinutes() - copy.getTimezoneOffset());
+  return copy.toISOString().slice(0, 10);
+};
+
+const addDays = (days) => {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return toISODate(date);
+};
+
+function DateRangeFilter({ title, description, icon, startValue, endValue, onChange, presets }) {
+  const updateStart = (value) => {
+    onChange({
+      start: value,
+      end: endValue && value && value > endValue ? value : endValue,
+    });
+  };
+
+  const updateEnd = (value) => {
+    onChange({
+      start: startValue && value && value < startValue ? value : startValue,
+      end: value,
+    });
+  };
+
+  return (
+    <div className="rounded-md border bg-background p-3 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2">
+          {icon}
+          <div>
+            <div className="text-sm font-medium">{title}</div>
+            <div className="text-xs text-muted-foreground">{description}</div>
+          </div>
+        </div>
+        {(startValue || endValue) && (
+          <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => onChange({ start: '', end: '' })}>
+            Limpar
+          </Button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label className="text-xs">Inicio</Label>
+          <Input type="date" value={startValue || ''} onChange={(e) => updateStart(e.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Fim</Label>
+          <Input type="date" value={endValue || ''} onChange={(e) => updateEnd(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {presets.map((preset) => (
+          <Button
+            key={preset.label}
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-xs"
+            onClick={() => onChange({ start: preset.start, end: preset.end })}
+          >
+            {preset.label}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltros }) {
   const [canais, setCanais] = useState([]);
@@ -16,7 +88,6 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
   const [loading, setLoading] = useState(true);
   const [filtrosAbertos, setFiltrosAbertos] = useState(false);
 
-  // Buscar marketplaces (nova arquitetura) e status ao montar o componente
   useEffect(() => {
     const carregarDados = async () => {
       try {
@@ -24,10 +95,10 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
           fetch('/api/v2/pedidos/marketplaces?ativos=true'),
           fetch('/api/v2/pedidos/status-opcoes')
         ]);
-        
+
         const marketplacesData = await marketplacesRes.json();
         const statusData = await statusRes.json();
-        
+
         if (marketplacesData.success) {
           setCanais(marketplacesData.data.marketplaces || []);
         }
@@ -40,26 +111,40 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
         setLoading(false);
       }
     };
-    
+
     carregarDados();
   }, []);
 
-  const hasFiltros =
-    filtros.search ||
-    filtros.status_id ||
-    filtros.canal_venda_id ||
-    filtros.has_demanda !== null ||
-    filtros.delivery_start ||
-    filtros.delivery_end ||
-    filtros.pedido_date_start ||
-    filtros.pedido_date_end ||
-    filtros.is_flex ||
-    filtros.is_personalizado;
+  const activeFilters = useMemo(() => {
+    const active = [];
+    if (filtros.search) active.push('Busca');
+    if (filtros.status_id) active.push('Status');
+    if (filtros.canal_venda_id) active.push('Origem');
+    if (filtros.has_demanda !== null) active.push('Demanda');
+    if (filtros.delivery_start || filtros.delivery_end) active.push('Prazo de envio');
+    if (filtros.pedido_date_start || filtros.pedido_date_end) active.push('Data do pedido');
+    if (filtros.is_flex) active.push('Entrega rapida');
+    if (filtros.is_personalizado) active.push('Personalizados');
+    return active;
+  }, [filtros]);
 
-  // Handler para filtros contextuais
+  const hasFiltros = activeFilters.length > 0;
+
+  const pedidoDatePresets = [
+    { label: 'Hoje', start: toISODate(new Date()), end: toISODate(new Date()) },
+    { label: 'Ultimos 7 dias', start: addDays(-6), end: toISODate(new Date()) },
+    { label: 'Ultimos 30 dias', start: addDays(-29), end: toISODate(new Date()) },
+  ];
+
+  const deliveryPresets = [
+    { label: 'Hoje', start: toISODate(new Date()), end: toISODate(new Date()) },
+    { label: 'Proximos 7 dias', start: toISODate(new Date()), end: addDays(7) },
+    { label: 'Atrasados', start: '', end: addDays(-1) },
+  ];
+
   const handleFiltroContextual = (filtroContextual) => {
     const novosFiltros = {};
-    
+
     switch (filtroContextual.tipo) {
       case 'canal':
         novosFiltros.canal_venda_id = filtroContextual.canal_venda_id;
@@ -72,263 +157,230 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
         novosFiltros.canal_venda_id = filtroContextual.canal_venda_id;
         novosFiltros.has_demanda = false;
         break;
+      default:
+        break;
     }
-    
+
     onFiltroChange(novosFiltros);
   };
 
   return (
     <>
-      {/* Filtros Contextuais (baseados em horário de coleta) */}
       <FiltrosContextuais onFiltroContextual={handleFiltroContextual} />
 
-      {/* Filtros Manuais (colapsável) */}
       <Card className="mb-4">
-        <div className="flex items-center justify-between p-4 border-b cursor-pointer" onClick={() => setFiltrosAbertos(!filtrosAbertos)}>
-          <div className="flex items-center gap-2">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <span className="font-medium text-sm">Filtros Manuais</span>
-            {hasFiltros && (
-              <Badge variant="secondary" className="text-xs">
-                Ativos
-              </Badge>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {hasFiltros && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onLimparFiltros();
-                }}
-                className="gap-2 h-8"
-              >
-                <X className="h-4 w-4" />
-                Limpar
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 w-8 p-0"
-              onClick={(e) => {
-                e.stopPropagation();
-                setFiltrosAbertos(!filtrosAbertos);
-              }}
-            >
-              {filtrosAbertos ? (
-                <ChevronUp className="h-4 w-4" />
-              ) : (
-                <ChevronDown className="h-4 w-4" />
+        <div className="p-4 border-b space-y-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-2">
+              <Filter className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium text-sm">Filtros</span>
+              {hasFiltros && (
+                <Badge variant="secondary" className="text-xs">
+                  {activeFilters.length} ativo{activeFilters.length > 1 ? 's' : ''}
+                </Badge>
               )}
-            </Button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {hasFiltros && (
+                <Button variant="ghost" size="sm" onClick={onLimparFiltros} className="gap-2 h-8">
+                  <X className="h-4 w-4" />
+                  Limpar
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2 h-8"
+                onClick={() => setFiltrosAbertos(!filtrosAbertos)}
+              >
+                Mais filtros
+                {filtrosAbertos ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </Button>
+            </div>
           </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="space-y-2">
+              <Label>Busca</Label>
+              <div className="relative">
+                <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  value={filtros.search}
+                  onChange={(e) => onFiltroChange({ search: e.target.value })}
+                  placeholder="Pedido, cliente ou documento..."
+                  className="pl-9"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Status</Label>
+              <Select
+                value={filtros.status_id?.toString() || 'all'}
+                onValueChange={(value) =>
+                  onFiltroChange({ status_id: value === 'all' ? null : parseInt(value) })
+                }
+                disabled={loading}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={loading ? 'Carregando...' : 'Todos os status'} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os status</SelectItem>
+                  {loading ? (
+                    <div className="flex items-center justify-center py-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    </div>
+                  ) : (
+                    statusList.map((status) => (
+                      <SelectItem key={status.id} value={status.id.toString()}>
+                        <div className="flex items-center gap-2">
+                          <div className="w-3 h-3 rounded-full" style={{ backgroundColor: status.cor_status }} />
+                          {status.nome}
+                        </div>
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Origem da venda</Label>
+              <Select
+                value={filtros.canal_venda_id?.toString() || 'all'}
+                onValueChange={(value) =>
+                  onFiltroChange({ canal_venda_id: value === 'all' ? null : parseInt(value) })
+                }
+                disabled={loading}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={loading ? 'Carregando...' : 'Todas as origens'} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas as origens</SelectItem>
+                  {loading ? (
+                    <div className="flex items-center justify-center py-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    </div>
+                  ) : (
+                    canais.map((canal) => (
+                      <SelectItem key={canal.id} value={canal.id.toString()}>
+                        {canal.nome}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {hasFiltros && (
+            <div className="flex flex-wrap gap-2">
+              {activeFilters.map((filter) => (
+                <Badge key={filter} variant="outline" className="bg-muted/40">
+                  {filter}
+                </Badge>
+              ))}
+            </div>
+          )}
         </div>
-        
+
         {filtrosAbertos && (
-          <CardContent className="pt-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {/* Busca */}
-          <div className="space-y-2">
-            <Label>Busca</Label>
-            <div className="relative">
-              <Input
-                value={filtros.search}
-                onChange={(e) => onFiltroChange({ search: e.target.value })}
-                placeholder="Pedido, cliente, SKU..."
-                className="pl-9"
-              />
-            </div>
-          </div>
-
-          {/* Status */}
-          <div className="space-y-2">
-            <Label>Status</Label>
-            <Select
-              value={filtros.status_id?.toString() || 'all'}
-              onValueChange={(value) =>
-                onFiltroChange({ status_id: value === 'all' ? null : parseInt(value) })
-              }
-              disabled={loading}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder={loading ? 'Carregando...' : 'Todos os status'} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todos os status</SelectItem>
-                {loading ? (
-                  <div className="flex items-center justify-center py-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  </div>
-                ) : (
-                  statusList.map((status) => (
-                    <SelectItem key={status.id} value={status.id.toString()}>
-                      <div className="flex items-center gap-2">
-                        <div 
-                          className="w-3 h-3 rounded-full" 
-                          style={{ backgroundColor: status.cor_status }}
-                        />
-                        {status.nome}
-                      </div>
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Canal */}
-          <div className="space-y-2">
-            <Label>Canal de Venda</Label>
-            <Select
-              value={filtros.canal_venda_id?.toString() || 'all'}
-              onValueChange={(value) =>
-                onFiltroChange({ canal_venda_id: value === 'all' ? null : parseInt(value) })
-              }
-              disabled={loading}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder={loading ? 'Carregando...' : 'Todos os canais'} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todos os canais</SelectItem>
-                {loading ? (
-                  <div className="flex items-center justify-center py-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  </div>
-                ) : (
-                  canais.map((canal) => (
-                    <SelectItem key={canal.id} value={canal.id.toString()}>
-                      {canal.nome}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Demanda */}
-          <div className="space-y-2">
-            <Label>Demanda</Label>
-            <Select
-              value={
-                filtros.has_demanda === null ? 'all' :
-                filtros.has_demanda ? 'com' : 'sem'
-              }
-              onValueChange={(value) =>
-                onFiltroChange({
-                  has_demanda: value === 'all' ? null : value === 'com'
-                })
-              }
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Todos" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todos</SelectItem>
-                <SelectItem value="com">Com demanda</SelectItem>
-                <SelectItem value="sem">Sem demanda</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Período de Envio - De */}
-          <div className="space-y-2">
-            <Label>Período de Envio - De</Label>
-            <Input
-              type="date"
-              value={filtros.delivery_start}
-              onChange={(e) => onFiltroChange({ delivery_start: e.target.value })}
-            />
-          </div>
-
-          {/* Período de Envio - Até */}
-          <div className="space-y-2">
-            <Label>Período de Envio - Até</Label>
-            <Input
-              type="date"
-              value={filtros.delivery_end}
-              onChange={(e) => onFiltroChange({ delivery_end: e.target.value })}
-            />
-          </div>
-
-          {/* Data do Pedido - De */}
-          <div className="space-y-2">
-            <Label>Data do Pedido - De</Label>
-            <Input
-              type="date"
-              value={filtros.pedido_date_start}
-              onChange={(e) => onFiltroChange({ pedido_date_start: e.target.value })}
-            />
-          </div>
-
-          {/* Data do Pedido - Até */}
-          <div className="space-y-2">
-            <Label>Data do Pedido - Até</Label>
-            <Input
-              type="date"
-              value={filtros.pedido_date_end}
-              onChange={(e) => onFiltroChange({ pedido_date_end: e.target.value })}
-            />
-          </div>
-
-          {/* Filtro Flex (Entrega Rápida) */}
-          <div className="space-y-2 flex items-end">
-            <div className="flex items-center space-x-3 pb-2">
-              <Switch
-                id="filtro-flex"
-                checked={filtros.is_flex === true}
-                onCheckedChange={(checked) =>
-                  onFiltroChange({ is_flex: checked ? true : null })
+          <CardContent className="pt-4 space-y-4">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <DateRangeFilter
+                title="Data do pedido"
+                description="Quando o pedido foi registrado ou importado."
+                icon={<CalendarRange className="h-4 w-4 mt-0.5 text-muted-foreground" />}
+                startValue={filtros.pedido_date_start}
+                endValue={filtros.pedido_date_end}
+                presets={pedidoDatePresets}
+                onChange={({ start, end }) =>
+                  onFiltroChange({ pedido_date_start: start, pedido_date_end: end })
                 }
               />
-              <Label htmlFor="filtro-flex" className="flex items-center gap-2 cursor-pointer">
-                <Zap className="h-4 w-4 text-orange-500" />
-                <div>
-                  <div className="font-medium">Apenas Entrega Rápida</div>
-                  <div className="text-xs text-muted-foreground">Pedidos Flex (prioritários)</div>
-                </div>
-              </Label>
-            </div>
-          </div>
 
-          {/* Filtro Personalizado */}
-          <div className="space-y-2 flex items-end">
-            <div className="flex items-center space-x-3 pb-2">
-              <Switch
-                id="filtro-personalizado"
-                checked={filtros.is_personalizado === true}
-                onCheckedChange={(checked) =>
-                  onFiltroChange({ is_personalizado: checked ? true : null })
+              <DateRangeFilter
+                title="Prazo de envio"
+                description="Filtra pelo limite de envio ou coleta."
+                icon={<Truck className="h-4 w-4 mt-0.5 text-muted-foreground" />}
+                startValue={filtros.delivery_start}
+                endValue={filtros.delivery_end}
+                presets={deliveryPresets}
+                onChange={({ start, end }) =>
+                  onFiltroChange({ delivery_start: start, delivery_end: end })
                 }
               />
-              <Label htmlFor="filtro-personalizado" className="flex items-center gap-2 cursor-pointer">
-                <Sparkles className="h-4 w-4 text-purple-500" />
-                <div>
-                  <div className="font-medium">Apenas Personalizados</div>
-                  <div className="text-xs text-muted-foreground">Pedidos com personalização</div>
-                </div>
-              </Label>
             </div>
-          </div>
-        </div>
 
-        {/* Botão Limpar Filtros */}
-        {hasFiltros && (
-          <div className="flex justify-end mt-4 pt-4 border-t">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onLimparFiltros}
-              className="gap-2"
-            >
-              <X className="h-4 w-4" />
-              Limpar Filtros
-            </Button>
-          </div>
-        )}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <Label>Demanda</Label>
+                <Select
+                  value={
+                    filtros.has_demanda === null ? 'all' :
+                    filtros.has_demanda ? 'com' : 'sem'
+                  }
+                  onValueChange={(value) =>
+                    onFiltroChange({
+                      has_demanda: value === 'all' ? null : value === 'com'
+                    })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Todos" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="com">Com demanda</SelectItem>
+                    <SelectItem value="sem">Sem demanda</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="rounded-md border p-3 flex items-center justify-between gap-3">
+                <Label htmlFor="filtro-flex" className="flex items-center gap-2 cursor-pointer">
+                  <Zap className="h-4 w-4 text-orange-500" />
+                  <div>
+                    <div className="font-medium">Entrega rapida</div>
+                    <div className="text-xs text-muted-foreground">Somente pedidos Flex</div>
+                  </div>
+                </Label>
+                <Switch
+                  id="filtro-flex"
+                  checked={filtros.is_flex === true}
+                  onCheckedChange={(checked) =>
+                    onFiltroChange({ is_flex: checked ? true : null })
+                  }
+                />
+              </div>
+
+              <div className="rounded-md border p-3 flex items-center justify-between gap-3">
+                <Label htmlFor="filtro-personalizado" className="flex items-center gap-2 cursor-pointer">
+                  <Sparkles className="h-4 w-4 text-purple-500" />
+                  <div>
+                    <div className="font-medium">Personalizados</div>
+                    <div className="text-xs text-muted-foreground">Somente pedidos com personalizacao</div>
+                  </div>
+                </Label>
+                <Switch
+                  id="filtro-personalizado"
+                  checked={filtros.is_personalizado === true}
+                  onCheckedChange={(checked) =>
+                    onFiltroChange({ is_personalizado: checked ? true : null })
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="rounded-md bg-muted/40 p-3 flex items-start gap-2 text-xs text-muted-foreground">
+              <Store className="h-4 w-4 mt-0.5" />
+              <span>
+                Use <strong>Origem da venda</strong> para filtrar por marketplace, loja ou canal interno mapeado para o pedido.
+              </span>
+            </div>
           </CardContent>
         )}
       </Card>

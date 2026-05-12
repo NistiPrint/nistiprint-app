@@ -73,13 +73,10 @@ def _enqueue_bling_order_to_redis(full_order: Dict[str, Any], cfg: Dict[str, Any
     )
 
     try:
-        # Montar payload no mesmo formato do webhook
+        # Montar payload no mesmo formato do webhook preservando o pedido completo.
+        # O campo loja.id identifica a origem/marketplace e nao pode ser descartado.
         payload = {
-            'data': {
-                'id': bling_id,
-                'numero': full_order.get('numero'),
-                'numeroLoja': order_sn,
-            },
+            'data': full_order,
             'companyId': bling_company_id,
         }
 

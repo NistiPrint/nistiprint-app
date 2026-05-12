@@ -50,7 +50,6 @@ function PedidosListPage() {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(50);
   const [total, setTotal] = useState(0);
-  const [totalPages, setTotalPages] = useState(0);
 
   // Estados de seleção
   const [pedidosSelecionados, setPedidosSelecionados] = useState([]);
@@ -82,8 +81,8 @@ function PedidosListPage() {
   };
 
   // Estados para resultados da consolidação
-  const [resultadosConsolidacao, setResultadosConsolidacao] = useState(null);
-  const [demandName, setDemandName] = useState('');
+  const [resultadosConsolidacao] = useState(null);
+  const [demandName] = useState('');
 
 
   // Carregar canais próximos (para highlight e contexto)
@@ -178,19 +177,16 @@ function PedidosListPage() {
         setPedidos(pedidosMapeados);
         setTotal(total);
         // Calcular total de páginas
-        setTotalPages(Math.ceil(total / limit));
       } else {
         toast.error(data.message || 'Erro ao carregar pedidos');
         setPedidos([]);
         setTotal(0);
-        setTotalPages(0);
       }
     } catch (error) {
       console.error('Erro ao carregar pedidos:', error);
       toast.error('Erro ao carregar pedidos');
       setPedidos([]);
       setTotal(0);
-      setTotalPages(0);
     } finally {
       setLoading(false);
     }
@@ -270,12 +266,12 @@ function PedidosListPage() {
     });
 
     if (canaisUnicos.size === 0) {
-      toast.error('Os pedidos selecionados não possuem canal de venda definido');
+      toast.error('Os pedidos selecionados nao possuem origem da venda definida');
       return;
     }
 
     if (canaisUnicos.size > 1) {
-      toast.error('Selecione pedidos de apenas um canal de venda para gerar demanda');
+      toast.error('Selecione pedidos de apenas uma origem da venda para gerar demanda');
       return;
     }
 
@@ -284,7 +280,7 @@ function PedidosListPage() {
     const canal = channels.find(c => c.id === canalId);
     
     if (!canal) {
-      toast.error('Canal de venda não encontrado');
+      toast.error('Origem da venda nao encontrada');
       return;
     }
 
@@ -360,7 +356,7 @@ function PedidosListPage() {
   };
 
   // Handler para sincronizar status com Bling
-  const handleSyncBlingStatus = async () => {
+  const _handleSyncBlingStatus = async () => {
     if (pedidosSelecionados.length === 0) {
       toast.error('Selecione pelo menos um pedido');
       return;
@@ -692,7 +688,7 @@ function ResultadosConsolidacaoModal({ open, onOpenChange, resultados, demandNam
 
   const handleGerar = async () => {
     if (!nome || !dataEntrega || !canalSelecionado) {
-      toast.error('Preencha nome, canal de venda e data de entrega');
+      toast.error('Preencha nome, origem da venda e data de entrega');
       return;
     }
 
@@ -786,10 +782,10 @@ function ResultadosConsolidacaoModal({ open, onOpenChange, resultados, demandNam
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="canal-venda">Canal de Venda *</Label>
+                <Label htmlFor="canal-venda">Origem da venda *</Label>
                 <Select value={canalSelecionado} onValueChange={setCanalSelecionado}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Selecione o canal" />
+                    <SelectValue placeholder="Selecione a origem" />
                   </SelectTrigger>
                   <SelectContent>
                     {canais.map((canal) => (

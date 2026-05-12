@@ -78,7 +78,7 @@ export default function TabelaPedidos({
                 <TableHead>Enviar Até</TableHead>
                 <TableHead>Data</TableHead>
                 <TableHead>Cliente</TableHead>
-                <TableHead>Canal</TableHead>
+                <TableHead>Origem</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-center">Demanda</TableHead>
                 <TableHead className="text-right">Ações</TableHead>
@@ -389,13 +389,6 @@ function CanalIcon({ canalNome, marketplaceSlug, marketplaceColor }) {
   };
 
   // Cores de fallback (usar marketplaceColor se disponível)
-  const colorMap = {
-    shopee: 'bg-orange-500',
-    amazon: 'bg-blue-600',
-    mercadolivre: 'bg-blue-400',
-    shein: 'bg-black',
-  };
-
   // Verificar se há ícone disponível para este canal
   const iconUrl = Object.entries(iconUrls).find(([slug]) => 
     canalSlug.includes(slug)
@@ -407,12 +400,12 @@ function CanalIcon({ canalNome, marketplaceSlug, marketplaceColor }) {
         <TooltipTrigger>
           <img
             src={iconUrl}
-            alt={canalNome || 'Canal'}
+            alt={canalNome || 'Origem'}
             className="w-6 h-6 object-contain"
           />
         </TooltipTrigger>
         <TooltipContent>
-          <span>{canalNome || 'Canal'}</span>
+          <span>{canalNome || 'Origem'}</span>
         </TooltipContent>
       </Tooltip>
     );
@@ -432,12 +425,12 @@ function CanalIcon({ canalNome, marketplaceSlug, marketplaceColor }) {
           className={`text-xs ${!canalNome ? 'border-red-300 text-red-500' : ''}`}
           style={badgeColor}
         >
-          {canalNome || 'Unknown'}
+          {canalNome || 'Origem indefinida'}
         </Badge>
       </TooltipTrigger>
       {!canalNome && (
         <TooltipContent>
-          <p>Canal não identificado. Verifique o mapeamento do "ID da Loja" em Configurações {'>'} Canais.</p>
+          <p>Origem nao identificada. Verifique o mapeamento do "ID da Loja" nas configuracoes de integracao.</p>
         </TooltipContent>
       )}
     </Tooltip>
