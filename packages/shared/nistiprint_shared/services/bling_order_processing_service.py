@@ -766,7 +766,10 @@ def _upsert_pedido_bling(payload, bling_integration_id):
         'updated_at': get_now_iso()
     }
     
-    res = supabase_db.table('pedidos_bling').upsert(data, on_conflict='bling_id').execute()
+    res = supabase_db.table('pedidos_bling').upsert(
+        data,
+        on_conflict='bling_integration_id,bling_id',
+    ).execute()
     return res.data[0]['id'] if res.data else None
 
 def _upsert_pedido_shopee(shopee_data: dict, marketplace_integration_id: int) -> int:

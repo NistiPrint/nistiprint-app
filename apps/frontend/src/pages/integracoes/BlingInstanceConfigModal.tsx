@@ -96,6 +96,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
 
   // Estado para campo customizado
   const [customFieldId, setCustomFieldId] = useState<string>('2797770');
+  const [companyId, setCompanyId] = useState<string>('');
 
   // Carregar dados
   useEffect(() => {
@@ -117,6 +118,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
         if (blingData.installation?.config?.id_campo_personalizado) {
           setCustomFieldId(String(blingData.installation.config.id_campo_personalizado));
         }
+        setCompanyId(String(blingData.installation?.config?.company_id || ''));
       }
 
       // Carregar vínculos existentes
@@ -152,6 +154,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
           config: {
             ...(blingInstance?.config || {}),
             id_campo_personalizado: parseInt(customFieldId),
+            company_id: companyId?.trim() || null,
           },
         }),
       });
@@ -258,6 +261,18 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
               />
               <p className="text-sm text-muted-foreground">
                 ID do campo no Bling que indica se um produto é personalizado.
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="companyId">Company ID da Conta Bling</Label>
+              <Input
+                id="companyId"
+                value={companyId}
+                onChange={(e) => setCompanyId(e.target.value)}
+                placeholder="Ex: fa3c40c3e6ec60129f2c1a063872b816"
+              />
+              <p className="text-sm text-muted-foreground">
+                Usado para identificar a conta de origem no webhook (`companyId`).
               </p>
             </div>
           </div>
