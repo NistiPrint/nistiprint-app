@@ -2,6 +2,7 @@ import json
 from flask import request, jsonify, Blueprint, Response, stream_with_context
 from nistiprint_shared.services.installed_integration_service import installed_integration_service
 from nistiprint_shared.services.bling.bling_client_updated import BlingClient
+from nistiprint_shared.database.supabase_db_service import supabase_db
 
 nfe_bp = Blueprint('nfe', __name__)
 
@@ -21,10 +22,44 @@ def generate_nfe():
         except json.JSONDecodeError:
             bling_orders = []
 
-    if not (platform or instance_id) or not bling_orders:
+    if not bling_orders:
         return jsonify({'error': 'Missing platform/instance_id or bling_orders'}), 400
 
     try:
+        def _extract_numero_loja(order_obj):
+            if not isinstance(order_obj, dict):
+                return None
+            return str(order_obj.get('numeroLoja') or '').strip() or None
+
+        numero_loja_list = [
+            numero_loja
+            for numero_loja in (_extract_numero_loja(order) for order in bling_orders)
+            if numero_loja
+        ]
+
+        # Se não vier instance_id explícito, tenta resolver pela origem dos pedidos já persistidos.
+        if not instance_id and numero_loja_list:
+            pedidos_res = (
+                supabase_db.table('pedidos')
+                .select('codigo_pedido_externo, bling_integration_id')
+                .in_('codigo_pedido_externo', numero_loja_list)
+                .execute()
+            )
+            rows = pedidos_res.data or []
+            integration_ids = sorted(
+                {
+                    int(row['bling_integration_id'])
+                    for row in rows
+                    if row.get('bling_integration_id') is not None
+                }
+            )
+            if len(integration_ids) == 1:
+                instance_id = str(integration_ids[0])
+            elif len(integration_ids) > 1:
+                return jsonify({
+                    'error': 'Pedidos pertencem a múltiplas contas Bling. Gere NF por conta separadamente.'
+                }), 400
+
         # 1. Tentar encontrar a instância responsável pela emissão de NF
         bling_instance = None
         
