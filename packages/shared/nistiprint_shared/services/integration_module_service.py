@@ -98,6 +98,7 @@ class IntegrationModuleService:
         module.updated_at = datetime.utcnow()
 
         module_data = module.to_dict()
+        module_data['id'] = module.id
         response = self.table.insert(module_data).execute()
         if response.data:
             return str(response.data[0]['id'])
