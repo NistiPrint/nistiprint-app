@@ -260,6 +260,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
         { id: 'tiktokshop', name: 'TikTok Shop' },
         { id: 'kwai', name: 'Kwai' },
         { id: 'lojaintegrada', name: 'Loja Integrada' },
+        { id: 'magazineluiza', name: 'Magazine Luiza' },
       ];
 
   return (
