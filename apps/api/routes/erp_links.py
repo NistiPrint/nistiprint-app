@@ -81,11 +81,12 @@ def create_erp_link(erp_integration_id):
             return ApiResponse.error(message="Payload é obrigatório", status_code=400)
 
         marketplace_integration_id = data.get('marketplace_integration_id')
+        marketplace_module_id = data.get('marketplace_module_id')
         erp_store_id = data.get('erp_store_id')
         store_name = data.get('store_name')
         config = data.get('config', {})
 
-        if not marketplace_integration_id or not erp_store_id:
+        if not erp_store_id or not (marketplace_integration_id or marketplace_module_id):
             return ApiResponse.error(
                 message="marketplace_integration_id e erp_store_id são obrigatórios",
                 status_code=400
@@ -93,7 +94,8 @@ def create_erp_link(erp_integration_id):
 
         link = erp_marketplace_links_service.create_link(
             erp_integration_id=int(erp_integration_id),
-            marketplace_integration_id=int(marketplace_integration_id),
+            marketplace_integration_id=int(marketplace_integration_id) if marketplace_integration_id else None,
+            marketplace_module_id=marketplace_module_id,
             erp_store_id=str(erp_store_id),
             store_name=store_name,
             config=config
