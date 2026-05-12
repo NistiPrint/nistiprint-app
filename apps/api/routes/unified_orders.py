@@ -110,27 +110,30 @@ def get_unified_orders_advanced():
         if not origem_pedido_key:
             origem_pedido_key = None
 
+        rpc_params = {
+            'p_situacao_pedido_id': status_id,
+            'p_canal_venda_id': canal_venda_id,
+            'p_has_demanda': has_demanda,
+            'p_is_flex': is_flex,
+            'p_is_personalizado': is_personalizado,
+            'p_delivery_start_date': delivery_start,
+            'p_delivery_end_date': delivery_end,
+            'p_pedido_date_start': pedido_date_start,
+            'p_pedido_date_end': pedido_date_end,
+            'p_search_term': search,
+            'p_sort': sort,
+            'p_order': order,
+            'p_limit': limit,
+            'p_offset': offset
+        }
+        if origem_pedido_key:
+            rpc_params['p_origem_pedido_key'] = origem_pedido_key
+
         # Chamar função RPC (usa nome novo para evitar conflito) com retry
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                result = supabase_db.rpc('list_pedidos_filtrados', {
-                    'p_situacao_pedido_id': status_id,
-                    'p_canal_venda_id': canal_venda_id,
-                    'p_origem_pedido_key': origem_pedido_key,
-                    'p_has_demanda': has_demanda,
-                    'p_is_flex': is_flex,
-                    'p_is_personalizado': is_personalizado,
-                    'p_delivery_start_date': delivery_start,
-                    'p_delivery_end_date': delivery_end,
-                    'p_pedido_date_start': pedido_date_start,
-                    'p_pedido_date_end': pedido_date_end,
-                    'p_search_term': search,
-                    'p_sort': sort,
-                    'p_order': order,
-                    'p_limit': limit,
-                    'p_offset': offset
-                }).execute()
+                result = supabase_db.rpc('list_pedidos_filtrados', rpc_params).execute()
                 break
             except Exception as e:
                 if 'ConnectionTerminated' in str(e) and attempt < max_retries - 1:
@@ -191,21 +194,8 @@ def get_unified_orders_advanced():
             print(f"=== RESULT COUNT: {result.count} ===")
 
         # Contar total (sem limit/offset) - também tratar strings vazias
-        count_result = supabase_db.rpc('list_pedidos_filtrados', {
-            'p_situacao_pedido_id': status_id,
-            'p_canal_venda_id': canal_venda_id,
-            'p_origem_pedido_key': origem_pedido_key,
-            'p_has_demanda': has_demanda,
-            'p_is_flex': is_flex,
-            'p_is_personalizado': is_personalizado,
-            'p_delivery_start_date': delivery_start,
-            'p_delivery_end_date': delivery_end,
-            'p_pedido_date_start': pedido_date_start,
-            'p_pedido_date_end': pedido_date_end,
-            'p_search_term': search,
-            'p_limit': 10000,
-            'p_offset': 0
-        }).execute()
+        count_params = {**rpc_params, 'p_limit': 10000, 'p_offset': 0}
+        count_result = supabase_db.rpc('list_pedidos_filtrados', count_params).execute()
         
         total = len(count_result.data) if count_result.data else 0
         
