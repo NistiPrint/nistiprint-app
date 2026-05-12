@@ -20,19 +20,149 @@ import logging
 logger = logging.getLogger("ErpMarketplaceLinksService")
 
 
+MARKETPLACE_MODULES = {
+    "shopee": {"name": "Shopee", "color": "#EE4D2D"},
+    "mercadolivre": {"name": "Mercado Livre", "color": "#FFF159"},
+    "amazon": {"name": "Amazon FBA Classic", "color": "#FF9900"},
+    "amazonfba_classic": {"name": "Amazon FBA Classic", "color": "#FF9900"},
+    "amazon_fulfillment": {"name": "Amazon Fulfillment", "color": "#FF9900"},
+    "shein": {"name": "Shein", "color": "#FF6B6B"},
+    "tiktok": {"name": "TikTok Shop", "color": "#000000"},
+    "tiktokshop": {"name": "TikTok Shop", "color": "#000000"},
+    "kwai": {"name": "Kwai", "color": "#FF0000"},
+    "lojaintegrada": {"name": "Loja Integrada", "color": "#0066CC"},
+}
+
+
 class ErpMarketplaceLinksService:
     """Serviço para gestão de vínculos ERP ↔ Marketplace."""
 
     def __init__(self):
         self.table_name = "erp_marketplace_links"
 
+    def _normalize_module_id(self, module_id: Optional[str]) -> Optional[str]:
+        if not module_id:
+            return None
+
+        normalized = module_id.strip().lower()
+        aliases = {
+            "amazon": "amazonfba_classic",
+            "tiktok": "tiktokshop",
+            "loja_integrada": "lojaintegrada",
+            "loja-integrada": "lojaintegrada",
+            "mercado_livre": "mercadolivre",
+            "mercado-livre": "mercadolivre",
+        }
+        return aliases.get(normalized, normalized)
+
+    def _module_metadata(self, module_id: str) -> Dict[str, str]:
+        module_id = self._normalize_module_id(module_id)
+        default_name = module_id.replace("_", " ").title()
+        return MARKETPLACE_MODULES.get(module_id, {"name": default_name, "color": "#007bff"})
+
+    def _get_marketplace_module_from_integration(self, marketplace_integration_id: Optional[int]) -> Optional[str]:
+        if not marketplace_integration_id:
+            return None
+
+        result = supabase_db.table("installed_integrations") \
+            .select("module_id") \
+            .eq("id", marketplace_integration_id) \
+            .execute()
+
+        if result.data:
+            return self._normalize_module_id(result.data[0].get("module_id"))
+        return None
+
+    def _ensure_sales_channel(self, module_id: str) -> Optional[int]:
+        module_id = self._normalize_module_id(module_id)
+        metadata = self._module_metadata(module_id)
+
+        result = supabase_db.table("canais_venda") \
+            .select("id") \
+            .eq("nome", metadata["name"]) \
+            .execute()
+        if result.data:
+            return result.data[0]["id"]
+
+        created = supabase_db.table("canais_venda").insert({
+            "nome": metadata["name"],
+            "slug": module_id,
+            "descricao": f"Canal criado automaticamente para {metadata['name']}",
+            "ativo": True,
+            "color": metadata["color"],
+            "configuracao": {"marketplace_module_id": module_id},
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }).execute()
+
+        if created.data:
+            return created.data[0]["id"]
+        return None
+
+    def _sync_channel_connection(
+        self,
+        erp_integration_id: int,
+        marketplace_integration_id: Optional[int],
+        marketplace_module_id: str,
+        erp_store_id: str,
+        store_name: Optional[str],
+        config: Optional[Dict[str, Any]] = None
+    ) -> None:
+        channel_id = self._ensure_sales_channel(marketplace_module_id)
+        if not channel_id:
+            logger.warning("Nao foi possivel garantir canal para modulo %s", marketplace_module_id)
+            return
+
+        payload = {
+            "channel_id": channel_id,
+            "integration_id": erp_integration_id,
+            "bling_integration_id": erp_integration_id,
+            "marketplace_integration_id": marketplace_integration_id,
+            "marketplace_module_id": marketplace_module_id,
+            "aggregator_store_id": str(erp_store_id),
+            "aggregator_store_name": store_name or f"{self._module_metadata(marketplace_module_id)['name']} ({erp_store_id})",
+            "config": config or {},
+            "is_active": True,
+            "sync_status": "active",
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        existing = supabase_db.table("channel_connections") \
+            .select("id") \
+            .eq("channel_id", channel_id) \
+            .eq("aggregator_store_id", str(erp_store_id)) \
+            .eq("is_active", True) \
+            .execute()
+
+        if existing.data:
+            supabase_db.table("channel_connections") \
+                .update(payload) \
+                .eq("id", existing.data[0]["id"]) \
+                .execute()
+            return
+
+        supabase_db.table("channel_connections") \
+            .update({
+                "is_active": False,
+                "updated_at": datetime.utcnow().isoformat(),
+            }) \
+            .eq("bling_integration_id", erp_integration_id) \
+            .eq("aggregator_store_id", str(erp_store_id)) \
+            .neq("channel_id", channel_id) \
+            .eq("is_active", True) \
+            .execute()
+
+        payload["created_at"] = datetime.utcnow().isoformat()
+        supabase_db.table("channel_connections").insert(payload).execute()
+
     def create_link(
         self,
         erp_integration_id: int,
-        marketplace_integration_id: int,
+        marketplace_integration_id: Optional[int],
         erp_store_id: str,
         store_name: Optional[str] = None,
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        marketplace_module_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Cria vínculo entre ERP e Marketplace.
@@ -48,9 +178,18 @@ class ErpMarketplaceLinksService:
             Dicionário com dados do vínculo criado ou None se falhar
         """
         try:
+            marketplace_module_id = (
+                self._normalize_module_id(marketplace_module_id)
+                or self._get_marketplace_module_from_integration(marketplace_integration_id)
+            )
+
+            if not marketplace_module_id:
+                raise ValueError("marketplace_module_id e obrigatorio quando nao ha marketplace_integration_id")
+
             data = {
                 "erp_integration_id": erp_integration_id,
                 "marketplace_integration_id": marketplace_integration_id,
+                "marketplace_module_id": marketplace_module_id,
                 "erp_store_id": str(erp_store_id),
                 "store_name": store_name,
                 "config": config or {},
@@ -58,11 +197,21 @@ class ErpMarketplaceLinksService:
                 "updated_at": datetime.utcnow().isoformat()
             }
 
-            result = supabase_db.table(self.table_name).insert(data).execute()
+            result = supabase_db.table(self.table_name) \
+                .upsert(data, on_conflict="erp_integration_id,erp_store_id") \
+                .execute()
 
             if result.data:
                 link = dict(result.data[0])
                 link["id"] = str(link.get("id"))
+                self._sync_channel_connection(
+                    erp_integration_id=erp_integration_id,
+                    marketplace_integration_id=marketplace_integration_id,
+                    marketplace_module_id=marketplace_module_id,
+                    erp_store_id=erp_store_id,
+                    store_name=store_name,
+                    config=config,
+                )
                 logger.info(
                     "Vínculo criado: ERP=%s, Marketplace=%s, Loja=%s",
                     erp_integration_id,
@@ -88,6 +237,11 @@ class ErpMarketplaceLinksService:
             True se removido com sucesso, False caso contrário
         """
         try:
+            current = supabase_db.table(self.table_name) \
+                .select("erp_integration_id, erp_store_id, marketplace_module_id") \
+                .eq("id", link_id) \
+                .execute()
+
             result = supabase_db.table(self.table_name).delete().eq("id", link_id).execute()
 
             if result.data:
@@ -125,6 +279,15 @@ class ErpMarketplaceLinksService:
                 links = []
                 for link in result.data:
                     link["id"] = str(link.get("id"))
+                    if not link.get("marketplace") and link.get("marketplace_module_id"):
+                        metadata = self._module_metadata(link["marketplace_module_id"])
+                        link["marketplace"] = {
+                            "id": None,
+                            "module_id": link["marketplace_module_id"],
+                            "instance_name": metadata["name"],
+                            "is_active": False,
+                            "catalog_only": True,
+                        }
                     links.append(link)
                 return links
 

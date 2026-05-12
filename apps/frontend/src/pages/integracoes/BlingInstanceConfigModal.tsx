@@ -48,12 +48,21 @@ interface MarketplaceInstance {
   module_id: string;
   instance_name: string;
   is_active: boolean;
+  catalog_only?: boolean;
+}
+
+interface MarketplaceModule {
+  id: string;
+  name: string;
+  category?: string;
+  tipo?: string;
 }
 
 interface ErpLink {
   id: string;
   erp_integration_id: number;
-  marketplace_integration_id: number;
+  marketplace_integration_id: number | null;
+  marketplace_module_id?: string;
   erp_store_id: string;
   store_name: string;
   marketplace?: MarketplaceInstance;
@@ -84,11 +93,12 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
   const [blingInstance, setBlingInstance] = useState<BlingInstance | null>(null);
   const [links, setLinks] = useState<ErpLink[]>([]);
   const [marketplaceInstances, setMarketplaceInstances] = useState<MarketplaceInstance[]>([]);
+  const [marketplaceModules, setMarketplaceModules] = useState<MarketplaceModule[]>([]);
   
   // Estado para formulário de novo vínculo (inline)
   const [showAddForm, setShowAddForm] = useState(false);
   const [newLink, setNewLink] = useState({
-    marketplace_integration_id: '',
+    marketplace_integration_id: 'none',
     marketplace_module_id: 'shopee',
     erp_store_id: '',
     store_name: '',
@@ -134,6 +144,15 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
         const marketplaceData = await marketplaceRes.json();
         setMarketplaceInstances(marketplaceData.data || []);
       }
+
+      const modulesRes = await fetch('/api/v2/marketplace/modules');
+      if (modulesRes.ok) {
+        const modulesData = await modulesRes.json();
+        const modules = (modulesData.modules || []).filter((mod: MarketplaceModule) =>
+          mod.tipo === 'MARKETPLACE' || mod.category === 'Marketplace'
+        );
+        setMarketplaceModules(modules);
+      }
     } catch (error) {
       console.error('Erro ao carregar dados:', error);
       toast.error('Erro ao carregar dados');
@@ -176,7 +195,10 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          marketplace_integration_id: parseInt(newLink.marketplace_integration_id),
+          marketplace_module_id: newLink.marketplace_module_id,
+          ...(newLink.marketplace_integration_id !== 'none'
+            ? { marketplace_integration_id: parseInt(newLink.marketplace_integration_id) }
+            : {}),
           erp_store_id: newLink.erp_store_id,
           store_name: newLink.store_name || undefined,
         }),
@@ -186,7 +208,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
         toast.success('Vínculo adicionado com sucesso!');
         setShowAddForm(false);
         setNewLink({
-          marketplace_integration_id: '',
+          marketplace_integration_id: 'none',
           marketplace_module_id: 'shopee',
           erp_store_id: '',
           store_name: '',
@@ -226,6 +248,19 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
   const filteredMarketplaces = marketplaceInstances.filter(
     (m) => m.module_id === newLink.marketplace_module_id
   );
+
+  const marketplaceModuleOptions = marketplaceModules.length > 0
+    ? marketplaceModules
+    : [
+        { id: 'shopee', name: 'Shopee' },
+        { id: 'amazonfba_classic', name: 'Amazon FBA Classic' },
+        { id: 'amazon_fulfillment', name: 'Amazon Fulfillment' },
+        { id: 'mercadolivre', name: 'Mercado Livre' },
+        { id: 'shein', name: 'Shein' },
+        { id: 'tiktokshop', name: 'TikTok Shop' },
+        { id: 'kwai', name: 'Kwai' },
+        { id: 'lojaintegrada', name: 'Loja Integrada' },
+      ];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -300,7 +335,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
                     onClick={() => {
                       setShowAddForm(false);
                       setNewLink({
-                        marketplace_integration_id: '',
+                        marketplace_integration_id: 'none',
                         marketplace_module_id: 'shopee',
                         erp_store_id: '',
                         store_name: '',
@@ -317,17 +352,18 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
                     <Select
                       value={newLink.marketplace_module_id}
                       onValueChange={(value) =>
-                        setNewLink({ ...newLink, marketplace_module_id: value })
+                        setNewLink({ ...newLink, marketplace_module_id: value, marketplace_integration_id: 'none' })
                       }
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="Selecione" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="shopee">Shopee</SelectItem>
-                        <SelectItem value="amazon">Amazon</SelectItem>
-                        <SelectItem value="mercadolivre">Mercado Livre</SelectItem>
-                        <SelectItem value="shein">Shein</SelectItem>
+                        {marketplaceModuleOptions.map((mod) => (
+                          <SelectItem key={mod.id} value={mod.id}>
+                            {mod.name}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -344,6 +380,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
                         <SelectValue placeholder="Selecione" />
                       </SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="none">Nenhuma instancia instalada</SelectItem>
                         {filteredMarketplaces.map((m) => (
                           <SelectItem key={m.id} value={String(m.id)}>
                             {m.instance_name}
@@ -404,10 +441,15 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
                     <TableRow key={link.id}>
                       <TableCell>
                         <Badge variant="outline">
-                          {link.marketplace?.module_id || 'N/A'}
+                          {link.marketplace?.module_id || link.marketplace_module_id || 'N/A'}
                         </Badge>
                       </TableCell>
-                      <TableCell>{link.marketplace?.instance_name || 'N/A'}</TableCell>
+                      <TableCell>
+                        {link.marketplace?.instance_name || 'Catalogo'}
+                        {link.marketplace?.catalog_only && (
+                          <Badge variant="secondary" className="ml-2">sem instalacao</Badge>
+                        )}
+                      </TableCell>
                       <TableCell className="font-mono">{link.erp_store_id}</TableCell>
                       <TableCell>{link.store_name || '-'}</TableCell>
                       <TableCell>
