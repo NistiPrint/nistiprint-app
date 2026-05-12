@@ -31,6 +31,7 @@ MARKETPLACE_MODULES = {
     "tiktokshop": {"name": "TikTok Shop", "color": "#000000"},
     "kwai": {"name": "Kwai", "color": "#FF0000"},
     "lojaintegrada": {"name": "Loja Integrada", "color": "#0066CC"},
+    "magazineluiza": {"name": "Magazine Luiza", "color": "#0086FF"},
 }
 
 
@@ -52,6 +53,9 @@ class ErpMarketplaceLinksService:
             "loja-integrada": "lojaintegrada",
             "mercado_livre": "mercadolivre",
             "mercado-livre": "mercadolivre",
+            "magalu": "magazineluiza",
+            "magazine_luiza": "magazineluiza",
+            "magazine-luiza": "magazineluiza",
         }
         return aliases.get(normalized, normalized)
 

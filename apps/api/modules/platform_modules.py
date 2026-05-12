@@ -477,6 +477,42 @@ def get_loja_integrada_module_definition():
         }
     )
 
+def get_magazine_luiza_module_definition():
+    """Get the module definition for Magazine Luiza integration"""
+    return IntegrationModule(
+        id="magazineluiza",
+        name="Magazine Luiza",
+        description="Integracao com Magazine Luiza para vinculacao de lojas Bling, pedidos e canais de venda.",
+        version="1.0.0",
+        author="NistiPrint Team",
+        icon_url="https://app.nistiprint.com.br/assets/img/magazineluiza.svg",
+        category="Marketplace",
+        tags=["magazineluiza", "magalu", "e-commerce", "orders", "inventory"],
+        tipo="MARKETPLACE",
+        auth_flow="api_key",
+        config_schema={
+            "title": "Configuracao Magazine Luiza",
+            "type": "object",
+            "required": ["api_key"],
+            "properties": {
+                "api_key": {
+                    "type": "string",
+                    "title": "Chave da API",
+                    "description": "Chave de API ou token de acesso do Magazine Luiza"
+                },
+                "seller_id": {
+                    "type": "string",
+                    "title": "Seller ID",
+                    "description": "Identificador da conta/seller no Magazine Luiza"
+                }
+            }
+        },
+        auth_config={},
+        data_mapping_spec={
+            "test_endpoint": "/orders"
+        }
+    )
+
 def get_bling_module_definition():
     """Get the module definition for Bling V3 integration"""
     return IntegrationModule(
@@ -554,7 +590,8 @@ def get_all_platform_modules():
         get_shein_module_definition(),
         get_tiktok_shop_module_definition(),
         get_kwai_module_definition(),
-        get_loja_integrada_module_definition()
+        get_loja_integrada_module_definition(),
+        get_magazine_luiza_module_definition()
     ]
 
 

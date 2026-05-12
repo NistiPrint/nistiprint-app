@@ -34,6 +34,7 @@ class IntegracaoCanalService:
         'tiktokshop',
         'kwai',
         'lojaintegrada',
+        'magazineluiza',
     }
 
     def __init__(self):
@@ -377,6 +378,8 @@ class IntegracaoCanalService:
             return 'kwai'
         elif 'loja integrada' in store_name_lower or 'lojaintegrada' in store_name_lower:
             return 'lojaintegrada'
+        elif 'magazine luiza' in store_name_lower or 'magazineluiza' in store_name_lower or 'magalu' in store_name_lower:
+            return 'magazineluiza'
         else:
             return None
 
