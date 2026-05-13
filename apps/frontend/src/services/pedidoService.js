@@ -120,6 +120,14 @@ export function formatarPedido(pedido) {
       cor: pedido.status?.cor || '#f59e0b',
       descricao: pedido.status?.descricao || ''
     },
+    logistica: {
+      ...pedido.logistica,
+      canal_venda: {
+        ...pedido.logistica?.canal_venda,
+        cor: pedido.logistica?.canal_venda?.cor || '#007bff',
+        nome: pedido.logistica?.canal_venda?.nome || 'Canal Desconhecido'
+      }
+    },
     totalFormatado: new Intl.NumberFormat('pt-BR', {
       style: 'currency',
       currency: pedido.financeiro?.moeda || 'BRL'

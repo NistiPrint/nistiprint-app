@@ -315,7 +315,7 @@ def get_pedido_detalhe(pedido_id):
                 'id': marketplace_info['id'],
                 'nome': marketplace_info['instance_name'],
                 'slug': marketplace_info['slug'],
-                'cor': marketplace_info['color'],
+                'cor': marketplace_info.get('color') or '#007bff',
                 'origem': 'marketplace',
             }
         else:
