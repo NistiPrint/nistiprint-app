@@ -89,8 +89,15 @@ def criar_vinculo():
                 }), 400
         
         # Verificar se já existe vínculo
-        existing = integracao_canal_service.get_canal_by_bling_loja_id(data['bling_loja_id'])
-        if existing and existing['canal_venda_id'] == data['canal_venda_id']:
+        if data.get('bling_integration_id'):
+            existing = integracao_canal_service.resolver_por_bling_integration_e_loja(
+                data['bling_integration_id'],
+                data['bling_loja_id'],
+            )
+        else:
+            existing = integracao_canal_service.get_canal_by_bling_loja_id(data['bling_loja_id'])
+        existing_channel_id = existing.get('canal_venda_id') or existing.get('channel_id') if existing else None
+        if existing and existing_channel_id == data['canal_venda_id']:
             return jsonify({
                 'success': False,
                 'error': 'Já existe um vínculo para este canal e loja Bling'
@@ -104,6 +111,7 @@ def criar_vinculo():
             bling_integration_id=data.get('bling_integration_id'),
             marketplace_integration_id=data.get('marketplace_integration_id'),
             is_primary=data.get('is_primary', False),
+            process_webhooks=data.get('process_webhooks', True),
             config_json=data.get('config_json', {})
         )
         
@@ -158,7 +166,7 @@ def atualizar_vinculo(config_id):
         # Campos permitidos para atualização
         allowed_fields = ['canal_venda_id', 'bling_loja_id', 'plataforma_nome',
                          'integration_id', 'bling_integration_id', 'marketplace_integration_id',
-                         'is_primary', 'is_active', 'config_json']
+                         'is_primary', 'is_active', 'process_webhooks', 'config_json']
         updates = {k: v for k, v in data.items() if k in allowed_fields}
         
         config = integracao_canal_service.atualizar_vinculo(config_id, updates)
@@ -328,6 +336,7 @@ def listar_plataformas():
                 'bling_loja_id': config['bling_loja_id'],
                 'is_primary': config.get('is_primary', False),
                 'is_active': config.get('is_active', True),
+                'process_webhooks': config.get('process_webhooks', True),
                 'integration_instance': config.get('integration_instance_name'),
                 # Novos campos para bling_integration e marketplace_integration
                 'bling_integration_id': config.get('bling_integration_id'),

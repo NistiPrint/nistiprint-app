@@ -133,6 +133,23 @@ def _extract_bling_loja_id(payload: dict | None):
     return None
 
 
+def _get_webhook_processing_link(bling_integration_id: int | None, loja_id: str | None) -> dict | None:
+    if not bling_integration_id or not loja_id:
+        return None
+
+    rows = (
+        supabase_db.table('channel_connections')
+        .select('id,process_webhooks,marketplace_integration_id,channel_id')
+        .eq('bling_integration_id', bling_integration_id)
+        .eq('aggregator_store_id', str(loja_id))
+        .eq('is_active', True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
 def _preserve_original_bling_fields(detail_payload: dict, original_payload: dict) -> dict:
     """
     O detalhe do Bling e o webhook/listagem podem ter formatos diferentes.
@@ -332,6 +349,55 @@ def process_webhook(
             )
             logger.info("[ingest] bling_instance resolved id=%s cnpj=%s",
                         bling_inst['id'], bling_inst['config'].get('cnpj'))
+
+        original_loja_id = str(_extract_bling_loja_id(original_payload) or '')
+        if original_loja_id:
+            with ingest_step('check_webhook_processing', ingest_ctx):
+                processing_link = _get_webhook_processing_link(bling_inst['id'], original_loja_id)
+                if processing_link and processing_link.get('process_webhooks') is False:
+                    ingest_ctx['status'] = 'skipped'
+                    message = (
+                        f"webhook ignorado: vinculo {processing_link.get('id')} "
+                        f"configurado com process_webhooks=false "
+                        f"(bling_integration_id={bling_inst['id']}, loja_id={original_loja_id})"
+                    )
+                    _set_stage_details(
+                        ingest_ctx,
+                        message,
+                        {
+                            'channel_connection_id': processing_link.get('id'),
+                            'bling_integration_id': bling_inst['id'],
+                            'loja_id': original_loja_id,
+                            'numero_loja': original_payload.get('numeroLoja'),
+                            'process_webhooks': False,
+                        },
+                    )
+                    _write_ingest_log(
+                        correlation_id=correlation_id,
+                        stage='webhook_ignored',
+                        status='skipped',
+                        message=message,
+                        duration_ms=int((perf_counter() - pipeline_started) * 1000),
+                        payload_summary=ingest_ctx.get('payload_summary'),
+                        bling_integration_id=bling_inst['id'],
+                        numero_loja=original_payload.get('numeroLoja'),
+                        pedido_id=None,
+                    )
+                    _update_webhook_event(
+                        webhook_event_id,
+                        bling_id=ingest_ctx.get('payload_summary', {}).get('bling_id'),
+                        numero_loja=original_payload.get('numeroLoja'),
+                        last_status='skipped',
+                        last_attempt_at=get_now_iso(),
+                    )
+                    logger.info("[ingest] %s", message)
+                    return {
+                        'status': 'skipped',
+                        'message': message,
+                        'correlation_id': correlation_id,
+                        'bling_integration_id': bling_inst['id'],
+                        'numero_loja': original_payload.get('numeroLoja'),
+                    }
 
         # 2. Buscar detalhe completo do pedido na API do Bling
         # O webhook é apenas um aviso de alteração, precisamos dos dados atualizados

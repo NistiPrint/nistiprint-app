@@ -55,6 +55,60 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
             with self.assertRaises(bos.BlingDetailUnavailableError):
                 bos.process_webhook(payload)
 
+    def test_process_webhook_skips_when_link_disables_webhooks(self):
+        payload = {
+            'id': 999,
+            'numero': '1',
+            'numeroLoja': 'ABC',
+            'loja': {'id': 204047801},
+        }
+
+        with patch.object(bos, '_resolve_bling_instance', return_value={'id': 12, 'config': {}}), \
+             patch.object(bos, '_get_webhook_processing_link', return_value={'id': 'link-1', 'process_webhooks': False}), \
+             patch.object(bos, '_fetch_bling_order_detail') as fetch_detail, \
+             patch.object(bos, '_upsert_pedido_bling') as upsert_bling, \
+             patch.object(bos, '_upsert_pedido_master') as upsert_master, \
+             patch.object(bos.demanda_producao_service, 'create_from_order') as create_demanda, \
+             patch.object(bos, '_write_ingest_log') as write_log, \
+             patch.object(bos, '_update_webhook_event') as update_event:
+            result = bos.process_webhook(payload, company_id='company-1', webhook_event_id=123)
+
+        self.assertEqual(result['status'], 'skipped')
+        self.assertEqual(result['bling_integration_id'], 12)
+        self.assertEqual(result['numero_loja'], 'ABC')
+        fetch_detail.assert_not_called()
+        upsert_bling.assert_not_called()
+        upsert_master.assert_not_called()
+        create_demanda.assert_not_called()
+        self.assertTrue(any(call.kwargs.get('stage') == 'webhook_ignored' for call in write_log.call_args_list))
+        self.assertTrue(any(call.kwargs.get('last_status') == 'skipped' for call in update_event.call_args_list))
+
+    def test_process_webhook_continues_when_link_allows_webhooks(self):
+        payload = {
+            'id': 999,
+            'numero': '1',
+            'numeroLoja': 'ABC',
+            'loja': {'id': 204047801},
+        }
+
+        with patch.object(bos, '_resolve_bling_instance', return_value={'id': 12, 'config': {}}), \
+             patch.object(bos, '_get_webhook_processing_link', return_value={'id': 'link-1', 'process_webhooks': True}), \
+             patch.object(bos, '_fetch_bling_order_detail', side_effect=bos.BlingDetailUnavailableError('detalhe ausente')) as fetch_detail, \
+             patch.object(bos, '_upsert_pedido_bling', return_value=19861), \
+             patch.object(bos, '_resolve_marketplace_instance', return_value=None), \
+             patch.object(bos, '_resolve_canal_venda_id', return_value=31), \
+             patch.object(bos, '_upsert_pedido_master', return_value=16741), \
+             patch.object(bos, '_detect_and_mark_personalized'), \
+             patch.object(bos, '_log_ingest'), \
+             patch.object(bos.demanda_producao_service, 'create_from_order'), \
+             patch.object(bos, '_write_ingest_log'), \
+             patch.object(bos, '_update_webhook_event'):
+            result = bos.process_webhook(payload)
+
+        fetch_detail.assert_called_once_with({'id': 12, 'config': {}}, 999)
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['error_type'], 'bling_detail_unavailable')
+
     def test_resolve_shipping_carrier_uses_fresh_shopee_data(self):
         shopee_data = {
             'shipping_carrier': 'Entrega Rapida Shopee',
@@ -255,6 +309,7 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         }
 
         with patch.object(bos, '_resolve_bling_instance', return_value={'id': 1, 'config': {}}), \
+             patch.object(bos, '_get_webhook_processing_link', return_value=None), \
              patch.object(bos, '_fetch_bling_order_detail', side_effect=bos.BlingDetailUnavailableError('offline')), \
              patch.object(bos, '_upsert_pedido_bling', return_value=19861), \
              patch.object(bos, '_resolve_marketplace_instance', return_value=None), \

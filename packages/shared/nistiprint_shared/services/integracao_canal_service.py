@@ -132,6 +132,8 @@ class IntegracaoCanalService:
                 enriched['marketplace_integration_id'] = link.get('marketplace_integration_id')
                 enriched['erp_marketplace_link_id'] = link.get('id')
                 enriched['erp_marketplace_config'] = link.get('config') or {}
+                if 'process_webhooks' not in enriched or enriched.get('process_webhooks') is None:
+                    enriched['process_webhooks'] = link.get('process_webhooks', True)
                 if not enriched.get('bling_integration_id'):
                     enriched['bling_integration_id'] = link.get('erp_integration_id')
                 break
@@ -216,6 +218,7 @@ class IntegracaoCanalService:
                 'erp_store_id': str(store_id),
                 'store_name': row.get('aggregator_store_name') or str(store_id),
                 'config': row.get('config') or row.get('config_json') or {},
+                'process_webhooks': row.get('process_webhooks', True) is not False,
                 'updated_at': datetime.utcnow().isoformat()
             }, on_conflict='erp_integration_id,erp_store_id').execute()
         except Exception as link_error:
@@ -246,6 +249,7 @@ class IntegracaoCanalService:
                 aggregator_store_id,
                 aggregator_store_name,
                 config,
+                process_webhooks,
                 sync_status,
                 is_active,
                 canais_venda!inner (
@@ -272,6 +276,7 @@ class IntegracaoCanalService:
                     'aggregator_store_name': config.get('aggregator_store_name'),
                     'plataforma_nome': self._extract_platform_from_store_name(config.get('aggregator_store_name')),
                     'is_primary': str(config.get('sync_status')).lower() in ('true', 'primary'),
+                    'process_webhooks': config.get('process_webhooks', True) is not False,
                     'canal_nome': canal.get('nome') if canal else None,
                     'canal_slug': canal.get('slug') if canal else None,
                     'canal_ativo': canal.get('ativo', True) if canal else False,
@@ -319,6 +324,7 @@ class IntegracaoCanalService:
                     'aggregator_store_name': None,
                     'plataforma_nome': config.get('plataforma_nome'),
                     'is_primary': config.get('is_primary', False),
+                    'process_webhooks': True,
                     'canal_nome': canal.get('nome') if canal else None,
                     'canal_slug': canal.get('slug') if canal else None,
                     'canal_ativo': canal.get('ativo', True) if canal else False,
@@ -344,6 +350,7 @@ class IntegracaoCanalService:
                     'aggregator_store_name': None,
                     'plataforma_nome': None,
                     'is_primary': True,
+                    'process_webhooks': True,
                     'canal_nome': canal.get('nome'),
                     'canal_slug': canal.get('slug'),
                     'canal_ativo': True,
@@ -463,7 +470,7 @@ class IntegracaoCanalService:
         try:
             # 1. Buscar em channel_connections (nova tabela)
             result = supabase_db.table(self.table_name).select(
-                "id, channel_id, integration_id, bling_integration_id, marketplace_integration_id, aggregator_store_id, aggregator_store_name, config"
+                "id, channel_id, integration_id, bling_integration_id, marketplace_integration_id, aggregator_store_id, aggregator_store_name, config, process_webhooks"
             ).eq('channel_id', canal_venda_id).eq('is_active', True).order('created_at', desc=True).execute()
 
             if result.data:
@@ -522,6 +529,7 @@ class IntegracaoCanalService:
                     'marketplace_integration_id': row.get('marketplace_integration_id'),
                     'aggregator_store_id': row.get('aggregator_store_id'),
                     'plataforma_nome': plataforma_nome,
+                    'process_webhooks': row.get('process_webhooks', True) is not False,
                     'module_id': integration.get('module_id'),
                     'instance_name': integration.get('instance_name'),
                     'is_active': integration.get('is_active', True),
@@ -580,6 +588,7 @@ class IntegracaoCanalService:
                     'marketplace_integration_id': row.get('marketplace_integration_id'),
                     'aggregator_store_id': str(row.get('bling_loja_id')) if row.get('bling_loja_id') else None,
                     'plataforma_nome': row.get('plataforma_nome'),
+                    'process_webhooks': True,
                     'module_id': integration.get('module_id'),
                     'instance_name': integration.get('instance_name'),
                     'is_active': integration.get('is_active', True),
@@ -610,6 +619,7 @@ class IntegracaoCanalService:
                         'marketplace_integration_id': None,
                         'aggregator_store_id': None,
                         'plataforma_nome': integration.get('module_id'),
+                        'process_webhooks': True,
                         'module_id': integration.get('module_id'),
                         'instance_name': integration.get('instance_name'),
                         'is_active': integration.get('is_active', True),
@@ -716,6 +726,7 @@ class IntegracaoCanalService:
                     'plataforma_nome': plataforma_nome or self._extract_platform_from_store_name(row.get('aggregator_store_name')),
                     'is_active': row.get('is_active', True),
                     'is_primary': str(row.get('sync_status')).lower() in ('true', 'primary'),
+                    'process_webhooks': row.get('process_webhooks', True) is not False,
                     'config_json': row.get('config', {}),
                     'created_at': row.get('created_at'),
                     'updated_at': row.get('updated_at'),
@@ -740,7 +751,8 @@ class IntegracaoCanalService:
                      plataforma_nome: str, integration_id: Optional[int] = None,
                      bling_integration_id: Optional[int] = None,
                      marketplace_integration_id: Optional[int] = None,
-                     is_primary: bool = False, config_json: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
+                     is_primary: bool = False, config_json: Optional[Dict] = None,
+                     process_webhooks: bool = True) -> Optional[Dict[str, Any]]:
         """
         Cria novo vínculo entre canal e loja Bling.
 
@@ -752,8 +764,10 @@ class IntegracaoCanalService:
             existing = supabase_db.table(self.table_name).select('id') \
                 .eq('channel_id', canal_venda_id) \
                 .eq('aggregator_store_id', str(bling_loja_id)) \
-                .eq('is_active', True) \
-                .execute()
+                .eq('is_active', True)
+            if bling_integration_id:
+                existing = existing.eq('bling_integration_id', bling_integration_id)
+            existing = existing.execute()
             if existing.data:
                 logger.warning(f"Vínculo já existe para canal {canal_venda_id} e loja {bling_loja_id}")
                 return None
@@ -777,6 +791,7 @@ class IntegracaoCanalService:
                 'aggregator_store_id': str(bling_loja_id),
                 'aggregator_store_name': f"{plataforma_nome} ({bling_loja_id})",
                 'is_active': True,
+                'process_webhooks': process_webhooks is not False,
                 'sync_status': 'primary' if is_primary else 'active',
                 'config': config_json or {}
             }
@@ -836,6 +851,8 @@ class IntegracaoCanalService:
                 updates['aggregator_store_name'] = f"{plataforma_nome} ({store_id})" if store_id else plataforma_nome
             if 'is_primary' in updates:
                 updates['sync_status'] = 'primary' if updates.pop('is_primary') else 'active'
+            if 'process_webhooks' in updates:
+                updates['process_webhooks'] = updates['process_webhooks'] is not False
 
             if 'integration_id' not in updates:
                 if updates.get('bling_integration_id') is not None:
@@ -908,6 +925,7 @@ class IntegracaoCanalService:
                 'bling_integration_id': config.get('bling_integration_id'),
                 'marketplace_integration_id': config.get('marketplace_integration_id'),
                 'plataforma': config.get('plataforma_nome'),
+                'process_webhooks': config.get('process_webhooks', True) is not False,
                 'resolved_from': config.get('resolved_from') or config.get('fallback') or 'channel_connections',
                 'is_primary': config.get('is_primary', False)
             }
@@ -924,6 +942,7 @@ class IntegracaoCanalService:
                     'bling_integration_id': primary.get('bling_integration_id'),
                     'marketplace_integration_id': primary.get('marketplace_integration_id'),
                     'plataforma': primary.get('plataforma_nome'),
+                    'process_webhooks': primary.get('process_webhooks', True) is not False,
                     'resolved_from': 'plataforma_fallback',
                     'is_primary': primary.get('is_primary', False)
                 }
@@ -1009,6 +1028,7 @@ class IntegracaoCanalService:
                 'plataforma': vinculo.get('plataforma_nome'),
                 'bling_integration_id': bling_int_id,
                 'marketplace_integration_id': mp_int_id,
+                'process_webhooks': vinculo.get('process_webhooks', True) is not False,
             }
 
             if bling_orfao or mp_orfao:
