@@ -193,11 +193,16 @@ def _serialize_queue_item(data: dict) -> str:
 def _extract_order_context(data: dict):
     order_data = data.get('data') if data.get('data') and isinstance(data.get('data'), dict) else data
     company_id = data.get('companyId') if data.get('companyId') else None
+    bling_integration_hint = (
+        data.get('bling_integration_id')
+        or data.get('blingIntegrationId')
+        or order_data.get('bling_integration_id')
+    )
     webhook_event_id = data.get('webhook_event_id')
     bling_id = order_data.get('id')
     numero = order_data.get('numero')
     numero_loja = order_data.get('numeroLoja')
-    return order_data, company_id, webhook_event_id, bling_id, numero, numero_loja
+    return order_data, company_id, bling_integration_hint, webhook_event_id, bling_id, numero, numero_loja
 
 
 def _insert_webhook_event(
@@ -360,7 +365,7 @@ def consumir_fila_bling(correlation_id=None):
                     continue
                 
                 # Extract order data - Bling webhooks nest the actual order in a 'data' field
-                order_data, company_id, webhook_event_id, bling_id, numero, numero_loja = _extract_order_context(data)
+                order_data, company_id, bling_integration_hint, webhook_event_id, bling_id, numero, numero_loja = _extract_order_context(data)
                 
                 # Check for minimum required fields to avoid CNPJ errors
                 if not bling_id and not numero and not numero_loja:
@@ -390,10 +395,11 @@ def consumir_fila_bling(correlation_id=None):
                         last_attempt_at=get_now_iso(),
                     )
 
-                logger.info(f"Iniciando processamento do webhook Bling no worker... (bling_id={bling_id}, numero={numero}, numeroLoja={numero_loja}, companyId={company_id}, webhook_event_id={webhook_event_id})")
+                logger.info(f"Iniciando processamento do webhook Bling no worker... (bling_id={bling_id}, numero={numero}, numeroLoja={numero_loja}, companyId={company_id}, blingIntegrationId={bling_integration_hint}, webhook_event_id={webhook_event_id})")
                 try:
                     result = process_webhook(
                         order_data,
+                        bling_integration_hint=bling_integration_hint,
                         company_id=company_id,
                         correlation_id=webhook_correlation_id,
                         webhook_event_id=webhook_event_id,

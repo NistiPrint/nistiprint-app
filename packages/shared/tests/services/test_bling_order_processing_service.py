@@ -283,6 +283,20 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         self.assertEqual(update_data['loja_id'], 204047801)
         update_table.update.return_value.eq.assert_called_once_with('id', 19860)
 
+    def test_find_existing_pedido_bling_does_not_fallback_to_global_numero(self):
+        table = MagicMock()
+        table.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        table.select.return_value.is_.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+
+        with patch.object(bos.supabase_db, 'table', return_value=table):
+            existing = bos._find_existing_pedido_bling_for_update(
+                bling_id=19860,
+                bling_integration_id=22,
+            )
+
+        self.assertIsNone(existing)
+        self.assertEqual(table.select.call_count, 2)
+
     def test_resolve_canal_venda_id_uses_store_link_without_marketplace_installation(self):
         table = MagicMock()
         table.select.return_value.eq.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
@@ -341,13 +355,26 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         with patch.object(import_service, '_get_redis_client', return_value=redis_client):
             result = import_service._enqueue_bling_order_to_redis(
                 full_order,
-                {'bling_company_id': 'company-1'},
+                {'bling_company_id': 'company-1', 'bling_integration_id': 22},
             )
 
         self.assertTrue(result['success'])
         queued_payload = json.loads(redis_client.rpush.call_args.args[1])
         self.assertEqual(queued_payload['data']['loja']['id'], 204047801)
         self.assertEqual(queued_payload['data']['contato']['nome'], 'Cliente')
+        self.assertEqual(queued_payload['companyId'], 'company-1')
+        self.assertEqual(queued_payload['bling_integration_id'], 22)
+
+    def test_resolve_situacao_interna_handles_none_response(self):
+        table = MagicMock()
+        table.select.return_value.eq.return_value.eq.return_value.maybe_single.return_value.execute.return_value = None
+
+        with patch.object(bos.supabase_db, 'table', return_value=table), \
+             patch.object(bos.logger, 'warning') as warning:
+            situacao_id = bos._resolve_situacao_interna(bling_integration_id=22, bling_situacao_id=999)
+
+        self.assertIsNone(situacao_id)
+        warning.assert_called()
 
     def test_upsert_pedido_master_does_not_overwrite_cliente_with_empty_json(self):
         payload = {
@@ -384,6 +411,42 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         self.assertEqual(pedido_id, 321)
         insert_data = table.insert.call_args.args[0]
         self.assertNotIn('informacoes_cliente', insert_data)
+
+    def test_upsert_pedido_master_scopes_direct_bling_external_code_by_integration(self):
+        payload = {
+            'id': 19860,
+            'numero': '457317',
+            'total': 10,
+            'data': '2026-05-02',
+            'situacao': {'id': 15},
+            'contato': {'nome': 'Cliente'},
+            'itens': [],
+        }
+
+        table = MagicMock()
+        table.insert.return_value.execute.return_value.data = [{'id': 321}]
+
+        with patch.object(bos, '_find_existing_pedido_master_for_update', return_value=None), \
+             patch.object(bos.supabase_db, 'table', return_value=table), \
+             patch.object(bos, '_resolve_situacao_interna', return_value=None), \
+             patch.object(bos, '_upsert_itens_pedido'), \
+             patch.object(bos.logger, 'info'):
+            pedido_id = bos._upsert_pedido_master(
+                payload,
+                pedido_bling_id=11,
+                pedido_shopee_id=None,
+                bling_integration_id=22,
+                marketplace_integration_id=None,
+                canal_venda_id=None,
+                is_flex=False,
+                modalidade=None,
+                shopee_data=None,
+            )
+
+        self.assertEqual(pedido_id, 321)
+        insert_data = table.insert.call_args.args[0]
+        self.assertEqual(insert_data['codigo_pedido_externo'], 'BLING-22-19860')
+        self.assertNotIn('situacao_pedido_id', insert_data)
 
     def test_upsert_pedido_master_uses_shopee_ship_by_date_for_deadline(self):
         payload = {

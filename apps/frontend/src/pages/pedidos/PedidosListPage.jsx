@@ -35,7 +35,8 @@ function PedidosListPage() {
   // Estados de filtro
   const [filtros, setFiltros] = useState({
     search: '',
-    status_id: null,
+    status_id: 2,
+    bling_integration_id: null,
     canal_venda_id: null,
     origem_pedido_key: null,
     has_demanda: null, // true, false, null
@@ -153,6 +154,8 @@ function PedidosListPage() {
           marketplace_slug: order.marketplace_slug,
           marketplace_color: order.marketplace_color,
           marketplace_integration_id: order.marketplace_integration_id,
+          bling_integration_id: order.bling_integration_id,
+          bling_integration_name: order.bling_integration_nome || order.bling_integration?.nome,
           canal_venda_id: order.canal_venda_id,
           situacao_pedido_id: order.situacao_pedido_id || order.situacaoPedidoId,
           total_pedido: order.total_pedido || order.totalPedido || order.total,
@@ -214,7 +217,8 @@ function PedidosListPage() {
   const handleLimparFiltros = () => {
     setFiltros({
       search: '',
-      status_id: null,
+      status_id: 2,
+      bling_integration_id: null,
       canal_venda_id: null,
       origem_pedido_key: null,
       has_demanda: null,

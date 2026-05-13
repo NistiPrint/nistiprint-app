@@ -40,6 +40,7 @@ def get_unified_orders_advanced():
 
     Query params:
     - status_id: Filtrar por status do pedido
+    - bling_integration_id: Filtrar por conta Bling/ERP instalada
     - canal_venda_id: Filtrar por canal de venda
     - origem_pedido_key: Filtrar por origem estavel (canal:<id>, marketplace:<id>, bling_loja:<loja_id>)
     - has_demanda: true/false (pedidos com/sem demanda)
@@ -57,6 +58,7 @@ def get_unified_orders_advanced():
     try:
         # Parâmetros de filtro
         status_id = request.args.get('status_id', type=int)
+        bling_integration_id = request.args.get('bling_integration_id', type=int)
         canal_venda_id = request.args.get('canal_venda_id', type=int)
         origem_pedido_key = request.args.get('origem_pedido_key')
         has_demanda = request.args.get('has_demanda')
@@ -113,6 +115,7 @@ def get_unified_orders_advanced():
         rpc_params = {
             'p_situacao_pedido_id': status_id,
             'p_canal_venda_id': canal_venda_id,
+            'p_bling_integration_id': bling_integration_id,
             'p_has_demanda': has_demanda,
             'p_is_flex': is_flex,
             'p_is_personalizado': is_personalizado,
@@ -171,6 +174,11 @@ def get_unified_orders_advanced():
                 pedido['canal_venda'] = {
                     'id': pedido.get('canal_venda_id'),
                     'nome': pedido.get('canal_venda_nome')
+                }
+
+                pedido['bling_integration'] = {
+                    'id': pedido.get('bling_integration_id'),
+                    'nome': pedido.get('bling_integration_nome')
                 }
                 
                 # Garantir que is_flex e data_limite_envio estejam presentes
