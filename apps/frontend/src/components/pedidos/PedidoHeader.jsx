@@ -73,12 +73,12 @@ export default function PedidoHeader({
             </h1>
             <Badge
               style={{
-                backgroundColor: pedido.status.cor,
+                backgroundColor: pedido.statusFormatado?.cor || '#f59e0b',
                 color: 'white',
               }}
               className="text-sm px-3 py-1"
             >
-              {pedido.status.nome}
+              {pedido.statusFormatado?.nome || 'Pendente'}
             </Badge>
             {(pedido.is_personalizado || pedido.personalizado) && (
               <Badge variant="outline" className="text-xs px-2 py-0.5 border-purple-300 text-purple-600 bg-purple-50 flex items-center gap-1">
