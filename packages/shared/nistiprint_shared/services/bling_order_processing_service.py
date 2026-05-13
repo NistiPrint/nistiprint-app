@@ -116,6 +116,12 @@ def _build_payload_summary(payload: dict) -> dict:
     }
 
 
+def _response_data(response, default=None):
+    if response is None:
+        return default
+    return getattr(response, 'data', default)
+
+
 def _extract_bling_loja_id(payload: dict | None):
     if not isinstance(payload, dict):
         return None
@@ -347,8 +353,11 @@ def process_webhook(
                     'cnpj': (bling_inst.get('config') or {}).get('cnpj'),
                 },
             )
-            logger.info("[ingest] bling_instance resolved id=%s cnpj=%s",
-                        bling_inst['id'], bling_inst['config'].get('cnpj'))
+            logger.info(
+                "[ingest] bling_instance resolved id=%s cnpj=%s",
+                bling_inst['id'],
+                (bling_inst.get('config') or {}).get('cnpj'),
+            )
 
         original_loja_id = str(_extract_bling_loja_id(original_payload) or '')
         if original_loja_id:
@@ -696,10 +705,19 @@ def _fetch_bling_order_detail(bling_inst: dict, bling_order_id) -> dict:
 
 def _resolve_bling_instance(payload, hint, company_id=None):
     if hint:
-        row = supabase_db.table('installed_integrations') \
-            .select('*').eq('id', hint).single().execute().data
+        response = (
+            supabase_db.table('installed_integrations')
+            .select('*')
+            .eq('id', hint)
+            .eq('module_id', 'bling')
+            .eq('is_active', True)
+            .maybe_single()
+            .execute()
+        )
+        row = _response_data(response)
         if row:
             return row
+        raise LookupError(f"Instancia Bling ativa nao encontrada para id={hint}")
     
     # Try company_id first (from webhook wrapper)
     if company_id:
@@ -707,24 +725,37 @@ def _resolve_bling_instance(payload, hint, company_id=None):
         if cached:
             return cached
 
-        rows = supabase_db.rpc('find_bling_integration_by_company_id',
-                               {'p_company_id': company_id}).execute().data
+        response = supabase_db.rpc(
+            'find_bling_integration_by_company_id',
+            {'p_company_id': company_id}
+        ).execute()
+        rows = _response_data(response, []) or []
         if rows:
+            if len(rows) > 1:
+                ids = [row.get('id') for row in rows]
+                raise LookupError(f"company_id={company_id} resolveu multiplas contas Bling: {ids}")
             return rows[0]
     
     # Fallback to CNPJ from payload
-    cnpj = (payload.get('intermediador') or {}).get('cnpj') \
+    cnpj = (
+        (payload.get('intermediador') or {}).get('cnpj')
         or (payload.get('loja') or {}).get('cnpj')
+        or (payload.get('empresa') or {}).get('cnpj')
+        or payload.get('cnpj')
+    )
     if not cnpj:
         raise ValueError("Não foi possível identificar instância Bling: CNPJ ausente e company_id não fornecido")
     cached = integration_resolution_service.resolve_bling_by_cnpj(cnpj)
     if cached:
         return cached
 
-    rows = supabase_db.rpc('find_bling_integration_by_cnpj',
-                           {'p_cnpj': cnpj}).execute().data
+    response = supabase_db.rpc('find_bling_integration_by_cnpj', {'p_cnpj': cnpj}).execute()
+    rows = _response_data(response, []) or []
     if not rows:
         raise LookupError(f"Nenhuma installed_integration Bling ativa para CNPJ={cnpj}")
+    if len(rows) > 1:
+        ids = [row.get('id') for row in rows]
+        raise LookupError(f"CNPJ={cnpj} resolveu multiplas contas Bling: {ids}")
     return rows[0]
 
 def _resolve_marketplace_instance(loja_id: str, bling_integration_id: int | None = None):
@@ -912,7 +943,6 @@ def _upsert_pedido_bling(payload, bling_integration_id):
 
     existing = _find_existing_pedido_bling_for_update(
         bling_id=bling_id,
-        numero_pedido=data['numero_pedido'],
         bling_integration_id=bling_integration_id,
     )
     if existing:
@@ -926,11 +956,11 @@ def _upsert_pedido_bling(payload, bling_integration_id):
     return res.data[0]['id'] if res.data else None
 
 
-def _find_existing_pedido_bling_for_update(bling_id, numero_pedido, bling_integration_id):
+def _find_existing_pedido_bling_for_update(bling_id, bling_integration_id):
     """
     Reaproveita espelhos legados antes do modelo multi-Bling.
-    A tabela ainda pode conter linhas com bling_integration_id nulo ou unique global
-    em numero_pedido; criar uma nova linha nesse caso bloqueia o pipeline.
+    A busca por numero_pedido foi removida porque numero do Bling nao e unico
+    entre contas diferentes.
     """
     filters = [
         ('bling_integration_id', bling_integration_id, 'bling_id', bling_id),
@@ -944,18 +974,6 @@ def _find_existing_pedido_bling_for_update(bling_id, numero_pedido, bling_integr
         else:
             query = query.eq(first_key, first_value)
         rows = query.eq(second_key, second_value).limit(1).execute().data
-        if rows:
-            return rows[0]
-
-    if numero_pedido:
-        rows = (
-            supabase_db.table('pedidos_bling')
-            .select('id')
-            .eq('numero_pedido', str(numero_pedido))
-            .limit(1)
-            .execute()
-            .data
-        )
         if rows:
             return rows[0]
 
@@ -1025,7 +1043,7 @@ def _upsert_pedido_master(payload, *,
     bling_id      = payload.get('id')                          # ID interno Bling
     bling_numero  = str(payload.get('numero') or '')           # número exibido
     numero_loja   = payload.get('numeroLoja')                  # ID marketplace
-    codigo_externo = numero_loja if numero_loja else f"BLING-{bling_id}"
+    codigo_externo = numero_loja if numero_loja else f"BLING-{bling_integration_id}-{bling_id}"
 
     # Cliente (sempre do Bling — fonte canônica)
     contato = payload.get('contato') or {}
@@ -1195,12 +1213,34 @@ def _resolve_situacao_interna(bling_integration_id, bling_situacao_id):
     """Mapeia status do Bling para status interno via integration_status_mappings."""
     if not bling_situacao_id:
         return None
-    mapping_res = supabase_db.table('integration_status_mappings') \
-        .select('internal_situacao_pedido_id') \
-        .eq('module_id', 'bling') \
-        .eq('external_status_id', str(bling_situacao_id)) \
-        .maybe_single().execute()
-    return mapping_res.data['internal_situacao_pedido_id'] if mapping_res.data else None
+
+    try:
+        mapping_res = supabase_db.table('integration_status_mappings') \
+            .select('internal_situacao_pedido_id') \
+            .eq('module_id', 'bling') \
+            .eq('external_status_id', str(bling_situacao_id)) \
+            .maybe_single().execute()
+    except Exception as e:
+        logger.warning(
+            "[ingest] erro ao resolver situacao Bling status=%s inst=%s: %s",
+            bling_situacao_id,
+            bling_integration_id,
+            e,
+        )
+        return None
+
+    mapping = _response_data(mapping_res)
+    if isinstance(mapping, list):
+        mapping = mapping[0] if mapping else None
+    if not mapping:
+        logger.warning(
+            "[ingest] sem mapeamento de situacao Bling status=%s inst=%s; mantendo status_original e situacao_pedido_id=null",
+            bling_situacao_id,
+            bling_integration_id,
+        )
+        return None
+
+    return mapping.get('internal_situacao_pedido_id')
 
 def _volume_servico(payload):
     volumes = payload.get('transporte', {}).get('volumes', [])

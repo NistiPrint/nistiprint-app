@@ -65,6 +65,7 @@ def _enqueue_bling_order_to_redis(full_order: Dict[str, Any], cfg: Dict[str, Any
     bling_id = full_order.get("id")
     order_sn = full_order.get("numeroLoja")
     bling_company_id = cfg.get("bling_company_id")
+    bling_integration_id = cfg.get("bling_integration_id")
 
     logger.info(
         "Enfileirando pedido Bling %s (numeroLoja=%s) no Redis",
@@ -78,6 +79,7 @@ def _enqueue_bling_order_to_redis(full_order: Dict[str, Any], cfg: Dict[str, Any
         payload = {
             'data': full_order,
             'companyId': bling_company_id,
+            'bling_integration_id': bling_integration_id,
         }
 
         # Enfileirar no Redis

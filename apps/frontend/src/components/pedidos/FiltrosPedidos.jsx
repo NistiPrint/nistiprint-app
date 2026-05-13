@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { CalendarRange, ChevronDown, ChevronUp, Filter, Loader2, Search, Sparkles, Store, Truck, X, Zap } from 'lucide-react';
+import { Building2, CalendarRange, ChevronDown, ChevronUp, Filter, Loader2, Search, Sparkles, Store, Truck, X, Zap } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import FiltrosContextuais from './FiltrosContextuais';
@@ -85,25 +85,32 @@ function DateRangeFilter({ title, description, icon, startValue, endValue, onCha
 export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltros }) {
   const [origens, setOrigens] = useState([]);
   const [statusList, setStatusList] = useState([]);
+  const [blingIntegrations, setBlingIntegrations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filtrosAbertos, setFiltrosAbertos] = useState(false);
 
   useEffect(() => {
     const carregarDados = async () => {
       try {
-        const [origensRes, statusRes] = await Promise.all([
+        const [origensRes, statusRes, integracoesRes] = await Promise.all([
           fetch('/api/v2/pedidos/origens'),
-          fetch('/api/v2/pedidos/status-opcoes')
+          fetch('/api/v2/pedidos/status-opcoes'),
+          fetch('/api/v2/integracao-canais/integracoes')
         ]);
 
         const origensData = await origensRes.json();
         const statusData = await statusRes.json();
+        const integracoesData = await integracoesRes.json();
 
         if (origensData.success) {
           setOrigens(origensData.data.origens || []);
         }
         if (statusData.success) {
           setStatusList(statusData.data.status || []);
+        }
+        if (integracoesData.success) {
+          const integracoes = Array.isArray(integracoesData.data) ? integracoesData.data : [];
+          setBlingIntegrations(integracoes.filter((item) => item.module_id === 'bling' && item.is_active !== false));
         }
       } catch (error) {
         console.error('Erro ao carregar filtros:', error);
@@ -119,6 +126,7 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
     const active = [];
     if (filtros.search) active.push('Busca');
     if (filtros.status_id) active.push('Status');
+    if (filtros.bling_integration_id) active.push('Conta Bling');
     if (filtros.origem_pedido_key || filtros.canal_venda_id) active.push('Origem');
     if (filtros.has_demanda !== null) active.push('Demanda');
     if (filtros.delivery_start || filtros.delivery_end) active.push('Prazo de envio');
@@ -203,7 +211,7 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
             <div className="space-y-2">
               <Label>Busca</Label>
               <div className="relative">
@@ -241,6 +249,38 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
                         <div className="flex items-center gap-2">
                           <div className="w-3 h-3 rounded-full" style={{ backgroundColor: status.cor_status }} />
                           {status.nome}
+                        </div>
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Conta Bling/ERP</Label>
+              <Select
+                value={filtros.bling_integration_id?.toString() || 'all'}
+                onValueChange={(value) =>
+                  onFiltroChange({ bling_integration_id: value === 'all' ? null : parseInt(value) })
+                }
+                disabled={loading}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={loading ? 'Carregando...' : 'Todas as contas'} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas as contas</SelectItem>
+                  {loading ? (
+                    <div className="flex items-center justify-center py-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    </div>
+                  ) : (
+                    blingIntegrations.map((integration) => (
+                      <SelectItem key={integration.id} value={integration.id.toString()}>
+                        <div className="flex items-center gap-2">
+                          <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span>{integration.instance_name || integration.name || `Bling ${integration.id}`}</span>
                         </div>
                       </SelectItem>
                     ))

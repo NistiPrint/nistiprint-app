@@ -27,23 +27,33 @@ class OrderReprocessService:
         return response.data or None
 
     def _get_bling_context(self, pedido: Dict[str, Any]) -> Dict[str, Any]:
+        pedido_bling_integration_id = pedido.get('bling_integration_id')
         pedido_bling_id = pedido.get('pedido_bling_id')
         if not pedido_bling_id:
-            return {'bling_id': None, 'numero_loja': pedido.get('codigo_pedido_externo')}
+            return {
+                'bling_id': None,
+                'numero_loja': pedido.get('codigo_pedido_externo'),
+                'bling_integration_id': pedido_bling_integration_id,
+            }
 
         try:
             response = supabase_db.table('pedidos_bling') \
-                .select('bling_id, numero_loja') \
+                .select('bling_id, numero_loja, bling_integration_id') \
                 .eq('id', pedido_bling_id) \
                 .single().execute()
             row = response.data or {}
             return {
                 'bling_id': row.get('bling_id'),
                 'numero_loja': row.get('numero_loja') or pedido.get('codigo_pedido_externo'),
+                'bling_integration_id': pedido_bling_integration_id or row.get('bling_integration_id'),
             }
         except Exception as e:
             logger.warning("Erro ao buscar contexto Bling do pedido %s: %s", pedido.get('id'), e)
-            return {'bling_id': None, 'numero_loja': pedido.get('codigo_pedido_externo')}
+            return {
+                'bling_id': None,
+                'numero_loja': pedido.get('codigo_pedido_externo'),
+                'bling_integration_id': pedido_bling_integration_id,
+            }
 
     def _get_latest_webhook_event(self, pedido_id: int, pedido: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         candidates: List[Dict[str, Any]] = []
@@ -93,7 +103,7 @@ class OrderReprocessService:
             reverse=True,
         )[0]
 
-    def _queue_webhook_event(self, webhook_event: Dict[str, Any]) -> None:
+    def _queue_webhook_event(self, webhook_event: Dict[str, Any], bling_integration_id: Optional[int] = None) -> None:
         raw_payload = webhook_event.get('raw_payload')
         if not isinstance(raw_payload, dict) or not raw_payload:
             raise ValueError("webhook_event sem raw_payload reutilizavel")
@@ -101,6 +111,8 @@ class OrderReprocessService:
         queued_payload = dict(raw_payload)
         queued_payload['webhook_event_id'] = webhook_event['id']
         queued_payload['reprocess_requested_at'] = get_now_iso()
+        if bling_integration_id:
+            queued_payload['bling_integration_id'] = int(bling_integration_id)
 
         get_redis_client().rpush(BLING_WEBHOOK_QUEUE, _serialize_queue_item(queued_payload))
 
@@ -110,6 +122,7 @@ class OrderReprocessService:
             if not pedido:
                 return {"success": False, "error": "Pedido nao encontrado", "pedido_id": pedido_id}
 
+            context = self._get_bling_context(pedido)
             webhook_event = self._get_latest_webhook_event(pedido_id, pedido)
             if not webhook_event:
                 return {
@@ -118,7 +131,10 @@ class OrderReprocessService:
                     "pedido_id": pedido_id,
                 }
 
-            self._queue_webhook_event(webhook_event)
+            self._queue_webhook_event(
+                webhook_event,
+                bling_integration_id=context.get('bling_integration_id'),
+            )
 
             next_attempt_count = int(webhook_event.get('attempt_count') or 0) + 1
             self.webhook_events_table.update({
