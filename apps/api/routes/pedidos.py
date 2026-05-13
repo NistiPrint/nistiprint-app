@@ -336,9 +336,9 @@ def get_pedido_detalhe(pedido_id):
             'origem': pedido.get('origem'),
             'status': {
                 'id': pedido.get('situacao_pedido_id'),
-                'nome': pedido.get('situacao_pedido', {}).get('nome') if pedido.get('situacao_pedido') else 'Pendente',
-                'cor': pedido.get('situacao_pedido', {}).get('cor_status') if pedido.get('situacao_pedido') else '#f59e0b',
-                'descricao': pedido.get('situacao_pedido', {}).get('descricao') if pedido.get('situacao_pedido') else ''
+                'nome': (pedido.get('situacao_pedido') or {}).get('nome') or 'Pendente',
+                'cor': (pedido.get('situacao_pedido') or {}).get('cor_status') or '#f59e0b',
+                'descricao': (pedido.get('situacao_pedido') or {}).get('descricao') or ''
             },
             'cliente': {
                 'nome': pedido.get('cliente_nome') or (pedido.get('informacoes_cliente', {}) or {}).get('nome'),
