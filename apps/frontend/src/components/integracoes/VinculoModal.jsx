@@ -21,7 +21,7 @@ import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Store, Building2, Link, AlertCircle, Package, HelpCircle } from 'lucide-react';
+import { Store, Building2, Link, AlertCircle, Package, HelpCircle, Bell } from 'lucide-react';
 import * as integracaoCanalService from '@/services/integracaoCanalService';
 
 /**
@@ -45,6 +45,7 @@ export default function VinculoModal({
     bling_integration_id: 'none',
     marketplace_integration_id: 'none',
     is_primary: false,
+    process_webhooks: true,
     is_active: true
   });
   const [error, setError] = useState('');
@@ -61,6 +62,7 @@ export default function VinculoModal({
           bling_integration_id: vinculoEdit.bling_integration_id?.toString() || 'none',
           marketplace_integration_id: vinculoEdit.marketplace_integration_id?.toString() || 'none',
           is_primary: vinculoEdit.is_primary || false,
+          process_webhooks: vinculoEdit.process_webhooks !== false,
           is_active: vinculoEdit.is_active !== false
         });
       } else if (plataformaFilter) {
@@ -113,6 +115,7 @@ export default function VinculoModal({
         bling_integration_id: hasBling ? parseInt(formData.bling_integration_id) : null,
         marketplace_integration_id: hasMarketplace ? parseInt(formData.marketplace_integration_id) : null,
         is_primary: formData.is_primary,
+        process_webhooks: formData.process_webhooks,
         is_active: formData.is_active
       };
 
@@ -131,6 +134,7 @@ export default function VinculoModal({
         bling_integration_id: 'none',
         marketplace_integration_id: 'none',
         is_primary: false,
+        process_webhooks: true,
         is_active: true
       });
     } catch (err) {
@@ -390,6 +394,23 @@ export default function VinculoModal({
             <Switch
               checked={formData.is_primary}
               onCheckedChange={(checked) => setFormData(prev => ({ ...prev, is_primary: checked }))}
+            />
+          </div>
+
+          {/* Process Webhooks */}
+          <div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+            <div className="flex-1 space-y-0.5">
+              <Label className="text-sm font-medium flex items-center gap-2">
+                <Bell className="h-4 w-4 text-muted-foreground" />
+                Processar webhooks
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Desligue quando esta conta Bling receber pedidos duplicados de uma loja ja processada por outro vinculo
+              </p>
+            </div>
+            <Switch
+              checked={formData.process_webhooks}
+              onCheckedChange={(checked) => setFormData(prev => ({ ...prev, process_webhooks: checked }))}
             />
           </div>
 

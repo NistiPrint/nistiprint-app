@@ -19,7 +19,8 @@ import {
   Link,
   AlertCircle,
   HelpCircle,
-  CheckCircle2
+  CheckCircle2,
+  BellOff
 } from 'lucide-react';
 
 /**
@@ -117,6 +118,7 @@ export default function LojaVinculoTable({
               </Tooltip>
             </div>
           </TableHead>
+          <TableHead className="w-[120px]">Webhooks</TableHead>
           <TableHead className="w-[100px] text-right">Ações</TableHead>
         </TableRow>
       </TableHeader>
@@ -205,6 +207,18 @@ export default function LojaVinculoTable({
                   <Badge variant="outline" className="gap-1">
                     <AlertCircle className="w-3 h-3" />
                     {hasOnlyBling ? 'Falta Marketplace' : hasOnlyMarketplace ? 'Falta Bling' : 'Incompleto'}
+                  </Badge>
+                )}
+              </TableCell>
+              <TableCell>
+                {vinculo.process_webhooks === false ? (
+                  <Badge variant="outline" className="gap-1 border-amber-500 text-amber-700">
+                    <BellOff className="w-3 h-3" />
+                    Ignora
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary" className="gap-1">
+                    Processa
                   </Badge>
                 )}
               </TableCell>

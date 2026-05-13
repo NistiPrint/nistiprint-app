@@ -85,6 +85,7 @@ def create_erp_link(erp_integration_id):
         erp_store_id = data.get('erp_store_id')
         store_name = data.get('store_name')
         config = data.get('config', {})
+        process_webhooks = data.get('process_webhooks', True)
 
         if not erp_store_id or not (marketplace_integration_id or marketplace_module_id):
             return ApiResponse.error(
@@ -98,7 +99,8 @@ def create_erp_link(erp_integration_id):
             marketplace_module_id=marketplace_module_id,
             erp_store_id=str(erp_store_id),
             store_name=store_name,
-            config=config
+            config=config,
+            process_webhooks=process_webhooks
         )
 
         if link:
@@ -163,7 +165,12 @@ def update_erp_link_config(link_id):
         if not data:
             return ApiResponse.error(message="Payload é obrigatório", status_code=400)
 
-        link = erp_marketplace_links_service.update_config(link_id, data)
+        process_webhooks = data.pop('process_webhooks', None)
+        link = erp_marketplace_links_service.update_config(
+            link_id,
+            data,
+            process_webhooks=process_webhooks,
+        )
 
         if link:
             return ApiResponse.success(data=link)

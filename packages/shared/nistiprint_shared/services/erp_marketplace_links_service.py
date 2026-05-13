@@ -110,7 +110,8 @@ class ErpMarketplaceLinksService:
         marketplace_module_id: str,
         erp_store_id: str,
         store_name: Optional[str],
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        process_webhooks: bool = True
     ) -> None:
         channel_id = self._ensure_sales_channel(marketplace_module_id)
         if not channel_id:
@@ -126,6 +127,7 @@ class ErpMarketplaceLinksService:
             "aggregator_store_id": str(erp_store_id),
             "aggregator_store_name": store_name or f"{self._module_metadata(marketplace_module_id)['name']} ({erp_store_id})",
             "config": config or {},
+            "process_webhooks": process_webhooks is not False,
             "is_active": True,
             "sync_status": "active",
             "updated_at": datetime.utcnow().isoformat(),
@@ -134,6 +136,7 @@ class ErpMarketplaceLinksService:
         existing = supabase_db.table("channel_connections") \
             .select("id") \
             .eq("channel_id", channel_id) \
+            .eq("bling_integration_id", erp_integration_id) \
             .eq("aggregator_store_id", str(erp_store_id)) \
             .eq("is_active", True) \
             .execute()
@@ -166,7 +169,8 @@ class ErpMarketplaceLinksService:
         erp_store_id: str,
         store_name: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
-        marketplace_module_id: Optional[str] = None
+        marketplace_module_id: Optional[str] = None,
+        process_webhooks: bool = True
     ) -> Optional[Dict[str, Any]]:
         """
         Cria vínculo entre ERP e Marketplace.
@@ -197,6 +201,7 @@ class ErpMarketplaceLinksService:
                 "erp_store_id": str(erp_store_id),
                 "store_name": store_name,
                 "config": config or {},
+                "process_webhooks": process_webhooks is not False,
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
             }
@@ -215,6 +220,7 @@ class ErpMarketplaceLinksService:
                     erp_store_id=erp_store_id,
                     store_name=store_name,
                     config=config,
+                    process_webhooks=process_webhooks,
                 )
                 logger.info(
                     "Vínculo criado: ERP=%s, Marketplace=%s, Loja=%s",
@@ -448,7 +454,8 @@ class ErpMarketplaceLinksService:
     def update_config(
         self,
         link_id: str,
-        config: Dict[str, Any]
+        config: Dict[str, Any],
+        process_webhooks: Optional[bool] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Atualiza configurações de um vínculo.
@@ -471,14 +478,27 @@ class ErpMarketplaceLinksService:
             updated_config = {**current.data[0].get("config", {}), **config}
 
             # Atualizar
-            result = supabase_db.table(self.table_name).update({
+            update_payload = {
                 "config": updated_config,
                 "updated_at": datetime.utcnow().isoformat()
-            }).eq("id", link_id).execute()
+            }
+            if process_webhooks is not None:
+                update_payload["process_webhooks"] = process_webhooks is not False
+
+            result = supabase_db.table(self.table_name).update(update_payload).eq("id", link_id).execute()
 
             if result.data:
                 link = dict(result.data[0])
                 link["id"] = str(link.get("id"))
+                self._sync_channel_connection(
+                    erp_integration_id=link["erp_integration_id"],
+                    marketplace_integration_id=link.get("marketplace_integration_id"),
+                    marketplace_module_id=link.get("marketplace_module_id"),
+                    erp_store_id=link.get("erp_store_id"),
+                    store_name=link.get("store_name"),
+                    config=link.get("config"),
+                    process_webhooks=link.get("process_webhooks", True),
+                )
                 return link
 
             return None
