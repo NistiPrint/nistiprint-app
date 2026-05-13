@@ -104,7 +104,17 @@ export function formatarPedido(pedido) {
   if (!pedido) return null;
   
   return {
-    ...pedido,
+    cliente: {
+      ...pedido.cliente,
+      nome: pedido.cliente?.nome || 'Não informado',
+      documento: pedido.cliente?.documento || '-',
+    },
+    financeiro: {
+      ...pedido.financeiro,
+      total: pedido.financeiro?.total || 0,
+      moeda: pedido.financeiro?.moeda || 'BRL'
+    },
+    itens: pedido.itens || [],
     statusFormatado: {
       nome: pedido.status?.nome || 'Pendente',
       cor: pedido.status?.cor || '#f59e0b',

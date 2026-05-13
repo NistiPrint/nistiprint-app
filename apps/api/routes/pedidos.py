@@ -341,8 +341,8 @@ def get_pedido_detalhe(pedido_id):
                 'descricao': pedido.get('situacao_pedido', {}).get('descricao') if pedido.get('situacao_pedido') else ''
             },
             'cliente': {
-                'nome': pedido.get('cliente_nome'),
-                'documento': pedido.get('cliente_documento'),
+                'nome': pedido.get('cliente_nome') or (pedido.get('informacoes_cliente', {}) or {}).get('nome'),
+                'documento': pedido.get('cliente_documento') or (pedido.get('informacoes_cliente', {}) or {}).get('numeroDocumento'),
                 'telefone': pedido.get('cliente_telefone'),
                 'email': pedido.get('cliente_email'),
                 'informacoes_adicionais': pedido.get('informacoes_cliente', {})

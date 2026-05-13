@@ -35,6 +35,49 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         cached_lookup.assert_called_once_with('204047801', bling_integration_id=12)
         rpc_mock.assert_not_called()
 
+    def test_resolve_marketplace_instance_falls_back_to_module_link(self):
+        rpc_response = MagicMock()
+        rpc_response.execute.return_value.data = []
+
+        cc_table = MagicMock()
+        cc_table.select.return_value.eq.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {'marketplace_module_id': 'kwai'}
+        ]
+
+        modules_table = MagicMock()
+        modules_table.select.return_value.eq.return_value.maybe_single.return_value.execute.return_value.data = {
+            'id': 'kwai',
+            'slug': 'kwai',
+            'name': 'Kwai',
+        }
+
+        def table_side_effect(name):
+            if name == 'channel_connections':
+                return cc_table
+            if name == 'integration_modules':
+                return modules_table
+            raise AssertionError(f'tabela inesperada: {name}')
+
+        with patch.object(
+            bos.integration_resolution_service,
+            'resolve_marketplace_by_shop_id',
+            return_value=None,
+        ) as cached_lookup, \
+             patch.object(bos.supabase_db, 'rpc', return_value=rpc_response) as rpc_mock, \
+             patch.object(bos.supabase_db, 'table', side_effect=table_side_effect):
+            result = bos._resolve_marketplace_instance(205221352, bling_integration_id=2)
+
+        self.assertIsNotNone(result)
+        self.assertIsNone(result['id'])
+        self.assertEqual(result['module_id'], 'kwai')
+        self.assertEqual(result['plataforma_slug'], 'kwai')
+        self.assertIn('module-link', result['instance_name'])
+        cached_lookup.assert_called_once_with('205221352', bling_integration_id=2)
+        rpc_mock.assert_called_once_with(
+            'find_marketplace_by_bling_loja',
+            {'p_loja_id': '205221352', 'p_bling_integration_id': 2},
+        )
+
     @patch('nistiprint_shared.services.bling.bling_client.BlingClient')
     def test_fetch_bling_order_detail_uses_bling_client(self, bling_client_cls):
         bling_client = MagicMock()

@@ -583,7 +583,7 @@ def process_webhook(
         # 10. Encadear demanda
         with ingest_step('create_demanda', ingest_ctx):
             demanda_producao_service.create_from_order(
-                {'pedido_id': pedido_id, 'numeroLoja': payload.get('numeroLoja')},
+                {**payload, 'pedido_id': pedido_id},
                 is_flex=flex.is_flex,
                 modalidade_logistica=flex.modalidade,
                 marketplace_integration_id=(marketplace_inst or {}).get('id'),
@@ -759,6 +759,7 @@ def _resolve_bling_instance(payload, hint, company_id=None):
     return rows[0]
 
 def _resolve_marketplace_instance(loja_id: str, bling_integration_id: int | None = None):
+    loja_id = str(loja_id)
     cached = integration_resolution_service.resolve_marketplace_by_shop_id(
         loja_id,
         bling_integration_id=bling_integration_id,
@@ -768,15 +769,47 @@ def _resolve_marketplace_instance(loja_id: str, bling_integration_id: int | None
 
     rows = supabase_db.rpc('find_marketplace_by_bling_loja',
                            {'p_loja_id': loja_id, 'p_bling_integration_id': bling_integration_id}).execute().data
-    if not rows:
-        return None
-    inst = rows[0]
-    # Anexar slug da plataforma para conveniência do caller
-    mod = supabase_db.table('integration_modules') \
-        .select('slug').eq('id', inst['module_id']).single().execute().data
-    inst['plataforma_slug'] = (mod or {}).get('slug')
-    return inst
+    if rows:
+        inst = rows[0]
+        # Anexar slug da plataforma para conveniencia do caller
+        mod = supabase_db.table('integration_modules') \
+            .select('slug').eq('id', inst['module_id']).single().execute().data
+        inst['plataforma_slug'] = (mod or {}).get('slug')
+        return inst
 
+    # Fallback: aceitar mapeamento por marketplace_module_id mesmo sem
+    # installed_integration de marketplace.
+    try:
+        cc = supabase_db.table('channel_connections') \
+            .select('marketplace_module_id') \
+            .eq('aggregator_store_id', loja_id) \
+            .eq('is_active', True)
+        if bling_integration_id:
+            cc = cc.eq('bling_integration_id', bling_integration_id)
+        cc = cc.limit(1).execute().data
+        if not cc:
+            return None
+
+        module_id = (cc[0] or {}).get('marketplace_module_id')
+        if not module_id:
+            return None
+
+        mod = supabase_db.table('integration_modules') \
+            .select('id,slug,name') \
+            .eq('id', module_id) \
+            .maybe_single().execute().data or {}
+        plataforma_slug = mod.get('slug') or module_id
+        module_name = mod.get('name') or plataforma_slug
+
+        return {
+            'id': None,
+            'module_id': module_id,
+            'instance_name': f"{module_name} (module-link)",
+            'plataforma_slug': plataforma_slug,
+        }
+    except Exception as e:
+        logger.warning('[ingest] Erro no fallback marketplace por module_id loja_id=%s: %s', loja_id, e)
+        return None
 
 def _resolve_canal_venda_id(marketplace_integration_id, bling_integration_id, loja_id):
     """
@@ -1497,3 +1530,4 @@ def _bling_client_for_config(cfg):
         channel_id=canal_venda_id,
         function_name="ORDER_IMPORT",
     )
+

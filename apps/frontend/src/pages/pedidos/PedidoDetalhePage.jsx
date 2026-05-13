@@ -49,9 +49,10 @@ export default function PedidoDetalhePage() {
   const carregarDemandas = useCallback(async () => {
     try {
       const dados = await pedidoService.getPedidoDemandas(parseInt(id));
-      setDemandas(dados.demandas || []);
+      setDemandas(dados?.demandas || []);
     } catch (err) {
       console.error('Erro ao carregar demandas:', err);
+      setDemandas([]);
     }
   }, [id]);
 
