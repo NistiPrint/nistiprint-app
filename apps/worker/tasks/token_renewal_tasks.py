@@ -4,7 +4,7 @@ import logging
 import sys
 import os
 
-# Adicionar diretório do worker ao path para importar task_logger
+# Adicionar diretorio do worker ao path para importar task_logger
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from task_logger import log_task_execution
 
@@ -15,16 +15,15 @@ logger = logging.getLogger(__name__)
 @log_task_execution(task_type='TOKEN_RENEWAL')
 def renew_shopee_tokens_task():
     """
-    Tarefa Celery para renovar automaticamente tokens de integrações Shopee.
+    Tarefa Celery para renovar automaticamente tokens de integracoes Shopee.
 
     Esta tarefa:
-    1. Busca todas as integrações Shopee ativas
-    2. Verifica se o token expira em menos de 1 hora
-    3. Executa a mesma renovação usada manualmente na UI
+    1. Busca todas as integracoes Shopee ativas
+    2. Executa a mesma renovacao usada manualmente na UI
     """
     try:
-        logger.info("Iniciando renovação agendada de tokens Shopee.")
+        logger.info("Iniciando renovacao agendada de tokens Shopee.")
         return token_renewal_service.renew_shopee_tokens_expiring_soon()
     except Exception as e:
-        logger.error(f"Erro na tarefa de renovação de tokens Shopee: {str(e)}")
+        logger.error(f"Erro na tarefa de renovacao de tokens Shopee: {str(e)}")
         return {'status': 'FAILED', 'error': str(e)}

@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import logging
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
@@ -8,10 +8,13 @@ logger = logging.getLogger(__name__)
 
 
 class TokenRenewalService:
-    """Serviço compartilhado para renovação agendada de tokens."""
+    """Servico compartilhado para renovacao agendada de tokens."""
 
     def renew_shopee_tokens_expiring_soon(self, expiry_threshold: timedelta = timedelta(hours=1)) -> dict:
-        logger.info("Iniciando verificação de tokens Shopee com expiração próxima.")
+        logger.info(
+            "Iniciando renovacao agendada de tokens Shopee ativos. "
+            "expiry_threshold mantido apenas por compatibilidade."
+        )
 
         response = supabase_db.client.table('installed_integrations') \
             .select('*') \
@@ -21,17 +24,16 @@ class TokenRenewalService:
 
         integrations = response.data or []
         if not integrations:
-            logger.info("Nenhuma integração Shopee ativa encontrada.")
+            logger.info("Nenhuma integracao Shopee ativa encontrada.")
             return {
                 'status': 'SUCCESS',
-                'message': 'Nenhuma integração Shopee ativa encontrada',
+                'message': 'Nenhuma integracao Shopee ativa encontrada',
                 'total': 0,
                 'renewed': 0,
                 'failed': 0,
                 'skipped': 0
             }
 
-        now = datetime.now(timezone.utc)
         renewed_count = 0
         failed_count = 0
         skipped_count = 0
@@ -39,29 +41,8 @@ class TokenRenewalService:
         for integration in integrations:
             integration_id = str(integration.get('id'))
             instance_name = integration.get('instance_name', f'ID {integration_id}')
-            expires_at = integration.get('expires_at')
 
-            if not expires_at:
-                logger.warning("Integração Shopee %s não tem expires_at. Pulando.", instance_name)
-                skipped_count += 1
-                continue
-
-            try:
-                expires_dt = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                if expires_dt.tzinfo is None:
-                    expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-            except ValueError:
-                logger.warning("expires_at inválido para %s: %s. Pulando.", instance_name, expires_at)
-                skipped_count += 1
-                continue
-
-            time_until_expiry = expires_dt - now
-            if time_until_expiry > expiry_threshold:
-                logger.info("Token de %s ainda válido por %s. Pulando.", instance_name, time_until_expiry)
-                skipped_count += 1
-                continue
-
-            logger.info("Renovando token para %s (expira em %s).", instance_name, time_until_expiry)
+            logger.info("Renovando token Shopee para %s.", instance_name)
 
             try:
                 installed_integration_service.renew_integration_token(
@@ -86,21 +67,21 @@ class TokenRenewalService:
                     }).execute()
                 except Exception as log_error:
                     logger.error(
-                        "Erro ao registrar falha de renovação da integração %s: %s",
+                        "Erro ao registrar falha de renovacao da integracao %s: %s",
                         integration_id,
                         log_error,
                     )
 
         result = {
             'status': 'SUCCESS',
-            'message': 'Renovação de tokens Shopee concluída',
+            'message': 'Renovacao de tokens Shopee concluida',
             'total': len(integrations),
             'renewed': renewed_count,
             'failed': failed_count,
             'skipped': skipped_count
         }
         logger.info(
-            "Renovação concluída: %s renovados, %s falharam, %s pulados.",
+            "Renovacao concluida: %s renovados, %s falharam, %s pulados.",
             renewed_count,
             failed_count,
             skipped_count,
