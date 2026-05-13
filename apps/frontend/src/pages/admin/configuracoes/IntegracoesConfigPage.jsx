@@ -38,7 +38,6 @@ export default function IntegracoesConfigPage() {
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [filtroStatus, setFiltroStatus] = useState('todas'); // 'todas', 'com_problemas', 'saudaveis'
-  const [analiseStatus, setAnaliseStatus] = useState(null);
 
   useEffect(() => {
     carregarDados();
@@ -49,17 +48,15 @@ export default function IntegracoesConfigPage() {
     setError('');
 
     try {
-      const [platformsData, canaisData, integracoesData, analiseData] = await Promise.all([
+      const [platformsData, canaisData, integracoesData] = await Promise.all([
         integracaoCanalService.listarPlataformas(),
         integracaoCanalService.listarCanais(),
-        integracaoCanalService.listarIntegracoes(),
-        integracaoCanalService.getAnaliseStatus() // Nova chamada para análise
+        integracaoCanalService.listarIntegracoes()
       ]);
 
       setPlatforms(platformsData);
       setCanais(canaisData);
       setIntegracoes(integracoesData);
-      setAnaliseStatus(analiseData);
     } catch (err) {
       console.error('Erro ao carregar dados:', err);
       setError('Falha ao carregar configurações. Tente recarregar a página.');
@@ -90,8 +87,28 @@ export default function IntegracoesConfigPage() {
       setSuccessMsg('Vínculo removido com sucesso');
       carregarDados();
       setTimeout(() => setSuccessMsg(''), 3000);
-    } catch (err) {
+    } catch {
       setError('Falha ao remover vínculo');
+      setTimeout(() => setError(''), 3000);
+    }
+  }
+
+  async function handleToggleWebhooks(vinculo) {
+    const nextValue = vinculo.process_webhooks === false;
+
+    try {
+      await integracaoCanalService.atualizarVinculo(vinculo.id, {
+        process_webhooks: nextValue
+      });
+      setSuccessMsg(
+        nextValue
+          ? 'Webhooks ativados para este vínculo'
+          : 'Webhooks ignorados para este vínculo'
+      );
+      carregarDados();
+      setTimeout(() => setSuccessMsg(''), 3000);
+    } catch {
+      setError('Falha ao atualizar processamento de webhooks');
       setTimeout(() => setError(''), 3000);
     }
   }
@@ -272,6 +289,7 @@ export default function IntegracoesConfigPage() {
               onEditVinculo={handleEditVinculo}
               onDeleteVinculo={handleDeleteVinculo}
               onAddVinculo={handleAddVinculo}
+              onToggleWebhooks={handleToggleWebhooks}
             />
           ))}
         </div>

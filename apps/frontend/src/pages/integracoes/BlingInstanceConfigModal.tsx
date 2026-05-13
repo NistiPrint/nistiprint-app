@@ -38,9 +38,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { Switch } from '@/components/ui/switch';
 
 // Ícones
-import { Building2, Plus, ShoppingCart, Trash2, X } from 'lucide-react';
+import { BellOff, Building2, Plus, ShoppingCart, Trash2, X } from 'lucide-react';
 
 // Tipos
 interface MarketplaceInstance {
@@ -65,6 +66,7 @@ interface ErpLink {
   marketplace_module_id?: string;
   erp_store_id: string;
   store_name: string;
+  process_webhooks?: boolean;
   marketplace?: MarketplaceInstance;
 }
 
@@ -102,6 +104,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
     marketplace_module_id: 'shopee',
     erp_store_id: '',
     store_name: '',
+    process_webhooks: true,
   });
 
   // Estado para campo customizado
@@ -201,6 +204,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
             : {}),
           erp_store_id: newLink.erp_store_id,
           store_name: newLink.store_name || undefined,
+          process_webhooks: newLink.process_webhooks,
         }),
       });
 
@@ -212,6 +216,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
           marketplace_module_id: 'shopee',
           erp_store_id: '',
           store_name: '',
+          process_webhooks: true,
         });
         load_data();
       } else {
@@ -221,6 +226,28 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
     } catch (error) {
       console.error('Erro ao adicionar vínculo:', error);
       toast.error('Erro ao adicionar vínculo');
+    }
+  };
+
+  const handleToggleLinkWebhooks = async (link: ErpLink) => {
+    try {
+      const nextValue = link.process_webhooks === false;
+      const res = await fetch(`/api/v2/erp-links/links/${link.id}/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ process_webhooks: nextValue }),
+      });
+
+      if (res.ok) {
+        toast.success(nextValue ? 'Webhooks ativados para este vínculo' : 'Webhooks ignorados para este vínculo');
+        load_data();
+      } else {
+        const error = await res.json();
+        toast.error(error.message || 'Erro ao atualizar webhooks');
+      }
+    } catch (error) {
+      console.error('Erro ao atualizar webhooks:', error);
+      toast.error('Erro ao atualizar webhooks');
     }
   };
 
@@ -340,6 +367,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
                         marketplace_module_id: 'shopee',
                         erp_store_id: '',
                         store_name: '',
+                        process_webhooks: true,
                       });
                     }}
                   >
@@ -414,6 +442,21 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
                     />
                   </div>
 
+                  <div className="flex items-center justify-between rounded-lg border bg-background p-3">
+                    <div className="space-y-0.5">
+                      <Label className="text-sm font-medium">Processar webhooks</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Desligue nesta conta Bling quando a mesma origem ja for processada por outra conta.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={newLink.process_webhooks}
+                      onCheckedChange={(checked) =>
+                        setNewLink({ ...newLink, process_webhooks: checked })
+                      }
+                    />
+                  </div>
+
                   <Button onClick={handleAddLink} className="w-full">
                     Adicionar Vínculo
                   </Button>
@@ -434,6 +477,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
                     <TableHead>Instância</TableHead>
                     <TableHead>ID Loja Bling</TableHead>
                     <TableHead>Nome</TableHead>
+                    <TableHead>Webhooks</TableHead>
                     <TableHead className="w-[100px]">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -453,6 +497,23 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
                       </TableCell>
                       <TableCell className="font-mono">{link.erp_store_id}</TableCell>
                       <TableCell>{link.store_name || '-'}</TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="gap-2"
+                          onClick={() => handleToggleLinkWebhooks(link)}
+                        >
+                          {link.process_webhooks === false ? (
+                            <>
+                              <BellOff className="h-4 w-4 text-amber-600" />
+                              Ignora
+                            </>
+                          ) : (
+                            'Processa'
+                          )}
+                        </Button>
+                      </TableCell>
                       <TableCell>
                         <Button
                           variant="ghost"

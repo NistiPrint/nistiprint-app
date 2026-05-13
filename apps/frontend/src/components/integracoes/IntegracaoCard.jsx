@@ -26,10 +26,10 @@ export default function IntegracaoCard({
   plataforma,
   vinculos = [],
   integracoes = [],
-  canais = [],
   onEditVinculo,
   onDeleteVinculo,
-  onAddVinculo
+  onAddVinculo,
+  onToggleWebhooks
 }) {
   // Agrupar vínculos por canal
   const vinculosPorCanal = vinculos.reduce((acc, vinculo) => {
@@ -106,10 +106,6 @@ export default function IntegracaoCard({
 
     return { orfaos, placeholders, incompletos, completos, total: vinculos.length };
   }, [vinculos, integracaoMap]);
-
-  // Verificar se há integração marketplace ativa
-  const marketplaceIntegrations = integracoes.filter(i => i.module_id === plataforma.toLowerCase());
-  const integracaoAtiva = marketplaceIntegrations.find(i => i.is_active);
 
   // Determinar status geral da plataforma
   const getStatusBadge = () => {
@@ -249,6 +245,7 @@ export default function IntegracaoCard({
               integracoes={integracoes}
               onEdit={onEditVinculo}
               onDelete={onDeleteVinculo}
+              onToggleWebhooks={onToggleWebhooks}
             />
           </div>
         ))}

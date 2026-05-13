@@ -7,7 +7,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import BlingInstanceConfigModal from '@/pages/integracoes/BlingInstanceConfigModal';
 import MarketplaceService from '@/services/MarketplaceService';
 import * as integracaoCanalService from '@/services/integracaoCanalService';
-import { AlertCircle, Building2, CheckCircle2, Database, HelpCircle, Package, Plus, RefreshCw, Settings, Trash2, Zap } from 'lucide-react';
+import { AlertCircle, Building2, CheckCircle2, Database, HelpCircle, Package, Plus, RefreshCw, Settings, Trash2, X, Zap } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 

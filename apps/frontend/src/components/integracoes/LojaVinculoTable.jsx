@@ -36,7 +36,8 @@ export default function LojaVinculoTable({
   vinculos = [],
   integracoes = [],
   onEdit,
-  onDelete
+  onDelete,
+  onToggleWebhooks
 }) {
   const getIntegrationName = (integrationId) => {
     if (!integrationId) return null;
@@ -211,16 +212,33 @@ export default function LojaVinculoTable({
                 )}
               </TableCell>
               <TableCell>
-                {vinculo.process_webhooks === false ? (
-                  <Badge variant="outline" className="gap-1 border-amber-500 text-amber-700">
-                    <BellOff className="w-3 h-3" />
-                    Ignora
-                  </Badge>
-                ) : (
-                  <Badge variant="secondary" className="gap-1">
-                    Processa
-                  </Badge>
-                )}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 px-2"
+                      onClick={() => onToggleWebhooks?.(vinculo)}
+                    >
+                      {vinculo.process_webhooks === false ? (
+                        <Badge variant="outline" className="gap-1 border-amber-500 text-amber-700">
+                          <BellOff className="w-3 h-3" />
+                          Ignora
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary" className="gap-1">
+                          Processa
+                        </Badge>
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p className="text-xs">
+                      Clique para {vinculo.process_webhooks === false ? 'processar' : 'ignorar'} webhooks deste vinculo.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
               </TableCell>
               <TableCell className="text-right">
                 <div className="flex justify-end gap-1">
