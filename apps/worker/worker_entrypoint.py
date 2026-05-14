@@ -13,7 +13,7 @@ from logging.handlers import TimedRotatingFileHandler
 from celery import Celery
 from celery.signals import after_setup_logger, after_setup_task_logger
 
-LOG_FORMAT = "[%(asctime)s] %(levelname)s %(name)s %(message)s"
+LOG_FORMAT = "%(levelname)s %(name)s %(message)s"
 DEFAULT_LOG_LEVEL = os.environ.get("WORKER_LOG_LEVEL", "INFO").upper()
 DEFAULT_LOG_FILE = os.environ.get("WORKER_LOG_FILE", "/var/log/nistiprint/worker.log")
 DEFAULT_LOG_BACKUP_COUNT = int(os.environ.get("WORKER_LOG_BACKUP_COUNT", "30"))

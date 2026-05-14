@@ -1005,34 +1005,47 @@ def get_dashboard_totals():
         sector_totals = {'CPD': 0, 'Capas': 0, 'Miolos': 0, 'Expedição': 0}
         if logs_res.data:
             for log in logs_res.data:
-                qty = float(log.get('quantidade_produzida', 0))
-                metadata = log.get('detalhes_producao') or {}
-                campo = metadata.get('campo')
-                if campo:
-                    if campo in ['capas_impressas_qtd', 'capas_prontas_retirada_qtd']:
-                        sector_totals['CPD'] += qty
-                    elif campo == 'capas_produzidas_qtd':
-                        sector_totals['Capas'] += qty
-                    elif campo == 'miolos_prontos_retirada_qtd':
-                        sector_totals['Miolos'] += qty
-                    elif campo in ['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd']:
-                        sector_totals['Expedição'] += qty
-        demand_totals = {'today': 0, 'future': 0}
-        all_demandas = demanda_producao_service.get_all_demandas()
-        for demanda in all_demandas:
-            data_entrega_str = demanda.get('data_entrega')
-            if data_entrega_str:
                 try:
-                    from datetime import datetime
-                    data_entrega = datetime.strptime(data_entrega_str, '%Y-%m-%d').date()
-                    if data_entrega == today:
-                        demand_totals['today'] += 1
-                    elif data_entrega > today:
-                        demand_totals['future'] += 1
-                except ValueError:
-                    pass
+                    qty = float(log.get('quantidade_produzida', 0))
+                    metadata = log.get('detalhes_producao') or {}
+                    campo = metadata.get('campo')
+                    if campo:
+                        if campo in ['capas_impressas_qtd', 'capas_prontas_retirada_qtd']:
+                            sector_totals['CPD'] += qty
+                        elif campo == 'capas_produzidas_qtd':
+                            sector_totals['Capas'] += qty
+                        elif campo == 'miolos_prontos_retirada_qtd':
+                            sector_totals['Miolos'] += qty
+                        elif campo in ['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd']:
+                            sector_totals['Expedição'] += qty
+                except Exception as e:
+                    print(f"Error processing log row: {log}, Error: {e}")
+        
+        demand_totals = {'today': 0, 'future': 0}
+        try:
+            all_demandas = demanda_producao_service.get_all_demandas()
+        except Exception as e:
+            print(f"Error calling get_all_demandas: {e}")
+            return jsonify({'success': False, 'message': f'Erro ao buscar demandas: {e}'}), 500
+        
+        if all_demandas:
+            for demanda in all_demandas:
+                try:
+                    data_entrega_str = demanda.get('data_entrega')
+                    if data_entrega_str:
+                        from datetime import datetime
+                        data_entrega = datetime.strptime(data_entrega_str, '%Y-%m-%d').date()
+                        if data_entrega == today:
+                            demand_totals['today'] += 1
+                        elif data_entrega > today:
+                            demand_totals['future'] += 1
+                except Exception as e:
+                    print(f"Error processing demanda {demanda.get('id')}: {e}")
+        
         return jsonify({'success': True, 'sector_totals': sector_totals, 'demand_totals': demand_totals})
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
 
 @demanda_producao_api_bp.route('/dashboard-summary', methods=['GET'])
