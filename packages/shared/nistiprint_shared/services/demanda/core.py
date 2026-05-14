@@ -431,14 +431,32 @@ class DemandaCoreService:
     def _get_aggregated_demandas(self, response_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not response_data: return []
 
-        demanda_ids = [row['id'] for row in response_data]
+        valid_rows = []
+        for idx, row in enumerate(response_data):
+            if not isinstance(row, dict):
+                logger.warning("Ignoring invalid demanda row at index %s: expected dict, got %s", idx, type(row).__name__)
+                continue
+            if row.get('id') is None:
+                logger.warning("Ignoring demanda row without id at index %s", idx)
+                continue
+            valid_rows.append(row)
+
+        if not valid_rows:
+            return []
+
+        demanda_ids = [row['id'] for row in valid_rows]
         # Busca itens para todas as demandas da página de uma vez
         itens_res = supabase_db.execute_with_retry(self.itens_table.select("*").in_('demanda_id', demanda_ids))
 
         # Agrupa itens por demanda_id
         itens_by_demanda = {}
-        for item in itens_res.data:
-            did = item['demanda_id']
+        for item in (itens_res.data or []):
+            if not isinstance(item, dict):
+                logger.warning("Ignoring invalid item row while aggregating demandas: %s", type(item).__name__)
+                continue
+            did = item.get('demanda_id')
+            if did is None:
+                continue
             if did not in itens_by_demanda: itens_by_demanda[did] = []
             itens_by_demanda[did].append(item)
 
@@ -449,28 +467,43 @@ class DemandaCoreService:
             .in_('demanda_id', demanda_ids)
         )
         coleta_totals_map = {}
-        for row in coletas_res.data:
-            did = row['demanda_id']
-            coleta_totals_map[did] = coleta_totals_map.get(did, 0) + row['quantidade']
+        for row in (coletas_res.data or []):
+            if not isinstance(row, dict):
+                logger.warning("Ignoring invalid coleta row while aggregating demandas: %s", type(row).__name__)
+                continue
+            did = row.get('demanda_id')
+            if did is None:
+                continue
+            coleta_totals_map[did] = coleta_totals_map.get(did, 0) + float(row.get('quantidade') or 0)
 
         result = []
-        for row in response_data:
-            canal_nome = row.get('canal_venda', {}).get('nome') if row.get('canal_venda') else None
-            canal_color = row.get('canal_venda', {}).get('color') if row.get('canal_venda') else None
-            canal_plataforma = row.get('canal_venda', {}).get('plataformas', {}).get('nome') if row.get('canal_venda') else None
+        for row in valid_rows:
+            canal_venda = row.get('canal_venda')
+            if not isinstance(canal_venda, dict):
+                canal_venda = {}
+            plataformas = canal_venda.get('plataformas')
+            if not isinstance(plataformas, dict):
+                plataformas = {}
+
+            canal_nome = canal_venda.get('nome')
+            canal_color = canal_venda.get('color')
+            canal_plataforma = plataformas.get('nome')
 
             # Injetar o total coletado na row antes de processar
-            row['quantidade_coletada_total'] = coleta_totals_map.get(row['id'], 0)
+            row_with_totals = {**row, 'quantidade_coletada_total': coleta_totals_map.get(row['id'], 0)}
 
             processed = self._process_demanda_dict(
                 {
-                    **row,
+                    **row_with_totals,
                     'canal_venda_nome': canal_nome,
                     'canal_venda_color': canal_color,
                     'canal_venda_plataforma': canal_plataforma
                 },
                 itens_by_demanda.get(row['id'], [])
             )
+            if not isinstance(processed, dict):
+                logger.warning("Ignoring invalid processed demanda for id=%s", row.get('id'))
+                continue
             result.append(processed)
         return result
 

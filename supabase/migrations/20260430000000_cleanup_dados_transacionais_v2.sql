@@ -3,7 +3,7 @@
 -- Data: 2026-04-30
 -- ============================================================
 -- Preserva cadastros: produtos, canais, plataformas, configurações, etc.
--- Preserva PEDIDOS (histórico comercial)
+-- Preserva PEDIDOS (histórico comercial - NÃO LIMPAR)
 -- Preserva INTEGRAÇÕES (configurações de conexão)
 -- Limpa: estoque, produção, filas, logs, notificações, etc.
 -- ============================================================
@@ -23,14 +23,6 @@ BEGIN
     END IF;
 END;
 $$ LANGUAGE plpgsql;
-
--- ============================================================
--- PEDIDOS (SERÃO REPOPULADOS PELO REPROCESSAMENTO)
--- ============================================================
-SELECT public.truncate_if_exists('pedidos');
-SELECT public.truncate_if_exists('pedidos_bling');
-SELECT public.truncate_if_exists('itens_pedido');
-SELECT public.truncate_if_exists('pedidos_shopee');
 
 -- ============================================================
 -- PRODUÇÃO E DEMANDAS
@@ -119,12 +111,12 @@ SELECT public.truncate_if_exists('feedback_pedido');
 -- ============================================================
 -- HISTÓRICO DE TRANSIÇÕES DE SITUAÇÃO
 -- ============================================================
-SELECT public.truncate_if_exists('transicoes_situacao');
+-- SELECT public.truncate_if_exists('transicoes_situacao');
 
 -- ============================================================
 -- CACHE DE PEDIDOS POR CANAL (SHOPEE)
 -- ============================================================
-SELECT public.truncate_if_exists('pedidos_shopee');
+-- SELECT public.truncate_if_exists('pedidos_shopee');
 
 -- ============================================================
 -- FILA DE PROCESSAMENTO DE ESTOQUE
