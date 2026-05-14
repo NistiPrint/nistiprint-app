@@ -155,9 +155,17 @@ class DemandaReportingProductionService:
 
         result = []
         for row in response_data:
-            canal_nome = row.get('canal_venda', {}).get('nome') if row.get('canal_venda') else None
-            canal_color = row.get('canal_venda', {}).get('color') if row.get('canal_venda') else None
-            canal_plataforma = row.get('canal_venda', {}).get('plataformas', {}).get('nome') if row.get('canal_venda') else None
+            canal = row.get('canal_venda')
+            canal_nome = None
+            canal_color = None
+            canal_plataforma = None
+            
+            if isinstance(canal, dict):
+                canal_nome = canal.get('nome')
+                canal_color = canal.get('color')
+                plataformas = canal.get('plataformas')
+                if isinstance(plataformas, dict):
+                    canal_plataforma = plataformas.get('nome')
 
             row['quantidade_coletada_total'] = coleta_totals_map.get(row['id'], 0)
 
