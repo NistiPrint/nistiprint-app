@@ -1,4 +1,4 @@
-from flask import request, jsonify, session
+from flask import request, jsonify, session, Response, stream_with_context
 import json
 import pytz
 from datetime import datetime, timedelta
@@ -14,6 +14,16 @@ from nistiprint_shared.services.daily_production_log_service import daily_produc
 from .demanda_producao_base import demanda_producao_api_bp
 
 from nistiprint_shared.services.previsao_consumo_service import previsao_consumo_service
+
+
+def _integration_to_bling_account_data(integration):
+    account_data = integration.to_dict()
+    account_data['id'] = integration.id
+    if getattr(integration, 'access_token', None):
+        account_data['access_token'] = integration.access_token
+    if getattr(integration, 'refresh_token', None):
+        account_data['refresh_token'] = integration.refresh_token
+    return account_data
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/auditoria-consumo', methods=['GET'])
 @login_required
@@ -99,6 +109,99 @@ def api_get_demanda(demanda_id):
         import traceback
         print(f"ERROR in api_get_demanda: {e}")
         print(traceback.format_exc())
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@demanda_producao_api_bp.route('/<string:demanda_id>/nfe', methods=['GET', 'POST'])
+@login_required
+def api_generate_nfe_demanda(demanda_id):
+    """
+    Gera notas fiscais para os pedidos vinculados a uma demanda.
+    Usa demandas_pedidos como fonte da rastreabilidade e agrupa por conta Bling.
+    """
+    try:
+        demanda = demanda_producao_service.get_demanda_with_itens(demanda_id)
+        if not demanda:
+            return jsonify({'success': False, 'message': 'Demanda nÃ£o encontrada'}), 404
+
+        pedidos_origem = demanda.get('pedidos_origem') or []
+        if not pedidos_origem:
+            return jsonify({'success': False, 'message': 'A demanda nÃ£o possui pedidos relacionados.'}), 400
+
+        requested_instance_id = None
+        if request.method == 'POST':
+            requested_instance_id = (request.get_json(silent=True) or {}).get('bling_integration_id')
+        else:
+            requested_instance_id = request.args.get('bling_integration_id')
+
+        grupos = {}
+        for pedido in pedidos_origem:
+            integration_id = pedido.get('bling_integration_id')
+            if requested_instance_id and str(integration_id) != str(requested_instance_id):
+                continue
+            grupos.setdefault(integration_id, []).append(pedido)
+
+        if not grupos:
+            return jsonify({'success': False, 'message': 'Nenhum pedido da demanda corresponde Ã  conta Bling selecionada.'}), 400
+
+        def generate():
+            from nistiprint_shared.services.installed_integration_service import installed_integration_service
+            from nistiprint_shared.services.bling.bling_client_updated import BlingClient
+
+            for integration_id, pedidos in grupos.items():
+                if not integration_id:
+                    for pedido in pedidos:
+                        yield f"data: {json.dumps({'status': 'error', 'success': False, 'order': {'id': pedido.get('bling_order_id'), 'numero': pedido.get('bling_numero'), 'numeroLoja': pedido.get('codigo_pedido_externo')}, 'error': 'Pedido sem conta Bling vinculada.'})}\n\n"
+                    continue
+
+                integration = installed_integration_service.get_installed_by_id(str(integration_id))
+                if not integration:
+                    for pedido in pedidos:
+                        yield f"data: {json.dumps({'status': 'error', 'success': False, 'order': {'id': pedido.get('bling_order_id'), 'numero': pedido.get('bling_numero'), 'numeroLoja': pedido.get('codigo_pedido_externo')}, 'error': f'Conta Bling {integration_id} nÃ£o encontrada.'})}\n\n"
+                    continue
+
+                bling_client = BlingClient(_integration_to_bling_account_data(integration))
+
+                for pedido in pedidos:
+                    order = {
+                        'id': pedido.get('bling_order_id'),
+                        'numero': pedido.get('bling_numero') or pedido.get('numero_pedido'),
+                        'numeroLoja': pedido.get('codigo_pedido_externo'),
+                        'contato': {'nome': pedido.get('cliente_nome')}
+                    }
+                    if not order['id']:
+                        yield f"data: {json.dumps({'status': 'error', 'success': False, 'order': order, 'error': 'Pedido sem ID interno do Bling para gerar NF.'})}\n\n"
+                        continue
+
+                    try:
+                        result = bling_client.generate_nfe(order)
+                        response = {
+                            'status': 'processing',
+                            'order': {
+                                'id': order.get('id'),
+                                'numero': order.get('numero'),
+                                'numeroLoja': order.get('numeroLoja'),
+                                'nfe_id': result.get('nfe_id')
+                            },
+                            'bling_integration_id': integration_id,
+                            'account_label': pedido.get('bling_account_label'),
+                            'success': not result.get('error')
+                        }
+                        if result.get('error'):
+                            response['error'] = result.get('error_message') or 'Erro desconhecido ao gerar NFe'
+                            if result.get('error_details'):
+                                response['error_details'] = result.get('error_details')
+                        yield f"data: {json.dumps(response)}\n\n"
+                    except Exception as e:
+                        yield f"data: {json.dumps({'status': 'error', 'success': False, 'order': order, 'bling_integration_id': integration_id, 'error': str(e)})}\n\n"
+
+            yield f"data: {json.dumps({'status': 'complete'})}\n\n"
+
+        return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/coletas', methods=['GET'])

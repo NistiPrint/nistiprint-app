@@ -37,11 +37,15 @@ import {
     ArrowLeft,
     Calendar,
     CheckCircle,
+    Copy,
+    FileText,
     Flame,
     History,
     List,
+    Loader2,
     Package,
     Printer,
+    Receipt,
     Save,
     Search,
     TrendingUp,
@@ -84,6 +88,10 @@ function DemandaDashboardPage() {
     useState(false)
   const [selectedItemForHistory, setSelectedItemForHistory] = useState(null)
   const [showPedidosOrigem, setShowPedidosOrigem] = useState(false)
+  const [nfeSidebarOpen, setNfeSidebarOpen] = useState(false)
+  const [nfeResults, setNfeResults] = useState([])
+  const [nfeGenerating, setNfeGenerating] = useState(false)
+  const nfeEventSourceRef = useRef(null)
 
   const debouncedSearchQuery = useDebounce(searchQuery, 300)
 
@@ -122,6 +130,14 @@ function DemandaDashboardPage() {
   useEffect(() => {
     pendingChangesRef.current = pendingChanges
   }, [pendingChanges])
+
+  useEffect(() => {
+    return () => {
+      if (nfeEventSourceRef.current) {
+        nfeEventSourceRef.current.close()
+      }
+    }
+  }, [])
 
   useEffect(() => {
     fetchDemanda()
@@ -436,7 +452,7 @@ function DemandaDashboardPage() {
   const handlePrintDemanda = async mode => {
     if (
       !confirm(
-        `Enviar ${mode === 'full' ? 'TODAS' : 'PENDENTES'} para impressão?`,
+        `Enviar ${mode === 'full' ? 'TODOS' : 'PENDENTES'} os arquivos de producao para impressao?`,
       )
     )
       return
@@ -453,6 +469,179 @@ function DemandaDashboardPage() {
       }
     } catch (e) {
       toast.error(e.message)
+    }
+  }
+
+  const escapeHtml = value =>
+    String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
+
+  const handleCopyOrderChunk = async chunk => {
+    try {
+      await navigator.clipboard.writeText(chunk)
+      toast.success('Lista de pedidos copiada.')
+    } catch {
+      toast.error('Nao foi possivel copiar a lista.')
+    }
+  }
+
+  const handlePrintOrderPapers = async () => {
+    const pedidos = demanda?.pedidos_origem || []
+    const orderIds = pedidos.map(p => p.pedido_id).filter(Boolean)
+
+    if (orderIds.length === 0) {
+      toast.warning('Esta demanda nao possui pedidos relacionados.')
+      return
+    }
+
+    try {
+      const response = await fetch(
+        `/api/v2/pedidos/impressao?order_ids=${orderIds.join(',')}`,
+      )
+      const payload = await response.json()
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.message || 'Erro ao carregar pedidos.')
+      }
+
+      const orders = payload.data?.orders || []
+      if (orders.length === 0) {
+        toast.warning('Nenhum papel de pedido encontrado para impressao.')
+        return
+      }
+
+      const cardsHtml = orders
+        .map(
+          order => `
+          <section class="stamp-card">
+            <header class="stamp-header">
+              <div>
+                <div><strong>Nome:</strong> ${escapeHtml(order.contato?.nome || 'N/A')}</div>
+                <div><strong>CPF:</strong> ${escapeHtml(order.contato?.numeroDocumento || 'N/A')}</div>
+                ${order.contato?.endereco ? `<div>${escapeHtml(order.contato.endereco)}</div>` : ''}
+              </div>
+              <div class="order-platform">
+                <div>${escapeHtml(order.plataforma || 'Pedido')}</div>
+                <div>${escapeHtml(order.numeroLoja || 'N/A')}</div>
+              </div>
+            </header>
+            <main class="stamp-content">
+              <div class="order-title">Pedido ${escapeHtml(order.numero || order.id || 'N/A')}</div>
+              ${(order.itens || [])
+                .map(
+                  item => `
+                    <div class="item">
+                      <div class="item-details">
+                        <div>${escapeHtml(item.descricao || 'N/A')}</div>
+                        ${item.variacao ? `<div class="muted">${escapeHtml(item.variacao)}</div>` : ''}
+                        <strong>${escapeHtml(item.codigo || '')}</strong>
+                        ${(item.personalizations || [])
+                          .map(p =>
+                            p.customization_name
+                              ? `<div class="custom-name">${escapeHtml(p.customization_name)}${p.customization_initial ? ` (${escapeHtml(p.customization_initial)})` : ''}${p.quantity_to_personalize > 1 ? ` x${escapeHtml(p.quantity_to_personalize)}` : ''}</div>`
+                              : '',
+                          )
+                          .join('')}
+                      </div>
+                      <div class="item-qty">${escapeHtml(item.quantidade || 1)}</div>
+                      <div class="item-price">R$ ${Number(item.valor || 0).toFixed(2)}</div>
+                    </div>
+                  `,
+                )
+                .join('')}
+              <div class="total-items">${escapeHtml(order.total_items || 0)} ${(order.total_items || 0) > 1 ? 'itens' : 'item'}</div>
+            </main>
+          </section>
+        `,
+        )
+        .join('')
+
+      const iframe = document.createElement('iframe')
+      iframe.style.position = 'absolute'
+      iframe.style.top = '-9999px'
+      iframe.style.left = '-9999px'
+      document.body.appendChild(iframe)
+
+      iframe.onload = () => {
+        iframe.contentWindow.print()
+        setTimeout(() => iframe.remove(), 1000)
+      }
+
+      iframe.contentDocument.open()
+      iframe.contentDocument.write(`
+        <html>
+          <head>
+            <meta charset="utf-8" />
+            <title>Papeis dos Pedidos</title>
+            <style>
+              * { box-sizing: border-box; }
+              body { margin: 0; font-family: Arial, sans-serif; color: #111; }
+              .stamp-card { width: 210mm; min-height: 297mm; padding: 20mm; page-break-after: always; display: flex; flex-direction: column; }
+              .stamp-header { display: flex; justify-content: space-between; gap: 24px; font-size: 20px; margin-bottom: 32px; }
+              .stamp-header div div { padding: 8px 0; }
+              .order-platform { text-align: right; font-weight: 700; }
+              .stamp-content { flex: 1; display: flex; flex-direction: column; }
+              .order-title { text-align: center; font-size: 36px; font-weight: 700; margin-bottom: 32px; }
+              .item { display: flex; align-items: center; border-top: 1px solid #ddd; padding: 14px 0; }
+              .item-details { flex: 1; font-size: 18px; }
+              .muted { font-size: 13px; color: #666; }
+              .item-qty { width: 12%; text-align: center; font-size: 24px; font-weight: 700; }
+              .item-price { width: 14%; text-align: right; font-size: 13px; }
+              .custom-name { display: inline-block; margin-top: 8px; padding: 4px 8px; border: 2px solid #111; font-weight: 700; text-transform: uppercase; }
+              .total-items { margin-top: auto; text-align: center; font-size: 36px; font-weight: 700; }
+            </style>
+          </head>
+          <body>${cardsHtml}</body>
+        </html>
+      `)
+      iframe.contentDocument.close()
+    } catch (error) {
+      toast.error(error.message || 'Erro ao imprimir papeis dos pedidos.')
+    }
+  }
+
+  const handleGenerateDemandNfe = blingIntegrationId => {
+    const pedidos = demanda?.pedidos_origem || []
+    if (pedidos.length === 0) {
+      toast.warning('Esta demanda nao possui pedidos relacionados.')
+      return
+    }
+
+    if (nfeEventSourceRef.current) {
+      nfeEventSourceRef.current.close()
+    }
+
+    setNfeResults([])
+    setNfeGenerating(true)
+    setNfeSidebarOpen(true)
+
+    const params = blingIntegrationId
+      ? `?bling_integration_id=${encodeURIComponent(blingIntegrationId)}`
+      : ''
+    const eventSource = new EventSource(`/api/v2/demanda_producao/${id}/nfe${params}`)
+    nfeEventSourceRef.current = eventSource
+
+    eventSource.onmessage = event => {
+      const data = JSON.parse(event.data)
+      if (data.status === 'complete') {
+        setNfeGenerating(false)
+        toast.success('Processamento de NFs concluido.')
+        eventSource.close()
+        return
+      }
+      setNfeResults(prev => [...prev, data])
+      if (data.status === 'error' || data.success === false) {
+        toast.error(data.error || 'Erro ao gerar NF.')
+      }
+    }
+
+    eventSource.onerror = () => {
+      toast.error('Erro na conexao com o servidor de NF.')
+      setNfeGenerating(false)
+      eventSource.close()
     }
   }
 
@@ -705,18 +894,22 @@ Deseja imprimir ${quantity} cópias localmente?`,
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant='ghost' size='icon' className='h-6 w-6'>
+                  <Button
+                    variant='ghost'
+                    size='icon'
+                    className='h-6 w-6'
+                    title='Imprimir arquivos de producao deste item'>
                     <Printer className='h-4 w-4 text-gray-500 hover:text-black' />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent>
                   <DropdownMenuItem
                     onClick={() => handlePrintItem(item, 'full')}>
-                    Imprimir Tudo ({item.quantidade_total})
+                    Enviar todos os arquivos ({item.quantidade_total})
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => handlePrintItem(item, 'balance')}>
-                    Imprimir Faltantes (
+                    Enviar arquivos pendentes (
                     {Math.max(
                       0,
                       item.quantidade_total - (item.capas_impressas_qtd || 0),
@@ -946,28 +1139,35 @@ Deseja imprimir ${quantity} cópias localmente?`,
             </span>
           </div>
         </div>
-        <div className='flex gap-2'>
+        <div className='flex flex-wrap justify-end gap-2'>
           <Button variant='outline' onClick={() => setShowPedidosOrigem(true)} className='gap-2'>
             <List className='h-4 w-4' /> Ver Pedidos Relacionados
           </Button>
+          <Button variant='outline' onClick={handlePrintOrderPapers} className='gap-2'>
+            <FileText className='h-4 w-4' /> Imprimir Papeis dos Pedidos
+          </Button>
+          <Button variant='outline' onClick={() => handleGenerateDemandNfe()} disabled={nfeGenerating} className='gap-2'>
+            {nfeGenerating ? <Loader2 className='h-4 w-4 animate-spin' /> : <Receipt className='h-4 w-4' />}
+            Gerar NFs dos Pedidos
+          </Button>
           <Link to='/producao/impressao'>
-            <Button variant='outline' size='icon' title='Fila de Impressão'>
+            <Button variant='outline' size='icon' title='Fila de arquivos de producao'>
               <List className='h-4 w-4' />
             </Button>
           </Link>
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant='outline' title='Impressão em Massa'>
-                <Printer className='h-4 w-4 mr-2' /> Imprimir
+              <Button variant='outline' title='Impressao de arquivos de producao'>
+                <Printer className='h-4 w-4 mr-2' /> Arquivos de Producao
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
               <DropdownMenuItem onClick={() => handlePrintDemanda('full')}>
-                Imprimir Todos (Completo)
+                Enviar todos os arquivos
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => handlePrintDemanda('balance')}>
-                Imprimir Pendentes (Saldo)
+                Enviar arquivos pendentes
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -1161,27 +1361,82 @@ Deseja imprimir ${quantity} cópias localmente?`,
 
       {/* Dialog for viewing related orders */}
       <Dialog open={showPedidosOrigem} onOpenChange={setShowPedidosOrigem}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Pedidos Relacionados - {demanda.nome}</DialogTitle>
           </DialogHeader>
           {demanda.pedidos_origem && demanda.pedidos_origem.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Código Pedido Externo</TableHead>
-                  <TableHead>Número Pedido</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {demanda.pedidos_origem.map((pedido, idx) => (
-                  <TableRow key={idx}>
-                    <TableCell>{pedido.codigo_pedido_externo || '-'}</TableCell>
-                    <TableCell>{pedido.numero_pedido || '-'}</TableCell>
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={handlePrintOrderPapers} className="gap-2">
+                  <FileText className="h-4 w-4" /> Imprimir Papeis dos Pedidos
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleGenerateDemandNfe()} disabled={nfeGenerating} className="gap-2">
+                  {nfeGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Receipt className="h-4 w-4" />}
+                  Gerar NFs dos Pedidos
+                </Button>
+              </div>
+
+              {demanda.pedidos_origem_por_bling?.length > 0 && (
+                <div className="grid gap-2 md:grid-cols-2">
+                  {demanda.pedidos_origem_por_bling.map((grupo, idx) => (
+                    <div key={grupo.bling_integration_id || idx} className="rounded-md border p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <div className="text-sm font-semibold">{grupo.account_label || 'Conta Bling nao identificada'}</div>
+                          <div className="text-xs text-muted-foreground">{grupo.pedidos?.length || 0} pedidos</div>
+                        </div>
+                        {grupo.bling_integration_id && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleGenerateDemandNfe(grupo.bling_integration_id)}
+                            disabled={nfeGenerating}
+                            className="gap-2">
+                            <Receipt className="h-4 w-4" /> Gerar NFs
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {demanda.pedidos_origem_chunks?.length > 0 && (
+                <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+                  <div className="text-sm font-semibold">Codigos para busca manual no Bling</div>
+                  {demanda.pedidos_origem_chunks.map((chunk, idx) => (
+                    <div key={idx} className="flex items-start gap-2">
+                      <Input readOnly value={chunk} className="font-mono text-xs" />
+                      <Button variant="outline" size="icon" onClick={() => handleCopyOrderChunk(chunk)} title={`Copiar lote ${idx + 1}`}>
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Codigo Pedido Externo</TableHead>
+                    <TableHead>Numero Pedido</TableHead>
+                    <TableHead>Cliente</TableHead>
+                    <TableHead>Conta Bling</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {demanda.pedidos_origem.map((pedido, idx) => (
+                    <TableRow key={pedido.pedido_id || idx}>
+                      <TableCell className="font-mono text-xs">{pedido.codigo_pedido_externo || '-'}</TableCell>
+                      <TableCell>{pedido.numero_pedido || '-'}</TableCell>
+                      <TableCell>{pedido.cliente_nome || '-'}</TableCell>
+                      <TableCell>{pedido.bling_account_label || (pedido.bling_integration_id ? `Conta ${pedido.bling_integration_id}` : '-')}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           ) : (
             <div className="text-center py-8 text-gray-500">
               Nenhum pedido relacionado encontrado.
@@ -1189,6 +1444,55 @@ Deseja imprimir ${quantity} cópias localmente?`,
           )}
         </DialogContent>
       </Dialog>
+
+      <div className={`fixed inset-y-0 right-0 z-50 w-96 bg-white shadow-2xl transform transition-transform duration-300 ease-in-out ${nfeSidebarOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+        <div className="flex h-full flex-col">
+          <div className="flex items-center justify-between border-b bg-muted p-4">
+            <h3 className="text-lg font-bold">Notas Fiscais dos Pedidos</h3>
+            <Button variant="ghost" size="sm" onClick={() => setNfeSidebarOpen(false)}>
+              <X className="h-5 w-5" />
+            </Button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4">
+            {nfeGenerating && nfeResults.length === 0 && (
+              <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
+                <Loader2 className="mb-2 h-8 w-8 animate-spin" />
+                <p>Processando pedidos...</p>
+              </div>
+            )}
+            {nfeResults.length > 0 && (
+              <ul className="space-y-2">
+                {nfeResults.map((result, idx) => (
+                  <li key={idx} className={`rounded-lg border p-3 ${result.success ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+                    <div className="mb-1 flex items-center justify-between gap-3">
+                      <span className="font-medium">#{result.order?.numero || result.order?.id || 'N/A'}</span>
+                      <span className={`text-sm ${result.success ? 'text-green-600' : 'text-red-600'}`}>
+                        {result.success ? 'OK' : 'Erro'}
+                      </span>
+                    </div>
+                    {result.account_label && (
+                      <p className="text-xs text-muted-foreground">{result.account_label}</p>
+                    )}
+                    {result.success && result.order?.nfe_id && (
+                      <a
+                        href={`https://www.bling.com.br/notas.fiscais.php#edit/${result.order.nfe_id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-blue-600 hover:underline"
+                      >
+                        Abrir NF-e
+                      </a>
+                    )}
+                    {result.error && (
+                      <p className="mt-1 text-sm text-red-600">{result.error}</p>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
