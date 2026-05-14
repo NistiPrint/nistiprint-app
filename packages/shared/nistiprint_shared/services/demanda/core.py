@@ -538,8 +538,149 @@ class DemandaCoreService:
             processed_itens
         )
         demanda['itens'] = processed_itens
+        demanda.update(self._get_pedidos_origem_metadata(internal_id))
 
         return demanda
+
+    def _get_pedidos_origem_metadata(self, demanda_internal_id: int) -> Dict[str, Any]:
+        """
+        Retorna a rastreabilidade da demanda a partir da tabela pivot demandas_pedidos.
+        Este Ã© o contrato usado pelo frontend para a lista de pedidos, chunks e NF.
+        """
+        empty = {
+            'pedidos_origem': [],
+            'pedidos_origem_chunks': [],
+            'pedidos_origem_por_bling': []
+        }
+        if not demanda_internal_id:
+            return empty
+
+        try:
+            pivot_res = supabase_db.table('demandas_pedidos') \
+                .select('pedido_id, created_at') \
+                .eq('demanda_id', demanda_internal_id) \
+                .order('created_at') \
+                .execute()
+            pivot_rows = pivot_res.data or []
+            pedido_ids = [row.get('pedido_id') for row in pivot_rows if row.get('pedido_id')]
+            if not pedido_ids:
+                return empty
+
+            pedidos_res = supabase_db.table('pedidos').select('''
+                id,
+                numero_pedido,
+                codigo_pedido_externo,
+                origem,
+                cliente_nome,
+                canal_venda_id,
+                situacao_pedido_id,
+                data_venda,
+                total_pedido,
+                is_flex,
+                bling_integration_id,
+                marketplace_integration_id,
+                pedido_bling_id
+            ''').in_('id', pedido_ids).execute()
+            pedidos = pedidos_res.data or []
+            pedidos_by_id = {pedido.get('id'): pedido for pedido in pedidos}
+
+            pedido_bling_ids = [
+                pedido.get('pedido_bling_id')
+                for pedido in pedidos
+                if pedido.get('pedido_bling_id')
+            ]
+            bling_by_id = {}
+            if pedido_bling_ids:
+                bling_res = supabase_db.table('pedidos_bling').select('''
+                    id,
+                    bling_id,
+                    numero_pedido,
+                    numero_loja,
+                    bling_integration_id,
+                    raw_payload
+                ''').in_('id', pedido_bling_ids).execute()
+                bling_by_id = {row.get('id'): row for row in (bling_res.data or [])}
+
+            integration_ids = sorted({
+                int(pedido.get('bling_integration_id'))
+                for pedido in pedidos
+                if pedido.get('bling_integration_id') is not None
+            })
+            integration_labels = {}
+            if integration_ids:
+                integrations_res = supabase_db.table('installed_integrations') \
+                    .select('id, instance_name') \
+                    .in_('id', integration_ids) \
+                    .execute()
+                integration_labels = {
+                    int(row.get('id')): row.get('instance_name') or f"Conta Bling {row.get('id')}"
+                    for row in (integrations_res.data or [])
+                    if row.get('id') is not None
+                }
+
+            pedidos_origem = []
+            for pedido_id in pedido_ids:
+                pedido = pedidos_by_id.get(pedido_id)
+                if not pedido:
+                    continue
+
+                bling_data = bling_by_id.get(pedido.get('pedido_bling_id')) or {}
+                raw_payload = bling_data.get('raw_payload') or {}
+                bling_order_id = bling_data.get('bling_id') or raw_payload.get('id')
+                bling_numero = bling_data.get('numero_pedido') or raw_payload.get('numero') or pedido.get('numero_pedido')
+                bling_integration_id = pedido.get('bling_integration_id') or bling_data.get('bling_integration_id')
+                try:
+                    bling_integration_key = int(bling_integration_id) if bling_integration_id is not None else None
+                except (TypeError, ValueError):
+                    bling_integration_key = bling_integration_id
+
+                pedidos_origem.append({
+                    'pedido_id': pedido.get('id'),
+                    'numero_pedido': pedido.get('numero_pedido'),
+                    'codigo_pedido_externo': pedido.get('codigo_pedido_externo'),
+                    'origem': pedido.get('origem'),
+                    'cliente_nome': pedido.get('cliente_nome'),
+                    'canal_venda_id': pedido.get('canal_venda_id'),
+                    'situacao_pedido_id': pedido.get('situacao_pedido_id'),
+                    'data_venda': pedido.get('data_venda'),
+                    'total_pedido': pedido.get('total_pedido'),
+                    'is_flex': pedido.get('is_flex'),
+                    'bling_integration_id': bling_integration_id,
+                    'bling_account_label': integration_labels.get(bling_integration_key),
+                    'bling_order_id': bling_order_id,
+                    'bling_numero': bling_numero,
+                    'pedido_bling_id': pedido.get('pedido_bling_id')
+                })
+
+            codigos_externos = [
+                str(pedido.get('codigo_pedido_externo')).strip()
+                for pedido in pedidos_origem
+                if pedido.get('codigo_pedido_externo')
+            ]
+            chunks = [
+                ';'.join(codigos_externos[index:index + 100])
+                for index in range(0, len(codigos_externos), 100)
+            ]
+
+            grupos_map = {}
+            for pedido in pedidos_origem:
+                group_key = pedido.get('bling_integration_id') or 'sem_conta'
+                if group_key not in grupos_map:
+                    grupos_map[group_key] = {
+                        'bling_integration_id': pedido.get('bling_integration_id'),
+                        'account_label': pedido.get('bling_account_label') or 'Conta Bling nao identificada',
+                        'pedidos': []
+                    }
+                grupos_map[group_key]['pedidos'].append(pedido)
+
+            return {
+                'pedidos_origem': pedidos_origem,
+                'pedidos_origem_chunks': chunks,
+                'pedidos_origem_por_bling': list(grupos_map.values())
+            }
+        except Exception as e:
+            logger.error("Erro ao montar pedidos de origem da demanda %s: %s", demanda_internal_id, e, exc_info=True)
+            return empty
 
     def _resolve_miolo_for_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """

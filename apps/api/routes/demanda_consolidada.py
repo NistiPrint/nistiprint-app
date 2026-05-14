@@ -45,7 +45,15 @@ def gerar_demanda_consolidada():
     """
     try:
         data = request.get_json() or {}
-        pedido_ids = data.get('pedido_ids', [])
+        raw_pedido_ids = data.get('pedido_ids') or []
+        pedido_ids = []
+        for pedido_id in raw_pedido_ids:
+            try:
+                normalized_id = int(pedido_id)
+            except (TypeError, ValueError):
+                return ApiResponse.error(message=f'ID de pedido invalido: {pedido_id}', status_code=400)
+            if normalized_id not in pedido_ids:
+                pedido_ids.append(normalized_id)
         
         if not pedido_ids:
             return ApiResponse.error(message='Nenhum pedido selecionado', status_code=400)
@@ -73,6 +81,43 @@ def gerar_demanda_consolidada():
         
         # 2. Consolidar itens por produto/SKU (mesma lógica de file_processors.py)
         # Estrutura: {(produto_id, sku): {descricao, quantidade_total, pedidos_origem, miolo}}
+        pedidos_by_id = {int(pedido['id']): pedido for pedido in pedidos_result.data}
+        missing_ids = [pedido_id for pedido_id in pedido_ids if pedido_id not in pedidos_by_id]
+        if missing_ids:
+            return ApiResponse.error(
+                message=f'Pedido(s) nao encontrado(s): {", ".join(map(str, missing_ids))}',
+                status_code=404
+            )
+
+        canais = {
+            pedido.get('canal_venda_id')
+            for pedido in pedidos_result.data
+            if pedido.get('canal_venda_id')
+        }
+        if not canais:
+            return ApiResponse.error(message='Os pedidos selecionados nao possuem origem da venda.', status_code=400)
+        if len(canais) > 1:
+            return ApiResponse.error(message='Selecione pedidos de apenas uma origem da venda.', status_code=400)
+
+        selected_canal_venda_id = next(iter(canais))
+        requested_canal_venda_id = data.get('canal_venda_id')
+        if requested_canal_venda_id and int(requested_canal_venda_id) != int(selected_canal_venda_id):
+            return ApiResponse.error(
+                message='A origem da venda informada nao corresponde aos pedidos selecionados.',
+                status_code=400
+            )
+
+        pedidos_sem_itens = [
+            pedido.get('numero_pedido') or pedido.get('codigo_pedido_externo') or str(pedido.get('id'))
+            for pedido in pedidos_result.data
+            if not pedido.get('itens_pedido')
+        ]
+        if pedidos_sem_itens:
+            return ApiResponse.error(
+                message=f'Pedido(s) sem itens para consolidar: {", ".join(pedidos_sem_itens)}',
+                status_code=400
+            )
+
         itens_consolidados_map = {}
         
         for pedido in pedidos_result.data:
@@ -147,7 +192,7 @@ def gerar_demanda_consolidada():
         from nistiprint_shared.services.demandas_sugestoes_service import DemandasSugestoesService
         
         sugestoes = None
-        canal_venda_id = data.get('canal_venda_id') or itens_consolidados[0].get('canal_venda_id')
+        canal_venda_id = selected_canal_venda_id
         
         if canal_venda_id:
             try:
@@ -192,17 +237,46 @@ def gerar_demanda_consolidada():
 
         # 6. Vincular pedidos à demanda criada (tabela pivot demandas_pedidos)
         demanda_id = nova_demanda.get('id')
-        vinculos = []
+        vinculos_payload = [
+            {
+                'demanda_id': demanda_id,
+                'pedido_id': pedido_id
+            }
+            for pedido_id in pedido_ids
+        ]
 
-        for pedido_id in pedido_ids:
+        try:
+            supabase_db.table('demandas_pedidos').upsert(
+                vinculos_payload,
+                on_conflict='demanda_id,pedido_id'
+            ).execute()
+        except Exception as e:
+            logger.error(f"Erro ao vincular pedidos a demanda {demanda_id}: {e}", exc_info=True)
             try:
-                supabase_db.table('demandas_pedidos').insert({
-                    'demanda_id': demanda_id,
-                    'pedido_id': pedido_id
-                }).execute()
-                vinculos.append(pedido_id)
-            except Exception as e:
-                logger.error(f"Erro ao vincular pedido {pedido_id}: {e}")
+                supabase_db.table('demandas_producao').delete().eq('id', demanda_id).execute()
+            except Exception:
+                logger.warning("Nao foi possivel remover demanda sem rastreabilidade apos falha de vinculo.", exc_info=True)
+            return ApiResponse.error(message='Falha ao registrar rastreabilidade dos pedidos.', status_code=500)
+
+        vinculos_res = supabase_db.table('demandas_pedidos') \
+            .select('pedido_id') \
+            .eq('demanda_id', demanda_id) \
+            .in_('pedido_id', pedido_ids) \
+            .execute()
+        vinculos = [row['pedido_id'] for row in (vinculos_res.data or [])]
+
+        if len(set(vinculos)) != len(set(pedido_ids)):
+            logger.error(
+                "Rastreabilidade incompleta para demanda %s: vinculados=%s esperados=%s",
+                demanda_id,
+                vinculos,
+                pedido_ids
+            )
+            try:
+                supabase_db.table('demandas_producao').delete().eq('id', demanda_id).execute()
+            except Exception:
+                logger.warning("Nao foi possivel remover demanda com rastreabilidade incompleta.", exc_info=True)
+            return ApiResponse.error(message='Rastreabilidade incompleta. A demanda nao foi criada.', status_code=500)
 
         logger.info(f"Demanda {demanda_id} criada com {len(itens_demanda)} itens consolidados")
         logger.info(f"Pedidos vinculados: {len(vinculos)} de {len(pedido_ids)}")
