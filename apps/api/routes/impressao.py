@@ -81,8 +81,8 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             if not vinculos:
                 return None
 
-        # 3. Buscar itens do pedido
-        itens_result = supabase_db.table('itens_pedido').select('*').eq('pedido_id', pedido_id).execute()
+        # 3. Buscar itens do pedido com tag_impressao_pdf do produto
+        itens_result = supabase_db.table('itens_pedido').select('*, produtos(tag_impressao_pdf)').eq('pedido_id', pedido_id).execute()
         itens_raw = itens_result.data or []
 
         # 4. Buscar personalizações
@@ -92,6 +92,11 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
         # 5. Montar estrutura de itens formatada
         itens_formatted = []
         for item in itens_raw:
+            # Extrair tag do produto relacionado, se existir
+            tag_do_produto = None
+            if item.get('produtos'):
+                tag_do_produto = item.get('produtos').get('tag_impressao_pdf')
+            
             # Buscar personalizações associadas a este item
             item_pers = []
             for p in personalizations_raw:
@@ -106,8 +111,8 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
                     })
 
             # Calcular custom_tag
-            custom_tag = ''
-            if item.get('personalizado'):
+            custom_tag = tag_do_produto or ''
+            if not custom_tag and item.get('personalizado'):
                 custom_tag = process_string({
                     'codigo': item.get('sku_externo', ''),
                     'descricao': item.get('descricao', '')

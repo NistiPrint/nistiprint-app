@@ -872,8 +872,16 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
                     order['hasCustomItem'] = 1
                 item['custom_tag'] = custom_tag
 
-        bling_orders_data.sort(key=lambda x: (x['hasCustomItem'], x['total_items'], len(x['itens']), len(
-            [item for item in x['itens'] if item['custom_tag'] != '']), next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), '')))
+        # Ordena por:
+        # 1. Pedidos sem personalizados (hasCustomItem=0) primeiro.
+        # 2. Pedidos com personalizados (hasCustomItem=1) por último.
+        # 3. Dentro dos personalizados, segregar por ordem de tag.
+        bling_orders_data.sort(key=lambda x: (
+            0 if x['hasCustomItem'] == 0 else 1,
+            next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), ''),
+            x['total_items'], 
+            len(x['itens'])
+        ))
     else:
         # Build basic bling_orders_data from spreadsheet for later sync
         sku_column = 'Número de referência SKU' if 'Número de referência SKU' in filtered_data.columns else 'Nº de referência do SKU principal'
@@ -1114,8 +1122,16 @@ def process_amazon(file, period_filter, options=None, bling_client=None):
                     order['hasCustomItem'] = 1
                 item['custom_tag'] = custom_tag
 
-        bling_orders_data.sort(key=lambda x: (x['hasCustomItem'], x['total_items'], len(x['itens']), len(
-            [item for item in x['itens'] if item['custom_tag'] != '']), next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), '')))
+        # Ordena por:
+        # 1. Pedidos sem personalizados (hasCustomItem=0) primeiro.
+        # 2. Pedidos com personalizados (hasCustomItem=1) por último.
+        # 3. Dentro dos personalizados, segregar por ordem de tag.
+        bling_orders_data.sort(key=lambda x: (
+            0 if x['hasCustomItem'] == 0 else 1,
+            next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), ''),
+            x['total_items'], 
+            len(x['itens'])
+        ))
     else:
         # Build basic bling_orders_data from spreadsheet for later sync
         for oid in ids_pedidos:
@@ -1338,8 +1354,16 @@ def process_shein(file, period_filter, options=None, bling_client=None):
                     order['hasCustomItem'] = 1
                 item['custom_tag'] = custom_tag
 
-        bling_orders_data.sort(key=lambda x: (x['hasCustomItem'], x['total_items'], len(x['itens']), len(
-            [item for item in x['itens'] if item['custom_tag'] != '']), next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), '')))
+        # Ordena por:
+        # 1. Pedidos sem personalizados (hasCustomItem=0) primeiro.
+        # 2. Pedidos com personalizados (hasCustomItem=1) por último.
+        # 3. Dentro dos personalizados, segregar por ordem de tag.
+        bling_orders_data.sort(key=lambda x: (
+            0 if x['hasCustomItem'] == 0 else 1,
+            next((item['custom_tag'] for item in x['itens'] if item['custom_tag'] != ''), ''),
+            x['total_items'], 
+            len(x['itens'])
+        ))
     else:
         # Build basic bling_orders_data from spreadsheet for later sync
         for oid in ids_pedidos:
