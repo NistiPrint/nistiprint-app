@@ -38,11 +38,18 @@ def process_eventos_producao_task(correlation_id=None):
         # Esta função é síncrona e gerencia seu próprio loop internamente via asyncio.run().
         stats_fila = motor_reconciliacao_estoque.processar_fila_unificada(limit=50)
 
-        return {
+        # Retornar dados (o log é feito pelo decorator @log_task_execution)
+        result = {
             'status': 'SUCCESS',
             'eventos_v2': stats_v2,
             'tarefas_fila': stats_fila
         }
+        
+        # Otimização: Se não houver nada processado, retornar None silencia o log de sucesso do Celery
+        if stats_v2.get('eventos_processados', 0) == 0 and stats_fila == 0:
+            return None
+            
+        return result
     except Exception as e:
         import traceback
         print(f"[*] Erro no processador de eventos/fila: {e}")
