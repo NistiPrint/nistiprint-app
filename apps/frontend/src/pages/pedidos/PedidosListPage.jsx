@@ -125,13 +125,14 @@ function PedidosListPage() {
         order: 'desc',
       });
 
-      // Adicionar apenas filtros não-nulos
+      // Adicionar filtros, garantindo que origem_pedido_key esteja presente mesmo que vazio
       Object.entries(filtros).forEach(([key, value]) => {
-        if (value !== null && value !== '') {
+        if (key === 'origem_pedido_key') {
+          params.append(key, value || '');
+        } else if (value !== null && value !== '') {
           params.append(key, value);
         }
       });
-
       const response = await fetch(`/api/v2/order/list-advanced?${params}`);
       const data = await response.json();
 

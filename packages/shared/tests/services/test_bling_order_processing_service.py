@@ -111,7 +111,7 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
              patch.object(bos, '_fetch_bling_order_detail') as fetch_detail, \
              patch.object(bos, '_upsert_pedido_bling') as upsert_bling, \
              patch.object(bos, '_upsert_pedido_master') as upsert_master, \
-             patch.object(bos.demanda_producao_service, 'create_from_order') as create_demanda, \
+             patch.object(bos.consolidation_service, 'consolidar_pedido') as consolidar_pedido, \
              patch.object(bos, '_write_ingest_log') as write_log, \
              patch.object(bos, '_update_webhook_event') as update_event:
             result = bos.process_webhook(payload, company_id='company-1', webhook_event_id=123)
@@ -122,7 +122,7 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         fetch_detail.assert_not_called()
         upsert_bling.assert_not_called()
         upsert_master.assert_not_called()
-        create_demanda.assert_not_called()
+        consolidar_pedido.assert_not_called()
         self.assertTrue(any(call.kwargs.get('stage') == 'webhook_ignored' for call in write_log.call_args_list))
         self.assertTrue(any(call.kwargs.get('last_status') == 'skipped' for call in update_event.call_args_list))
 
@@ -143,12 +143,13 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
              patch.object(bos, '_upsert_pedido_master', return_value=16741), \
              patch.object(bos, '_detect_and_mark_personalized'), \
              patch.object(bos, '_log_ingest'), \
-             patch.object(bos.demanda_producao_service, 'create_from_order'), \
+             patch.object(bos.consolidation_service, 'consolidar_pedido', return_value={'id': 901, 'status': 'RASCUNHO'}) as consolidar_pedido, \
              patch.object(bos, '_write_ingest_log'), \
              patch.object(bos, '_update_webhook_event'):
             result = bos.process_webhook(payload)
 
         fetch_detail.assert_called_once_with({'id': 12, 'config': {}}, 999)
+        consolidar_pedido.assert_called_once_with(16741)
         self.assertEqual(result['status'], 'error')
         self.assertEqual(result['error_type'], 'bling_detail_unavailable')
 
@@ -374,13 +375,14 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
              patch.object(bos, '_upsert_pedido_master', return_value=16741), \
              patch.object(bos, '_detect_and_mark_personalized'), \
              patch.object(bos, '_log_ingest'), \
-             patch.object(bos.demanda_producao_service, 'create_from_order'), \
+             patch.object(bos.consolidation_service, 'consolidar_pedido', return_value=None) as consolidar_pedido, \
              patch.object(bos, '_write_ingest_log'), \
              patch.object(bos, '_update_webhook_event'), \
              patch.object(bos.logger, 'info'), \
              patch.object(bos.logger, 'warning'):
             result = bos.process_webhook(payload, company_id='company-1')
 
+        consolidar_pedido.assert_called_once_with(16741)
         self.assertEqual(result['status'], 'error')
         self.assertEqual(result['error_type'], 'bling_detail_unavailable')
         self.assertEqual(result['pedido_id'], 16741)

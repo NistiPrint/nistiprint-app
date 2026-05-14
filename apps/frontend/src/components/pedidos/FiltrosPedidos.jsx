@@ -292,7 +292,7 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
             <div className="space-y-2">
               <Label>Origem da venda</Label>
               <Select
-                value={filtros.origem_pedido_key || (filtros.canal_venda_id ? `canal:${filtros.canal_venda_id}` : 'all')}
+                value={filtros.origem_pedido_key || 'all'}
                 onValueChange={(value) =>
                   onFiltroChange({
                     origem_pedido_key: value === 'all' ? null : value,
@@ -367,63 +367,42 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label>Demanda</Label>
-                <Select
-                  value={
-                    filtros.has_demanda === null ? 'all' :
-                    filtros.has_demanda ? 'com' : 'sem'
-                  }
-                  onValueChange={(value) =>
-                    onFiltroChange({
-                      has_demanda: value === 'all' ? null : value === 'com'
-                    })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Todos" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos</SelectItem>
-                    <SelectItem value="com">Com demanda</SelectItem>
-                    <SelectItem value="sem">Sem demanda</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="rounded-md border p-3 flex items-center justify-between gap-3">
-                <Label htmlFor="filtro-flex" className="flex items-center gap-2 cursor-pointer">
-                  <Zap className="h-4 w-4 text-orange-500" />
-                  <div>
-                    <div className="font-medium">Entrega rapida</div>
-                    <div className="text-xs text-muted-foreground">Somente pedidos Flex</div>
+              {[
+                {
+                  label: 'Demanda',
+                  key: 'has_demanda',
+                  options: [{ val: false, text: 'Sem Demanda' }, { val: true, text: 'Com Demanda' }]
+                },
+                {
+                  label: 'Flex',
+                  key: 'is_flex',
+                  options: [{ val: false, text: 'Normal' }, { val: true, text: 'Flex' }]
+                },
+                {
+                  label: 'Personalizados',
+                  key: 'is_personalizado',
+                  options: [{ val: false, text: 'Comum' }, { val: true, text: 'Personalizado' }]
+                }
+              ].map((f) => (
+                <div key={f.key} className="space-y-2">
+                  <Label>{f.label}</Label>
+                  <div className="flex gap-1 p-1 bg-muted/50 rounded-lg">
+                    {f.options.map((opt) => (
+                      <button
+                        key={String(opt.val)}
+                        onClick={() => onFiltroChange({ [f.key]: filtros[f.key] === opt.val ? null : opt.val })}
+                        className={`flex-1 px-3 py-1.5 text-sm rounded-md transition-all ${
+                          filtros[f.key] === opt.val
+                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            : 'hover:bg-background hover:shadow-sm text-muted-foreground'
+                        }`}
+                      >
+                        {opt.text}
+                      </button>
+                    ))}
                   </div>
-                </Label>
-                <Switch
-                  id="filtro-flex"
-                  checked={filtros.is_flex === true}
-                  onCheckedChange={(checked) =>
-                    onFiltroChange({ is_flex: checked ? true : null })
-                  }
-                />
-              </div>
-
-              <div className="rounded-md border p-3 flex items-center justify-between gap-3">
-                <Label htmlFor="filtro-personalizado" className="flex items-center gap-2 cursor-pointer">
-                  <Sparkles className="h-4 w-4 text-purple-500" />
-                  <div>
-                    <div className="font-medium">Personalizados</div>
-                    <div className="text-xs text-muted-foreground">Somente pedidos com personalizacao</div>
-                  </div>
-                </Label>
-                <Switch
-                  id="filtro-personalizado"
-                  checked={filtros.is_personalizado === true}
-                  onCheckedChange={(checked) =>
-                    onFiltroChange({ is_personalizado: checked ? true : null })
-                  }
-                />
-              </div>
+                </div>
+              ))}
             </div>
 
             <div className="rounded-md bg-muted/40 p-3 flex items-start gap-2 text-xs text-muted-foreground">

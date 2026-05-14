@@ -266,6 +266,173 @@ class DemandaAlocacaoEstoqueService:
             user_id=user_id
         )
 
+    def processar_alocacao_avulsa_otimizado(self, product_id, campo, quantidade, user_id, sincrono=False):
+        """
+        Distribui uma produção avulsa entre itens ativos compatíveis.
+
+        Regras:
+        - Normaliza alias de campo (capas_acabadas_qtd -> capas_produzidas_qtd)
+        - Seleciona itens por produto (capa) ou miolo conforme o campo
+        - Considera apenas demandas ativas
+        - Atualiza via motor_estoque_v2 (reconciliação síncrona)
+        """
+        from nistiprint_shared.services.motor_estoque_v2 import motor_estoque_v2
+
+        campo_map = {
+            'capas_acabadas_qtd': 'capas_produzidas_qtd',
+            'capas_impressas_qtd': 'capas_impressas_qtd',
+            'capas_produzidas_qtd': 'capas_produzidas_qtd',
+            'miolos_prontos_retirada_qtd': 'miolos_prontos_retirada_qtd',
+            'expedicao_capas_retiradas_qtd': 'expedicao_capas_retiradas_qtd',
+            'expedicao_miolos_retirados_qtd': 'expedicao_miolos_retirados_qtd',
+            'finalizados_qtd': 'finalizados_qtd',
+        }
+        campo_normalizado = campo_map.get(str(campo or '').strip())
+        if not campo_normalizado:
+            raise ValueError(f"Campo de alocacao nao suportado: {campo}")
+
+        try:
+            quantidade_total = float(quantidade or 0)
+        except (TypeError, ValueError):
+            raise ValueError(f"Quantidade invalida: {quantidade}")
+        if quantidade_total <= 0:
+            raise ValueError("Quantidade deve ser maior que zero")
+
+        coluna_produto = (
+            'id_produto_miolo'
+            if campo_normalizado in ('miolos_prontos_retirada_qtd', 'expedicao_miolos_retirados_qtd')
+            else 'produto_id'
+        )
+
+        itens_resp = supabase_db.execute_with_retry(
+            self.itens_table.select('*').eq(coluna_produto, int(product_id))
+        )
+        itens = [row for row in (getattr(itens_resp, 'data', None) or []) if isinstance(row, dict)]
+        if not itens:
+            return {
+                'success': True,
+                'status': 'sem_alvo',
+                'message': 'Nenhum item compativel encontrado para alocacao.',
+                'campo': campo_normalizado,
+                'quantidade_solicitada': quantidade_total,
+                'quantidade_alocada': 0.0,
+                'quantidade_nao_alocada': quantidade_total,
+                'alocacoes': []
+            }
+
+        demanda_ids = sorted({item.get('demanda_id') for item in itens if item.get('demanda_id') is not None})
+        if not demanda_ids:
+            return {
+                'success': True,
+                'status': 'sem_alvo',
+                'message': 'Itens sem demanda associada para alocacao.',
+                'campo': campo_normalizado,
+                'quantidade_solicitada': quantidade_total,
+                'quantidade_alocada': 0.0,
+                'quantidade_nao_alocada': quantidade_total,
+                'alocacoes': []
+            }
+
+        demandas_resp = supabase_db.execute_with_retry(
+            self.demandas_table.select('id,status,data_entrega,horario_coleta,prioridade_manual,modalidade_logistica,is_flex').in_('id', demanda_ids)
+        )
+        demandas_rows = [row for row in (getattr(demandas_resp, 'data', None) or []) if isinstance(row, dict)]
+
+        status_map = {
+            'PENDENTE': 'AGUARDANDO',
+            'RASCUNHO': 'AGUARDANDO',
+            'CRIADA': 'AGUARDANDO',
+            'EM PRODUCAO': 'EM_PRODUCAO',
+            'EM_ANDAMENTO': 'EM_PRODUCAO',
+            'COLETA PARCIAL': 'COLETA_PARCIAL',
+            'COLETA_PARCIAL': 'COLETA_PARCIAL',
+            'FINALIZADO': 'CONCLUIDO',
+            'CONCLUIDO': 'CONCLUIDO',
+            'COLETADO': 'COLETADO',
+            'CANCELADO': 'CANCELADO',
+        }
+        active_status = {'AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL'}
+
+        demandas_ativas = {}
+        for demanda in demandas_rows:
+            raw_status = str(demanda.get('status') or '').strip().upper().replace('_', ' ')
+            normalized = status_map.get(raw_status, str(demanda.get('status') or '').strip().upper().replace(' ', '_'))
+            if normalized in active_status:
+                demandas_ativas[demanda['id']] = demanda
+
+        if not demandas_ativas:
+            return {
+                'success': True,
+                'status': 'sem_alvo',
+                'message': 'Nao ha demandas ativas para receber a alocacao.',
+                'campo': campo_normalizado,
+                'quantidade_solicitada': quantidade_total,
+                'quantidade_alocada': 0.0,
+                'quantidade_nao_alocada': quantidade_total,
+                'alocacoes': []
+            }
+
+        itens_ativos = [item for item in itens if item.get('demanda_id') in demandas_ativas]
+        itens_ativos.sort(
+            key=lambda item: (
+                0 if (demandas_ativas[item['demanda_id']].get('modalidade_logistica') == 'EXPRESS' or demandas_ativas[item['demanda_id']].get('is_flex')) else 1,
+                -(float(demandas_ativas[item['demanda_id']].get('prioridade_manual') or 0)),
+                demandas_ativas[item['demanda_id']].get('data_entrega') or '9999-12-31',
+                demandas_ativas[item['demanda_id']].get('horario_coleta') or '23:59'
+            )
+        )
+
+        restante = quantidade_total
+        alocacoes = []
+        for item in itens_ativos:
+            if restante <= 0:
+                break
+
+            total_item = float(item.get('quantidade') or 0)
+            atual_item = float(item.get(campo_normalizado) or 0)
+            pendente = max(0.0, total_item - atual_item)
+            if pendente <= 0:
+                continue
+
+            delta = min(restante, pendente)
+            lote_id = str(uuid.uuid4())
+            recon_result = motor_estoque_v2.reconciliar(
+                item_demanda_id=int(item['id']),
+                deltas={campo_normalizado: delta},
+                origem='AlocacaoAvulsa',
+                user_id=user_id,
+                lote_id=lote_id
+            )
+
+            alocacoes.append({
+                'item_id': item['id'],
+                'demanda_id': item.get('demanda_id'),
+                'quantidade_alocada': delta,
+                'campo': campo_normalizado,
+                'motor_result': recon_result
+            })
+            restante -= delta
+
+        qtd_alocada = quantidade_total - restante
+        status = 'success' if restante <= 0 else ('partial' if qtd_alocada > 0 else 'sem_alvo')
+        return {
+            'success': True,
+            'status': status,
+            'campo': campo_normalizado,
+            'sincrono': bool(sincrono),
+            'quantidade_solicitada': quantidade_total,
+            'quantidade_alocada': qtd_alocada,
+            'quantidade_nao_alocada': restante,
+            'alocacoes': alocacoes,
+            'message': (
+                'Alocacao avulsa concluida.'
+                if status == 'success'
+                else 'Alocacao avulsa parcial.'
+                if status == 'partial'
+                else 'Nenhuma alocacao avulsa realizada.'
+            )
+        }
+
     def liberar_alocacao_por_demanda(self, demanda_id: int, quantidade: float, motivo: str = "Liberação Automática"):
         """
         Libera alocações de reserva de estoque para uma demanda específica.

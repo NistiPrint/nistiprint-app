@@ -57,7 +57,7 @@ def get_unified_orders_advanced():
     """
     try:
         # Parâmetros de filtro
-        status_id = request.args.get('status_id', type=int)
+        situacao_pedido_id = request.args.get('status_id', type=int)
         bling_integration_id = request.args.get('bling_integration_id', type=int)
         canal_venda_id = request.args.get('canal_venda_id', type=int)
         origem_pedido_key = request.args.get('origem_pedido_key')
@@ -113,9 +113,10 @@ def get_unified_orders_advanced():
             origem_pedido_key = None
 
         rpc_params = {
-            'p_situacao_pedido_id': status_id,
-            'p_canal_venda_id': canal_venda_id,
+            'p_situacao_pedido_id': situacao_pedido_id,
             'p_bling_integration_id': bling_integration_id,
+            'p_canal_venda_id': canal_venda_id,
+            'p_origem_pedido_key': origem_pedido_key or None,
             'p_has_demanda': has_demanda,
             'p_is_flex': is_flex,
             'p_is_personalizado': is_personalizado,
@@ -129,8 +130,6 @@ def get_unified_orders_advanced():
             'p_limit': limit,
             'p_offset': offset
         }
-        if origem_pedido_key:
-            rpc_params['p_origem_pedido_key'] = origem_pedido_key
 
         # Chamar função RPC (usa nome novo para evitar conflito) com retry
         max_retries = 3

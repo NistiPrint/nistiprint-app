@@ -131,15 +131,21 @@ class DemandaReportingDashboardService:
         """Agrega dados de demandas com itens e coletas."""
         if not response_data:
             return []
+        response_data = [row for row in response_data if isinstance(row, dict) and row.get('id') is not None]
+        if not response_data:
+            return []
 
         demanda_ids = [row['id'] for row in response_data]
         # Busca itens para todas as demandas da página de uma vez
         itens_res = supabase_db.execute_with_retry(self.itens_table.select("*").in_('demanda_id', demanda_ids))
+        itens_rows = [item for item in (getattr(itens_res, 'data', None) or []) if isinstance(item, dict)]
 
         # Agrupa itens por demanda_id
         itens_by_demanda = {}
-        for item in itens_res.data:
-            did = item['demanda_id']
+        for item in itens_rows:
+            did = item.get('demanda_id')
+            if did is None:
+                continue
             if did not in itens_by_demanda:
                 itens_by_demanda[did] = []
             itens_by_demanda[did].append(item)
@@ -151,15 +157,21 @@ class DemandaReportingDashboardService:
             .in_('demanda_id', demanda_ids)
         )
         coleta_totals_map = {}
-        for row in coletas_res.data:
-            did = row['demanda_id']
-            coleta_totals_map[did] = coleta_totals_map.get(did, 0) + row['quantidade']
+        for row in (getattr(coletas_res, 'data', None) or []):
+            if not isinstance(row, dict):
+                continue
+            did = row.get('demanda_id')
+            if did is None:
+                continue
+            coleta_totals_map[did] = coleta_totals_map.get(did, 0) + float(row.get('quantidade') or 0)
 
         result = []
         for row in response_data:
-            canal_nome = row.get('canal_venda', {}).get('nome') if row.get('canal_venda') else None
-            canal_color = row.get('canal_venda', {}).get('color') if row.get('canal_venda') else None
-            canal_plataforma = row.get('canal_venda', {}).get('plataformas', {}).get('nome') if row.get('canal_venda') else None
+            canal = row.get('canal_venda') if isinstance(row.get('canal_venda'), dict) else {}
+            plataformas = canal.get('plataformas') if isinstance(canal.get('plataformas'), dict) else {}
+            canal_nome = canal.get('nome')
+            canal_color = canal.get('color')
+            canal_plataforma = plataformas.get('nome')
 
             # Injetar o total coletado na row antes de processar
             row['quantidade_coletada_total'] = coleta_totals_map.get(row['id'], 0)
@@ -173,6 +185,8 @@ class DemandaReportingDashboardService:
                 },
                 itens_by_demanda.get(row['id'], [])
             )
+            if not isinstance(processed, dict):
+                continue
             result.append(processed)
         return result
 

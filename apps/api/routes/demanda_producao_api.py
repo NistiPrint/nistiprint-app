@@ -1226,14 +1226,17 @@ def get_system_tasks():
 @demanda_producao_api_bp.route('/miolo-demand-summary', methods=['GET'])
 def get_miolo_demand_summary():
     try:
-        all_demandas = demanda_producao_service.get_demandas_by_status(['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL'])
+        all_demandas_raw = demanda_producao_service.get_demandas_by_status(['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL']) or []
+        all_demandas = [d for d in all_demandas_raw if isinstance(d, dict) and d.get('id') is not None]
         miolo_summary = {}
         demanda_ids = [d['id'] for d in all_demandas]
-        itens_mapping = demanda_producao_service.get_items_for_multiple_demandas([str(id) for id in demanda_ids])
+        itens_mapping = demanda_producao_service.get_items_for_multiple_demandas([str(id) for id in demanda_ids]) or {}
         for demanda in all_demandas:
             did_str = str(demanda['id'])
             itens = itens_mapping.get(did_str, [])
             for item in itens:
+                if not isinstance(item, dict):
+                    continue
                 miolo_name = item.get('miolo_name')
                 miolo_id = item.get('id_produto_miolo')
                 if miolo_name:
@@ -1266,14 +1269,17 @@ def get_miolo_demand_summary():
 @demanda_producao_api_bp.route('/capa-demand-info', methods=['GET'])
 def get_capa_demand_info():
     try:
-        all_demandas = demanda_producao_service.get_demandas_by_status(['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL'])
+        all_demandas_raw = demanda_producao_service.get_demandas_by_status(['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL']) or []
+        all_demandas = [d for d in all_demandas_raw if isinstance(d, dict) and d.get('id') is not None]
         capa_summary = {}
         demanda_ids = [d['id'] for d in all_demandas]
-        itens_mapping = demanda_producao_service.get_items_for_multiple_demandas([str(id) for id in demanda_ids])
+        itens_mapping = demanda_producao_service.get_items_for_multiple_demandas([str(id) for id in demanda_ids]) or {}
         for demanda in all_demandas:
             did_str = str(demanda['id'])
             itens = itens_mapping.get(did_str, [])
             for item in itens:
+                if not isinstance(item, dict):
+                    continue
                 if not item.get('produto_id'): continue
                 key = str(item['produto_id'])
                 quantity = item.get('quantidade_total', 0)
