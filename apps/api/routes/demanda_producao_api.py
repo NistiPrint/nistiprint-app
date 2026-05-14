@@ -1,6 +1,7 @@
 from flask import request, jsonify, session, Response, stream_with_context
 import json
 import pytz
+import logging
 from datetime import datetime, timedelta
 from constants import APP_TIMEZONE
 from routes.auth import login_required, check_permission, get_current_user
@@ -14,6 +15,9 @@ from nistiprint_shared.services.daily_production_log_service import daily_produc
 from .demanda_producao_base import demanda_producao_api_bp
 
 from nistiprint_shared.services.previsao_consumo_service import previsao_consumo_service
+from nistiprint_shared.utils.date_utils import get_today
+
+logger = logging.getLogger(__name__)
 
 
 def _integration_to_bling_account_data(integration):
@@ -77,16 +81,26 @@ def api_retry_fila_estoque(task_id):
 @demanda_producao_api_bp.route('/', methods=['GET'])
 def api_list_demandas():
     try:
-        demandas = demanda_producao_service.get_all_demandas()
+        demandas_raw = demanda_producao_service.get_all_demandas() or []
+        demandas = []
+        for idx, demanda in enumerate(demandas_raw):
+            if not isinstance(demanda, dict):
+                logger.warning("Ignoring invalid demanda in api_list_demandas at index=%s type=%s", idx, type(demanda).__name__)
+                continue
+            demandas.append(demanda)
 
         def sort_key(d):
             modalidade = d.get('modalidade_logistica', 'STANDARD')
             is_express = modalidade == 'EXPRESS'
-            priority = d.get('manual_priority_score') or 0
+            priority_raw = d.get('manual_priority_score') or 0
+            try:
+                priority = int(priority_raw)
+            except (TypeError, ValueError):
+                priority = 0
             data_entrega = d.get('data_entrega') or '9999-12-31'
             horario = d.get('deadline_final') or d.get('horario_coleta') or "23:59"
             
-            return (not is_express, -int(priority), data_entrega, horario)
+            return (not is_express, -priority, data_entrega, horario)
             
         demandas.sort(key=sort_key)
 
@@ -994,9 +1008,8 @@ def api_processar_fila_estoque():
 @demanda_producao_api_bp.route('/dashboard-totals', methods=['GET'])
 def get_dashboard_totals():
     try:
-        from datetime import date
         from nistiprint_shared.database.supabase_db_service import supabase_db
-        today = date.today()
+        today = get_today()
         logs_res = supabase_db.table('logs_producao_diaria')\
             .select("*")\
             .eq('data', today.isoformat())\
@@ -1004,10 +1017,15 @@ def get_dashboard_totals():
             .execute()
         sector_totals = {'CPD': 0, 'Capas': 0, 'Miolos': 0, 'Expedição': 0}
         if logs_res.data:
-            for log in logs_res.data:
+            for idx, log in enumerate(logs_res.data):
                 try:
+                    if not isinstance(log, dict):
+                        logger.warning("Ignoring invalid log row in dashboard-totals at index=%s type=%s", idx, type(log).__name__)
+                        continue
                     qty = float(log.get('quantidade_produzida', 0))
                     metadata = log.get('detalhes_producao') or {}
+                    if not isinstance(metadata, dict):
+                        metadata = {}
                     campo = metadata.get('campo')
                     if campo:
                         if campo in ['capas_impressas_qtd', 'capas_prontas_retirada_qtd']:
@@ -1029,18 +1047,24 @@ def get_dashboard_totals():
             return jsonify({'success': False, 'message': f'Erro ao buscar demandas: {e}'}), 500
         
         if all_demandas:
-            for demanda in all_demandas:
+            for idx, demanda in enumerate(all_demandas):
                 try:
+                    if not isinstance(demanda, dict):
+                        logger.warning("Ignoring invalid demanda in dashboard-totals at index=%s type=%s", idx, type(demanda).__name__)
+                        continue
                     data_entrega_str = demanda.get('data_entrega')
                     if data_entrega_str:
-                        from datetime import datetime
-                        data_entrega = datetime.strptime(data_entrega_str, '%Y-%m-%d').date()
+                        if isinstance(data_entrega_str, datetime):
+                            data_entrega = data_entrega_str.date()
+                        else:
+                            data_entrega = datetime.fromisoformat(str(data_entrega_str)[:10]).date()
                         if data_entrega == today:
                             demand_totals['today'] += 1
                         elif data_entrega > today:
                             demand_totals['future'] += 1
                 except Exception as e:
-                    print(f"Error processing demanda {demanda.get('id')}: {e}")
+                    demanda_id = demanda.get('id') if isinstance(demanda, dict) else None
+                    print(f"Error processing demanda {demanda_id}: {e}")
         
         return jsonify({'success': True, 'sector_totals': sector_totals, 'demand_totals': demand_totals})
     except Exception as e:

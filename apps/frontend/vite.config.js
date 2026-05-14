@@ -23,7 +23,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://api:8080',  // Usa o nome do serviço Docker na rede interna
+        target: 'http://localhost:8080',  // Usa o nome do serviço Docker na rede interna
         changeOrigin: true,
         credentials: true,
         ws: true,
