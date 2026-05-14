@@ -941,7 +941,7 @@ class DemandaCoreService:
                     .maybe_single() \
                     .execute()
                 
-                if response.data and response.data.get('horario_limite'):
+                if response and response.data and response.data.get('horario_limite'):
                     horario = response.data['horario_limite']
                     # Converter time para string HH:MM se necessário
                     if hasattr(horario, 'isoformat'):
