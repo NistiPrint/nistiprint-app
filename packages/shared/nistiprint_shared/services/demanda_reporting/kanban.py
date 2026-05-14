@@ -43,6 +43,10 @@ class DemandaReportingKanbanService:
         # Caso contrário, tenta converter para UPPER_SNAKE_CASE ou mantém o original.
         return mapping.get(status, status.upper().replace(' ', '_'))
 
+    def _safe_dict_rows(self, rows: Any) -> List[Dict[str, Any]]:
+        """Retorna apenas linhas dicionário válidas para evitar falhas em payloads quebrados."""
+        return [row for row in (rows or []) if isinstance(row, dict)]
+
     def _process_demanda_dict(self, demanda: Dict[str, Any], itens: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Adiciona aliases e processa campos para o frontend, incluindo agregações de itens."""
         if not demanda:
@@ -135,15 +139,19 @@ class DemandaReportingKanbanService:
         return i
 
     def _get_aggregated_demandas(self, response_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        response_data = self._safe_dict_rows(response_data)
         if not response_data:
             return []
 
-        demanda_ids = [row['id'] for row in response_data]
+        demanda_ids = [row.get('id') for row in response_data if row.get('id') is not None]
+        if not demanda_ids:
+            return []
         itens_res = supabase_db.execute_with_retry(self.itens_table.select("*").in_('demanda_id', demanda_ids))
+        itens_rows = self._safe_dict_rows(getattr(itens_res, 'data', None))
 
         # OTIMIZAÇÃO: Coletar nomes de miolos em lote se estiverem faltando
         missing_miolo_ids = set()
-        for i in itens_res.data:
+        for i in itens_rows:
             if i.get('id_produto_miolo') and not i.get('miolo_nome'):
                 missing_miolo_ids.add(str(i['id_produto_miolo']))
         
@@ -152,20 +160,24 @@ class DemandaReportingKanbanService:
             try:
                 # Otimização via ProductService se tiver batch mode, ou via query direta
                 prods_res = supabase_db.table('produtos').select('id, nome').in_('id', list(missing_miolo_ids)).execute()
-                for p in prods_res.data:
+                for p in self._safe_dict_rows(getattr(prods_res, 'data', None)):
                     miolo_names_map[str(p['id'])] = p['nome']
             except: pass
 
         itens_by_demanda = {}
-        for item in itens_res.data:
+        for item in itens_rows:
             processed_item = self._process_item_dict(item)
+            if not isinstance(processed_item, dict):
+                continue
             # Injetar nome do miolo se faltava e buscamos em lote
             mid = str(processed_item.get('id_produto_miolo'))
             if not processed_item.get('miolo_name') and mid in miolo_names_map:
                 processed_item['miolo_nome'] = miolo_names_map[mid]
                 processed_item['miolo_name'] = miolo_names_map[mid]
 
-            did = item['demanda_id']
+            did = item.get('demanda_id')
+            if did is None:
+                continue
             if did not in itens_by_demanda:
                 itens_by_demanda[did] = []
             itens_by_demanda[did].append(processed_item)
@@ -176,17 +188,23 @@ class DemandaReportingKanbanService:
             .in_('demanda_id', demanda_ids)
         )
         coleta_totals_map = {}
-        for row in coletas_res.data:
-            did = row['demanda_id']
-            coleta_totals_map[did] = coleta_totals_map.get(did, 0) + row['quantidade']
+        for row in self._safe_dict_rows(getattr(coletas_res, 'data', None)):
+            did = row.get('demanda_id')
+            if did is None:
+                continue
+            coleta_totals_map[did] = coleta_totals_map.get(did, 0) + float(row.get('quantidade') or 0)
 
         result = []
         for row in response_data:
-            canal_nome = row.get('canal_venda', {}).get('nome') if row.get('canal_venda') else None
-            canal_color = row.get('canal_venda', {}).get('color') if row.get('canal_venda') else None
-            canal_plataforma = row.get('canal_venda', {}).get('plataformas', {}).get('nome') if row.get('canal_venda') else None
+            if row.get('id') is None:
+                continue
+            canal = row.get('canal_venda') if isinstance(row.get('canal_venda'), dict) else {}
+            plataformas = canal.get('plataformas') if isinstance(canal.get('plataformas'), dict) else {}
+            canal_nome = canal.get('nome')
+            canal_color = canal.get('color')
+            canal_plataforma = plataformas.get('nome')
 
-            row['quantidade_coletada_total'] = coleta_totals_map.get(row['id'], 0)
+            row['quantidade_coletada_total'] = coleta_totals_map.get(row.get('id'), 0)
 
             # Passar itens processados para o helper
             demanda_itens = itens_by_demanda.get(row['id'], [])
@@ -200,6 +218,8 @@ class DemandaReportingKanbanService:
                 },
                 demanda_itens
             )
+            if not isinstance(processed, dict):
+                continue
             # Garantir que itens fiquem no dict para evitar re-fetch
             processed['itens'] = demanda_itens
             result.append(processed)
@@ -232,10 +252,11 @@ class DemandaReportingKanbanService:
         response = supabase_db.execute_with_retry(
             self.itens_table.select("*").in_('demanda_id', [str(id) for id in demanda_ids])
         )
+        response_rows = self._safe_dict_rows(getattr(response, 'data', None))
 
         # OTIMIZAÇÃO: Coletar nomes de miolos em lote se estiverem faltando
         missing_miolo_ids = set()
-        for i in response.data:
+        for i in response_rows:
             if i.get('id_produto_miolo') and not i.get('miolo_nome'):
                 missing_miolo_ids.add(str(i['id_produto_miolo']))
         
@@ -243,13 +264,15 @@ class DemandaReportingKanbanService:
         if missing_miolo_ids:
             try:
                 prods_res = supabase_db.table('produtos').select('id, nome').in_('id', list(missing_miolo_ids)).execute()
-                for p in prods_res.data:
+                for p in self._safe_dict_rows(getattr(prods_res, 'data', None)):
                     miolo_names_map[str(p['id'])] = p['nome']
             except: pass
 
         mapping = {}
-        for item in response.data:
+        for item in response_rows:
             processed = self._process_item_dict(item)
+            if not isinstance(processed, dict):
+                continue
             
             # Injetar nome do miolo se faltava
             mid = str(processed.get('id_produto_miolo'))
@@ -257,6 +280,8 @@ class DemandaReportingKanbanService:
                 processed['miolo_nome'] = miolo_names_map[mid]
                 processed['miolo_name'] = miolo_names_map[mid]
 
+            if item.get('demanda_id') is None:
+                continue
             did = str(item['demanda_id'])
             if did not in mapping:
                 mapping[did] = []
@@ -267,7 +292,10 @@ class DemandaReportingKanbanService:
         """Retorna dados do painel de produção organizado por setores/colunas Kanban."""
         # Busca demandas ativas (status normalizados para Upper Snake Case)
         # Exclui: Finalizado (CONCLUIDO), Coletado (COLETADO), Cancelado (CANCELADO)
-        demandas_ativas = self.get_demandas_by_status(['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL'])
+        demandas_ativas = [
+            d for d in (self.get_demandas_by_status(['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL']) or [])
+            if isinstance(d, dict) and d.get('id') is not None
+        ]
 
         # Coletar todos os itens para enriquecer com estoque em lote
         all_items_flat = []
@@ -275,7 +303,7 @@ class DemandaReportingKanbanService:
         
         for d in demandas_ativas:
             # Pega os itens que já foram processados e anexados à demanda
-            itens = d.get('itens', [])
+            itens = [i for i in (d.get('itens') or []) if isinstance(i, dict)]
             all_items_flat.extend(itens)
             itens_mapping[str(d['id'])] = itens
 
@@ -303,6 +331,10 @@ class DemandaReportingKanbanService:
         # Enriquecer itens com dados de estoque (Delegado para o Core Service Otimizado)
         from nistiprint_shared.services.demanda.core import demanda_core_service
         enriched_items = demanda_core_service.enrich_items_with_stock(all_items_flat, deposito_id)
+        enriched_items = [
+            item for item in (enriched_items or [])
+            if isinstance(item, dict) and item.get('demanda_id') is not None
+        ]
 
         # Remapear enriquecidos de volta para o itens_mapping
         itens_mapping = {}
@@ -327,6 +359,8 @@ class DemandaReportingKanbanService:
                 urgentes_count += 1
 
             for item in itens:
+                if not isinstance(item, dict) or item.get('id') is None:
+                    continue
                 # Skip only 'Concluído' items (not 'Fechando')
                 if item.get('status_item') == 'Concluído':
                     continue

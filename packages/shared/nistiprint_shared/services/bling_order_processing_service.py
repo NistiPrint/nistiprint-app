@@ -7,7 +7,7 @@ from time import perf_counter
 import unicodedata
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
-from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
+from nistiprint_shared.services.consolidation_service import consolidation_service
 from nistiprint_shared.services.correlation_service import (
     generate_correlation_id,
     set_correlation_id,
@@ -580,14 +580,22 @@ def process_webhook(
                 raw_decision=flex.raw_decision if hasattr(flex, 'raw_decision') else None,
             )
 
-        # 10. Encadear demanda
+        # 10. Encadear consolidacao em rascunho
         with ingest_step('create_demanda', ingest_ctx):
-            demanda_producao_service.create_from_order(
-                {**payload, 'pedido_id': pedido_id},
-                is_flex=flex.is_flex,
-                modalidade_logistica=flex.modalidade,
-                marketplace_integration_id=(marketplace_inst or {}).get('id'),
-            )
+            consolidacao = consolidation_service.consolidar_pedido(pedido_id)
+            if consolidacao:
+                ingest_ctx['status'] = 'success'
+                ingest_ctx['message'] = (
+                    f"pedido_id={pedido_id} consolidado em demanda "
+                    f"id={consolidacao.get('id')} status={consolidacao.get('status')}"
+                )
+            else:
+                # Sem consolidacao (pedido sem classificacao/criterio) nao deve quebrar o pipeline.
+                ingest_ctx['status'] = 'warning'
+                ingest_ctx['message'] = (
+                    f"pedido_id={pedido_id} sem consolidacao automatica "
+                    "(nao classificado ou sem regra aplicavel)"
+                )
 
         detail_unavailable = bool(ingest_ctx.get('detail_unavailable'))
         final_status = 'failed' if detail_unavailable else 'success'
