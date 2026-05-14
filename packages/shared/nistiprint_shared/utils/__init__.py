@@ -155,6 +155,102 @@ def process_string(item):
     if '| AGENDA 2025 PERSONALIZADA COM NOME E CAPA DURA' in item['descricao']:
         return 'BARBIE'
     
+    if 'VACMNO_URSBA_BAA' in item['codigo']:
+        return 'URSO BALÃO'
+    
+    if 'VACMNO_URSAV_BAA' in item['codigo']:
+        return 'URSO AVIADOR'
+    
+    if 'VACMNO_URSAT_BBB' in item['codigo']:
+        return 'URSO ASTRONAUTA'
+    
+    if 'VACMNO_CP1_BBB' in item['codigo']:
+        return 'DINOSSAURO'
+    
+    if 'VACMNO_CP9_BBB' in item['codigo']:
+        return 'CINZA ESCURO'
+    
+    if 'VACMNO_CP3_BAA' in item['codigo']:
+        return 'ANIMAL TRANSPARENTE'
+    
+    if 'VACMNO_CP5_BBB' in item['codigo']:
+        return 'BEGE'
+    
+    if 'VACMNO_CP10_PXP' in item['codigo']:
+        return 'LARANJA'
+    
+    if 'VACMNO_CP7_BBB' in item['codigo']:
+        return 'CINZA CLARO'
+    
+    if 'VACMNO_CP4_BAA' in item['codigo']:
+        return 'NOITE ESTRELADA'
+    
+    if 'VACMNO_CP2_BAA' in item['codigo']:
+        return 'CÉU AZUL'
+    
+    if 'VACMNO_CP6_BBB' in item['codigo']:
+        return 'AREIA'
+    
+    if 'VACMNO_CP8_BBB' in item['codigo']:
+        return 'VERDE'
+    
+    if 'VACMNO_MCP6_PBP' in item['codigo']:
+        return 'MINIMALISTA - CINZA'
+    
+    if 'VACMNO_MCP1_BBB' in item['codigo']:
+        return 'VERDE PASTEL'
+    
+    if 'VACMNO_MCP2_BBB' in item['codigo']:
+        return 'MINIMALISTA - MARROM'
+    
+    if 'VACMNO_MCP3_BBB' in item['codigo']:
+        return 'MINIMALISTA - AZUL BB'
+    
+    if 'VACMNO_MCP4_PAP' in item['codigo']:
+        return 'MINIMALISTA - AZL ESCURO PP'
+    
+    if 'VACMNO_MCP5_PBP' in item['codigo']:
+        return 'MINIMALISTA - BEGE'
+    
+    if 'VACMNA_CPA6_BBB' in item['codigo']:
+        return 'DELICATE - ANIMAIS'
+    
+    if 'VACMNA_CPA1_BBB' in item['codigo']:
+        return 'DELICATE - FLORAL'
+    
+    if 'VACMNA_CPA2_BRR' in item['codigo']:
+        return 'DELICATE - LAÇOS'
+    
+    if 'VACMNA_CPA3_BRR' in item['codigo']:
+        return 'DELICATE - MARGARIDAS'
+    
+    if 'VACMNA_CPA4_BRR' in item['codigo']:
+        return 'DELICATE - FLOR ROSA'
+    
+    if 'VACMNA_CPA5_BRB' in item['codigo']:
+        return 'DELICATE - FLOR LILÁS'
+    
+    if 'CMB_VACMNO_BBA' in item['codigo']:
+        return 'KIT RAVI'
+    
+    if 'CMB_AURORA_BBB' in item['codigo']:
+        return 'KIT AURORA'
+    
+    if 'CMB_ELOA_BRR' in item['codigo']:
+        return 'KIT ELOA'
+    
+    if 'VACMNA_JAEN1_BBB' in item['codigo']:
+        return 'Jardim 1 - ARCO'
+    
+    if 'VACMNA_JAEN2_BBB' in item['codigo']:
+        return 'Jardim 2 - CERCADINHO'
+    
+    if 'VACMNA_JAEN3_RBB' in item['codigo']:
+        return 'Jardim 3 - LAÇO'
+    
+    if 'VACMNA_JAEN4_BBB' in item['codigo']:
+        return 'Jardim 4 - ARCO LILÁS'
+    
     """
     Check if all words in any key exist in the input string and return the value.
     Ignores the order of the words and handles case sensitivity.

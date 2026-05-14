@@ -51,8 +51,9 @@ class DemandaReportingProductionService:
         d['nome'] = d.get('descricao')
         d['manual_priority_score'] = d.get('prioridade_manual', 0)
 
-        if itens is not None:
+        if itens is not None and isinstance(itens, list):
             def qtd(item, field):
+                if not isinstance(item, dict): return 0
                 return max(0, float(item.get(field) or 0))
             # Agregações para o DemandaCard
             d['total_itens'] = sum(qtd(i, 'quantidade') for i in itens)
@@ -81,25 +82,35 @@ class DemandaReportingProductionService:
             )
 
             progresso = 0
-            if d['total_itens'] > 0:
+            if d.get('total_itens', 0) > 0:
                 progresso = round((d['itens_finalizados_total'] / d['total_itens']) * 100)
             d['progresso_percentual'] = progresso
 
-            if d['total_itens'] > 0:
+            if d.get('total_itens', 0) > 0:
                 d['readiness_score'] = round(((d['capas_impressas_qtd'] + d['miolos_produzidos_qtd']) / (2 * d['total_itens'])) * 100)
             else:
                 d['readiness_score'] = 0
 
             d['is_stuck'] = False
-            if d['status'] == 'Em Produção' and d['total_itens'] > 0:
+            if d.get('status') == 'Em Produção' and d.get('total_itens', 0) > 0:
                 gap_capas = d['capas_impressas_qtd'] - d['capas_produzidas_qtd']
                 if gap_capas > (d['total_itens'] * 0.5) and d['itens_concluidos'] < (d['total_itens'] * 0.2):
                     d['is_stuck'] = True
 
             if itens:
                 first_item = itens[0]
-                d['id_produto_miolo'] = first_item.get('id_produto_miolo')
-                d['produto_miolo_nome'] = first_item.get('produto_miolo_nome') or first_item.get('miolo_nome')
+                if isinstance(first_item, dict):
+                    d['id_produto_miolo'] = first_item.get('id_produto_miolo')
+                    d['produto_miolo_nome'] = first_item.get('produto_miolo_nome') or first_item.get('miolo_nome')
+        else:
+            # Fallback para caso itens não seja uma lista válida
+            d.update({
+                'total_itens': 0, 'total_quantidade': 0, 'itens_finalizados_total': 0,
+                'itens_finalizados': 0, 'itens_prontos_total': 0, 'itens_concluidos': 0,
+                'capas_impressas_qtd': 0, 'capas_produzidas_qtd': 0, 'capas_prontas_retirada_qtd': 0,
+                'miolos_produzidos_qtd': 0, 'miolos_prontos_retirada_qtd': 0, 'completed_quantidade': 0,
+                'progresso_percentual': 0, 'readiness_score': 0, 'is_stuck': False
+            })
 
         if d.get('dados_adicionais'):
             dados_adicionais = d['dados_adicionais']
