@@ -317,6 +317,7 @@ class OrderTrackerService:
                             'quantidade_atendida': qty,
                             'created_at': datetime.utcnow().isoformat()
                         })
+
                     else:
                         logging.warning(f"Could not link External Item {sku_externo} (Ord: {order_id}) to any item in Demanda {demanda_id}")
 
