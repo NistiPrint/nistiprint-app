@@ -460,7 +460,9 @@ class ConsolidationService:
         quantidade = self._calcular_quantidade_pedido(pedido)
         
         # Criar demanda
+        demanda_id = f"DEM-{get_now().strftime('%Y%m%d%H%M%S')}-{pedido.get('canal_venda_id')}"
         demanda_payload = {
+            'demanda_id': demanda_id,
             'status': 'RASCUNHO',
             'descricao': f"Rascunho {canal.get('nome', 'Canal')} - {modalidade} - {data_entrega or 'Sem data'}",
             'canal_venda_id': pedido.get('canal_venda_id'),
@@ -534,7 +536,9 @@ class ConsolidationService:
         categoria_temporal = self._calcular_categoria_temporal(data_entrega, modalidade)
         quantidade = self._calcular_quantidade_pedido(pedido)
         
+        demanda_id = f"DEM-{get_now().strftime('%Y%m%d%H%M%S')}-{pedido.get('canal_venda_id')}"
         demanda_payload = {
+            'demanda_id': demanda_id,
             'status': 'AGUARDANDO',  # Já publicada
             'descricao': f"Demanda {canal.get('nome', 'Canal')} - {modalidade} - {pedido.get('numero_pedido', 'N/A')}",
             'canal_venda_id': pedido.get('canal_venda_id'),
