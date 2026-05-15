@@ -103,7 +103,7 @@ celery_app = Celery(
 
 # Roteamento e Filas
 celery_app.conf.task_queues = {
-    'default': {'exchange': 'default', 'routing_key': 'default'},
+    'celery': {'exchange': 'celery', 'routing_key': 'celery'},
     'ai_personalization': {'exchange': 'ai', 'routing_key': 'ai.personalization'},
     'bling_status_sync':  {'exchange': 'bling', 'routing_key': 'bling.status'},
 }
@@ -123,6 +123,10 @@ celery_app.conf.update(
     enable_utc=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    task_default_queue='celery',
+    task_default_exchange='celery',
+    task_default_routing_key='celery',
+    broker_connection_retry_on_startup=True,
     beat_schedule=load_dynamic_schedules()
 )
 
