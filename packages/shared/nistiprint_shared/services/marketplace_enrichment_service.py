@@ -189,7 +189,7 @@ class MarketplaceEnrichmentService:
             }
 
             # Upsert no vinculos_integracao_pedido
-            self.vinculos_table.upsert(vinculo, on_conflict='pedido_id,plataforma').execute()
+            self.vinculos_table.upsert(vinculo, on_conflict='plataforma,id_na_plataforma').execute()
 
             # Atualizar colunas explícitas na tabela pedidos
             update_pedido = {
