@@ -193,6 +193,7 @@ def gerar_demanda_consolidada():
         
         sugestoes = None
         canal_venda_id = selected_canal_venda_id
+        marketplace_integration_id = data.get('marketplace_integration_id')
         
         if canal_venda_id:
             try:
@@ -203,6 +204,7 @@ def gerar_demanda_consolidada():
                 
                 sugestoes = DemandasSugestoesService.calcular_sugestoes(
                     canal_venda_id=canal_venda_id,
+                    marketplace_integration_id=marketplace_integration_id,
                     tipo_demanda='PLATAFORMA',
                     data_entrega=data_entrega
                 )
@@ -229,7 +231,8 @@ def gerar_demanda_consolidada():
             observacoes=data.get('observacoes'),
             user_id=user_id,
             tipo_demanda='PLATAFORMA',
-            status='EM_PRODUCAO'
+            status='EM_PRODUCAO',
+            marketplace_integration_id=marketplace_integration_id
         )
 
         if not nova_demanda:

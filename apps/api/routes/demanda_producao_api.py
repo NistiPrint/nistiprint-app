@@ -1615,10 +1615,11 @@ def get_sugestoes_demanda():
         data = request.get_json() or {}
         
         canal_venda_id = data.get('canal_venda_id')
-        if not canal_venda_id:
+        marketplace_integration_id = data.get('marketplace_integration_id')
+        if not canal_venda_id and not marketplace_integration_id:
             return jsonify({
                 'success': False,
-                'message': 'canal_venda_id é obrigatório'
+                'message': 'canal_venda_id ou marketplace_integration_id é obrigatório'
             }), 400
         
         tipo_demanda = data.get('tipo_demanda', 'PLATAFORMA')
@@ -1636,6 +1637,7 @@ def get_sugestoes_demanda():
         # Calcular sugestões
         sugestoes = DemandasSugestoesService.calcular_sugestoes(
             canal_venda_id=canal_venda_id,
+            marketplace_integration_id=marketplace_integration_id,
             tipo_demanda=tipo_demanda,
             data_entrega=data_entrega
         )
@@ -1684,18 +1686,20 @@ def validar_override():
         campo = data.get('campo')
         valor_alterado = data.get('valor_alterado')
         canal_venda_id = data.get('canal_venda_id')
+        marketplace_integration_id = data.get('marketplace_integration_id')
         
-        if not all([campo, valor_alterado, canal_venda_id]):
+        if not campo or valor_alterado is None or (not canal_venda_id and not marketplace_integration_id):
             return jsonify({
                 'success': False,
-                'message': 'campo, valor_alterado e canal_venda_id são obrigatórios'
+                'message': 'campo, valor_alterado e (canal_venda_id ou marketplace_integration_id) são obrigatórios'
             }), 400
         
         # Validar override
         validacao = DemandasSugestoesService.validar_override(
             campo=campo,
             valor_alterado=valor_alterado,
-            canal_venda_id=canal_venda_id
+            canal_venda_id=canal_venda_id,
+            marketplace_integration_id=marketplace_integration_id
         )
         
         return jsonify({

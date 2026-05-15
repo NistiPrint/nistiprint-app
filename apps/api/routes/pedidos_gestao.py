@@ -491,6 +491,7 @@ def gerar_demanda_pedidos():
         
         sugestoes = None
         canal_venda_id_para_sugestao = None
+        marketplace_integration_id = data.get('marketplace_integration_id')
         
         # Descobrir canal_venda_id para sugestões
         pedido_ids = data.get('pedido_ids')
@@ -513,6 +514,7 @@ def gerar_demanda_pedidos():
                 
                 sugestoes = DemandasSugestoesService.calcular_sugestoes(
                     canal_venda_id=canal_venda_id_para_sugestao,
+                    marketplace_integration_id=marketplace_integration_id,
                     tipo_demanda='PLATAFORMA',
                     data_entrega=data_entrega
                 )
@@ -573,7 +575,8 @@ def gerar_demanda_pedidos():
                     user_id=user_id,
                     tipo_demanda='PLATAFORMA',
                     status='EM_PRODUCAO',
-                    pedido_id=pedido_id
+                    pedido_id=pedido_id,
+                    marketplace_integration_id=marketplace_integration_id or pedido.get('marketplace_integration_id')
                 )
 
                 if nova_demanda:
@@ -624,7 +627,8 @@ def gerar_demanda_pedidos():
                 observacoes=data.get('observacoes'),
                 user_id=user_id,
                 tipo_demanda='PLATAFORMA',
-                status='EM_PRODUCAO'
+                status='EM_PRODUCAO',
+                marketplace_integration_id=marketplace_integration_id
             )
 
             return ApiResponse.success(data={

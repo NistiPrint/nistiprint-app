@@ -13,6 +13,7 @@ Nova arquitetura:
 from typing import Dict, Any, List, Optional
 from datetime import datetime, date, time, timedelta
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
 import logging
 
 logger = logging.getLogger("DemandasSugestoesService")
@@ -36,7 +37,8 @@ class DemandasSugestoesService:
     @classmethod
     def calcular_sugestoes(
         cls,
-        canal_venda_id: int,
+        canal_venda_id: Optional[int] = None,
+        marketplace_integration_id: Optional[int] = None,
         tipo_demanda: str = 'PLATAFORMA',
         data_entrega: Optional[date] = None
     ) -> Dict[str, Any]:
@@ -63,38 +65,39 @@ class DemandasSugestoesService:
             }
         """
         try:
-            # Chamar função SQL fn_sugerir_valores_demanda
-            result = supabase_db.rpc(
-                'fn_sugerir_valores_demanda',
-                {
-                    'p_canal_venda_id': canal_venda_id,
-                    'p_tipo_demanda': tipo_demanda,
-                    'p_data_entrega': data_entrega.isoformat() if data_entrega else None
-                }
-            ).execute()
-            
-            if result.data:
-                row = result.data[0] if isinstance(result.data, list) else result.data
-                
-                # Converter para formato amigável
-                sugestoes = {
-                    'horario_coleta': cls._format_time(row.get('horario_coleta_sugerido')),
-                    'modalidade_logistica': row.get('modalidade_logistica_sugerida', 'STANDARD'),
-                    'data_limite_execucao': cls._format_date(row.get('data_limite_execucao_sugerida')),
-                    'is_flex': row.get('is_flex_sugerido', False),
-                    'fulfillment': row.get('fulfillment_sugerido', False),
-                    'prazo_dias': row.get('prazo_dias', 2),
-                    'horario_limite': cls._format_time(row.get('horario_limite')),
-                    'regra_origem': row.get('regra_origem', 'padrao_sistema'),
-                    'alertas': row.get('alertas', [])
-                }
-                
-                logger.debug(f"Sugestões calculadas para canal {canal_venda_id}: {sugestoes}")
-                return sugestoes
-            else:
-                # Fallback: valores padrão
-                logger.warning(f"Função fn_sugerir_valores_demanda não retornou dados para canal {canal_venda_id}")
+            modalidade_sugerida = 'STANDARD'
+            contexto = {}
+            if marketplace_integration_id:
+                contexto = logistica_coleta_service.calcular_contexto_coleta(
+                    marketplace_integration_id=marketplace_integration_id,
+                    modalidade=modalidade_sugerida,
+                )
+            elif canal_venda_id:
+                contexto = logistica_coleta_service.resolver_por_canal(
+                    canal_venda_id=canal_venda_id,
+                    modalidade=modalidade_sugerida,
+                )
+
+            if not contexto.get('tem_regra'):
                 return cls._get_valores_padrao()
+
+            prazo_dias = cls.PRAZO_POR_MODALIDADE.get(modalidade_sugerida, 2)
+            data_limite_execucao = None
+            if data_entrega:
+                data_limite_execucao = data_entrega - timedelta(days=prazo_dias)
+
+            return {
+                'horario_coleta': contexto.get('proxima_coleta_horario'),
+                'modalidade_logistica': modalidade_sugerida,
+                'data_limite_execucao': cls._format_date(data_limite_execucao),
+                'is_flex': modalidade_sugerida == 'EXPRESS',
+                'fulfillment': modalidade_sugerida == 'FULFILLMENT',
+                'prazo_dias': prazo_dias,
+                'horario_limite': contexto.get('deadline_final_horario'),
+                'regra_origem': 'regras_logisticas_integracao',
+                'alertas': [],
+                'coleta_contexto': contexto,
+            }
                 
         except Exception as e:
             logger.error(f"Erro ao calcular sugestões: {e}", exc_info=True)
@@ -105,7 +108,8 @@ class DemandasSugestoesService:
         cls,
         campo: str,
         valor_alterado: Any,
-        canal_venda_id: int
+        canal_venda_id: Optional[int] = None,
+        marketplace_integration_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Valida se um override é compatível com as regras do canal.
@@ -123,40 +127,38 @@ class DemandasSugestoesService:
             }
         """
         try:
-            # Converter valor para JSONB
-            if isinstance(valor_alterado, (date, datetime)):
-                valor_json = valor_alterado.isoformat()
-            elif isinstance(valor_alterado, time):
-                valor_json = valor_alterado.strftime('%H:%M')
-            elif isinstance(valor_alterado, bool):
-                valor_json = str(valor_alterado).lower()
-            else:
-                valor_json = str(valor_alterado)
-            
-            # Chamar função SQL fn_validar_override_demanda
-            result = supabase_db.rpc(
-                'fn_validar_override_demanda',
-                {
-                    'p_campo': campo,
-                    'p_valor_alterado': valor_json,
-                    'p_canal_venda_id': canal_venda_id
-                }
-            ).execute()
-            
-            if result.data:
-                row = result.data[0] if isinstance(result.data, list) else result.data
-                
-                validacao = {
-                    'valid': row.get('valid', False),
-                    'alertas': row.get('alertas', []),
-                    'bloqueios': row.get('bloqueios', [])
-                }
-                
-                logger.debug(f"Validação para {campo}: {validacao}")
-                return validacao
-            else:
-                # Fallback: válido sem alertas
-                return {'valid': True, 'alertas': [], 'bloqueios': []}
+            if not marketplace_integration_id and canal_venda_id:
+                cc = (
+                    supabase_db.table('channel_connections')
+                    .select('marketplace_integration_id')
+                    .eq('channel_id', canal_venda_id)
+                    .eq('is_active', True)
+                    .not_.is_('marketplace_integration_id', 'null')
+                    .limit(1)
+                    .execute()
+                )
+                if cc.data:
+                    marketplace_integration_id = cc.data[0].get('marketplace_integration_id')
+
+            if campo == 'horario_coleta':
+                try:
+                    hh = int(str(valor_alterado).split(':')[0])
+                    mm = int(str(valor_alterado).split(':')[1])
+                except Exception:
+                    return {'valid': False, 'alertas': [], 'bloqueios': ['Formato de horário inválido']}
+                if hh < 8 or hh > 18 or (hh == 18 and mm > 0):
+                    return {'valid': False, 'alertas': [], 'bloqueios': ['Horário fora do expediente (08:00-18:00)']}
+
+                contexto = logistica_coleta_service.calcular_contexto_coleta(
+                    marketplace_integration_id=marketplace_integration_id,
+                    modalidade='STANDARD',
+                )
+                alertas = []
+                if contexto.get('deadline_final_horario') and str(valor_alterado) > contexto['deadline_final_horario']:
+                    alertas.append(f"Horário após limite da integração ({contexto['deadline_final_horario']})")
+                return {'valid': True, 'alertas': alertas, 'bloqueios': []}
+
+            return {'valid': True, 'alertas': [], 'bloqueios': []}
                 
         except Exception as e:
             logger.error(f"Erro ao validar override: {e}", exc_info=True)
