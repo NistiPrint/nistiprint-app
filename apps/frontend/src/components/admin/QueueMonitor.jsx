@@ -35,7 +35,7 @@ const QueueService = {
   }
 };
 
-export default function QueueMonitor() {
+export default function QueueMonitor({ embed = false }) {
   const [stats, setStats] = useState({ pendentes: 0, processados: 0, dead_letter: 0, falhas: 0 });
   const [items, setItems] = useState([]);
   const [activeQueue, setActiveQueue] = useState('pendentes');
@@ -96,12 +96,14 @@ export default function QueueMonitor() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-3xl font-bold tracking-tight">Monitor de Fila (Bling)</h2>
-        <Button onClick={() => { fetchStats(); fetchItems(activeQueue); }} variant="outline" size="sm">
-          <RefreshCcw className="mr-2 h-4 w-4" /> Atualizar
-        </Button>
-      </div>
+      {!embed && (
+        <div className="flex justify-between items-center">
+          <h2 className="text-3xl font-bold tracking-tight">Monitor de Fila (Bling)</h2>
+          <Button onClick={() => { fetchStats(); fetchItems(activeQueue); }} variant="outline" size="sm">
+            <RefreshCcw className="mr-2 h-4 w-4" /> Atualizar
+          </Button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <StatCard 

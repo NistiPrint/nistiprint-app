@@ -162,11 +162,8 @@ function FerramentasPage() {
       <h1 className="text-3xl font-bold mb-6">Ferramentas Administrativas</h1>
 
       <Tabs defaultValue="import" className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="import">Importação Manual</TabsTrigger>
-          <TabsTrigger value="queue">
-            <Activity className="w-4 h-4 mr-2" /> Monitor de Fila
-          </TabsTrigger>
           <TabsTrigger value="reprocess">
             <Database className="w-4 h-4 mr-2" /> Reprocessamento
           </TabsTrigger>
@@ -217,10 +214,6 @@ function FerramentasPage() {
               </Button>
             </CardContent>
           </Card>
-        </TabsContent>
-
-        <TabsContent value="queue">
-          <QueueMonitor />
         </TabsContent>
 
         <TabsContent value="reprocess">

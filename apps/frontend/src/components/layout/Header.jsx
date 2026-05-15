@@ -115,7 +115,7 @@ const navigation = [
         type: 'sub-collapsible',
         adminOnly: true,
         children: [
-          { name: 'Monitor de Tarefas', href: '/admin/utilitarios/tasks', icon: HardDrive, type: 'link', adminOnly: true },
+          { name: 'Central de Tarefas', href: '/admin/utilitarios/tasks', icon: HardDrive, type: 'link', adminOnly: true },
           { name: 'Ferramentas', href: '/ferramentas', icon: Wrench, type: 'link', adminOnly: true },
         ]
       },
