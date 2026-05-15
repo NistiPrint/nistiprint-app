@@ -63,7 +63,14 @@ function PedidosListPage() {
   // Estados de canais próximos (para highlight e contexto)
   const [canaisProximosIds, setCanaisProximosIds] = useState([]);
   const [channels, setChannels] = useState([]);
-  const [canalInfo, setCanalInfo] = useState({ id: null, nome: null, horario_coleta: null });
+  const [canalInfo, setCanalInfo] = useState({
+    id: null,
+    nome: null,
+    horario_coleta: null,
+    marketplace_integration_id: null,
+    marketplace_nome: null,
+    coleta_contexto: null
+  });
 
   // Estados de modais
   const [gerarDemandaModalOpen, setGerarDemandaModalOpen] = useState(false);
@@ -250,7 +257,7 @@ function PedidosListPage() {
     }
   };
 
-  // Validar canais dos pedidos selecionados antes de abrir modal
+  // Validar integração logística dos pedidos selecionados antes de abrir modal
   const handleOpenGerarDemandaModal = () => {
     if (pedidosSelecionados.length === 0) {
       toast.error('Selecione pelo menos um pedido');
@@ -294,9 +301,32 @@ function PedidosListPage() {
     setCanalInfo({
       id: canal.id,
       nome: canal.nome,
-      horario_coleta: canal.horario_coleta || ''
+      horario_coleta: canal.horario_coleta || '',
+      marketplace_integration_id: pedidosSelecionadosData[0]?.marketplace_integration_id || null,
+      marketplace_nome: pedidosSelecionadosData[0]?.marketplace_nome || null,
+      coleta_contexto: null
     });
     setGerarDemandaModalOpen(true);
+    if (pedidosSelecionadosData[0]?.marketplace_integration_id) {
+      fetch('/api/v2/demanda_producao/sugestoes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          marketplace_integration_id: pedidosSelecionadosData[0].marketplace_integration_id,
+          tipo_demanda: 'PLATAFORMA'
+        })
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          const sugestoes = data?.sugestoes || {};
+          setCanalInfo((prev) => ({
+            ...prev,
+            horario_coleta: sugestoes.horario_coleta || prev.horario_coleta,
+            coleta_contexto: sugestoes.coleta_contexto || null
+          }));
+        })
+        .catch(() => {});
+    }
   };
 
 
@@ -606,7 +636,10 @@ function PedidosListPage() {
         quantidadePedidos={pedidosSelecionados.length}
         canalVendaId={canalInfo.id}
         canalVendaNome={canalInfo.nome}
+        marketplaceIntegrationId={canalInfo.marketplace_integration_id}
+        marketplaceIntegrationName={canalInfo.marketplace_nome}
         horarioColetaInicial={canalInfo.horario_coleta}
+        coletaContexto={canalInfo.coleta_contexto}
       />
 
       <AlterarSituacaoModal

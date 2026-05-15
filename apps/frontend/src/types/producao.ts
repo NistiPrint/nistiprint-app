@@ -277,12 +277,21 @@ export interface DemandaOverride {
 export interface DemandaSugestoes {
   horario_coleta: string;  // HH:MM
   modalidade_logistica: string;  // STANDARD, EXPRESS, FULFILLMENT, RETIRADA
+  coleta_contexto?: {
+    proxima_coleta_at?: string | null;
+    proxima_coleta_horario?: string | null;
+    proxima_coleta_tipo_envio?: string | null;
+    proxima_coleta_ponto_nome?: string | null;
+    deadline_final_horario?: string | null;
+    janela_status?: string | null;
+    minutos_ate_proxima_coleta?: number | null;
+  };
   data_limite_execucao?: string;  // YYYY-MM-DD
   is_flex: boolean;
   fulfillment: boolean;
   prazo_dias: number;
   horario_limite: string;  // HH:MM
-  regra_origem: string;  // 'regras_logisticas_canal' ou 'padrao_sistema'
+  regra_origem: string;  // 'regras_logisticas_integracao' ou 'padrao_sistema'
   alertas: string[];  // Alertas de validação
 }
 

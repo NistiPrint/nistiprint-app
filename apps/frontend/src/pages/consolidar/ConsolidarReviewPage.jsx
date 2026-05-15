@@ -52,6 +52,8 @@ export default function ConsolidarReviewPage() {
   const [demandaHorario, setDemandaHorario] = useState('');
   const [demandaObs, setDemandaObs] = useState('');
   const [canalSelecionado, setCanalSelecionado] = useState('');
+  const [marketplaceIntegrationId, setMarketplaceIntegrationId] = useState(null);
+  const [coletaContexto, setColetaContexto] = useState(null);
 
   useEffect(() => {
     const pedidoIds = searchParams.get('pedidos');
@@ -127,6 +129,12 @@ export default function ConsolidarReviewPage() {
         
         setPedidos(pedidosUnicos);
         setItensConsolidados(Array.from(itensMap.values()));
+        const integrations = Array.from(new Set(pedidosUnicos.map((p) => p.marketplace_integration_id).filter(Boolean)));
+        if (integrations.length === 1) {
+          setMarketplaceIntegrationId(integrations[0]);
+        } else {
+          setMarketplaceIntegrationId(null);
+        }
         
         // Gerar nome automático da demanda
         const dataHoje = new Date().toISOString().split('T')[0];
@@ -157,6 +165,7 @@ export default function ConsolidarReviewPage() {
       const payload = {
         nome: demandaNome,
         canal_venda_id: parseInt(canalSelecionado),
+        marketplace_integration_id: marketplaceIntegrationId,
         data_entrega: demandaData,
         horario_coleta: demandaHorario || null,
         observacoes: demandaObs,
@@ -196,6 +205,31 @@ export default function ConsolidarReviewPage() {
       setCreating(false);
     }
   }
+
+  useEffect(() => {
+    if (!marketplaceIntegrationId) {
+      setColetaContexto(null);
+      return;
+    }
+    fetch('/api/v2/demanda_producao/sugestoes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        marketplace_integration_id: marketplaceIntegrationId,
+        tipo_demanda: 'PLATAFORMA',
+        data_entrega: demandaData || undefined
+      })
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        const sugestoes = data?.sugestoes || {};
+        setColetaContexto(sugestoes.coleta_contexto || null);
+        if (!demandaHorario && sugestoes.horario_coleta) {
+          setDemandaHorario(sugestoes.horario_coleta);
+        }
+      })
+      .catch(() => {});
+  }, [marketplaceIntegrationId, demandaData]);
 
   if (loading) {
     return (
@@ -358,6 +392,14 @@ export default function ConsolidarReviewPage() {
                 <CardTitle className="text-lg">Dados da Demanda</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
+                {marketplaceIntegrationId && (
+                  <div className="text-xs rounded-md border bg-muted/30 p-3">
+                    Integração logística: <span className="font-medium">#{marketplaceIntegrationId}</span>
+                    {coletaContexto?.proxima_coleta_horario && (
+                      <span> | Próxima coleta: <span className="font-medium">{coletaContexto.proxima_coleta_horario}</span></span>
+                    )}
+                  </div>
+                )}
                 <div className="space-y-2">
                   <Label htmlFor="nome">Nome da Demanda *</Label>
                   <Input
@@ -410,6 +452,7 @@ export default function ConsolidarReviewPage() {
                       className="pl-9"
                     />
                   </div>
+                  <p className="text-xs text-muted-foreground">Override manual opcional do horário calculado por integração.</p>
                 </div>
 
                 <div className="space-y-2">
