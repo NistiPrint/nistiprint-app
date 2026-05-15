@@ -22,6 +22,7 @@ from nistiprint_shared.services.daily_production_log_service import daily_produc
 from nistiprint_shared.services.app_config_service import app_config_service
 from nistiprint_shared.services.system_events_log_service import system_events_log_service
 from nistiprint_shared.services.previsao_consumo_service import previsao_consumo_service
+from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
 from nistiprint_shared.services.unit_of_work import UnitOfWork
 from typing import List, Dict, Any, Optional
 import uuid
@@ -913,7 +914,8 @@ class DemandaCoreService:
             user_id=user_id,
             tipo_demanda='PLATAFORMA',
             is_flex=is_flex,
-            modalidade_logistica=modalidade
+            modalidade_logistica=modalidade,
+            marketplace_integration_id=kwargs.get('marketplace_integration_id') or order_data.get('marketplace_integration_id')
         )
 
         # 5. Register Processed Items
@@ -942,6 +944,7 @@ class DemandaCoreService:
         self,
         canal_venda_id: Optional[int],
         modalidade_logistica: str,
+        marketplace_integration_id: Optional[int] = None,
         horario_coleta_especifico: Optional[str] = None
     ) -> Optional[str]:
         """
@@ -949,8 +952,8 @@ class DemandaCoreService:
         
         PRECEDÊNCIA:
         1. horario_coleta_especifico (se fornecido explicitamente)
-        2. regras_logisticas_canal.horario_limite WHERE (canal_venda_id, modalidade) — FONTE CANÔNICA
-        3. canais_venda.horario_coleta — FALLBACK LEGADO
+        2. regras_logisticas_integracao por marketplace_integration_id — FONTE CANÔNICA
+        3. resolução por canal_venda_id -> channel_connections.marketplace_integration_id (transição)
         4. None — Se nada configurado
         
         Args:
@@ -965,51 +968,17 @@ class DemandaCoreService:
         if horario_coleta_especifico:
             return horario_coleta_especifico
         
-        # Prioridade 2: Buscar em regras_logisticas_canal
-        if canal_venda_id and modalidade_logistica:
-            try:
-                response = supabase_db.table('regras_logisticas_canal').select('horario_limite') \
-                    .eq('canal_venda_id', canal_venda_id) \
-                    .eq('modalidade', modalidade_logistica) \
-                    .maybe_single() \
-                    .execute()
-                
-                if response and response.data and response.data.get('horario_limite'):
-                    horario = response.data['horario_limite']
-                    # Converter time para string HH:MM se necessário
-                    if hasattr(horario, 'isoformat'):
-                        return horario.strftime('%H:%M')
-                    return str(horario)
-            except Exception as e:
-                logger.warning(
-                    "Erro ao buscar horario_limite em regras_logisticas_canal: %s",
-                    str(e)
-                )
-        
-        # Prioridade 3: Fallback para canais_venda.horario_coleta (LEGADO)
-        if canal_venda_id:
-            try:
-                response = supabase_db.table('canais_venda').select('horario_coleta') \
-                    .eq('id', canal_venda_id) \
-                    .maybe_single() \
-                    .execute()
-                
-                if response.data and response.data.get('horario_coleta'):
-                    horario = response.data['horario_coleta']
-                    logger.warning(
-                        "Horário de coleta derivado de canais_venda.horario_coleta (LEGADO). "
-                        "Considere configurar regras_logisticas_canal para (canal=%s, modalidade=%s).",
-                        canal_venda_id,
-                        modalidade_logistica
-                    )
-                    if hasattr(horario, 'isoformat'):
-                        return horario.strftime('%H:%M')
-                    return str(horario)
-            except Exception as e:
-                logger.warning(
-                    "Erro ao buscar horario_coleta em canais_venda: %s",
-                    str(e)
-                )
+        contexto = logistica_coleta_service.calcular_contexto_coleta(
+            marketplace_integration_id=marketplace_integration_id,
+            modalidade=modalidade_logistica,
+        )
+        if not contexto.get("tem_regra"):
+            contexto = logistica_coleta_service.resolver_por_canal(
+                canal_venda_id=canal_venda_id,
+                modalidade=modalidade_logistica,
+            )
+        if contexto.get("tem_regra"):
+            return contexto.get("proxima_coleta_horario")
         
         # Prioridade 4: Nenhum configurado
         return None
@@ -1064,13 +1033,23 @@ class DemandaCoreService:
         if data_finalizacao_prevista:
             kwargs['data_finalizacao_prevista'] = data_finalizacao_prevista.isoformat() if hasattr(data_finalizacao_prevista, 'isoformat') else data_finalizacao_prevista
 
-        # Resolver horário de coleta com base na regra de precedência
-        # 1. horario_coleta_especifico > 2. regras_logisticas_canal > 3. canais_venda > 4. None
+        marketplace_integration_id = kwargs.get('marketplace_integration_id')
+        # Resolver horário de coleta com base na nova regra canônica por integração.
         horario_coleta_resolvido = self._resolver_horario_coleta(
             canal_venda_id,
             modalidade_logistica,
+            marketplace_integration_id,
             horario_coleta_especifico
         )
+        contexto_coleta = logistica_coleta_service.calcular_contexto_coleta(
+            marketplace_integration_id=marketplace_integration_id,
+            modalidade=modalidade_logistica,
+        )
+        if not contexto_coleta.get("tem_regra"):
+            contexto_coleta = logistica_coleta_service.resolver_por_canal(
+                canal_venda_id=canal_venda_id,
+                modalidade=modalidade_logistica,
+            )
 
         demanda_payload = {
             'demanda_id': provided_id,
@@ -1088,7 +1067,10 @@ class DemandaCoreService:
             'fulfillment': fulfillment or modalidade_logistica == 'FULFILLMENT',
             'modalidade_logistica': modalidade_logistica,
             'classificacao_cliente': classificacao_cliente,
-            'dados_adicionais': kwargs,
+            'dados_adicionais': {
+                **kwargs,
+                'coleta_contexto': contexto_coleta,
+            },
             'created_at': get_now_iso(),
             'updated_at': get_now_iso()
         }

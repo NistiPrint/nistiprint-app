@@ -19,8 +19,8 @@ import logging
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.canal_modalidade_service import canal_modalidade_service
 from nistiprint_shared.services.regras_consolidacao_service import regras_consolidacao_service
-from nistiprint_shared.services.regra_logistica_service import regra_logistica_service
 from nistiprint_shared.services.canal_venda_service import canal_venda_service
+from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
 from nistiprint_shared.models.regras_consolidacao_canal import RegrasConsolidacaoCanal
 from nistiprint_shared.utils.date_utils import get_now, get_now_iso
 
@@ -120,6 +120,7 @@ class ConsolidationService:
             return None
         
         canal_venda_id = pedido.get('canal_venda_id')
+        marketplace_integration_id = pedido.get('marketplace_integration_id')
         if not canal_venda_id:
             logger.warning("Pedido %s sem canal_venda_id", pedido_id)
             return None
@@ -144,7 +145,11 @@ class ConsolidationService:
             return None
         
         # 3. Resolver horário de coleta
-        horario_coleta = self.resolver_horario(canal_venda_id, modalidade)
+        horario_coleta = self.resolver_horario(
+            canal_venda_id=canal_venda_id,
+            modalidade=modalidade,
+            marketplace_integration_id=marketplace_integration_id,
+        )
         
         # 4. Buscar regra de consolidação
         regra = self._get_regra_consolidacao(canal_venda_id, modalidade)
@@ -220,15 +225,15 @@ class ConsolidationService:
     def resolver_horario(
         self,
         canal_venda_id: int,
-        modalidade: str
+        modalidade: str,
+        marketplace_integration_id: Optional[int] = None
     ) -> Optional[str]:
         """
         Resolve horário de coleta.
         
-        PRECEDÊNCIA:
-        1. regras_logisticas_canal.horario_limite WHERE (canal_venda_id, modalidade)
-        2. canais_venda.horario_coleta (fallback legado)
-        3. None
+        FONTE CANÔNICA:
+        1. regras_logisticas_integracao por marketplace_integration_id
+        2. None
         
         Args:
             canal_venda_id: ID do canal de venda
@@ -237,43 +242,17 @@ class ConsolidationService:
         Returns:
             Horário de coleta (HH:MM) ou None
         """
-        # Buscar regra logística
-        regras = regra_logistica_service.get_by_canal(canal_venda_id)
-        if isinstance(regras, dict):
-            regras_iter = regras.get(modalidade) or []
-        else:
-            regras_iter = regras or []
-        
-        # Filtrar por modalidade e ordenar por prioridade
-        regra_modalidade = None
-        for regra in regras_iter:
-            if regra.get('modalidade') == modalidade:
-                regra_modalidade = regra
-                break
-        
-        if regra_modalidade:
-            horario = regra_modalidade.get('horario_limite')
-            if horario:
-                # Converter time para string HH:MM
-                if hasattr(horario, 'strftime'):
-                    return horario.strftime('%H:%M')
-                return str(horario)
-        
-        # Fallback: canais_venda.horario_coleta
-        canal = canal_venda_service.get_by_id(str(canal_venda_id))
-        if canal and canal.get('horario_coleta'):
-            horario = canal.get('horario_coleta')
-            logger.warning(
-                "Horário de coleta derivado de canais_venda.horario_coleta (LEGADO). "
-                "Considere configurar regras_logisticas_canal para (canal=%s, modalidade=%s).",
-                canal_venda_id,
-                modalidade
+        contexto = logistica_coleta_service.calcular_contexto_coleta(
+            marketplace_integration_id=marketplace_integration_id,
+            modalidade=modalidade,
+        )
+        if not contexto.get("tem_regra"):
+            # Fallback apenas para transição: tentar resolver marketplace pelo canal.
+            contexto = logistica_coleta_service.resolver_por_canal(
+                canal_venda_id=canal_venda_id,
+                modalidade=modalidade,
             )
-            if hasattr(horario, 'strftime'):
-                return horario.strftime('%H:%M')
-            return str(horario)
-        
-        return None
+        return contexto.get("proxima_coleta_horario")
     
     # ========================================================================
     # CÁLCULO DE CHAVE E BUSCA DE RASCUNHO
