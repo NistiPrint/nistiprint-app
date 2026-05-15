@@ -46,7 +46,7 @@ import MonitoramentoEstoquePage from './pages/admin/relatorios/MonitoramentoEsto
 import RelatoriosIndexPage from './pages/admin/relatorios/RelatoriosIndexPage'
 // AIDashboardPage removido — duplica VendasPersonalizadasPage
 import IAPage from './pages/admin/IAPage'
-import TasksMonitorPage from './pages/admin/utilitarios/TasksMonitorPage'
+import TaskControlCenter from './pages/admin/TaskControlCenter'
 import { AILogsPage } from './pages/ai/AILogsPage'
 import AuditoriaPage from './pages/auditoria/AuditoriaPage'
 import ConfiguracoesIA from './pages/configuracoes/ConfiguracoesIA'
@@ -332,7 +332,7 @@ function App() {
             path='admin/utilitarios/tasks'
             element={
               <ProtectedRoute requireAdmin={true}>
-                <TasksMonitorPage />
+                <TaskControlCenter />
               </ProtectedRoute>
             }
           />
