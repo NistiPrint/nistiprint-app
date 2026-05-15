@@ -22,7 +22,7 @@ import {
   XCircle,
   Zap
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -42,6 +42,7 @@ function TaskControlCenter() {
   
   // Schedules State
   const [scheduledTasks, setScheduledTasks] = useState({});
+  const [localFrequencies, setLocalFrequencies] = useState({});
   const [showReloadWarning, setShowReloadWarning] = useState(false);
   
   // Execution Logs State
@@ -63,6 +64,9 @@ function TaskControlCenter() {
   });
 
   const [confirmDialog, setConfirmDialog] = useState({ open: false, action: null, message: '' });
+  
+  // Refs for debouncing
+  const debounceTimers = useRef({});
 
   // --- API Calls for Schedules ---
 
@@ -73,6 +77,12 @@ function TaskControlCenter() {
       const data = await response.json();
       if (data.success) {
         setScheduledTasks(data.data || {});
+        // Inicializa frequências locais para edição fluida
+        const freqs = {};
+        Object.entries(data.data || {}).forEach(([name, config]) => {
+          freqs[name] = config.schedule_seconds;
+        });
+        setLocalFrequencies(freqs);
       }
     } catch (e) {
       console.error('Erro ao carregar agendamentos:', e);
@@ -94,7 +104,11 @@ function TaskControlCenter() {
       if (data.success) {
         toast.success(data.message);
         if (data.warning) setShowReloadWarning(true);
-        fetchSchedules();
+        // Atualiza apenas o estado local para evitar re-render total
+        setScheduledTasks(prev => ({
+          ...prev,
+          [taskName]: { ...prev[taskName], enabled: !currentEnabled }
+        }));
       }
     } catch (e) {
       toast.error('Erro ao atualizar tarefa');
@@ -103,7 +117,7 @@ function TaskControlCenter() {
     }
   };
 
-  const handleFrequencyChange = async (taskName, newFrequency) => {
+  const saveFrequency = async (taskName, newFrequency) => {
     setSaving(true);
     try {
       const response = await fetch(`/api/v2/admin/task-schedules/${taskName}`, {
@@ -113,15 +127,35 @@ function TaskControlCenter() {
       });
       const data = await response.json();
       if (data.success) {
-        toast.success(data.message);
+        toast.success(`Frequência de ${getTaskFriendlyName(taskName)} atualizada`);
         if (data.warning) setShowReloadWarning(true);
-        fetchSchedules();
+        // Sincroniza o estado principal
+        setScheduledTasks(prev => ({
+          ...prev,
+          [taskName]: { ...prev[taskName], schedule_seconds: parseInt(newFrequency) }
+        }));
       }
     } catch (e) {
-      toast.error('Erro ao atualizar frequência');
+      toast.error('Erro ao salvar frequência');
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleFrequencyChange = (taskName, value) => {
+    // 1. Atualiza o estado local imediatamente (UI rápida)
+    setLocalFrequencies(prev => ({ ...prev, [taskName]: value }));
+    
+    // 2. Debounce para salvar no banco apenas após parar de digitar
+    if (debounceTimers.current[taskName]) {
+      clearTimeout(debounceTimers.current[taskName]);
+    }
+    
+    debounceTimers.current[taskName] = setTimeout(() => {
+      if (value && parseInt(value) > 0) {
+        saveFrequency(taskName, value);
+      }
+    }, 1000); // 1 segundo de delay
   };
 
   const handleReloadWorker = async () => {
@@ -246,10 +280,15 @@ function TaskControlCenter() {
 
   useEffect(() => {
     refreshAll();
+    // Cleanup timers on unmount
+    return () => {
+      Object.values(debounceTimers.current).forEach(clearTimeout);
+    };
   }, [activeTab, logFilters]);
 
   // --- Helpers ---
   const formatFrequency = (seconds) => {
+    if (!seconds) return '-';
     if (seconds < 60) return `${seconds}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}min`;
     return `${Math.floor(seconds / 3600)}h`;
@@ -354,14 +393,17 @@ function TaskControlCenter() {
                         <Input
                           type="number"
                           min="1"
-                          value={config.schedule_seconds}
+                          value={localFrequencies[taskName] || ''}
                           onChange={(e) => handleFrequencyChange(taskName, e.target.value)}
                           disabled={saving || !config.enabled}
                           className="w-24 h-8"
                         />
                         <span className="text-xs text-muted-foreground">
-                          {formatFrequency(config.schedule_seconds)}
+                          {formatFrequency(localFrequencies[taskName])}
                         </span>
+                        {saving && debounceTimers.current[taskName] && (
+                          <RefreshCw className="h-3 w-3 animate-spin text-primary" />
+                        )}
                       </div>
                     </div>
                   </div>

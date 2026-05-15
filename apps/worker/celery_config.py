@@ -98,7 +98,6 @@ celery_app = Celery(
         'tasks.token_renewal_tasks',
         'nistiprint_shared.services.bling_status_sync_service',
         'nistiprint_shared.services.ai_personalization_service',
-        'tasks.stock_tasks',
     ]
 )
 
