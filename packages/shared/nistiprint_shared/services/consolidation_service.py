@@ -302,7 +302,7 @@ class ConsolidationService:
             is_flex=bool(pedido.get('is_flex')),
             produto_id=pedido.get('produto_id') if regra.agrupar_por_produto else None,
             miolo_id=pedido.get('id_produto_miolo') if regra.agrupar_por_miolo else None,
-            data_entrega=pedido.get('data_entrega') or pedido.get('data_limite_envio', '').split('T')[0] if regra.agrupar_por_data_entrega else None
+            data_entrega=pedido.get('data_entrega') or (str(pedido.get('data_limite_envio') or '')).split('T')[0] if regra.agrupar_por_data_entrega else None
         )
     
     def _buscar_rascunho_compativel(
@@ -396,7 +396,7 @@ class ConsolidationService:
             # requer_revisao será atualizado pelo trigger
         
         # Atualizar data_entrega se for mais urgente
-        data_entrega_pedido = pedido.get('data_entrega') or pedido.get('data_limite_envio', '').split('T')[0]
+        data_entrega_pedido = pedido.get('data_entrega') or (str(pedido.get('data_limite_envio') or '')).split('T')[0]
         if data_entrega_pedido:
             data_entrega_atual = rascunho.get('data_entrega')
             if not data_entrega_atual or data_entrega_pedido < data_entrega_atual:
