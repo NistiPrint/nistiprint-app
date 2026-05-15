@@ -10,6 +10,14 @@ import { ptBR } from 'date-fns/locale';
 
 function DemandaPrioridadePage() {
   const { prioritizedItems, loading, error } = useRealtimePrioritizedDemandas();
+  const orderedItems = [...prioritizedItems].sort((a, b) => {
+    const am = a?.demanda_info?.coleta_contexto?.minutos_ate_proxima_coleta;
+    const bm = b?.demanda_info?.coleta_contexto?.minutos_ate_proxima_coleta;
+    if (typeof am === 'number' && typeof bm === 'number') return am - bm;
+    if (typeof am === 'number') return -1;
+    if (typeof bm === 'number') return 1;
+    return (b?.prioridade_calculada || 0) - (a?.prioridade_calculada || 0);
+  });
 
   const getPriorityColor = (priority) => {
     if (priority >= 80) return 'border-red-500 bg-red-100';
@@ -52,7 +60,7 @@ function DemandaPrioridadePage() {
           ) : (
             <ScrollArea className="h-[70vh]">
               <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-                {prioritizedItems.map(item => (
+                {orderedItems.map(item => (
                   <Card 
                     key={item.id} 
                     className={`shadow-sm hover:shadow-md transition-shadow border-l-4 border-l-gray-300`}
@@ -98,6 +106,11 @@ function DemandaPrioridadePage() {
                       <p>
                         <span className="font-medium">Canal:</span> {item.demanda_info?.canal_venda_nome}
                       </p>
+                      {typeof item.demanda_info?.coleta_contexto?.minutos_ate_proxima_coleta === 'number' && (
+                        <p>
+                          <span className="font-medium">Próxima coleta:</span> {item.demanda_info?.coleta_contexto?.proxima_coleta_horario || '-'} ({item.demanda_info.coleta_contexto.minutos_ate_proxima_coleta} min)
+                        </p>
+                      )}
                       {item.demanda_info?.tipo_demanda === 'Empresas' && (
                         <div className="text-xs text-gray-700 space-y-1 mt-2">
                           <p className="font-medium">Empresa: {item.demanda_info.empresa_cliente_nome}</p>

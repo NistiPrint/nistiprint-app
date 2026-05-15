@@ -14,6 +14,7 @@ from flask import request, Blueprint, jsonify
 from routes.auth import login_required
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from datetime import datetime
 import logging
 
 logger = logging.getLogger("IntegracaoCanaisAPI")
@@ -533,4 +534,89 @@ def importar_pedidos_em_andamento():
 
     except Exception as e:
         logger.error(f"Erro ao importar pedidos: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@integracao_canais_bp.route('/logistica/regras', methods=['GET'])
+@login_required
+def listar_regras_logisticas_integracao():
+    """Lista regras logísticas por integração instalada."""
+    try:
+        marketplace_integration_id = request.args.get('marketplace_integration_id')
+        query = supabase_db.table('regras_logisticas_integracao').select(
+            "*, pontos_coleta(nome), installed_integrations(id, instance_name, module_id)"
+        ).order('marketplace_integration_id').order('prioridade_uso')
+        if marketplace_integration_id:
+            query = query.eq('marketplace_integration_id', int(marketplace_integration_id))
+        result = query.execute()
+        return jsonify({'success': True, 'data': result.data or []})
+    except Exception as e:
+        logger.error(f"Erro ao listar regras logísticas por integração: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@integracao_canais_bp.route('/logistica/regras', methods=['POST'])
+@login_required
+def criar_regra_logistica_integracao():
+    """Cria regra logística por integração."""
+    try:
+        data = request.get_json() or {}
+        required = ['marketplace_integration_id', 'modalidade', 'tipo_envio', 'horario_limite']
+        for field in required:
+            if data.get(field) in (None, ''):
+                return jsonify({'success': False, 'error': f'Campo obrigatório: {field}'}), 400
+
+        payload = {
+            'marketplace_integration_id': int(data['marketplace_integration_id']),
+            'modalidade': str(data['modalidade']).upper(),
+            'tipo_envio': str(data['tipo_envio']).upper(),
+            'horario_limite': data['horario_limite'],
+            'ponto_coleta_id': data.get('ponto_coleta_id'),
+            'dias_semana': data.get('dias_semana') or [0, 1, 2, 3, 4, 5, 6],
+            'ativo': bool(data.get('ativo', True)),
+            'prioridade_uso': int(data.get('prioridade_uso', 100)),
+            'descricao': data.get('descricao'),
+            'created_at': datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat(),
+        }
+        result = supabase_db.table('regras_logisticas_integracao').insert(payload).execute()
+        return jsonify({'success': True, 'data': (result.data or [None])[0]}), 201
+    except Exception as e:
+        logger.error(f"Erro ao criar regra logística por integração: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@integracao_canais_bp.route('/logistica/regras/<int:regra_id>', methods=['PUT'])
+@login_required
+def atualizar_regra_logistica_integracao(regra_id: int):
+    """Atualiza regra logística por integração."""
+    try:
+        data = request.get_json() or {}
+        allowed = {
+            'modalidade', 'tipo_envio', 'horario_limite', 'ponto_coleta_id',
+            'dias_semana', 'ativo', 'prioridade_uso', 'descricao'
+        }
+        updates = {k: v for k, v in data.items() if k in allowed}
+        if 'modalidade' in updates:
+            updates['modalidade'] = str(updates['modalidade']).upper()
+        if 'tipo_envio' in updates:
+            updates['tipo_envio'] = str(updates['tipo_envio']).upper()
+        updates['updated_at'] = datetime.utcnow().isoformat()
+
+        result = supabase_db.table('regras_logisticas_integracao').update(updates).eq('id', regra_id).execute()
+        return jsonify({'success': True, 'data': (result.data or [None])[0]})
+    except Exception as e:
+        logger.error(f"Erro ao atualizar regra logística por integração {regra_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@integracao_canais_bp.route('/logistica/regras/<int:regra_id>', methods=['DELETE'])
+@login_required
+def remover_regra_logistica_integracao(regra_id: int):
+    """Remove regra logística por integração."""
+    try:
+        supabase_db.table('regras_logisticas_integracao').delete().eq('id', regra_id).execute()
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"Erro ao remover regra logística por integração {regra_id}: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500

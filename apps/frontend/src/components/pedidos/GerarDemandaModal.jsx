@@ -20,7 +20,10 @@ export default function GerarDemandaModal({
   quantidadePedidos,
   canalVendaId = null,
   canalVendaNome = null,
+  marketplaceIntegrationId = null,
+  marketplaceIntegrationName = null,
   horarioColetaInicial = '',
+  coletaContexto = null,
 }) {
   const [dados, setDados] = useState({
     nome_demanda: '',
@@ -43,6 +46,7 @@ export default function GerarDemandaModal({
       await onGerarDemanda({
         ...dados,
         canal_venda_id: canalVendaId,
+        marketplace_integration_id: marketplaceIntegrationId,
       });
     } finally {
       setGerando(false);
@@ -78,7 +82,7 @@ export default function GerarDemandaModal({
               </div>
               <div className="flex items-center gap-2">
                 <Store className="h-4 w-4 text-muted-foreground" />
-                <span className="truncate font-medium">{canalVendaNome || 'Origem selecionada'}</span>
+                <span className="truncate font-medium">{marketplaceIntegrationName || canalVendaNome || 'Origem selecionada'}</span>
               </div>
               <div className="flex items-center gap-2">
                 <CalendarDays className="h-4 w-4 text-muted-foreground" />
@@ -89,10 +93,31 @@ export default function GerarDemandaModal({
                 <span>{dados.horario_coleta || 'Sem horario'}</span>
               </div>
             </div>
+            {coletaContexto?.proxima_coleta_horario && (
+              <div className="mt-3 border-t pt-2 text-xs">
+                Próxima coleta: <span className="font-medium">{coletaContexto.proxima_coleta_horario}</span>
+                {coletaContexto.proxima_coleta_tipo_envio ? ` (${coletaContexto.proxima_coleta_tipo_envio})` : ''}
+                {coletaContexto.proxima_coleta_ponto_nome ? ` - ${coletaContexto.proxima_coleta_ponto_nome}` : ''}
+              </div>
+            )}
             <div className="mt-3 border-t pt-2 text-xs text-muted-foreground">
-              Plataforma/B2C com modalidade inferida pelas regras da origem.
+              Logística inferida por integração instalada. Horário manual é override opcional.
             </div>
           </div>
+
+          {marketplaceIntegrationId && (
+            <div className="space-y-2">
+              <Label htmlFor="integration-id">
+                Integração da origem
+              </Label>
+              <Input
+                id="integration-id"
+                value={marketplaceIntegrationName || `Integração #${marketplaceIntegrationId}`}
+                disabled
+                className="bg-muted"
+              />
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="nome-demanda">
