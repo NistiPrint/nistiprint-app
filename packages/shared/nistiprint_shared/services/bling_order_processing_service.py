@@ -7,7 +7,6 @@ from time import perf_counter
 import unicodedata
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
-from nistiprint_shared.services.consolidation_service import consolidation_service
 from nistiprint_shared.services.correlation_service import (
     generate_correlation_id,
     set_correlation_id,
@@ -579,23 +578,6 @@ def process_webhook(
                 matched_rule_id=flex.matched_rule_id if hasattr(flex, 'matched_rule_id') else None,
                 raw_decision=flex.raw_decision if hasattr(flex, 'raw_decision') else None,
             )
-
-        # 10. Encadear consolidacao em rascunho
-        with ingest_step('create_demanda', ingest_ctx):
-            consolidacao = consolidation_service.consolidar_pedido(pedido_id)
-            if consolidacao:
-                ingest_ctx['status'] = 'success'
-                ingest_ctx['message'] = (
-                    f"pedido_id={pedido_id} consolidado em demanda "
-                    f"id={consolidacao.get('id')} status={consolidacao.get('status')}"
-                )
-            else:
-                # Sem consolidacao (pedido sem classificacao/criterio) nao deve quebrar o pipeline.
-                ingest_ctx['status'] = 'warning'
-                ingest_ctx['message'] = (
-                    f"pedido_id={pedido_id} sem consolidacao automatica "
-                    "(nao classificado ou sem regra aplicavel)"
-                )
 
         detail_unavailable = bool(ingest_ctx.get('detail_unavailable'))
         final_status = 'failed' if detail_unavailable else 'success'
