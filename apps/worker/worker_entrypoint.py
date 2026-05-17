@@ -81,17 +81,13 @@ def configure_worker_logging():
 
 @after_setup_logger.connect
 def _configure_celery_logger(logger=None, *args, **kwargs):
-    if logger is not None:
-        for h in _SHARED_HANDLERS:
-            if h not in logger.handlers:
-                logger.addHandler(h)
+    # Celery já propaga logs para o root logger que já configuramos
+    pass
 
 @after_setup_task_logger.connect
 def _configure_celery_task_logger(logger=None, *args, **kwargs):
-    if logger is not None:
-        for h in _SHARED_HANDLERS:
-            if h not in logger.handlers:
-                logger.addHandler(h)
+    # Celery já propaga logs para o root logger que já configuramos
+    pass
 
 # Inicializa logs
 configure_worker_logging()

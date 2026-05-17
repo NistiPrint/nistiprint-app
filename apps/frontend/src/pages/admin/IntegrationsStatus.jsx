@@ -7,8 +7,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import BlingInstanceConfigModal from '@/pages/integracoes/BlingInstanceConfigModal';
 import MarketplaceService from '@/services/MarketplaceService';
 import * as integracaoCanalService from '@/services/integracaoCanalService';
-import { AlertCircle, Building2, CheckCircle2, Database, HelpCircle, Package, Plus, RefreshCw, Settings, Trash2, X, Zap } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { AlertCircle, Building2, CheckCircle2, Database, HelpCircle, Package, Plus, RefreshCw, Settings, Trash2, X, Zap, Pencil, Check } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
 import { toast } from 'sonner';
 
 export default function IntegrationsStatus({ onAddClick }) {
@@ -23,6 +23,48 @@ export default function IntegrationsStatus({ onAddClick }) {
   const [selectedShopeeIntegration, setSelectedShopeeIntegration] = useState(null);
   const [shopeeConfig, setShopeeConfig] = useState({ partner_id: '', partner_key: '', shop_id: '' });
   const [savingConfig, setSavingConfig] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [moduleIcons, setModuleIcons] = useState({});
+  const editInputRef = useRef(null);
+
+  const fetchModules = async () => {
+    try {
+      const modules = await MarketplaceService.getAvailableModules();
+      const icons = {};
+      modules.forEach(m => {
+        icons[m.id] = m.icon_url;
+      });
+      setModuleIcons(icons);
+    } catch (error) {
+      console.error('Erro ao carregar ícones:', error);
+    }
+  };
+
+  useEffect(() => {
+    fetchIntegrations();
+    fetchModules();
+  }, []);
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setEditName('');
+  };
+
+  const saveName = async (item) => {
+    if (editName === item.instance_name) {
+      cancelEditing();
+      return;
+    }
+    try {
+      await MarketplaceService.updateInstallation(item.id, { instance_name: editName });
+      toast.success('Nome atualizado com sucesso!');
+      fetchIntegrations();
+      cancelEditing();
+    } catch (error) {
+      toast.error('Erro ao salvar nome');
+    }
+  };
 
   const handleOpenConfig = (id) => {
     setSelectedIntegrationId(id);
@@ -253,8 +295,47 @@ export default function IntegrationsStatus({ onAddClick }) {
                         <Badge variant="outline" className="mb-2 uppercase text-[10px]" style={{ color: item.instance_color }}>
                           {item.module_id}
                         </Badge>
-                        <CardTitle className="text-lg">{item.instance_name}</CardTitle>
-                        {item.description && <p className="text-xs text-muted-foreground mt-1">{item.description}</p>}
+                        <div className="flex items-center gap-3 group">
+                          {moduleIcons[item.module_id] && (
+                            <img src={moduleIcons[item.module_id]} alt={item.module_id} className="w-8 h-8 rounded-full bg-white p-1" />
+                          )}
+                          <div>
+                            <div className="flex items-center gap-2">
+                              {editingId === item.id ? (
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    ref={editInputRef}
+                                    type="text"
+                                    value={editName}
+                                    onChange={(e) => setEditName(e.target.value)}
+                                    className="px-2 py-1 rounded border text-sm w-full"
+                                    autoFocus
+                                  />
+                                  <Button size="sm" variant="ghost" onClick={() => saveName(item)}>
+                                    <Check className="h-4 w-4 text-green-500" />
+                                  </Button>
+                                  <Button size="sm" variant="ghost" onClick={cancelEditing}>
+                                    <X className="h-4 w-4 text-red-500" />
+                                  </Button>
+                                </div>
+                              ) : (
+                                <>
+                                  <CardTitle className="text-lg">{item.instance_name}</CardTitle>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="opacity-0 group-hover:opacity-100 transition-opacity"
+                                    onClick={() => startEditing(item)}
+                                  >
+                                    <Pencil className="h-3 w-3" />
+                                  </Button>
+                                </>
+                              )}
+                            </div>
+                            {item.description && <p className="text-xs text-muted-foreground mt-1">{item.description}</p>}
+                          </div>
+                        </div>
+
                       </div>
                       <div className="flex gap-1">
                         {item.is_active ? (

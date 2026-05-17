@@ -9,6 +9,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { ArrowUpRight, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { formatAppDate, formatAppDateTime } from '@/lib/dateTime';
+import { useEffect, useState } from 'react';
+import MarketplaceService from '@/services/MarketplaceService';
 
 export default function TabelaPedidos({
   pedidos,
@@ -21,8 +23,25 @@ export default function TabelaPedidos({
   total,
   onPageChange,
   onLimitChange,
-  canaisProximosIds = [],  // IDs dos canais com coleta próxima para highlight
+  canaisProximosIds = [],
 }) {
+  const [moduleIcons, setModuleIcons] = useState({});
+
+  useEffect(() => {
+    const fetchIcons = async () => {
+      try {
+        const modules = await MarketplaceService.getAvailableModules();
+        const icons = {};
+        modules.forEach(m => {
+          icons[m.slug] = m.icon_url;
+        });
+        setModuleIcons(icons);
+      } catch (error) {
+        console.error('Erro ao carregar ícones:', error);
+      }
+    };
+    fetchIcons();
+  }, []);
   const totalPages = Math.ceil(total / limit);
   const todosSelecionados = pedidos.length > 0 && pedidosSelecionados.length === pedidos.length;
 
@@ -376,25 +395,30 @@ function getDemandaStatusColor(status) {
 }
 
 // Componente de Ícone do Canal com fallback para nome
-function CanalIcon({ canalNome, marketplaceSlug, marketplaceColor }) {
-  // Priorizar marketplace_slug se disponível (nova arquitetura)
-  const canalSlug = marketplaceSlug || canalNome?.toLowerCase().replace(/\s+/g, '') || '';
+function CanalIcon({ canalNome, marketplaceSlug, marketplaceColor, moduleIcons }) {
+  // Priorizar marketplace_slug se disponível (nova arquitetura), tratando canalNome como opcional
+  const canalSlug = marketplaceSlug || (canalNome ? canalNome.toLowerCase().replace(/\s+/g, '') : '');
 
-  // URLs dos ícones (mesmos usados em IntegracaoCard.jsx)
-  const iconUrls = {
+  // URLs fixas para ícones legados
+  const legacyIconUrls = {
     shopee: 'https://app.nistiprint.com.br/assets/img/shopee.svg',
     amazon: 'https://app.nistiprint.com.br/assets/img/amazon.svg',
     mercadolivre: 'https://app.nistiprint.com.br/assets/img/mercadolivre.svg',
     shein: 'https://app.nistiprint.com.br/assets/img/shein.svg',
+    magazineluiza: 'https://app.nistiprint.com.br/assets/img/magazineluiza.svg',
+    kwai: 'https://app.nistiprint.com.br/assets/img/kwai.svg',
+    tiktokshop: 'https://app.nistiprint.com.br/assets/img/tiktok.svg',
+    lojaintegrada: 'https://app.nistiprint.com.br/assets/img/lojaintegrada.svg',
   };
 
-  // Cores de fallback (usar marketplaceColor se disponível)
-  // Verificar se há ícone disponível para este canal
-  const iconUrl = Object.entries(iconUrls).find(([slug]) => 
-    canalSlug.includes(slug)
-  )?.[1];
+  // Buscar ícone no mapeamento dinâmico ou no legado
+  const iconUrl = moduleIcons?.[canalSlug] || 
+                  legacyIconUrls[canalSlug] || 
+                  Object.entries(moduleIcons || {}).find(([slug]) => canalSlug.includes(slug))?.[1];
 
-  if (iconUrl) {
+  const [imgError, setImgError] = useState(false);
+
+  if (iconUrl && !imgError) {
     return (
       <Tooltip>
         <TooltipTrigger>
@@ -402,6 +426,7 @@ function CanalIcon({ canalNome, marketplaceSlug, marketplaceColor }) {
             src={iconUrl}
             alt={canalNome || 'Origem'}
             className="w-6 h-6 object-contain"
+            onError={() => setImgError(true)}
           />
         </TooltipTrigger>
         <TooltipContent>
@@ -436,3 +461,4 @@ function CanalIcon({ canalNome, marketplaceSlug, marketplaceColor }) {
     </Tooltip>
   );
 }
+

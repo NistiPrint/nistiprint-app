@@ -37,7 +37,13 @@ export default function LogisticaIntegracaoPage() {
   const [form, setForm] = useState(defaultForm);
 
   const marketplaceIntegrations = useMemo(
-    () => integracoes.filter((i) => i.module_id !== 'bling' && i.is_active !== false),
+    () =>
+      integracoes
+        .filter((i) => i.module_id !== 'bling' && i.is_active !== false)
+        .map((i) => ({
+          ...i,
+          optionLabel: `${i.instance_name || i.module_id} (#${i.id}) · ${i.module_id}`
+        })),
     [integracoes]
   );
 
@@ -131,12 +137,12 @@ export default function LogisticaIntegracaoPage() {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div className="space-y-2">
-              <Label>Integração marketplace</Label>
+              <Label>Integração instalada</Label>
               <Select value={form.marketplace_integration_id} onValueChange={(v) => setForm((p) => ({ ...p, marketplace_integration_id: v }))}>
                 <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
                 <SelectContent>
                   {marketplaceIntegrations.map((i) => (
-                    <SelectItem key={i.id} value={String(i.id)}>{i.instance_name}</SelectItem>
+                    <SelectItem key={i.id} value={String(i.id)}>{i.optionLabel}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -224,7 +230,7 @@ export default function LogisticaIntegracaoPage() {
             <SelectContent>
               <SelectItem value="all">Todas as integrações</SelectItem>
               {marketplaceIntegrations.map((i) => (
-                <SelectItem key={i.id} value={String(i.id)}>{i.instance_name}</SelectItem>
+                <SelectItem key={i.id} value={String(i.id)}>{i.optionLabel}</SelectItem>
               ))}
             </SelectContent>
           </Select>
