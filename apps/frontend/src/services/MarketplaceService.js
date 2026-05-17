@@ -199,6 +199,18 @@ export const importarPedidosEmAndamento = async (payload) => {
   }
 };
 
+/**
+ * Update installation details
+ */
+export const updateInstallation = async (instanceId, data) => {
+  try {
+    const response = await api.put(`${BASE_URL}/installed/${instanceId}`, data);
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
 const MarketplaceService = {
   getAvailableModules,
   getModuleDetails,
@@ -215,6 +227,7 @@ const MarketplaceService = {
   createChannelLink,
   listIntegracaoCanaisConfigs,
   importarPedidosEmAndamento,
+  updateInstallation,
 };
 
 export default MarketplaceService;
