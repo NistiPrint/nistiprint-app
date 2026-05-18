@@ -46,6 +46,63 @@ def get_order_detail(integration: Dict, order_ids: List[str]) -> Dict:
     return data
 
 
+def get_shipment(integration: Dict, shipment_id: str) -> Dict:
+    """
+    Fetches shipment details from Mercado Livre API.
+    """
+    host = "https://api.mercadolibre.com"
+    credentials = integration.get("credentials", {})
+    access_token = credentials.get("access_token")
+
+    if not access_token:
+        raise ValueError("Access token para Mercado Livre não encontrado.")
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    url = f"{host}/shipments/{shipment_id}"
+    logger.info(f"[ML Driver] Fetching shipment: {url}")
+    
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code != 200:
+        logger.error(f"[ML Driver] Error fetching shipment {shipment_id}: {response.status_code} - {response.text}")
+        return {"error": f"Erro na API do Mercado Livre (shipments): {response.status_code}", "details": response.text}
+
+    return response.json()
+
+
+def get_shipment_sla(integration: Dict, shipment_id: str) -> Dict:
+    """
+    Fetches shipment SLA (Service Level Agreement) details from Mercado Livre API.
+    Used to get the expected_date (shipping limit).
+    """
+    host = "https://api.mercadolibre.com"
+    credentials = integration.get("credentials", {})
+    access_token = credentials.get("access_token")
+
+    if not access_token:
+        raise ValueError("Access token para Mercado Livre não encontrado.")
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    url = f"{host}/shipments/{shipment_id}/sla"
+    logger.info(f"[ML Driver] Fetching shipment SLA: {url}")
+    
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code != 200:
+        logger.error(f"[ML Driver] Error fetching shipment SLA {shipment_id}: {response.status_code} - {response.text}")
+        return {"error": f"Erro na API do Mercado Livre (shipments/sla): {response.status_code}", "details": response.text}
+
+    return response.json()
+
+
 def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[Dict]:
     """
     Fetches list of orders from Mercado Livre API for a given integration instance.

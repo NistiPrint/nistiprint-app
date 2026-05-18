@@ -260,9 +260,13 @@ class PlatformAuthService:
         }
 
     def _refresh_mercadolivre_token(self, config: Dict, refresh_token: str) -> Dict:
-        client_id = config.get('client_id')
-        client_secret = config.get('client_secret')
+        import os
+        client_id = config.get('client_id') or os.getenv('ML_CNPJ01_CLIENT_ID')
+        client_secret = config.get('client_secret') or os.getenv('ML_CNPJ01_CLIENT_SECRET')
         
+        if not client_id or not client_secret:
+            raise ValueError(f"Credenciais Mercado Livre não encontradas no config nem em variáveis de ambiente.")
+
         url = "https://api.mercadolibre.com/oauth/token"
         payload = {
             "grant_type": "refresh_token",
@@ -400,7 +404,10 @@ class PlatformAuthService:
         url = f"https://api.mercadolibre.com{path}"
         headers = {"Authorization": f"Bearer {access_token}"}
         resp = requests.get(url, headers=headers)
-        return resp.json()
+        if resp.status_code == 200:
+            return {"success": True, "message": "Conexão estabelecida com sucesso."}
+        else:
+            return {"success": False, "message": f"Erro na conexão: {resp.status_code}", "details": resp.text}
 
 platform_auth_service = PlatformAuthService()
 
