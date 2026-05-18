@@ -67,6 +67,10 @@ def get_shipment(integration: Dict, shipment_id: str) -> Dict:
     
     response = requests.get(url, headers=headers)
     
+    # DEBUG LOGS
+    logger.info(f"DEBUG: ML Shipment Status: {response.status_code}")
+    logger.info(f"DEBUG: ML Shipment Body: {response.text}")
+    
     if response.status_code != 200:
         logger.error(f"[ML Driver] Error fetching shipment {shipment_id}: {response.status_code} - {response.text}")
         return {"error": f"Erro na API do Mercado Livre (shipments): {response.status_code}", "details": response.text}
@@ -95,6 +99,10 @@ def get_shipment_sla(integration: Dict, shipment_id: str) -> Dict:
     logger.info(f"[ML Driver] Fetching shipment SLA: {url}")
     
     response = requests.get(url, headers=headers)
+    
+    # DEBUG LOGS
+    logger.info(f"DEBUG: ML SLA Status: {response.status_code}")
+    logger.info(f"DEBUG: ML SLA Body: {response.text}")
     
     if response.status_code != 200:
         logger.error(f"[ML Driver] Error fetching shipment SLA {shipment_id}: {response.status_code} - {response.text}")
