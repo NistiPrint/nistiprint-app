@@ -75,14 +75,18 @@ def _classify_flex(
         shipment = meli_data.get('shipment') or {}
         shipping_option = shipment.get('shipping_option') or {}
         
-        mode = shipment.get('mode')
-        shipping_type = shipment.get('shipping_type')
-        option_name = shipping_option.get('name')
+        mode = str(shipment.get('mode') or '').lower()
+        shipping_type = str(shipment.get('shipping_type') or '').lower()
+        option_name_raw = str(shipping_option.get('name') or '')
+        option_name = _normalize_carrier(option_name_raw) # Reusing existing normalization
+        
+        logger.info("[flex] MELI comparison: mode=%s, type=%s, option=%s (raw=%s)", 
+                    mode, shipping_type, option_name, option_name_raw)
         
         is_meli_flex = (
             mode == "me2" and 
             shipping_type == "self_service" and 
-            option_name == "Prioritario"
+            (option_name == "prioritario" or option_name == "flex")
         )
         
         if is_meli_flex:
