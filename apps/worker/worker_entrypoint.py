@@ -82,19 +82,23 @@ def configure_worker_logging():
 
 @after_setup_logger.connect
 def _configure_celery_logger(logger=None, *args, **kwargs):
-    # Celery já propaga logs para o root logger que já configuramos
-    pass
+    if logger:
+        for handler in logger.handlers:
+            handler.setFormatter(logging.Formatter(LOG_FORMAT))
 
 @after_setup_task_logger.connect
 def _configure_celery_task_logger(logger=None, *args, **kwargs):
-    # Celery já propaga logs para o root logger que já configuramos
-    pass
+    if logger:
+        for handler in logger.handlers:
+            handler.setFormatter(logging.Formatter(LOG_FORMAT))
 
 # Inicializa logs
 configure_worker_logging()
 
 # Configurações de execução do app
 celery_app.conf.update(
+    worker_log_format=LOG_FORMAT,
+    worker_task_log_format=LOG_FORMAT,
     worker_hijack_root_logger=True, # Deixa o Celery propagar logs para o root que configuramos
     task_track_started=True,
     task_send_sent_event=True,
