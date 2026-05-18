@@ -27,3 +27,16 @@ def renew_shopee_tokens_task():
     except Exception as e:
         logger.error(f"Erro na tarefa de renovacao de tokens Shopee: {str(e)}")
         return {'status': 'FAILED', 'error': str(e)}
+
+@celery_app.task(name='tasks.token_renewal_tasks.renew_mercadolivre_tokens')
+@log_task_execution(task_type='TOKEN_RENEWAL')
+def renew_mercadolivre_tokens_task():
+    """
+    Tarefa Celery para renovar automaticamente tokens de integracoes Mercado Livre.
+    """
+    try:
+        logger.info("Iniciando renovacao agendada de tokens Mercado Livre.")
+        return token_renewal_service.renew_mercadolivre_tokens_expiring_soon()
+    except Exception as e:
+        logger.error(f"Erro na tarefa de renovacao de tokens Mercado Livre: {str(e)}")
+        return {'status': 'FAILED', 'error': str(e)}

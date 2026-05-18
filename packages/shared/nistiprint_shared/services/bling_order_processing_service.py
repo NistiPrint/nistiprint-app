@@ -15,6 +15,7 @@ from nistiprint_shared.services.integration_resolution_service import (
     integration_resolution_service,
 )
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
+from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso
 
 logger = logging.getLogger("bling_order_processing")
@@ -59,14 +60,51 @@ def _normalize_carrier(value: str | None) -> str:
 
 def _classify_flex(
     shopee_data: dict | None,
+    meli_data: dict | None,
     numero_loja: str | None,
     marketplace_slug: str | None,
 ) -> FlexClassificationResult:
+    if marketplace_slug == 'mercadolivre':
+        if not meli_data:
+             return FlexClassificationResult(
+                is_flex=False,
+                modalidade='STANDARD',
+                motivo='meli_data ausente para mercadolivre',
+            )
+        
+        shipment = meli_data.get('shipment') or {}
+        shipping_option = shipment.get('shipping_option') or {}
+        
+        mode = shipment.get('mode')
+        shipping_type = shipment.get('shipping_type')
+        option_name = shipping_option.get('name')
+        
+        is_meli_flex = (
+            mode == "me2" and 
+            shipping_type == "self_service" and 
+            option_name == "Prioritario"
+        )
+        
+        if is_meli_flex:
+            return FlexClassificationResult(
+                is_flex=True,
+                modalidade='FLEX',
+                motivo=f"meli: mode={mode}, type={shipping_type}, option={option_name}",
+                raw_decision={'mode': mode, 'shipping_type': shipping_type, 'option_name': option_name}
+            )
+        else:
+             return FlexClassificationResult(
+                is_flex=False,
+                modalidade='STANDARD',
+                motivo=f"meli: nao atende criterios flex (mode={mode}, type={shipping_type}, option={option_name})",
+                raw_decision={'mode': mode, 'shipping_type': shipping_type, 'option_name': option_name}
+            )
+
     if marketplace_slug != 'shopee':
         return FlexClassificationResult(
             is_flex=False,
             modalidade='STANDARD',
-            motivo=f"plataforma={marketplace_slug!r} nao e shopee",
+            motivo=f"plataforma={marketplace_slug!r} nao e shopee ou mercadolivre",
             raw_decision={'marketplace_slug': marketplace_slug, 'numero_loja': numero_loja},
         )
 
@@ -455,6 +493,8 @@ def process_webhook(
         # 4. Resolver instância marketplace pela loja_id
         loja_id = str(_extract_bling_loja_id(payload) or '')
         marketplace_inst, pedido_shopee_id, shopee_data = None, None, None
+        pedido_mercadolivre_id, meli_data = None, None
+        
         if loja_id:
             with ingest_step('resolve_marketplace', ingest_ctx):
                 try:
@@ -474,8 +514,10 @@ def process_webhook(
                                 marketplace_inst.get('plataforma_slug'),
                                 marketplace_inst.get('instance_name'))
 
-                    # 5. Enriquecimento via API marketplace (apenas Shopee no MVP)
-                    if marketplace_inst.get('plataforma_slug') == 'shopee':
+                    # 5. Enriquecimento via API marketplace
+                    plataforma = marketplace_inst.get('plataforma_slug')
+                    
+                    if plataforma == 'shopee':
                         with ingest_step('enrich_shopee', ingest_ctx):
                             try:
                                 shopee_data = _fetch_shopee_detail(
@@ -510,6 +552,43 @@ def process_webhook(
                                     exc_info=True,
                                 )
                                 shopee_data, pedido_shopee_id = None, None
+                    
+                    elif plataforma == 'mercadolivre':
+                        with ingest_step('enrich_mercadolivre', ingest_ctx):
+                            try:
+                                meli_data = _fetch_meli_detail(
+                                    marketplace_inst,
+                                    payload.get('numeroLoja'),
+                                )
+                                if meli_data and not meli_data.get('error'):
+                                    pedido_mercadolivre_id = _upsert_pedido_meli(
+                                        meli_data,
+                                        marketplace_integration_id=marketplace_inst['id'],
+                                    )
+                                else:
+                                    ingest_ctx['status'] = 'warning'
+                                    ingest_ctx['message'] = (
+                                        f"enriquecimento MELI retornou erro para order_id={payload.get('numeroLoja')}: "
+                                        f"{(meli_data or {}).get('error')}"
+                                    )
+                                    logger.warning(
+                                        "[ingest] enriquecimento MELI retornou erro para order_id=%s: %s — seguindo só com dados do Bling",
+                                        payload.get('numeroLoja'),
+                                        (meli_data or {}).get('error'),
+                                    )
+                                    meli_data = None
+                                    pedido_mercadolivre_id = None
+                            except Exception as e:
+                                ingest_ctx['status'] = 'warning'
+                                ingest_ctx['message'] = f"enriquecimento MELI falhou para order_id={payload.get('numeroLoja')}: {e}"
+                                logger.warning(
+                                    "[ingest] enriquecimento MELI falhou para order_id=%s: %s — seguindo só com dados do Bling",
+                                    payload.get('numeroLoja'),
+                                    e,
+                                    exc_info=True,
+                                )
+                                meli_data, pedido_mercadolivre_id = None, None
+
                 else:
                     ingest_ctx['status'] = 'warning'
                     ingest_ctx['message'] = f"loja_id={loja_id} sem instância marketplace mapeada"
@@ -527,6 +606,7 @@ def process_webhook(
         with ingest_step('classify_flex', ingest_ctx):
             flex = _classify_flex(
                 shopee_data,
+                meli_data,
                 payload.get('numeroLoja'),
                 (marketplace_inst or {}).get('plataforma_slug'),
             )
@@ -538,12 +618,14 @@ def process_webhook(
                 payload,
                 pedido_bling_id=pedido_bling_id,
                 pedido_shopee_id=pedido_shopee_id,
+                pedido_mercadolivre_id=pedido_mercadolivre_id,
                 bling_integration_id=bling_inst['id'],
                 marketplace_integration_id=(marketplace_inst or {}).get('id'),
                 canal_venda_id=canal_venda_id,
                 is_flex=flex.is_flex,
                 modalidade=flex.modalidade,
                 shopee_data=shopee_data,
+                meli_data=meli_data,
             )
             ingest_ctx['pedido_id'] = pedido_id
             logger.info("[ingest] pedido upserted id=%s is_flex=%s modalidade=%s",
@@ -957,6 +1039,75 @@ def _fetch_shopee_detail(marketplace_inst, order_sn):
     logger.info("[fetch_shopee_detail] Resultado do driver: %s", result)
     return result
 
+def _fetch_meli_detail(marketplace_inst, order_sn):
+    cfg, cred = marketplace_inst['config'], marketplace_inst.get('credentials') or {}
+    integration = {
+        'config':       cfg,
+        'credentials':  cred,
+        'access_token': marketplace_inst.get('access_token') or cred.get('access_token'),
+    }
+    logger.info("[fetch_meli_detail] Chamando driver com order_sn=%s", order_sn)
+    
+    # 1. Obter detalhes do pedido
+    order_data = meli_driver.get_order_detail(integration, [order_sn])
+    if not order_data or order_data.get('error'):
+        return order_data
+    
+    # 2. Obter detalhes do envio (se houver shipment.id)
+    shipping = order_data.get('shipping') or {}
+    shipment_id = shipping.get('id')
+    
+    shipment_data = {}
+    sla_data = {}
+    
+    if shipment_id:
+        shipment_data = meli_driver.get_shipment(integration, str(shipment_id))
+        sla_data = meli_driver.get_shipment_sla(integration, str(shipment_id))
+    
+    return {
+        'order': order_data,
+        'shipment': shipment_data,
+        'sla': sla_data,
+        'external_id': order_sn
+    }
+
+def _upsert_pedido_meli(meli_data: dict, marketplace_integration_id: int) -> int:
+    """
+    Upsert pedido na tabela pedidos_mercadolivre.
+    """
+    if not meli_data or meli_data.get('error'):
+        logger.error("[upsert_pedido_meli] Dados inválidos ou erro: %s", meli_data)
+        raise ValueError(f"Dados do Mercado Livre inválidos: {meli_data.get('error') if meli_data else 'None'}")
+
+    order = meli_data.get('order') or {}
+    shipment = meli_data.get('shipment') or {}
+    sla = (meli_data.get('sla') or [])[0] if isinstance(meli_data.get('sla'), list) and meli_data.get('sla') else {}
+    
+    shipping_option = shipment.get('shipping_option') or {}
+
+    row = {
+        'codigo_pedido':     meli_data.get('external_id'),
+        'shipment_id':       shipment.get('id'),
+        'status':            order.get('status'),
+        'mode':              shipment.get('mode'),
+        'shipping_type':     shipment.get('shipping_type'),
+        'shipping_option_name': shipping_option.get('name'),
+        'expected_date':     sla.get('expected_date'),
+        'buyer_nickname':    (order.get('buyer') or {}).get('nickname'),
+        'raw_order':         order,
+        'raw_shipment':      shipment,
+        'raw_sla':           meli_data.get('sla'),
+        'marketplace_integration_id': marketplace_integration_id,
+        'updated_at':        get_now_iso(),
+    }
+    
+    if not row.get('codigo_pedido'):
+        raise ValueError("codigo_pedido (external_id) está null - não é possível upsert pedidos_mercadolivre")
+    
+    res = supabase_db.table('pedidos_mercadolivre') \
+        .upsert(row, on_conflict='codigo_pedido').execute()
+    return res.data[0]['id']
+
 def _resolve_shipping_carrier(shopee_data, numero_loja):
     """
     Resolve o shipping_carrier preferindo o enrichment atual e caindo para o
@@ -1107,11 +1258,11 @@ def _upsert_pedido_shopee(shopee_data: dict, marketplace_integration_id: int) ->
     return res.data[0]['id']
 
 def _upsert_pedido_master(payload, *,
-                         pedido_bling_id, pedido_shopee_id,
+                         pedido_bling_id, pedido_shopee_id, pedido_mercadolivre_id=None,
                          bling_integration_id, marketplace_integration_id,
                          canal_venda_id,           # derivado de channel_connections
                          is_flex, modalidade,
-                         shopee_data,              # dict ou None
+                         shopee_data=None, meli_data=None,
                          ):
     """
     Upsert pedido na tabela pedidos (tabela unificada).
@@ -1134,10 +1285,17 @@ def _upsert_pedido_master(payload, *,
 
     # Datas
     data_venda          = _clean_date(payload.get('data'))
-    data_limite_envio = (
-        _clean_shopee_ship_by_date((shopee_data or {}).get('ship_by_date'))
-        or _clean_date(payload.get('dataPrevista'))
-    )
+    
+    # Resolver data limite de envio
+    data_limite_envio = None
+    if shopee_data:
+        data_limite_envio = _clean_shopee_ship_by_date(shopee_data.get('ship_by_date'))
+    elif meli_data:
+        sla = (meli_data.get('sla') or [])[0] if isinstance(meli_data.get('sla'), list) and meli_data.get('sla') else {}
+        data_limite_envio = sla.get('expected_date')
+    
+    if not data_limite_envio:
+        data_limite_envio = _clean_date(payload.get('dataPrevista'))
 
     # Logística
     transporte = payload.get('transporte') or {}
@@ -1156,6 +1314,7 @@ def _upsert_pedido_master(payload, *,
         'origem':                     'BLING',
         'pedido_bling_id':            pedido_bling_id,
         'pedido_shopee_id':           pedido_shopee_id,
+        'pedido_mercadolivre_id':     pedido_mercadolivre_id,
         'bling_integration_id':       bling_integration_id,
         'marketplace_integration_id': marketplace_integration_id,
         'canal_venda_id':             canal_venda_id,
@@ -1183,9 +1342,9 @@ def _upsert_pedido_master(payload, *,
         'modalidade_logistica':       modalidade,
 
         # Marketplace (preenchido só se houver enriquecimento)
-        'buyer_username':             (shopee_data or {}).get('buyer_username'),
-        'shipping_carrier':           (shopee_data or {}).get('shipping_carrier'),
-        'message_to_seller':          (shopee_data or {}).get('raw', {}).get('message_to_seller'),
+        'buyer_username':             (shopee_data or {}).get('buyer_username') or (meli_data.get('order', {}) if meli_data else {}).get('buyer', {}).get('nickname'),
+        'shipping_carrier':           (shopee_data or {}).get('shipping_carrier') or (meli_data.get('shipment', {}) if meli_data else {}).get('mode'),
+        'message_to_seller':          (shopee_data or {}).get('raw', {}).get('message_to_seller') or (meli_data.get('order', {}) if meli_data else {}).get('comment'),
 
         'updated_at':                 get_now_iso(),
     }
