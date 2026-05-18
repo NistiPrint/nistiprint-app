@@ -76,7 +76,8 @@ def _classify_flex(
         shipping_option = shipment.get('shipping_option') or {}
         
         mode = str(shipment.get('mode') or '').lower()
-        shipping_type = str(shipment.get('shipping_type') or '').lower()
+        # MELI returns logistic_type at the root of shipment detail
+        shipping_type = str(shipment.get('logistic_type') or shipment.get('shipping_type') or '').lower()
         option_name_raw = str(shipping_option.get('name') or '')
         option_name = _normalize_carrier(option_name_raw) # Reusing existing normalization
         
@@ -1087,6 +1088,9 @@ def _upsert_pedido_meli(meli_data: dict, marketplace_integration_id: int) -> int
     shipment = meli_data.get('shipment') or {}
     sla = (meli_data.get('sla') or [])[0] if isinstance(meli_data.get('sla'), list) and meli_data.get('sla') else {}
     
+    logger.info("[upsert_pedido_meli] Raw shipment flags - logistic_type: %s, shipping_type: %s", 
+                shipment.get('logistic_type'), shipment.get('shipping_type'))
+
     shipping_option = shipment.get('shipping_option') or {}
 
     row = {
