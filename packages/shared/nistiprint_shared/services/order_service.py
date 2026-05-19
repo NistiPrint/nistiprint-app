@@ -44,7 +44,7 @@ class OrderService:
 
         try:
             # 1. Tentar encontrar o pedido Core existente
-            existing_order = self.pedidos_table.select("id, situacao_pedido_id, is_flex, servico_logistico").eq('codigo_pedido_externo', external_id).execute()
+            existing_order = self.pedidos_table.select("id, situacao_pedido_id, is_flex, is_fulfillment, servico_logistico").eq('codigo_pedido_externo', external_id).execute()
             
             core_id = None
             old_status = None
@@ -62,6 +62,7 @@ class OrderService:
                     'cliente_telefone': order_data.get('cliente_telefone'),
                     'cliente_email': order_data.get('cliente_email'),
                     'is_flex': order_data.get('is_flex'),
+                    'is_fulfillment': order_data.get('is_fulfillment'),
                     'data_limite_envio': order_data.get('data_limite_envio'),
                     'servico_logistico': order_data.get('servico_logistico'),
                     'payload_canonico': canonical_payload,
@@ -91,6 +92,8 @@ class OrderService:
                 if platform.upper() != 'BLING':
                     if order_data.get('is_flex') is not None:
                         update_core['is_flex'] = order_data.get('is_flex')
+                    if order_data.get('is_fulfillment') is not None:
+                        update_core['is_fulfillment'] = order_data.get('is_fulfillment')
                     if order_data.get('data_limite_envio'):
                         update_core['data_limite_envio'] = order_data.get('data_limite_envio')
                     if order_data.get('servico_logistico'):
@@ -113,6 +116,7 @@ class OrderService:
                     'cliente_telefone': order_data.get('cliente_telefone'),
                     'cliente_email': order_data.get('cliente_email'),
                     'is_flex': order_data.get('is_flex', False),
+                    'is_fulfillment': order_data.get('is_fulfillment', False),
                     'data_limite_envio': order_data.get('data_limite_envio'),
                     'servico_logistico': order_data.get('servico_logistico'),
                     'data_venda': order_data.get('data_venda') or datetime.now(timezone.utc).isoformat(),
@@ -272,6 +276,13 @@ class OrderService:
                 if isinstance(is_flex, str):
                     is_flex = is_flex.lower() in ('true', '1', 'yes')
                 query = query.eq('is_flex', is_flex)
+
+            # Filtro por pedidos Fulfillment
+            if filters.get('is_fulfillment') is not None:
+                is_fulfillment = filters.get('is_fulfillment')
+                if isinstance(is_fulfillment, str):
+                    is_fulfillment = is_fulfillment.lower() in ('true', '1', 'yes')
+                query = query.eq('is_fulfillment', is_fulfillment)
 
             # Novos filtros para consolidação
             if filters.get('has_demanda') is not None:

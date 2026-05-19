@@ -16,6 +16,7 @@ from nistiprint_shared.services.integration_resolution_service import (
 )
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
+from nistiprint_shared.services import flex_classifier_service, fulfillment_classifier_service
 from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso
 
 logger = logging.getLogger("bling_order_processing")
@@ -28,8 +29,9 @@ class BlingDetailUnavailableError(RuntimeError):
 @dataclass
 class FlexClassificationResult:
     is_flex: bool
-    modalidade: str
-    motivo: str
+    is_fulfillment: bool = False
+    modalidade: str = 'STANDARD'
+    motivo: str = ''
     matched_rule_id: int | None = None
     raw_decision: dict | None = None
 
@@ -58,12 +60,60 @@ def _normalize_carrier(value: str | None) -> str:
     return "".join(char for char in nfkd if not unicodedata.combining(char)).lower().strip()
 
 
+def _classify_fulfillment(
+    shopee_data: dict | None,
+    meli_data: dict | None,
+    numero_loja: str | None,
+    marketplace_slug: str | None,
+    canal_venda_id: int | None = None,
+    marketplace_integration_id: int | None = None,
+    correlation_id: str | None = None,
+) -> FlexClassificationResult:
+    """
+    Classifica se o pedido é fulfillment usando fulfillment_classifier_service.
+    """
+    fields = {
+        'fulfillment_flag': (shopee_data or {}).get('fulfillment_flag'),
+        'shipping_carrier': _resolve_shipping_carrier(shopee_data, numero_loja),
+        'canal_venda_id': canal_venda_id
+    }
+
+    if marketplace_slug == 'mercadolivre' and meli_data:
+        shipment = meli_data.get('shipment') or {}
+        fields['logistic_type'] = shipment.get('logistic_type') or shipment.get('shipping_type')
+
+    res = fulfillment_classifier_service.classify(
+        supabase_db,
+        fields=fields,
+        marketplace_integration_id=marketplace_integration_id,
+        log_context={'correlation_id': correlation_id, 'numero_loja': numero_loja}
+    )
+
+    return FlexClassificationResult(
+        is_flex=False, # Não é flex aqui
+        is_fulfillment=res.is_fulfillment,
+        modalidade=res.modalidade,
+        motivo=res.motivo,
+        matched_rule_id=res.matched_rule_id,
+        raw_decision={'fields': fields, 'res': res.__dict__}
+    )
+
+
 def _classify_flex(
     shopee_data: dict | None,
     meli_data: dict | None,
     numero_loja: str | None,
     marketplace_slug: str | None,
+    is_fulfillment: bool = False,
 ) -> FlexClassificationResult:
+    if is_fulfillment:
+        return FlexClassificationResult(
+            is_flex=False,
+            is_fulfillment=True,
+            modalidade='FULFILLMENT',
+            motivo='pedido ja classificado como fulfillment, ignorando flex',
+        )
+
     if marketplace_slug == 'mercadolivre':
         if not meli_data:
              return FlexClassificationResult(
@@ -598,6 +648,19 @@ def process_webhook(
                 loja_id
             )
 
+        # 6.5. Classificar Fulfillment
+        with ingest_step('classify_fulfillment', ingest_ctx):
+            fulfillment = _classify_fulfillment(
+                shopee_data,
+                meli_data,
+                payload.get('numeroLoja'),
+                (marketplace_inst or {}).get('plataforma_slug'),
+                canal_venda_id=canal_venda_id,
+                marketplace_integration_id=(marketplace_inst or {}).get('id'),
+                correlation_id=correlation_id,
+            )
+            ingest_ctx['fulfillment_motivo'] = fulfillment.motivo
+
         # 7. Classificar Flex
         with ingest_step('classify_flex', ingest_ctx):
             flex = _classify_flex(
@@ -605,6 +668,7 @@ def process_webhook(
                 meli_data,
                 payload.get('numeroLoja'),
                 (marketplace_inst or {}).get('plataforma_slug'),
+                is_fulfillment=fulfillment.is_fulfillment,
             )
             ingest_ctx['flex_motivo'] = flex.motivo
 
@@ -619,13 +683,15 @@ def process_webhook(
                 marketplace_integration_id=(marketplace_inst or {}).get('id'),
                 canal_venda_id=canal_venda_id,
                 is_flex=flex.is_flex,
-                modalidade=flex.modalidade,
+                is_fulfillment=fulfillment.is_fulfillment,
+                modalidade=fulfillment.modalidade if fulfillment.is_fulfillment else flex.modalidade,
                 shopee_data=shopee_data,
                 meli_data=meli_data,
             )
             ingest_ctx['pedido_id'] = pedido_id
-            logger.info("[ingest] pedido upserted id=%s is_flex=%s modalidade=%s",
-                        pedido_id, flex.is_flex, flex.modalidade)
+            logger.info("[ingest] pedido upserted id=%s is_flex=%s is_fulfillment=%s modalidade=%s",
+                        pedido_id, flex.is_flex, fulfillment.is_fulfillment, 
+                        fulfillment.modalidade if fulfillment.is_fulfillment else flex.modalidade)
             _update_webhook_event(
                 webhook_event_id,
                 pedido_id=pedido_id,
@@ -653,8 +719,13 @@ def process_webhook(
                 marketplace_integration_id=(marketplace_inst or {}).get('id'),
                 is_flex=flex.is_flex,
                 flex_motivo=flex.motivo,
+                is_fulfillment=fulfillment.is_fulfillment,
+                fulfillment_motivo=fulfillment.motivo,
                 matched_rule_id=flex.matched_rule_id if hasattr(flex, 'matched_rule_id') else None,
-                raw_decision=flex.raw_decision if hasattr(flex, 'raw_decision') else None,
+                raw_decision={
+                    'flex': flex.raw_decision if hasattr(flex, 'raw_decision') else None,
+                    'fulfillment': fulfillment.raw_decision if hasattr(fulfillment, 'raw_decision') else None,
+                },
             )
 
         detail_unavailable = bool(ingest_ctx.get('detail_unavailable'))
@@ -922,7 +993,8 @@ def _resolve_canal_venda_id(marketplace_integration_id, bling_integration_id, lo
 
 
 def _log_ingest(pedido_id, bling_id, marketplace_integration_id,
-                is_flex, flex_motivo, matched_rule_id, raw_decision):
+                is_flex, flex_motivo, is_fulfillment=False, fulfillment_motivo=None,
+                matched_rule_id=None, raw_decision=None):
     """Retorna o resumo da auditoria para ser anexado ao log estruturado."""
     return {
         'pedido_id': pedido_id,
@@ -930,6 +1002,8 @@ def _log_ingest(pedido_id, bling_id, marketplace_integration_id,
         'marketplace_integration_id': marketplace_integration_id,
         'is_flex': is_flex,
         'flex_motivo': flex_motivo,
+        'is_fulfillment': is_fulfillment,
+        'fulfillment_motivo': fulfillment_motivo,
         'matched_rule_id': matched_rule_id,
         'raw_decision': raw_decision,
     }
@@ -1260,7 +1334,7 @@ def _upsert_pedido_master(payload, *,
                          pedido_bling_id, pedido_shopee_id, pedido_mercadolivre_id=None,
                          bling_integration_id, marketplace_integration_id,
                          canal_venda_id,           # derivado de channel_connections
-                         is_flex, modalidade,
+                         is_flex, is_fulfillment=False, modalidade,
                          shopee_data=None, meli_data=None,
                          ):
     """
@@ -1338,6 +1412,7 @@ def _upsert_pedido_master(payload, *,
         # Logística / Flex
         'servico_logistico':          servico,
         'is_flex':                    is_flex,
+        'is_fulfillment':             is_fulfillment,
         'modalidade_logistica':       modalidade,
 
         # Marketplace (preenchido só se houver enriquecimento)

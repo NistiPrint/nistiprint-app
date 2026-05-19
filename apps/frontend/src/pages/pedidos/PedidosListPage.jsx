@@ -41,6 +41,7 @@ function PedidosListPage() {
     origem_pedido_key: null,
     has_demanda: null, // true, false, null
     is_flex: null,     // true, false, null - Filtro para pedidos Flex
+    is_fulfillment: null, // true, false, null - Filtro para pedidos Fulfillment
     is_personalizado: null, // true, false, null - Filtro para pedidos personalizados
     delivery_start: '',
     delivery_end: '',
@@ -173,8 +174,9 @@ function PedidosListPage() {
           demanda_status: order.demanda_status || null,  // Status da demanda (se houver)
           total_demandas: order.total_demandas || 0,  // Total de demandas vinculadas
           demandas: order.demandas || [],  // Array de demandas associadas (para rascunhos)
-          // NOVOS CAMPOS - Pedidos Flex
+          // NOVOS CAMPOS - Pedidos Flex/Fulfillment
           is_flex: order.is_flex || false,
+          is_fulfillment: order.is_fulfillment || false,
           is_personalizado: order.is_personalizado || false,
           data_limite_envio: order.data_limite_envio,
           enviar_ate_formatado: order.enviar_ate_formatado,

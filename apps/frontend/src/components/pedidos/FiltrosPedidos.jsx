@@ -132,6 +132,7 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
     if (filtros.delivery_start || filtros.delivery_end) active.push('Prazo de envio');
     if (filtros.pedido_date_start || filtros.pedido_date_end) active.push('Data do pedido');
     if (filtros.is_flex) active.push('Entrega rapida');
+    if (filtros.is_fulfillment) active.push('Fulfillment');
     if (filtros.is_personalizado) active.push('Personalizados');
     return active;
   }, [filtros]);
@@ -366,7 +367,7 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
               />
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {[
                 {
                   label: 'Demanda',
@@ -377,6 +378,11 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
                   label: 'Flex',
                   key: 'is_flex',
                   options: [{ val: false, text: 'Normal' }, { val: true, text: 'Flex' }]
+                },
+                {
+                  label: 'Fulfillment',
+                  key: 'is_fulfillment',
+                  options: [{ val: false, text: 'Normal' }, { val: true, text: 'Full' }]
                 },
                 {
                   label: 'Personalizados',

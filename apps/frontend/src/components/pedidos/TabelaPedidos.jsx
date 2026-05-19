@@ -113,11 +113,13 @@ export default function TabelaPedidos({
                 // Determinar classe da linha
                 const rowClass = pedido.is_flex
                   ? 'bg-orange-50/30 hover:bg-orange-50'
-                  : pedido.is_personalizado
-                    ? 'bg-purple-50/20 hover:bg-purple-50'
-                    : isCanalProximo
-                      ? 'bg-blue-50/20 hover:bg-blue-50'
-                      : '';
+                  : pedido.is_fulfillment
+                    ? 'bg-blue-50/30 hover:bg-blue-50'
+                    : pedido.is_personalizado
+                      ? 'bg-purple-50/20 hover:bg-purple-50'
+                      : isCanalProximo
+                        ? 'bg-blue-50/20 hover:bg-blue-50'
+                        : '';
 
                 return (
                 <TableRow key={pedido.id} className={rowClass}>
@@ -129,6 +131,17 @@ export default function TabelaPedidos({
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1">
+                      {/* Fulfillment indicator - subtle dot */}
+                      {pedido.is_fulfillment && (
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <div className="h-2 w-2 rounded-full bg-blue-500" />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <span>Fulfillment</span>
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
                       {/* Flex indicator - subtle dot */}
                       {pedido.is_flex && (
                         <Tooltip>

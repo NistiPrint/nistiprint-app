@@ -63,6 +63,7 @@ def get_unified_orders_advanced():
         origem_pedido_key = request.args.get('origem_pedido_key')
         has_demanda = request.args.get('has_demanda')
         is_flex = request.args.get('is_flex')
+        is_fulfillment = request.args.get('is_fulfillment')
         delivery_start = request.args.get('delivery_start')
         delivery_end = request.args.get('delivery_end')
         pedido_date_start = request.args.get('pedido_date_start')
@@ -73,7 +74,7 @@ def get_unified_orders_advanced():
         page = request.args.get('page', 1, type=int)
         limit = request.args.get('limit', 50, type=int)
 
-        # Converter has_demanda e is_flex para booleano
+        # Converter has_demanda, is_flex e is_fulfillment para booleano
         if has_demanda == 'true':
             has_demanda = True
         elif has_demanda == 'false':
@@ -87,6 +88,13 @@ def get_unified_orders_advanced():
             is_flex = False
         else:
             is_flex = None
+
+        if is_fulfillment == 'true':
+            is_fulfillment = True
+        elif is_fulfillment == 'false':
+            is_fulfillment = False
+        else:
+            is_fulfillment = None
         
         # Tratar filtro de personalizado
         is_personalizado = request.args.get('is_personalizado')
@@ -120,6 +128,7 @@ def get_unified_orders_advanced():
             'p_has_demanda': has_demanda,
             'p_is_flex': is_flex,
             'p_is_personalizado': is_personalizado,
+            'p_is_fulfillment': is_fulfillment,
             'p_delivery_start_date': delivery_start,
             'p_delivery_end_date': delivery_end,
             'p_pedido_date_start': pedido_date_start,
