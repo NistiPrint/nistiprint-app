@@ -74,36 +74,18 @@ def get_unified_orders_advanced():
         page = request.args.get('page', 1, type=int)
         limit = request.args.get('limit', 50, type=int)
 
-        # Converter has_demanda, is_flex e is_fulfillment para booleano
-        if has_demanda == 'true':
-            has_demanda = True
-        elif has_demanda == 'false':
-            has_demanda = False
-        else:
-            has_demanda = None
-            
-        if is_flex == 'true':
-            is_flex = True
-        elif is_flex == 'false':
-            is_flex = False
-        else:
-            is_flex = None
+        # Converter booleans
+        def to_bool(val):
+            if val == 'true': return True
+            if val == 'false': return False
+            return None
 
-        if is_fulfillment == 'true':
-            is_fulfillment = True
-        elif is_fulfillment == 'false':
-            is_fulfillment = False
-        else:
-            is_fulfillment = None
-        
-        # Tratar filtro de personalizado
-        is_personalizado = request.args.get('is_personalizado')
-        if is_personalizado == 'true':
-            is_personalizado = True
-        elif is_personalizado == 'false':
-            is_personalizado = False
-        else:
-            is_personalizado = None
+        has_demanda = to_bool(has_demanda)
+        is_flex = to_bool(is_flex)
+        is_fulfillment = to_bool(is_fulfillment)
+        is_personalizado = to_bool(request.args.get('is_personalizado'))
+
+        print(f"DEBUG FILTERS: is_fulfillment={is_fulfillment}, type={type(is_fulfillment)}")
 
         # Calcular offset
         offset = (page - 1) * limit
@@ -119,45 +101,50 @@ def get_unified_orders_advanced():
             pedido_date_end = None
         if not origem_pedido_key:
             origem_pedido_key = None
+# Chamar função RPC passando um único objeto contendo todos os parâmetros
+# Isso contorna o problema de "Could not find the function..." do PostgREST
+rpc_params = {
+    'limit': limit,
+    'offset': offset,
+    'sort': sort,
+    'order': order,
+    'search_term': search,
+    'situacao_pedido_id': situacao_pedido_id,
+    'bling_integration_id': bling_integration_id,
+    'canal_venda_id': canal_venda_id,
+    'origem_pedido_key': origem_pedido_key,
+    'has_demanda': has_demanda,
+    'is_flex': is_flex,
+    'is_personalizado': is_personalizado,
+    'is_fulfillment': is_fulfillment,
+    'delivery_start_date': delivery_start,
+    'delivery_end_date': delivery_end,
+    'pedido_date_start': pedido_date_start,
+    'pedido_date_end': pedido_date_end
+}
 
-        rpc_params = {
-            'p_situacao_pedido_id': situacao_pedido_id,
-            'p_bling_integration_id': bling_integration_id,
-            'p_canal_venda_id': canal_venda_id,
-            'p_origem_pedido_key': origem_pedido_key or None,
-            'p_has_demanda': has_demanda,
-            'p_is_flex': is_flex,
-            'p_is_personalizado': is_personalizado,
-            'p_is_fulfillment': is_fulfillment,
-            'p_delivery_start_date': delivery_start,
-            'p_delivery_end_date': delivery_end,
-            'p_pedido_date_start': pedido_date_start,
-            'p_pedido_date_end': pedido_date_end,
-            'p_search_term': search,
-            'p_sort': sort,
-            'p_order': order,
-            'p_limit': limit,
-            'p_offset': offset
-        }
-
-        # Chamar função RPC (usa nome novo para evitar conflito) com retry
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                result = supabase_db.rpc('list_pedidos_filtrados', rpc_params).execute()
-                break
-            except Exception as e:
-                if 'ConnectionTerminated' in str(e) and attempt < max_retries - 1:
-                    print(f"Tentativa {attempt + 1} falhou, retrying...")
-                    import time
-                    time.sleep(1)
-                else:
-                    raise
+# Chamar função RPC
+max_retries = 3
+for attempt in range(max_retries):
+    try:
+        result = supabase_db.rpc('list_pedidos_filtrados', rpc_params).execute()
+        break
+    except Exception as e:
+        print(f"RPC Error: {e}")
+        if 'ConnectionTerminated' in str(e) and attempt < max_retries - 1:
+            import time
+            time.sleep(1)
+        else:
+            raise
 
         pedidos = result.data or []
 
         # Debug log (usando print pois logger pode não estar definido)
         print(f"=== DEBUG RPC: list_pedidos_filtrados retornou {len(pedidos)} pedidos ===")
+        if is_fulfillment is not None:
+             mismatched = [p['id'] for p in pedidos if p.get('is_fulfillment') != is_fulfillment]
+             if mismatched:
+                 print(f"!!! ALERT: Found mismatched fulfillment flag in results: {mismatched}")
         if pedidos:
             print(f"=== PRIMEIRO PEDIDO: {pedidos[0]} ===")
             
