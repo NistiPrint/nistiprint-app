@@ -426,34 +426,53 @@ class BlingClient:
         Returns:
             dict: Resposta JSON da API ou False em caso de erro
         """
-        time.sleep(0.3)  # Throttle requests
-
         access_token = self._get_valid_token()
-
         url = f"https://api.bling.com.br/Api/v3/{endpoint}"
         headers = {
             'Accept': 'application/json',
             'Authorization': f'Bearer {access_token}'
         }
+        headers.update(kwargs.pop('headers', {}))
 
         # Log de depuração do token (apenas últimos 6 caracteres por segurança)
         token_preview = f"...{access_token[-6:]}" if access_token and len(access_token) > 6 else "INVALID"
-        print(f"📡 [BLING API] {method.upper()} {endpoint} | Auth: Bearer {token_preview}")
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            # Throttle requests to respect Bling limits
+            time.sleep(0.3)
+            
+            if attempt > 0:
+                print(f"🔄 [BLING API] Retentando {method.upper()} {endpoint} (Tentativa {attempt + 1}/{max_retries})...")
 
-        headers.update(kwargs.pop('headers', {}))
+            try:
+                print(f"📡 [BLING API] {method.upper()} {endpoint} | Auth: Bearer {token_preview}")
+                response = requests.request(method.upper(), url, headers=headers, **kwargs)
 
-        try:
-            response = requests.request(method.upper(), url, headers=headers, **kwargs)
+                if response.status_code in [200, 201]:
+                    return response.json()
+                
+                # Retry on 5xx errors (server side errors)
+                if response.status_code in [500, 502, 503, 504]:
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 2
+                        print(f"⚠️ [BLING API] Erro {response.status_code}. Retentando em {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue
+                
+                print(f"❌ [BLING API] Erro - Status: {response.status_code}, Response: {response.text}")
+                return False
 
-            if response.status_code in [200, 201]:
-                return response.json()
-            else:
-                print(f"Erro na API Bling - Status: {response.status_code}, Response: {response.text}")
-            return False
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    print(f"⚠️ [BLING API] Erro de conexão: {e}. Retentando em {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                print(f"❌ [BLING API] Erro de conexão crítico: {str(e)}")
+                return False
 
-        except requests.exceptions.RequestException as e:
-            print(f"Erro de conexão com API Bling: {str(e)}")
-            return False
+        return False
 
     # ==================== MÉTODOS ADMINISTRATIVOS ====================
 

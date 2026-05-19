@@ -454,16 +454,8 @@ def process_webhook(
         # O webhook é apenas um aviso de alteração, precisamos dos dados atualizados
         with ingest_step('fetch_bling', ingest_ctx):
             if payload.get('id'):
-                try:
-                    detalhe = _fetch_bling_order_detail(bling_inst, payload['id'])
-                except BlingDetailUnavailableError as e:
-                    ingest_ctx['status'] = 'warning'
-                    ingest_ctx['message'] = (
-                        f"detalhe Bling indisponivel; seguindo com payload original minimo: {e}"
-                    )
-                    ingest_ctx['detail_unavailable'] = True
-                    ingest_ctx['detail_unavailable_message'] = str(e)
-                    detalhe = original_payload
+                # Deixar o erro subir para o consumidor (Redis) para retry
+                detalhe = _fetch_bling_order_detail(bling_inst, payload['id'])
                 payload = _preserve_original_bling_fields(detalhe, original_payload)
                 ingest_ctx['payload_summary'] = _build_payload_summary(payload)
                 _set_stage_details(
@@ -474,10 +466,9 @@ def process_webhook(
                 logger.info("[ingest] payload Bling atualizado via /pedidos/vendas/%s", payload.get('id'))
 
             detalhe_disponivel = bool(payload.get('itens')) or bool(payload.get('contato'))
-            payload_minimo = bool(payload.get('id') and payload.get('numero') and payload.get('numeroLoja'))
-            if not detalhe_disponivel and not payload_minimo:
+            if not detalhe_disponivel:
                 raise BlingDetailUnavailableError(
-                    f"detalhe Bling indisponível para id={ingest_ctx['payload_summary'].get('bling_id')} "
+                    f"detalhe Bling indisponível (sem itens ou contato) para id={ingest_ctx['payload_summary'].get('bling_id')} "
                     f"(inst={bling_inst['id']})"
                 )
 
