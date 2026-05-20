@@ -178,6 +178,8 @@ def process_consolidacao(self, consolidacao_id: int, correlation_id=None):
                         'total_pedido': float(order.get('totalProdutos', 0)),
                         'origem': plataforma,
                         'is_flex': order.get('is_flex'),
+                        'is_fulfillment': order.get('is_fulfillment'),
+                        'modalidade_logistica': order.get('modalidade_logistica'),
                         'servico_logistico': order.get('servico_logistico')
                     }
                     
@@ -490,6 +492,8 @@ def persist_orders_batch(self, json_file_path: str, platform: str, channel_id: i
                 order_to_upsert = {
                     'codigo_pedido_externo': codigo_externo,
                     'is_flex': order.get('is_flex'),
+                    'is_fulfillment': order.get('is_fulfillment'),
+                    'modalidade_logistica': order.get('modalidade_logistica'),
                     'servico_logistico': order.get('servico_logistico')
                 }
 

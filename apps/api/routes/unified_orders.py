@@ -85,8 +85,6 @@ def get_unified_orders_advanced():
         is_fulfillment = to_bool(is_fulfillment)
         is_personalizado = to_bool(request.args.get('is_personalizado'))
 
-        print(f"DEBUG FILTERS: is_fulfillment={is_fulfillment}, type={type(is_fulfillment)}")
-
         # Calcular offset
         offset = (page - 1) * limit
 
@@ -101,55 +99,51 @@ def get_unified_orders_advanced():
             pedido_date_end = None
         if not origem_pedido_key:
             origem_pedido_key = None
-# Chamar função RPC passando um único objeto contendo todos os parâmetros
-# Isso contorna o problema de "Could not find the function..." do PostgREST
-rpc_params = {
-    'limit': limit,
-    'offset': offset,
-    'sort': sort,
-    'order': order,
-    'search_term': search,
-    'situacao_pedido_id': situacao_pedido_id,
-    'bling_integration_id': bling_integration_id,
-    'canal_venda_id': canal_venda_id,
-    'origem_pedido_key': origem_pedido_key,
-    'has_demanda': has_demanda,
-    'is_flex': is_flex,
-    'is_personalizado': is_personalizado,
-    'is_fulfillment': is_fulfillment,
-    'delivery_start_date': delivery_start,
-    'delivery_end_date': delivery_end,
-    'pedido_date_start': pedido_date_start,
-    'pedido_date_end': pedido_date_end
-}
 
-# Chamar função RPC
-max_retries = 3
-for attempt in range(max_retries):
-    try:
-        result = supabase_db.rpc('list_pedidos_filtrados', rpc_params).execute()
-        break
-    except Exception as e:
-        print(f"RPC Error: {e}")
-        if 'ConnectionTerminated' in str(e) and attempt < max_retries - 1:
-            import time
-            time.sleep(1)
-        else:
-            raise
+        # Chamar função RPC passando um único objeto contendo todos os parâmetros
+        # Isso contorna o problema de "Could not find the function..." do PostgREST
+        rpc_params = {
+            'p_limit': limit,
+            'p_offset': offset,
+            'p_sort': sort,
+            'p_order': order,
+            'p_search_term': search,
+            'p_situacao_pedido_id': situacao_pedido_id,
+            'p_bling_integration_id': bling_integration_id,
+            'p_canal_venda_id': canal_venda_id,
+            'p_origem_pedido_key': origem_pedido_key,
+            'p_has_demanda': has_demanda,
+            'p_is_flex': is_flex,
+            'p_is_personalizado': is_personalizado,
+            'p_is_fulfillment': is_fulfillment,
+            'p_delivery_start_date': delivery_start,
+            'p_delivery_end_date': delivery_end,
+            'p_pedido_date_start': pedido_date_start,
+            'p_pedido_date_end': pedido_date_end
+        }
+
+        # Chamar função RPC
+        max_retries = 3
+        result = None
+        for attempt in range(max_retries):
+            try:
+                result = supabase_db.rpc('list_pedidos_filtrados', rpc_params).execute()
+                break
+            except Exception as e:
+                print(f"RPC Error (attempt {attempt+1}): {e}")
+                if 'ConnectionTerminated' in str(e) and attempt < max_retries - 1:
+                    import time
+                    time.sleep(1)
+                else:
+                    raise
+
+        if result is None:
+            return ApiResponse.error("Erro ao buscar pedidos (sem resposta do banco).")
 
         pedidos = result.data or []
 
-        # Debug log (usando print pois logger pode não estar definido)
-        print(f"=== DEBUG RPC: list_pedidos_filtrados retornou {len(pedidos)} pedidos ===")
-        if is_fulfillment is not None:
-             mismatched = [p['id'] for p in pedidos if p.get('is_fulfillment') != is_fulfillment]
-             if mismatched:
-                 print(f"!!! ALERT: Found mismatched fulfillment flag in results: {mismatched}")
         if pedidos:
-            print(f"=== PRIMEIRO PEDIDO: {pedidos[0]} ===")
-            
             # Formatar pedidos para incluir status formatado e dados Flex
-            # A RPC agora retorna situacao_nome, situacao_cor, is_flex e data_limite_envio
             for pedido in pedidos:
                 # Garantir que o status tenha formato consistente
                 if not pedido.get('status'):
@@ -159,13 +153,13 @@ for attempt in range(max_retries):
                         'cor': pedido.get('situacao_cor', '#9ca3af')
                     }
                 
-                # Formatar cliente como objeto aninhado (para consistência com detalhes)
+                # Formatar cliente como objeto aninhado
                 pedido['cliente'] = {
                     'nome': pedido.get('cliente_nome'),
                     'documento': pedido.get('cliente_documento')
                 }
                 
-                # Formatar canal como objeto aninhado (para consistência com detalhes)
+                # Formatar canal como objeto aninhado
                 pedido['canal_venda'] = {
                     'id': pedido.get('canal_venda_id'),
                     'nome': pedido.get('canal_venda_nome')
@@ -192,21 +186,20 @@ for attempt in range(max_retries):
                         pedido['enviar_ate_formatado'] = pedido['data_limite_envio']
                 else:
                     pedido['enviar_ate_formatado'] = 'N/A'
-        else:
-            print(f"=== RESULT DATA: {result.data} ===")
-            print(f"=== RESULT COUNT: {result.count} ===")
 
-        # Contar total (sem limit/offset) - também tratar strings vazias
+        # Contar total (sem limit/offset)
         count_params = {**rpc_params, 'p_limit': 10000, 'p_offset': 0}
         count_result = supabase_db.rpc('list_pedidos_filtrados', count_params).execute()
-        
-        total = len(count_result.data) if count_result.data else 0
-        
+        total_count = len(count_result.data) if count_result.data else 0
+
         return ApiResponse.success(data={
-            'orders': pedidos,
-            'total': total,
-            'page': page,
-            'per_page': limit
+            'pedidos': pedidos,
+            'pagination': {
+                'total': total_count,
+                'page': page,
+                'limit': limit,
+                'pages': (total_count + limit - 1) // limit
+            }
         })
 
     except Exception as e:
@@ -294,8 +287,3 @@ def get_order_details(order_id):
         import traceback
         traceback.print_exc()
         return ApiResponse.error(message=str(e), status_code=500)
-
-
-
-
-
