@@ -72,9 +72,34 @@ def _classify_fulfillment(
     """
     Classifica se o pedido é fulfillment usando fulfillment_classifier_service.
     """
+    shipping_carrier = _resolve_shipping_carrier(shopee_data, numero_loja)
+    fulfillment_flag = (shopee_data or {}).get('fulfillment_flag')
+
+    # Fallback determinístico para Shopee, mesmo sem regra parametrizada no banco.
+    if marketplace_slug == 'shopee':
+        is_full_carrier = str(shipping_carrier or '').strip().lower() == 'full'
+        is_fulfillment_flag = str(fulfillment_flag or '').strip() == 'fulfilled_by_shopee'
+        if is_full_carrier or is_fulfillment_flag:
+            motivo = (
+                f"fallback_shopee carrier={shipping_carrier!r} fulfillment_flag={fulfillment_flag!r} "
+                f"→ is_fulfillment=True"
+            )
+            return FlexClassificationResult(
+                is_flex=False,
+                is_fulfillment=True,
+                modalidade='FULFILLMENT',
+                motivo=motivo,
+                matched_rule_id=None,
+                raw_decision={
+                    'source': 'fallback_shopee',
+                    'shipping_carrier': shipping_carrier,
+                    'fulfillment_flag': fulfillment_flag,
+                }
+            )
+
     fields = {
-        'fulfillment_flag': (shopee_data or {}).get('fulfillment_flag'),
-        'shipping_carrier': _resolve_shipping_carrier(shopee_data, numero_loja),
+        'fulfillment_flag': fulfillment_flag,
+        'shipping_carrier': shipping_carrier,
         'canal_venda_id': canal_venda_id
     }
 

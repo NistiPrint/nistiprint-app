@@ -63,9 +63,13 @@ def classify(
     canal_venda_id = fields.get('canal_venda_id')
     for r in rules:
         if r.get('integracao_instancia_id') is None:
-            # Se a regra tiver canal_venda_id, verificamos match
-            if r.get('canal_venda_id') and canal_venda_id and r.get('canal_venda_id') != canal_venda_id:
-                continue
+            # Regra com escopo de canal só pode casar quando o pedido tiver canal correspondente.
+            rule_channel_id = r.get('canal_venda_id')
+            if rule_channel_id is not None:
+                if canal_venda_id is None:
+                    continue
+                if rule_channel_id != canal_venda_id:
+                    continue
                 
             val = fields.get(r['campo'])
             if matches(r, val):

@@ -161,6 +161,14 @@ class OrderSyncService:
             carrier_lower = shipping_carrier.lower()
             is_flex = 'entrega rapida' in carrier_lower or 'entrega rápida' in carrier_lower
 
+            # Regra Fulfillment Shopee:
+            # - shipping_carrier == "Full" OR fulfillment_flag == "fulfilled_by_shopee"
+            fulfillment_flag = raw_order.get('fulfillment_flag')
+            is_fulfillment = (
+                str(shipping_carrier or '').strip().lower() == 'full' or
+                str(fulfillment_flag or '').strip() == 'fulfilled_by_shopee'
+            )
+
             if is_flex:
                 logger.info("🚀 Pedido FLEX detectado: %s (carrier: %s)", order_sn, shipping_carrier)
             else:
@@ -172,6 +180,7 @@ class OrderSyncService:
                 'codigo_pedido_externo': order_sn,
                 'origem': 'SHOPEE',
                 'is_flex': is_flex,
+                'is_fulfillment': is_fulfillment,
                 'data_limite_envio': data_prevista,
                 'servico_logistico': shipping_carrier,
                 'data_venda': clean_date(shopee_data.get('date_created')),

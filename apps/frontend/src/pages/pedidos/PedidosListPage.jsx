@@ -233,6 +233,7 @@ function PedidosListPage() {
       origem_pedido_key: null,
       has_demanda: null,
       is_flex: null,
+      is_fulfillment: null,
       is_personalizado: null,
       delivery_start: '',
       delivery_end: '',
