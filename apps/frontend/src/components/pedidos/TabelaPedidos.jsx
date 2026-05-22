@@ -202,6 +202,7 @@ export default function TabelaPedidos({
                       canalNome={pedido.canal_venda_nome}
                       marketplaceSlug={pedido.marketplace_slug}
                       marketplaceColor={pedido.marketplace_color}
+                      moduleIcons={moduleIcons}
                     />
                   </TableCell>
                   <TableCell>
@@ -427,7 +428,8 @@ function CanalIcon({ canalNome, marketplaceSlug, marketplaceColor, moduleIcons }
   // Buscar ícone no mapeamento dinâmico ou no legado
   const iconUrl = moduleIcons?.[canalSlug] || 
                   legacyIconUrls[canalSlug] || 
-                  Object.entries(moduleIcons || {}).find(([slug]) => canalSlug.includes(slug))?.[1];
+                  Object.entries(moduleIcons || {}).find(([slug]) => canalSlug.includes(slug))?.[1] ||
+                  Object.entries(legacyIconUrls).find(([slug]) => canalSlug.includes(slug))?.[1];
 
   const [imgError, setImgError] = useState(false);
 
