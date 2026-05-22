@@ -123,75 +123,6 @@ function PedidosListPage() {
   };
 
   // Carregar pedidos
-  const aplicarFiltrosLocais = (pedidosLista) => {
-    const toBool = (value) => {
-      if (typeof value === 'boolean') return value;
-      if (value === null || value === undefined) return false;
-      const normalized = String(value).trim().toLowerCase();
-      return ['true', '1', 'yes', 'y', 'sim'].includes(normalized);
-    };
-
-    const toDate = (value) => {
-      if (!value) return null;
-      const d = new Date(value);
-      return Number.isNaN(d.getTime()) ? null : d;
-    };
-
-    return pedidosLista.filter((pedido) => {
-      if (filtros.status_id != null && Number(pedido.situacao_pedido_id) !== Number(filtros.status_id)) return false;
-      if (filtros.bling_integration_id != null && Number(pedido.bling_integration_id) !== Number(filtros.bling_integration_id)) return false;
-      if (filtros.canal_venda_id != null && Number(pedido.canal_venda_id) !== Number(filtros.canal_venda_id)) return false;
-      if (filtros.has_demanda != null && toBool(pedido.tem_demanda) !== filtros.has_demanda) return false;
-      if (filtros.is_flex != null && toBool(pedido.is_flex) !== filtros.is_flex) return false;
-      if (filtros.is_fulfillment != null && toBool(pedido.is_fulfillment) !== filtros.is_fulfillment) return false;
-      if (filtros.is_personalizado != null && toBool(pedido.is_personalizado) !== filtros.is_personalizado) return false;
-
-      if (filtros.search) {
-        const term = filtros.search.toLowerCase();
-        const found = [
-          pedido.numero_pedido,
-          pedido.cliente_nome,
-          pedido.codigo_pedido_externo,
-          pedido.cliente_documento
-        ].some((val) => String(val || '').toLowerCase().includes(term));
-        if (!found) return false;
-      }
-
-      if (filtros.pedido_date_start) {
-        const venda = toDate(pedido.data_venda);
-        const start = toDate(filtros.pedido_date_start);
-        if (!venda || !start || venda < start) return false;
-      }
-      if (filtros.pedido_date_end) {
-        const venda = toDate(pedido.data_venda);
-        const end = toDate(filtros.pedido_date_end);
-        if (!venda || !end || venda > end) return false;
-      }
-      if (filtros.delivery_start) {
-        const limite = toDate(pedido.data_limite_envio);
-        const start = toDate(filtros.delivery_start);
-        if (!limite || !start || limite < start) return false;
-      }
-      if (filtros.delivery_end) {
-        const limite = toDate(pedido.data_limite_envio);
-        const end = toDate(filtros.delivery_end);
-        if (!limite || !end || limite > end) return false;
-      }
-
-      if (filtros.origem_pedido_key) {
-        if (filtros.origem_pedido_key.startsWith('canal:')) {
-          const canalId = Number(filtros.origem_pedido_key.split(':')[1]);
-          if (Number(pedido.canal_venda_id) !== canalId) return false;
-        } else if (filtros.origem_pedido_key.startsWith('marketplace:')) {
-          const marketplaceId = Number(filtros.origem_pedido_key.split(':')[1]);
-          if (Number(pedido.marketplace_integration_id) !== marketplaceId) return false;
-        }
-      }
-
-      return true;
-    });
-  };
-
   const carregarPedidos = async () => {
     setLoading(true);
     try {
@@ -232,6 +163,7 @@ function PedidosListPage() {
           marketplace_color: order.marketplace_color,
           marketplace_integration_id: order.marketplace_integration_id,
           bling_integration_id: order.bling_integration_id,
+          bling_loja_id: order.bling_loja_id,
           bling_integration_name: order.bling_integration_nome || order.bling_integration?.nome,
           canal_venda_id: order.canal_venda_id,
           situacao_pedido_id: order.situacao_pedido_id || order.situacaoPedidoId,
@@ -256,9 +188,8 @@ function PedidosListPage() {
           },
         }));
         
-        const pedidosFiltrados = aplicarFiltrosLocais(pedidosMapeados);
-        setPedidos(pedidosFiltrados);
-        setTotal(responseData.total ?? pedidosFiltrados.length);
+        setPedidos(pedidosMapeados);
+        setTotal(responseData.total ?? pedidosMapeados.length);
         // Calcular total de páginas
       } else {
         toast.error(data.message || 'Erro ao carregar pedidos');

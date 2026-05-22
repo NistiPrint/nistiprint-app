@@ -4,8 +4,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Switch } from '@/components/ui/switch';
-import { Building2, CalendarRange, ChevronDown, ChevronUp, Filter, Loader2, Search, Sparkles, Store, Truck, X, Zap } from 'lucide-react';
+import { CalendarRange, ChevronDown, ChevronUp, Filter, Loader2, Search, Store, Truck, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
 import FiltrosContextuais from './FiltrosContextuais';
@@ -85,32 +84,25 @@ function DateRangeFilter({ title, description, icon, startValue, endValue, onCha
 export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltros }) {
   const [origens, setOrigens] = useState([]);
   const [statusList, setStatusList] = useState([]);
-  const [blingIntegrations, setBlingIntegrations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filtrosAbertos, setFiltrosAbertos] = useState(false);
 
   useEffect(() => {
     const carregarDados = async () => {
       try {
-        const [origensRes, statusRes, integracoesRes] = await Promise.all([
+        const [origensRes, statusRes] = await Promise.all([
           fetch('/api/v2/pedidos/origens'),
-          fetch('/api/v2/pedidos/status-opcoes'),
-          fetch('/api/v2/integracao-canais/integracoes')
+          fetch('/api/v2/pedidos/status-opcoes')
         ]);
 
         const origensData = await origensRes.json();
         const statusData = await statusRes.json();
-        const integracoesData = await integracoesRes.json();
 
         if (origensData.success) {
           setOrigens(origensData.data.origens || []);
         }
         if (statusData.success) {
           setStatusList(statusData.data.status || []);
-        }
-        if (integracoesData.success) {
-          const integracoes = Array.isArray(integracoesData.data) ? integracoesData.data : [];
-          setBlingIntegrations(integracoes.filter((item) => item.module_id === 'bling' && item.is_active !== false));
         }
       } catch (error) {
         console.error('Erro ao carregar filtros:', error);
@@ -126,14 +118,13 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
     const active = [];
     if (filtros.search) active.push('Busca');
     if (filtros.status_id) active.push('Status');
-    if (filtros.bling_integration_id) active.push('Conta Bling');
     if (filtros.origem_pedido_key || filtros.canal_venda_id) active.push('Origem');
     if (filtros.has_demanda !== null) active.push('Demanda');
-    if (filtros.delivery_start || filtros.delivery_end) active.push('Prazo de envio');
+    if (filtros.delivery_start || filtros.delivery_end) active.push('Envio até');
     if (filtros.pedido_date_start || filtros.pedido_date_end) active.push('Data do pedido');
-    if (filtros.is_flex) active.push('Entrega rapida');
-    if (filtros.is_fulfillment) active.push('Fulfillment');
-    if (filtros.is_personalizado) active.push('Personalizados');
+    if (filtros.is_flex !== null) active.push('Flex');
+    if (filtros.is_fulfillment !== null) active.push('Fulfillment');
+    if (filtros.is_personalizado !== null) active.push('Personalizados');
     return active;
   }, [filtros]);
 
@@ -153,20 +144,25 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
 
   const handleFiltroContextual = (filtroContextual) => {
     const novosFiltros = {};
+    const origemKey = filtroContextual.origem_pedido_key
+      || (filtroContextual.marketplace_integration_id != null
+        ? `source:${filtroContextual.marketplace_integration_id}`
+        : (filtroContextual.canal_venda_id != null ? `canal:${filtroContextual.canal_venda_id}` : null));
+    const canalFallback = origemKey?.startsWith('source:') ? null : filtroContextual.canal_venda_id;
 
     switch (filtroContextual.tipo) {
       case 'canal':
-        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id;
-        novosFiltros.origem_pedido_key = `canal:${filtroContextual.canal_venda_id}`;
+        novosFiltros.canal_venda_id = canalFallback ?? null;
+        novosFiltros.origem_pedido_key = origemKey;
         break;
       case 'flex':
-        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id;
-        novosFiltros.origem_pedido_key = `canal:${filtroContextual.canal_venda_id}`;
+        novosFiltros.canal_venda_id = canalFallback ?? null;
+        novosFiltros.origem_pedido_key = origemKey;
         novosFiltros.is_flex = true;
         break;
       case 'sem_demanda':
-        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id;
-        novosFiltros.origem_pedido_key = `canal:${filtroContextual.canal_venda_id}`;
+        novosFiltros.canal_venda_id = canalFallback ?? null;
+        novosFiltros.origem_pedido_key = origemKey;
         novosFiltros.has_demanda = false;
         break;
       default:
@@ -212,7 +208,7 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
             <div className="space-y-2">
               <Label>Busca</Label>
               <div className="relative">
@@ -259,38 +255,6 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
             </div>
 
             <div className="space-y-2">
-              <Label>Conta Bling/ERP</Label>
-              <Select
-                value={filtros.bling_integration_id?.toString() || 'all'}
-                onValueChange={(value) =>
-                  onFiltroChange({ bling_integration_id: value === 'all' ? null : parseInt(value) })
-                }
-                disabled={loading}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder={loading ? 'Carregando...' : 'Todas as contas'} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todas as contas</SelectItem>
-                  {loading ? (
-                    <div className="flex items-center justify-center py-2">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    </div>
-                  ) : (
-                    blingIntegrations.map((integration) => (
-                      <SelectItem key={integration.id} value={integration.id.toString()}>
-                        <div className="flex items-center gap-2">
-                          <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
-                          <span>{integration.instance_name || integration.name || `Bling ${integration.id}`}</span>
-                        </div>
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
               <Label>Origem da venda</Label>
               <Select
                 value={filtros.origem_pedido_key || 'all'}
@@ -323,6 +287,34 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
                       </SelectItem>
                     ))
                   )}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Envio até</Label>
+              <Input
+                type="date"
+                value={filtros.delivery_end || ''}
+                onChange={(e) => onFiltroChange({ delivery_start: '', delivery_end: e.target.value })}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Flex</Label>
+              <Select
+                value={filtros.is_flex === null ? 'all' : (filtros.is_flex ? 'true' : 'false')}
+                onValueChange={(value) =>
+                  onFiltroChange({ is_flex: value === 'all' ? null : value === 'true' })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Todos" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos</SelectItem>
+                  <SelectItem value="true">Flex</SelectItem>
+                  <SelectItem value="false">Normal</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -373,11 +365,6 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
                   label: 'Demanda',
                   key: 'has_demanda',
                   options: [{ val: false, text: 'Sem Demanda' }, { val: true, text: 'Com Demanda' }]
-                },
-                {
-                  label: 'Flex',
-                  key: 'is_flex',
-                  options: [{ val: false, text: 'Normal' }, { val: true, text: 'Flex' }]
                 },
                 {
                   label: 'Fulfillment',

@@ -52,6 +52,12 @@ export default function FiltrosContextuais({ onFiltroContextual }) {
       tipo: 'canal',
       canal_venda_id: canal.id,
       canal_nome: canal.nome,
+      marketplace_integration_id: canal.marketplace_integration_id,
+      origem_pedido_key: canal.origem_pedido_key || (
+        canal.marketplace_integration_id != null
+          ? `source:${canal.marketplace_integration_id}`
+          : `canal:${canal.id}`
+      ),
     });
   };
 
@@ -60,6 +66,12 @@ export default function FiltrosContextuais({ onFiltroContextual }) {
       tipo: 'flex',
       canal_venda_id: canal.id,
       canal_nome: canal.nome,
+      marketplace_integration_id: canal.marketplace_integration_id,
+      origem_pedido_key: canal.origem_pedido_key || (
+        canal.marketplace_integration_id != null
+          ? `source:${canal.marketplace_integration_id}`
+          : `canal:${canal.id}`
+      ),
     });
   };
 
@@ -68,6 +80,12 @@ export default function FiltrosContextuais({ onFiltroContextual }) {
       tipo: 'sem_demanda',
       canal_venda_id: canal.id,
       canal_nome: canal.nome,
+      marketplace_integration_id: canal.marketplace_integration_id,
+      origem_pedido_key: canal.origem_pedido_key || (
+        canal.marketplace_integration_id != null
+          ? `source:${canal.marketplace_integration_id}`
+          : `canal:${canal.id}`
+      ),
     });
   };
 

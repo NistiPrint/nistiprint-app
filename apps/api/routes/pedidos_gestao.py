@@ -14,6 +14,7 @@ Rotas:
 from flask import request, Blueprint, jsonify
 from routes.auth import login_required
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from utils.order_filters_adapter import build_origin_options
 from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
 from nistiprint_shared.services.pedidos_bling_import_service import run_fetch_pedidos_em_andamento
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
@@ -201,11 +202,11 @@ def get_origens_pedidos():
     """
     Retorna origens realmente existentes para filtro de pedidos.
 
-    Cada item usa key estavel: canal:<id>, marketplace:<id> ou bling_loja:<loja_id>.
+    Cada item usa key canônica por instância de marketplace: source:<marketplace_integration_id>.
+    Chaves legadas seguem aceitas no backend durante a transição.
     """
     try:
-        result = supabase_db.rpc('get_pedidos_origem_options').execute()
-        origens = result.data if result.data else []
+        origens = build_origin_options(supabase_db)
 
         return ApiResponse.success(data={
             'origens': origens,
@@ -678,13 +679,33 @@ def get_canais_proximos_coleta():
             return ApiResponse.error(message=f"Erro na função SQL: {result.exception}", status_code=500)
 
         canais_proximos = result.data if result.data else []
+        channel_ids = [canal.get('fn_id') for canal in canais_proximos if canal.get('fn_id') is not None]
+        channel_marketplace_map = {}
+        if channel_ids:
+            cc_rows = (
+                supabase_db.table('channel_connections')
+                .select('channel_id, marketplace_integration_id')
+                .eq('is_active', True)
+                .in_('channel_id', channel_ids)
+                .execute()
+                .data
+                or []
+            )
+            for row in cc_rows:
+                channel_id = row.get('channel_id')
+                marketplace_id = row.get('marketplace_integration_id')
+                if channel_id is None or marketplace_id is None:
+                    continue
+                channel_marketplace_map[channel_id] = marketplace_id
         logger.info(f"Canais próximos retornados: {len(canais_proximos)}")
 
         # Formatar dados
         canais_formatados = []
         for canal in canais_proximos:
+            canal_id = canal.get('fn_id')
+            marketplace_integration_id = channel_marketplace_map.get(canal_id)
             canais_formatados.append({
-                'id': canal.get('fn_id'),
+                'id': canal_id,
                 'nome': canal.get('fn_nome'),
                 'horario_coleta': canal.get('fn_horario_coleta', ''),  # Já vem formatado HH:MI
                 'flex': canal.get('fn_flex', False),
@@ -692,6 +713,12 @@ def get_canais_proximos_coleta():
                 'color': canal.get('fn_color'),
                 'distancia_minutos': canal.get('fn_dist_min', 0),
                 'is_proximo': canal.get('fn_is_proximo', True),
+                'marketplace_integration_id': marketplace_integration_id,
+                'origem_pedido_key': (
+                    f"source:{marketplace_integration_id}"
+                    if marketplace_integration_id is not None
+                    else (f"canal:{canal_id}" if canal_id is not None else None)
+                ),
             })
 
         # Obter horário atual

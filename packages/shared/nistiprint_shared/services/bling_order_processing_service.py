@@ -1376,6 +1376,7 @@ def _upsert_pedido_master(payload, *,
     bling_id      = payload.get('id')                          # ID interno Bling
     bling_numero  = str(payload.get('numero') or '')           # número exibido
     numero_loja   = payload.get('numeroLoja')                  # ID marketplace
+    bling_loja_id = _extract_bling_loja_id(payload)
     codigo_externo = numero_loja if numero_loja else f"BLING-{bling_integration_id}-{bling_id}"
 
     # Cliente (sempre do Bling — fonte canônica)
@@ -1414,6 +1415,7 @@ def _upsert_pedido_master(payload, *,
         'pedido_shopee_id':           pedido_shopee_id,
         'pedido_mercadolivre_id':     pedido_mercadolivre_id,
         'bling_integration_id':       bling_integration_id,
+        'bling_loja_id':              str(bling_loja_id) if bling_loja_id not in (None, '') else None,
         'marketplace_integration_id': marketplace_integration_id,
         'canal_venda_id':             canal_venda_id,
         'situacao_pedido_id':         situacao_pedido_id,
