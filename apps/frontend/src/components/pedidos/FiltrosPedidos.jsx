@@ -137,9 +137,9 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
   ];
 
   const deliveryPresets = [
-    { label: 'Hoje', start: toISODate(new Date()), end: toISODate(new Date()) },
-    { label: 'Proximos 7 dias', start: toISODate(new Date()), end: addDays(7) },
-    { label: 'Atrasados', start: '', end: addDays(-1) },
+    { label: 'Hoje', start: addDays(0), end: addDays(0) },
+    { label: 'Amanhã', start: addDays(1), end: addDays(1) },
+    { label: 'Hoje + Amanhã', start: addDays(0), end: addDays(1) },
   ];
 
   const handleFiltroContextual = (filtroContextual) => {
@@ -293,11 +293,39 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
 
             <div className="space-y-2">
               <Label>Envio até</Label>
-              <Input
-                type="date"
-                value={filtros.delivery_end || ''}
-                onChange={(e) => onFiltroChange({ delivery_start: '', delivery_end: e.target.value })}
-              />
+              <Select
+                value={(() => {
+                  const { delivery_start, delivery_end } = filtros;
+                  if (!delivery_start && !delivery_end) return 'all';
+                  if (delivery_start === addDays(0) && delivery_end === addDays(0)) return 'hoje';
+                  if (delivery_start === addDays(1) && delivery_end === addDays(1)) return 'amanha';
+                  if (delivery_start === addDays(0) && delivery_end === addDays(1)) return 'hoje_amanha';
+                  return 'custom';
+                })()}
+                onValueChange={(value) => {
+                  if (value === 'all') onFiltroChange({ delivery_start: '', delivery_end: '' });
+                  else if (value === 'hoje') onFiltroChange({ delivery_start: addDays(0), delivery_end: addDays(0) });
+                  else if (value === 'amanha') onFiltroChange({ delivery_start: addDays(1), delivery_end: addDays(1) });
+                  else if (value === 'hoje_amanha') onFiltroChange({ delivery_start: addDays(0), delivery_end: addDays(1) });
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Qualquer data" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Qualquer data</SelectItem>
+                  <SelectItem value="hoje">Hoje</SelectItem>
+                  <SelectItem value="amanha">Amanhã</SelectItem>
+                  <SelectItem value="hoje_amanha">Hoje + Amanhã</SelectItem>
+                  {(filtros.delivery_start || filtros.delivery_end) && (
+                    !(filtros.delivery_start === addDays(0) && filtros.delivery_end === addDays(0)) &&
+                    !(filtros.delivery_start === addDays(1) && filtros.delivery_end === addDays(1)) &&
+                    !(filtros.delivery_start === addDays(0) && filtros.delivery_end === addDays(1))
+                  ) && (
+                    <SelectItem value="custom">Personalizado</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-2">

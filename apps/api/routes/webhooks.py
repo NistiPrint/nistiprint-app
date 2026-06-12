@@ -12,11 +12,14 @@ Ver: docs/02-features/webhooks_fluxo_correto.md
 
 from flask import Blueprint, request, jsonify
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.redis_queue_tasks import clear_queue, get_queue_items, get_queue_stats, move_items
+from nistiprint_shared.services.webhook_monitoring_service import webhook_monitoring_service
 from nistiprint_shared.constants import (
     STATUS_PEDIDO_CANCELADO,
     ALERTA_PEDIDO_CANCELADO,
     ALERTA_SEVERIDADE_MEDIA,
 )
+from routes.auth import admin_required
 from utils.api_response import ApiResponse
 import logging
 from datetime import datetime, timezone
@@ -24,6 +27,127 @@ from datetime import datetime, timezone
 logger = logging.getLogger("WebhooksPedidos")
 
 webhooks_bp = Blueprint('webhooks', __name__, url_prefix='/api/v2/webhooks')
+
+
+@webhooks_bp.route('/events', methods=['GET'])
+@admin_required
+def list_webhook_events():
+    try:
+        filters = {
+            'source': request.args.get('source') or 'bling',
+            'status': request.args.get('status'),
+            'bling_id': request.args.get('bling_id'),
+            'numero_loja': request.args.get('numero_loja'),
+            'pedido_id': request.args.get('pedido_id'),
+            'correlation_id': request.args.get('correlation_id'),
+            'since': request.args.get('since'),
+            'until': request.args.get('until'),
+            'page': request.args.get('page', 1),
+            'per_page': request.args.get('per_page', 50),
+        }
+        result = webhook_monitoring_service.list_events(filters)
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        logger.error("Erro ao listar webhook_events: %s", e, exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@webhooks_bp.route('/events/<int:event_id>', methods=['GET'])
+@admin_required
+def get_webhook_event(event_id):
+    try:
+        event = webhook_monitoring_service.get_event(event_id)
+        if not event:
+            return jsonify({'success': False, 'error': 'Evento de webhook nao encontrado'}), 404
+        return jsonify({'success': True, 'event': event})
+    except Exception as e:
+        logger.error("Erro ao buscar webhook_event id=%s: %s", event_id, e, exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@webhooks_bp.route('/events/<int:event_id>/logs', methods=['GET'])
+@admin_required
+def get_webhook_event_logs(event_id):
+    try:
+        result = webhook_monitoring_service.get_event_logs(event_id)
+        if not result:
+            return jsonify({'success': False, 'error': 'Evento de webhook nao encontrado'}), 404
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        logger.error("Erro ao buscar logs do webhook_event id=%s: %s", event_id, e, exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@webhooks_bp.route('/events/<int:event_id>/reprocess', methods=['POST'])
+@admin_required
+def reprocess_webhook_event(event_id):
+    try:
+        result = webhook_monitoring_service.reprocess_event(event_id)
+        if not result.get('success'):
+            return jsonify(result), result.get('status_code', 500)
+        return jsonify(result)
+    except Exception as e:
+        logger.error("Erro ao reprocessar webhook_event id=%s: %s", event_id, e, exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@webhooks_bp.route('/queue/stats', methods=['GET'])
+@admin_required
+def get_webhook_queue_stats():
+    try:
+        stats = get_queue_stats()
+        stats['processados'] = webhook_monitoring_service.get_processed_count()
+        return jsonify(stats)
+    except Exception as e:
+        logger.error("Erro ao buscar stats de filas de webhook: %s", e, exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@webhooks_bp.route('/queue/items', methods=['GET'])
+@admin_required
+def get_webhook_queue_items():
+    try:
+        queue = request.args.get('queue', 'pendentes')
+        limit = min(max(int(request.args.get('limit', 20)), 1), 100)
+        if queue == 'processados':
+            items = webhook_monitoring_service.list_processed_items(limit=limit)
+        else:
+            items = get_queue_items(queue, limit=limit)
+        return jsonify({'success': True, 'items': items})
+    except Exception as e:
+        logger.error("Erro ao listar itens de fila de webhook: %s", e, exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@webhooks_bp.route('/queue/reprocess', methods=['POST'])
+@admin_required
+def reprocess_webhook_queue():
+    try:
+        data = request.get_json(silent=True) or {}
+        source = data.get('source')
+        if source not in ('falhas', 'dead_letter'):
+            return jsonify({'success': False, 'error': 'source deve ser falhas ou dead_letter'}), 400
+        moved = move_items(source, destination='pendentes')
+        return jsonify({'success': True, 'reprocessed': moved})
+    except Exception as e:
+        logger.error("Erro ao reprocessar fila de webhook: %s", e, exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@webhooks_bp.route('/queue/clear', methods=['DELETE'])
+@admin_required
+def clear_webhook_queue():
+    try:
+        queue = request.args.get('queue')
+        if queue == 'processados':
+            return jsonify({'success': True, 'deleted': 0, 'message': 'Historico persistido nao e limpo pela fila Redis'})
+        if queue not in ('pendentes', 'falhas', 'dead_letter'):
+            return jsonify({'success': False, 'error': 'queue invalida'}), 400
+        deleted = clear_queue(queue)
+        return jsonify({'success': True, 'deleted': deleted})
+    except Exception as e:
+        logger.error("Erro ao limpar fila de webhook: %s", e, exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @webhooks_bp.route('/pedido-cancelado', methods=['POST'])

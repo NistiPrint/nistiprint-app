@@ -44,6 +44,7 @@ import HistoricoColetasPage from './pages/admin/relatorios/HistoricoColetasPage'
 import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPage'
 import MonitoramentoEstoquePage from './pages/admin/relatorios/MonitoramentoEstoquePage'
 import RelatoriosIndexPage from './pages/admin/relatorios/RelatoriosIndexPage'
+import WebhooksPage from './pages/admin/relatorios/WebhooksPage'
 // AIDashboardPage removido — duplica VendasPersonalizadasPage
 import IAPage from './pages/admin/IAPage'
 import TaskControlCenter from './pages/admin/TaskControlCenter'
@@ -306,6 +307,7 @@ function App() {
             <Route path='fila-estoque' element={<MonitoramentoEstoquePage />} />
             <Route path='monitoramento-estoque' element={<MonitoramentoEstoquePage />} />
             <Route path='monitoramento' element={<Navigate to='/relatorios/monitoramento-estoque' replace />} />
+            <Route path='webhooks' element={<WebhooksPage />} />
             <Route path='auditoria' element={<AuditoriaPage />} />
             <Route path='gerencial-historico' element={<GerencialHistorico />} />
           </Route>
