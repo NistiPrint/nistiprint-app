@@ -223,7 +223,7 @@ def _insert_webhook_event(
             'correlation_id': correlation_id,
             'last_status': 'pending',
             'last_attempt_at': get_now_iso(),
-            'attempt_count': 1,
+            'attempt_count': 0,
         }).execute()
         return response.data[0]['id'] if response.data else None
     except Exception as e:
@@ -243,7 +243,7 @@ def _update_webhook_event(webhook_event_id: int | None, **fields):
 
 def _increment_webhook_event_attempt(webhook_event_id: int | None):
     if not webhook_event_id:
-        return
+        return None
 
     try:
         response = supabase_db.table('webhook_events') \
@@ -251,14 +251,80 @@ def _increment_webhook_event_attempt(webhook_event_id: int | None):
             .eq('id', webhook_event_id) \
             .single().execute()
         current_attempt_count = int((response.data or {}).get('attempt_count') or 0)
+        next_attempt_count = current_attempt_count + 1
         _update_webhook_event(
             webhook_event_id,
-            attempt_count=current_attempt_count + 1,
+            attempt_count=next_attempt_count,
             last_status='pending',
             last_attempt_at=get_now_iso(),
         )
+        return next_attempt_count
     except Exception as e:
         logger.error("Erro ao incrementar tentativa em webhook_events id=%s: %s", webhook_event_id, e)
+        return None
+
+
+def _create_webhook_attempt(
+    webhook_event_id: int | None,
+    *,
+    correlation_id: str,
+    queue_name: str,
+) -> tuple[int | None, int | None]:
+    if not webhook_event_id:
+        return None, None
+
+    attempt_number = _increment_webhook_event_attempt(webhook_event_id)
+    if attempt_number is None:
+        attempt_number = 1
+
+    try:
+        response = supabase_db.table('webhook_event_attempts').insert({
+            'webhook_event_id': webhook_event_id,
+            'correlation_id': correlation_id,
+            'attempt_number': attempt_number,
+            'status': 'processing',
+            'queue_name': queue_name,
+            'started_at': get_now_iso(),
+        }).execute()
+        attempt_id = response.data[0]['id'] if response.data else None
+    except Exception as e:
+        logger.error("Erro ao inserir webhook_event_attempts event_id=%s: %s", webhook_event_id, e)
+        attempt_id = None
+
+    _update_webhook_event(
+        webhook_event_id,
+        last_status='processing',
+        last_attempt_at=get_now_iso(),
+    )
+    return attempt_id, attempt_number
+
+
+def _finish_webhook_attempt(
+    attempt_id: int | None,
+    *,
+    status: str,
+    result_summary: dict | None = None,
+    error_type: str | None = None,
+    error_message: str | None = None,
+):
+    if not attempt_id:
+        return
+
+    fields = {
+        'status': status,
+        'finished_at': get_now_iso(),
+    }
+    if result_summary is not None:
+        fields['result_summary'] = result_summary
+    if error_type:
+        fields['error_type'] = error_type
+    if error_message:
+        fields['error_message'] = str(error_message)[:4000]
+
+    try:
+        supabase_db.table('webhook_event_attempts').update(fields).eq('id', attempt_id).execute()
+    except Exception as e:
+        logger.error("Erro ao atualizar webhook_event_attempts id=%s: %s", attempt_id, e)
 
 
 def _mark_failure_payload(data: dict, *, error_type: str, message: str) -> dict:
@@ -270,11 +336,33 @@ def _mark_failure_payload(data: dict, *, error_type: str, message: str) -> dict:
     return failed
 
 
-def _move_failure_to_dead_letter(r, payload: dict, reason: str):
+def _move_failure_to_dead_letter(
+    r,
+    payload: dict,
+    reason: str,
+    *,
+    attempt_id: int | None = None,
+    error_type: str | None = None,
+    error_message: str | None = None,
+):
     dead_letter = dict(payload)
     dead_letter['dead_letter_reason'] = reason
     dead_letter['dead_lettered_at'] = get_now_iso()
     r.rpush(BLING_WEBHOOK_DEAD_LETTER, _serialize_queue_item(dead_letter))
+    webhook_event_id = dead_letter.get('webhook_event_id')
+    if webhook_event_id:
+        _update_webhook_event(
+            webhook_event_id,
+            last_status='dead_letter',
+            last_attempt_at=get_now_iso(),
+        )
+    _finish_webhook_attempt(
+        attempt_id,
+        status='dead_letter',
+        error_type=error_type or dead_letter.get('last_error_type') or 'dead_letter',
+        error_message=error_message or dead_letter.get('last_error') or reason,
+        result_summary={'dead_letter_reason': reason},
+    )
 
 
 @shared_task(name='nistiprint_shared.services.redis_queue_tasks.drain_bling_webhook_failures')
@@ -316,7 +404,11 @@ def drain_bling_webhook_failures(correlation_id=None):
         data['last_queue'] = 'pendentes'
         webhook_event_id = data.get('webhook_event_id')
         if webhook_event_id:
-            _increment_webhook_event_attempt(webhook_event_id)
+            _update_webhook_event(
+                webhook_event_id,
+                last_status='pending',
+                last_attempt_at=get_now_iso(),
+            )
         r.rpush(BLING_WEBHOOK_QUEUE, _serialize_queue_item(data))
         moved += 1
 
@@ -351,6 +443,8 @@ def consumir_fila_bling(correlation_id=None):
                 break
 
             data = None
+            attempt_id = None
+            webhook_event_id = None
             try:
                 # O payload pode vir direto ou dentro de uma chave 'body' (depende de como o n8n salva)
                 data = _parse_queue_item(mensagem_str)
@@ -359,25 +453,15 @@ def consumir_fila_bling(correlation_id=None):
                 logger.info(f"Raw payload recebido do Redis: {mensagem_str[:500]}")
                 
                 # Validate payload has required fields
-                if not data or not isinstance(data, dict):
+                invalid_queue_item = not data or not isinstance(data, dict)
+                if invalid_queue_item:
                     logger.error(f"Payload inválido: não é um dicionário ou está vazio. Payload: {mensagem_str[:200]}")
-                    r.rpush(BLING_WEBHOOK_DEAD_LETTER, mensagem_str)
-                    continue
+                    data = {'raw_message': mensagem_str}
                 
                 # Extract order data - Bling webhooks nest the actual order in a 'data' field
                 order_data, company_id, bling_integration_hint, webhook_event_id, bling_id, numero, numero_loja = _extract_order_context(data)
-                
-                # Check for minimum required fields to avoid CNPJ errors
-                if not bling_id and not numero and not numero_loja:
-                    logger.error(f"Payload sem campos obrigatórios (id, numero, numeroLoja). Payload: {mensagem_str[:200]}")
-                    _move_failure_to_dead_letter(
-                        r,
-                        _mark_failure_payload(data, error_type='invalid_payload', message='missing id/numero/numeroLoja'),
-                        reason='invalid_payload',
-                    )
-                    continue
-                
                 webhook_correlation_id = generate_correlation_id()
+
                 if not webhook_event_id:
                     webhook_event_id = _insert_webhook_event(
                         data,
@@ -388,12 +472,37 @@ def consumir_fila_bling(correlation_id=None):
                     )
                     if webhook_event_id:
                         data['webhook_event_id'] = webhook_event_id
-                else:
-                    _update_webhook_event(
-                        webhook_event_id,
-                        last_status='pending',
-                        last_attempt_at=get_now_iso(),
+
+                attempt_id, _attempt_number = _create_webhook_attempt(
+                    webhook_event_id,
+                    correlation_id=webhook_correlation_id,
+                    queue_name=BLING_WEBHOOK_QUEUE,
+                )
+
+                if invalid_queue_item:
+                    failed_payload = _mark_failure_payload(data, error_type='invalid_payload', message='payload vazio ou nao-dict')
+                    _move_failure_to_dead_letter(
+                        r,
+                        failed_payload,
+                        reason='invalid_payload',
+                        attempt_id=attempt_id,
+                        error_type='invalid_payload',
+                        error_message='payload vazio ou nao-dict',
                     )
+                    continue
+
+                # Check for minimum required fields to avoid CNPJ errors
+                if not bling_id and not numero and not numero_loja:
+                    logger.error(f"Payload sem campos obrigatórios (id, numero, numeroLoja). Payload: {mensagem_str[:200]}")
+                    _move_failure_to_dead_letter(
+                        r,
+                        _mark_failure_payload(data, error_type='invalid_payload', message='missing id/numero/numeroLoja'),
+                        reason='invalid_payload',
+                        attempt_id=attempt_id,
+                        error_type='invalid_payload',
+                        error_message='missing id/numero/numeroLoja',
+                    )
+                    continue
 
                 logger.info(f"Iniciando processamento do webhook Bling no worker... (bling_id={bling_id}, numero={numero}, numeroLoja={numero_loja}, companyId={company_id}, blingIntegrationId={bling_integration_hint}, webhook_event_id={webhook_event_id})")
                 try:
@@ -419,15 +528,16 @@ def consumir_fila_bling(correlation_id=None):
                 logger.info(f"Resultado do processamento: {status_result} - {msg_result}")
 
                 if status_result == 'success' or status_result == 'skipped':
-                    # Log de sucesso ou ignorado (filtros) vai para a fila de processados
-                    # Adicionamos o resultado ao JSON para o monitor exibir
-                    log_data = {
-                        'payload': data,
-                        'result': result,
-                        'processed_at': get_now_iso()
-                    }
-                    r.rpush(BLING_WEBHOOK_PROCESSADOS, json.dumps(log_data))
-                    r.ltrim(BLING_WEBHOOK_PROCESSADOS, -100, -1)
+                    _finish_webhook_attempt(
+                        attempt_id,
+                        status=status_result,
+                        result_summary=result,
+                    )
+                    _update_webhook_event(
+                        webhook_event_id,
+                        last_status=status_result,
+                        last_attempt_at=get_now_iso(),
+                    )
                     processados += 1
                 else:
                     # Falha real no processamento (ex: erro de API ou Banco)
@@ -442,14 +552,38 @@ def consumir_fila_bling(correlation_id=None):
                             r,
                             failed_payload,
                             reason=f"retry_count={retry_count} >= max={BLING_WEBHOOK_MAX_RETRIES}",
+                            attempt_id=attempt_id,
+                            error_type=error_type,
+                            error_message=msg_result or 'processing_error',
                         )
                     else:
+                        _finish_webhook_attempt(
+                            attempt_id,
+                            status='failed',
+                            error_type=error_type,
+                            error_message=msg_result or 'processing_error',
+                            result_summary=result,
+                        )
+                        _update_webhook_event(
+                            webhook_event_id,
+                            last_status='failed',
+                            last_attempt_at=get_now_iso(),
+                        )
                         r.rpush(BLING_WEBHOOK_FALHAS, _serialize_queue_item(failed_payload))
 
             except Exception as e:
                 logger.error(f"Erro crítico ao processar mensagem do Redis: {str(e)}")
                 failed_payload = _mark_failure_payload(data if 'data' in locals() and isinstance(data, dict) else {'raw_message': mensagem_str}, error_type='consumer_exception', message=str(e))
-                _move_failure_to_dead_letter(r, failed_payload, reason='consumer_exception')
+                if webhook_event_id and 'webhook_event_id' not in failed_payload:
+                    failed_payload['webhook_event_id'] = webhook_event_id
+                _move_failure_to_dead_letter(
+                    r,
+                    failed_payload,
+                    reason='consumer_exception',
+                    attempt_id=attempt_id,
+                    error_type='consumer_exception',
+                    error_message=str(e),
+                )
 
         return {'status': 'success', 'sent': processados}
 

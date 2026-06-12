@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Database, History, LineChart, Package, Settings, Truck } from 'lucide-react';
+import { Database, History, LineChart, Package, Settings, Truck, Webhook } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -107,6 +107,13 @@ function RelatoriosIndexPage() {
                 <span className="font-medium">Monitoramento</span>
               </div>
               <span className="text-xs text-muted-foreground">Eventos e Fila</span>
+            </Link>
+            <Link to="/relatorios/webhooks" className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors">
+              <div className="flex items-center gap-3">
+                <Webhook className="h-5 w-5 text-blue-500" />
+                <span className="font-medium">Webhooks Bling</span>
+              </div>
+              <span className="text-xs text-muted-foreground">Payloads e Logs</span>
             </Link>
           </CardContent>
         </Card>
