@@ -66,6 +66,7 @@ def gerar_demanda_consolidada():
             numero_pedido,
             codigo_pedido_externo,
             canal_venda_id,
+            data_coleta,
             canal_venda:canais_venda(nome),
             itens_pedido:itens_pedido(
                 id,
@@ -220,6 +221,8 @@ def gerar_demanda_consolidada():
         horario_coleta = data.get('horario_coleta')
         if not horario_coleta and sugestoes:
             horario_coleta = sugestoes.get('horario_coleta')
+        datas_coleta = [p.get('data_coleta') for p in pedidos_result.data if p.get('data_coleta')]
+        data_coleta = min(datas_coleta) if datas_coleta else None
 
         # 5. Criar demanda única consolidada
         nova_demanda = demanda_producao_service.criar_demanda_direta(
@@ -232,6 +235,7 @@ def gerar_demanda_consolidada():
             user_id=user_id,
             tipo_demanda='PLATAFORMA',
             status='EM_PRODUCAO',
+            data_coleta=data_coleta,
             marketplace_integration_id=marketplace_integration_id
         )
 

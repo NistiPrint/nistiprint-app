@@ -545,7 +545,7 @@ def listar_regras_logisticas_integracao():
         marketplace_integration_id = request.args.get('marketplace_integration_id')
         query = supabase_db.table('regras_logisticas_integracao').select(
             "*, pontos_coleta(nome), installed_integrations(id, instance_name, module_id)"
-        ).order('marketplace_integration_id').order('prioridade_uso')
+        ).order('marketplace_integration_id').order('horario_coleta').order('prioridade_uso')
         if marketplace_integration_id:
             query = query.eq('marketplace_integration_id', int(marketplace_integration_id))
         result = query.execute()
@@ -561,18 +561,26 @@ def criar_regra_logistica_integracao():
     """Cria regra logística por integração."""
     try:
         data = request.get_json() or {}
-        required = ['marketplace_integration_id', 'modalidade', 'tipo_envio', 'horario_limite']
+        required = ['marketplace_integration_id', 'modalidade', 'tipo_envio', 'horario_corte', 'horario_coleta']
         for field in required:
             if data.get(field) in (None, ''):
                 return jsonify({'success': False, 'error': f'Campo obrigatório: {field}'}), 400
+
+        dias_semana = data.get('dias_semana') or [1, 2, 3, 4, 5]
+        if any(int(d) < 1 or int(d) > 7 for d in dias_semana):
+            return jsonify({'success': False, 'error': 'dias_semana deve usar 1=segunda ... 7=domingo'}), 400
+        if str(data['horario_coleta']) < str(data['horario_corte']):
+            return jsonify({'success': False, 'error': 'horario_coleta deve ser maior ou igual a horario_corte'}), 400
 
         payload = {
             'marketplace_integration_id': int(data['marketplace_integration_id']),
             'modalidade': str(data['modalidade']).upper(),
             'tipo_envio': str(data['tipo_envio']).upper(),
-            'horario_limite': data['horario_limite'],
+            'horario_corte': data['horario_corte'],
+            'horario_coleta': data['horario_coleta'],
+            'horario_limite': data.get('horario_limite') or data['horario_coleta'],
             'ponto_coleta_id': data.get('ponto_coleta_id'),
-            'dias_semana': data.get('dias_semana') or [0, 1, 2, 3, 4, 5, 6],
+            'dias_semana': [int(d) for d in dias_semana],
             'ativo': bool(data.get('ativo', True)),
             'prioridade_uso': int(data.get('prioridade_uso', 100)),
             'descricao': data.get('descricao'),
@@ -593,7 +601,7 @@ def atualizar_regra_logistica_integracao(regra_id: int):
     try:
         data = request.get_json() or {}
         allowed = {
-            'modalidade', 'tipo_envio', 'horario_limite', 'ponto_coleta_id',
+            'modalidade', 'tipo_envio', 'horario_corte', 'horario_coleta', 'horario_limite', 'ponto_coleta_id',
             'dias_semana', 'ativo', 'prioridade_uso', 'descricao'
         }
         updates = {k: v for k, v in data.items() if k in allowed}
@@ -601,6 +609,14 @@ def atualizar_regra_logistica_integracao(regra_id: int):
             updates['modalidade'] = str(updates['modalidade']).upper()
         if 'tipo_envio' in updates:
             updates['tipo_envio'] = str(updates['tipo_envio']).upper()
+        if 'dias_semana' in updates:
+            if any(int(d) < 1 or int(d) > 7 for d in updates['dias_semana']):
+                return jsonify({'success': False, 'error': 'dias_semana deve usar 1=segunda ... 7=domingo'}), 400
+            updates['dias_semana'] = [int(d) for d in updates['dias_semana']]
+        if updates.get('horario_coleta') and updates.get('horario_corte') and str(updates['horario_coleta']) < str(updates['horario_corte']):
+            return jsonify({'success': False, 'error': 'horario_coleta deve ser maior ou igual a horario_corte'}), 400
+        if 'horario_coleta' in updates and 'horario_limite' not in updates:
+            updates['horario_limite'] = updates['horario_coleta']
         updates['updated_at'] = datetime.utcnow().isoformat()
 
         result = supabase_db.table('regras_logisticas_integracao').update(updates).eq('id', regra_id).execute()

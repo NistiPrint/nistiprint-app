@@ -262,7 +262,9 @@ class DemandaReportingDashboardService:
         response = supabase_db.execute_with_retry(
             self.demandas_table.select("*, canal_venda:canais_venda(nome, color, plataformas(nome))")
             .neq('status', 'CONCLUIDO').neq('status', 'CANCELADO')
-            .order('data_entrega', nullsfirst=False).limit(limit)
+            .order('data_coleta', nullsfirst=False)
+            .order('data_entrega', nullsfirst=False)
+            .limit(limit)
         )
         return self._get_aggregated_demandas(response.data)
 

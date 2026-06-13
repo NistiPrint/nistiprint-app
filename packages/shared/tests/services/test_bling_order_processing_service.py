@@ -190,6 +190,38 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
 
         self.assertEqual(carrier, 'Entrega Rapida Shopee')
 
+    def test_resolve_marketplace_timestamps_uses_shopee_pay_time_when_ready_to_ship(self):
+        timestamps = bos._resolve_marketplace_timestamps(
+            {'data': '2026-06-13'},
+            shopee_data={
+                'order_status': 'READY_TO_SHIP',
+                'create_time': '2026-06-13T09:10:00-03:00',
+                'pay_time': '2026-06-13T10:20:00-03:00',
+            },
+        )
+
+        self.assertEqual(timestamps['data_compra_marketplace'], '2026-06-13T09:10:00-03:00')
+        self.assertEqual(timestamps['data_pagamento_marketplace'], '2026-06-13T10:20:00-03:00')
+        self.assertEqual(timestamps['payment_time_source'], 'shopee.pay_time')
+
+    def test_resolve_marketplace_timestamps_uses_meli_date_approved_when_paid(self):
+        timestamps = bos._resolve_marketplace_timestamps(
+            {'data': '2026-06-13'},
+            meli_data={
+                'order': {
+                    'status': 'paid',
+                    'date_created': '2026-06-13T08:00:00-03:00',
+                    'payments': [
+                        {'date_approved': '2026-06-13T12:00:00-03:00'},
+                    ],
+                }
+            },
+        )
+
+        self.assertEqual(timestamps['data_compra_marketplace'], '2026-06-13T08:00:00-03:00')
+        self.assertEqual(timestamps['data_pagamento_marketplace'], '2026-06-13T12:00:00-03:00')
+        self.assertEqual(timestamps['payment_time_source'], 'mercadolivre.payments.date_approved')
+
     def test_resolve_shipping_carrier_falls_back_to_saved_row(self):
         table = MagicMock()
         table.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [

@@ -1034,6 +1034,7 @@ class DemandaCoreService:
             kwargs['data_finalizacao_prevista'] = data_finalizacao_prevista.isoformat() if hasattr(data_finalizacao_prevista, 'isoformat') else data_finalizacao_prevista
 
         marketplace_integration_id = kwargs.get('marketplace_integration_id')
+        data_coleta = kwargs.pop('data_coleta', None)
         # Resolver horário de coleta com base na nova regra canônica por integração.
         horario_coleta_resolvido = self._resolver_horario_coleta(
             canal_venda_id,
@@ -1058,6 +1059,7 @@ class DemandaCoreService:
             'status': status,
             'canal_venda_id': canal_venda_id,
             'horario_coleta': horario_coleta_resolvido,
+            'data_coleta': data_coleta,
             'tipo_demanda': tipo_demanda,
             'observacoes': observacoes or None,
             'pedido_id': pedido_id,

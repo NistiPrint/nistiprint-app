@@ -1,9 +1,22 @@
 from typing import Optional, Dict, Any
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.platform_api_service import platform_api_service
+from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_datetime(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 class MarketplaceEnrichmentService:
     """
@@ -164,6 +177,8 @@ class MarketplaceEnrichmentService:
             buyer_username = raw_order.get('buyer_username')
             shipping_carrier = raw_order.get('shipping_carrier')
             message_to_seller = raw_order.get('message_to_seller')
+            data_compra = shopee_data.get('create_time')
+            data_pagamento = shopee_data.get('pay_time') if shopee_data.get('order_status') == 'READY_TO_SHIP' else None
 
             logger.info(f"Dados da API Shopee recebidos: buyer_username={buyer_username}, shipping_carrier={shipping_carrier}, message_to_seller={message_to_seller}")
 
@@ -174,6 +189,8 @@ class MarketplaceEnrichmentService:
                 'message_to_seller': message_to_seller,
                 'recipient_address': raw_order.get('recipient_address', {}),
                 'status_pedido': shopee_data.get('status_original'),
+                'create_time': data_compra,
+                'pay_time': data_pagamento,
                 'raw_order': raw_order
             }
 
@@ -192,12 +209,25 @@ class MarketplaceEnrichmentService:
             self.vinculos_table.upsert(vinculo, on_conflict='integration_id,plataforma,id_na_plataforma').execute()
 
             # Atualizar colunas explícitas na tabela pedidos
+            pedido_rows = self.pedidos_table.select('modalidade_logistica').eq('id', pedido_id).limit(1).execute().data or []
+            modalidade = (pedido_rows[0] if pedido_rows else {}).get('modalidade_logistica') or 'STANDARD'
+            coleta_contexto = logistica_coleta_service.calcular_data_coleta(
+                marketplace_integration_id=marketplace_integration_id,
+                modalidade=modalidade,
+                pagamento_dt=_parse_datetime(data_pagamento),
+                compra_dt=_parse_datetime(data_compra),
+            )
+
             update_pedido = {
                 'buyer_username': buyer_username,
                 'marketplace_order_id': codigo_pedido_externo,
                 'shipping_carrier': shipping_carrier,
                 'message_to_seller': message_to_seller,
-                'contact_marketplace_id': None
+                'contact_marketplace_id': None,
+                'data_compra_marketplace': data_compra,
+                'data_pagamento_marketplace': data_pagamento or data_compra,
+                'data_coleta': coleta_contexto.get('data_coleta'),
+                'regra_logistica_integracao_id': (coleta_contexto.get('regra') or {}).get('id')
             }
             self.pedidos_table.update(update_pedido).eq('id', pedido_id).execute()
 

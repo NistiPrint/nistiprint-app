@@ -261,8 +261,12 @@ function DemandaListPage() {
       }
     })
 
-    // Ordenação Linha Principal: Horário de coleta
-    main.sort((a, b) => (a.horario_coleta || '23:59').localeCompare(b.horario_coleta || '23:59'))
+    // Ordenação Linha Principal: data/hora de coleta operacional
+    main.sort((a, b) => {
+      const coletaA = a.data_coleta || `${a.data_entrega || '9999-12-31'}T${a.horario_coleta || '23:59'}`
+      const coletaB = b.data_coleta || `${b.data_entrega || '9999-12-31'}T${b.horario_coleta || '23:59'}`
+      return coletaA.localeCompare(coletaB)
+    })
     
     // Ordenação Trilhas Laterais: Readiness Score (maior primeiro)
     lateral.sort((a, b) => (b.readiness_score || 0) - (a.readiness_score || 0))
@@ -498,7 +502,7 @@ function DemandaListPage() {
             <div className="flex items-center gap-3 mb-6 border-b pb-2">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">📅 PRINCIPAL</h2>
-                <p className="text-xs text-gray-500">Demandas prioritárias ordenadas por horário de coleta</p>
+                <p className="text-xs text-gray-500">Demandas prioritárias ordenadas por data/hora de coleta</p>
               </div>
             </div>
 

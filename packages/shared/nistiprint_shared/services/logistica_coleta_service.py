@@ -13,6 +13,9 @@ DEFAULT_TZ = "America/Sao_Paulo"
 
 @dataclass
 class JanelaColeta:
+    id: Optional[int]
+    horario_corte: str
+    horario_coleta: str
     horario_limite: str
     tipo_envio: str
     ponto_coleta_id: Optional[int]
@@ -59,11 +62,11 @@ class LogisticaColetaService:
     def _load_rules(self, marketplace_integration_id: int, modalidade: str) -> List[JanelaColeta]:
         response = (
             self._table
-            .select("horario_limite,tipo_envio,ponto_coleta_id,prioridade_uso,dias_semana,pontos_coleta(nome)")
+            .select("id,horario_corte,horario_coleta,horario_limite,tipo_envio,ponto_coleta_id,prioridade_uso,dias_semana,pontos_coleta(nome)")
             .eq("marketplace_integration_id", marketplace_integration_id)
             .eq("modalidade", modalidade)
             .eq("ativo", True)
-            .order("horario_limite", desc=False)
+            .order("horario_coleta", desc=False)
             .order("prioridade_uso", desc=True)
             .execute()
         )
@@ -72,9 +75,14 @@ class LogisticaColetaService:
         rules: List[JanelaColeta] = []
         for row in rows:
             ponto = row.get("pontos_coleta") or {}
+            horario_coleta = str(row.get("horario_coleta") or row.get("horario_limite") or "23:59")[:5]
+            horario_corte = str(row.get("horario_corte") or row.get("horario_limite") or horario_coleta)[:5]
             rules.append(
                 JanelaColeta(
-                    horario_limite=str(row.get("horario_limite") or "23:59")[:5],
+                    id=row.get("id"),
+                    horario_corte=horario_corte,
+                    horario_coleta=horario_coleta,
+                    horario_limite=str(row.get("horario_limite") or horario_coleta)[:5],
                     tipo_envio=row.get("tipo_envio") or "COLETA_LOCAL",
                     ponto_coleta_id=row.get("ponto_coleta_id"),
                     ponto_coleta_nome=ponto.get("nome"),
@@ -83,6 +91,90 @@ class LogisticaColetaService:
                 )
             )
         return rules
+
+    def calcular_data_coleta(
+        self,
+        marketplace_integration_id: Optional[int],
+        modalidade: Optional[str],
+        pagamento_dt: Optional[datetime] = None,
+        compra_dt: Optional[datetime] = None,
+        timezone_name: str = DEFAULT_TZ,
+    ) -> Dict[str, Any]:
+        if not marketplace_integration_id:
+            return {"tem_regra": False, "janela_status": "SEM_REGRA"}
+
+        modalidade_key = (modalidade or "STANDARD").upper()
+        tz = ZoneInfo(timezone_name)
+        reference = pagamento_dt or compra_dt
+        source = "payment_at" if pagamento_dt else "purchase_at" if compra_dt else "now"
+        if reference and reference.tzinfo is None:
+            reference = reference.replace(tzinfo=tz)
+        base_dt = reference.astimezone(tz) if reference else datetime.now(tz)
+
+        rules = self._load_rules(marketplace_integration_id, modalidade_key)
+        if not rules:
+            return {
+                "tem_regra": False,
+                "janela_status": "SEM_REGRA",
+                "marketplace_integration_id": marketplace_integration_id,
+                "modalidade": modalidade_key,
+                "payment_time_source": source,
+            }
+
+        candidates: List[tuple[datetime, int, JanelaColeta]] = []
+        for day_offset in range(0, 15):
+            candidate_day = base_dt + timedelta(days=day_offset)
+            weekday = self._normalize_weekday(candidate_day)
+            for rule in rules:
+                if weekday not in rule.dias_semana:
+                    continue
+
+                corte_hh, corte_mm = self._parse_time_hhmm(rule.horario_corte)
+                coleta_hh, coleta_mm = self._parse_time_hhmm(rule.horario_coleta)
+                cutoff_dt = candidate_day.replace(hour=corte_hh, minute=corte_mm, second=0, microsecond=0)
+                collection_dt = candidate_day.replace(hour=coleta_hh, minute=coleta_mm, second=0, microsecond=0)
+
+                if day_offset == 0 and base_dt > cutoff_dt:
+                    continue
+                candidates.append((collection_dt, -rule.prioridade_uso, rule))
+
+            if candidates:
+                break
+
+        if not candidates:
+            return {
+                "tem_regra": True,
+                "janela_status": "VENCIDA",
+                "marketplace_integration_id": marketplace_integration_id,
+                "modalidade": modalidade_key,
+                "payment_time_source": source,
+            }
+
+        collection_dt, _, rule = sorted(candidates, key=lambda item: (item[0], item[1]))[0]
+        return {
+            "tem_regra": True,
+            "marketplace_integration_id": marketplace_integration_id,
+            "modalidade": modalidade_key,
+            "data_coleta": collection_dt.isoformat(),
+            "proxima_coleta_at": collection_dt.isoformat(),
+            "proxima_coleta_horario": collection_dt.strftime("%H:%M"),
+            "proxima_coleta_tipo_envio": rule.tipo_envio,
+            "proxima_coleta_ponto_id": rule.ponto_coleta_id,
+            "proxima_coleta_ponto_nome": rule.ponto_coleta_nome,
+            "deadline_final_horario": rule.horario_coleta,
+            "horario_corte": rule.horario_corte,
+            "horario_coleta": rule.horario_coleta,
+            "janela_status": "MESMO_DIA" if collection_dt.date() == base_dt.date() else "PROXIMA",
+            "minutos_ate_proxima_coleta": max(0, int((collection_dt - datetime.now(tz)).total_seconds() // 60)),
+            "payment_time_source": source,
+            "regra": {
+                "id": rule.id,
+                "horario_corte": rule.horario_corte,
+                "horario_coleta": rule.horario_coleta,
+                "tipo_envio": rule.tipo_envio,
+                "prioridade_uso": rule.prioridade_uso,
+            },
+        }
 
     def calcular_contexto_coleta(
         self,
@@ -120,7 +212,7 @@ class LogisticaColetaService:
             if not candidate_rules:
                 continue
             for rule in candidate_rules:
-                hh, mm = self._parse_time_hhmm(rule.horario_limite)
+                hh, mm = self._parse_time_hhmm(rule.horario_coleta)
                 dt_candidate = candidate_day.replace(hour=hh, minute=mm, second=0, microsecond=0)
                 if day_offset == 0:
                     if deadline_today_dt is None or dt_candidate > deadline_today_dt:
@@ -146,7 +238,7 @@ class LogisticaColetaService:
             deadline_horario = deadline_today_dt.strftime("%H:%M")
         else:
             # fallback: maior horario da modalidade
-            deadline_horario = max((r.horario_limite for r in rules), default=next_window_rule.horario_limite)
+            deadline_horario = max((r.horario_coleta for r in rules), default=next_window_rule.horario_coleta)
 
         next_horario = next_window_dt.strftime("%H:%M")
         minutes_left = int((next_window_dt - now).total_seconds() // 60)
@@ -155,7 +247,7 @@ class LogisticaColetaService:
         elif next_window_dt.date() > now.date():
             status = "PROXIMA"
         else:
-            status = "BACKUP" if next_horario != min((r.horario_limite for r in rules), default=next_horario) else "PROXIMA"
+            status = "BACKUP" if next_horario != min((r.horario_coleta for r in rules), default=next_horario) else "PROXIMA"
 
         return {
             "tem_regra": True,
@@ -167,6 +259,8 @@ class LogisticaColetaService:
             "proxima_coleta_ponto_id": next_window_rule.ponto_coleta_id,
             "proxima_coleta_ponto_nome": next_window_rule.ponto_coleta_nome,
             "deadline_final_horario": deadline_horario,
+            "horario_corte": next_window_rule.horario_corte,
+            "horario_coleta": next_window_rule.horario_coleta,
             "janela_status": status,
             "minutos_ate_proxima_coleta": max(0, minutes_left),
         }
@@ -201,4 +295,3 @@ class LogisticaColetaService:
 
 
 logistica_coleta_service = LogisticaColetaService()
-

@@ -97,10 +97,11 @@ def api_list_demandas():
                 priority = int(priority_raw)
             except (TypeError, ValueError):
                 priority = 0
+            data_coleta = d.get('data_coleta')
             data_entrega = d.get('data_entrega') or '9999-12-31'
             horario = d.get('deadline_final') or d.get('horario_coleta') or "23:59"
             
-            return (not is_express, -priority, data_entrega, horario)
+            return (data_coleta or f"{data_entrega}T{horario}", not is_express, -priority)
             
         demandas.sort(key=sort_key)
 

@@ -1,5 +1,6 @@
 import logging
 import traceback
+from datetime import datetime
 from time import perf_counter
 from typing import Any
 
@@ -11,9 +12,10 @@ from nistiprint_shared.services.canonical_order_snapshot_service import (
     canonical_order_snapshot_service,
 )
 from nistiprint_shared.services.correlation_service import generate_correlation_id, set_correlation_id
+from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
-from nistiprint_shared.utils.date_utils import get_now_iso
+from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,27 @@ def _as_int(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_datetime(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _meli_date_approved(order: dict) -> str | None:
+    payments = order.get("payments") or []
+    if not isinstance(payments, list):
+        return None
+    for payment in payments:
+        if isinstance(payment, dict) and payment.get("date_approved"):
+            return payment.get("date_approved")
+    return None
 
 
 class MarketplaceWebhookIngestService:
@@ -429,6 +452,42 @@ class MarketplaceWebhookIngestService:
             bling_integration_id=bling_integration_id,
             external_order_id=str(external_order_id),
         )
+        data_compra_marketplace = data_venda
+        data_pagamento_marketplace = data_venda
+        data_envio_marketplace = None
+        payment_time_source = "fallback.data_compra_marketplace" if data_venda else None
+        modalidade = "STANDARD"
+        if source == "shopee":
+            status_key = status_original or (details or {}).get("order_status")
+            data_compra_marketplace = (details or {}).get("create_time") or data_venda
+            if status_key == "READY_TO_SHIP":
+                data_pagamento_marketplace = (details or {}).get("pay_time") or data_compra_marketplace
+                payment_time_source = "shopee.pay_time"
+            raw = (details or {}).get("raw") or {}
+            data_envio_marketplace = (details or {}).get("ship_time") or unix_to_app_iso(raw.get("ship_time"))
+            carrier = str((details or {}).get("shipping_carrier") or "").lower()
+            if "entrega rápida" in carrier or "entrega rapida" in carrier:
+                modalidade = "FLEX"
+        elif source == "mercadolivre":
+            order = (details or {}).get("order") or {}
+            shipment = (details or {}).get("shipment") or {}
+            data_compra_marketplace = order.get("date_created") or data_venda
+            if order.get("status") == "paid":
+                data_pagamento_marketplace = _meli_date_approved(order) or data_compra_marketplace
+                payment_time_source = "mercadolivre.payments.date_approved"
+            data_envio_marketplace = order.get("date_closed")
+            option = shipment.get("shipping_option") if isinstance(shipment.get("shipping_option"), dict) else {}
+            logistic_type = str(shipment.get("logistic_type") or shipment.get("shipping_type") or "").lower()
+            option_name = str(option.get("name") or "").lower()
+            if logistic_type == "self_service" and option_name in ("prioritario", "flex"):
+                modalidade = "FLEX"
+
+        coleta_contexto = logistica_coleta_service.calcular_data_coleta(
+            marketplace_integration_id=marketplace_integration_id,
+            modalidade=modalidade,
+            pagamento_dt=_parse_datetime(data_pagamento_marketplace),
+            compra_dt=_parse_datetime(data_compra_marketplace),
+        )
         row = {
             "numero_pedido": f"{source.upper()}-{external_order_id}",
             "codigo_pedido_externo": str(external_order_id),
@@ -443,6 +502,11 @@ class MarketplaceWebhookIngestService:
             "total_pedido": total,
             "moeda": currency or "BRL",
             "data_venda": data_venda,
+            "data_compra_marketplace": data_compra_marketplace,
+            "data_pagamento_marketplace": data_pagamento_marketplace,
+            "data_coleta": coleta_contexto.get("data_coleta"),
+            "data_envio_marketplace": data_envio_marketplace,
+            "regra_logistica_integracao_id": (coleta_contexto.get("regra") or {}).get("id"),
             "marketplace_order_id": str(external_order_id),
             "bling_order_id": bling_ref.get("bling_order_id"),
             "bling_order_number": bling_ref.get("bling_order_number"),
@@ -475,7 +539,18 @@ class MarketplaceWebhookIngestService:
             total=total,
             currency=currency,
             details=details or {},
-            mirror_fields={**mirror_fields, "bling_lookup": bling_ref},
+            mirror_fields={
+                **mirror_fields,
+                "bling_lookup": bling_ref,
+                "data_compra_marketplace": data_compra_marketplace,
+                "data_pagamento_marketplace": data_pagamento_marketplace,
+                "data_coleta": coleta_contexto.get("data_coleta"),
+                "data_envio_marketplace": data_envio_marketplace,
+                "regra_logistica_integracao_id": (coleta_contexto.get("regra") or {}).get("id"),
+                "horario_corte": coleta_contexto.get("horario_corte"),
+                "horario_coleta": coleta_contexto.get("horario_coleta"),
+                "payment_time_source": payment_time_source,
+            },
         )
         return pedido_id
 
@@ -580,6 +655,14 @@ class MarketplaceWebhookIngestService:
                 "fulfillment_flag": details.get("fulfillment_flag"),
                 "package_list": details.get("package_list"),
                 "ship_by_date": details.get("ship_by_date"),
+                "purchase_at": mirror_fields.get("data_compra_marketplace"),
+                "payment_at": mirror_fields.get("data_pagamento_marketplace"),
+                "collection_at": mirror_fields.get("data_coleta"),
+                "marketplace_shipped_at": mirror_fields.get("data_envio_marketplace"),
+                "cutoff_time": mirror_fields.get("horario_corte"),
+                "collection_time": mirror_fields.get("horario_coleta"),
+                "rule_id": mirror_fields.get("regra_logistica_integracao_id"),
+                "payment_time_source": mirror_fields.get("payment_time_source"),
                 "address": details.get("recipient_address"),
             }
             platform_fields = {
@@ -600,6 +683,14 @@ class MarketplaceWebhookIngestService:
                 "shipping_carrier": shipment.get("mode"),
                 "service": shipment.get("shipping_option", {}).get("name") if isinstance(shipment.get("shipping_option"), dict) else None,
                 "expected_date": sla.get("expected_date"),
+                "purchase_at": mirror_fields.get("data_compra_marketplace"),
+                "payment_at": mirror_fields.get("data_pagamento_marketplace"),
+                "collection_at": mirror_fields.get("data_coleta"),
+                "marketplace_shipped_at": mirror_fields.get("data_envio_marketplace"),
+                "cutoff_time": mirror_fields.get("horario_corte"),
+                "collection_time": mirror_fields.get("horario_coleta"),
+                "rule_id": mirror_fields.get("regra_logistica_integracao_id"),
+                "payment_time_source": mirror_fields.get("payment_time_source"),
                 "address": shipment.get("receiver_address"),
             }
             platform_fields = {

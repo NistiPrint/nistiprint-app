@@ -17,7 +17,8 @@ const defaultForm = {
   marketplace_integration_id: '',
   modalidade: 'STANDARD',
   tipo_envio: 'COLETA_LOCAL',
-  horario_limite: '',
+  horario_corte: '',
+  horario_coleta: '',
   ponto_coleta_id: 'none',
   dias_semana: [1, 2, 3, 4, 5],
   ativo: true,
@@ -25,7 +26,15 @@ const defaultForm = {
   descricao: ''
 };
 
-const diasLabel = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
+const diasLabel = {
+  1: 'Seg',
+  2: 'Ter',
+  3: 'Qua',
+  4: 'Qui',
+  5: 'Sex',
+  6: 'Sab',
+  7: 'Dom'
+};
 
 export default function LogisticaIntegracaoPage() {
   const [loading, setLoading] = useState(true);
@@ -93,8 +102,12 @@ export default function LogisticaIntegracaoPage() {
   };
 
   const onSubmit = async () => {
-    if (!form.marketplace_integration_id || !form.horario_limite) {
-      toast.error('Integração e horário limite são obrigatórios');
+    if (!form.marketplace_integration_id || !form.horario_corte || !form.horario_coleta) {
+      toast.error('Integração, hora de corte e hora de coleta são obrigatórios');
+      return;
+    }
+    if (form.horario_coleta < form.horario_corte) {
+      toast.error('Hora de coleta/entrega precisa ser maior ou igual à hora de corte');
       return;
     }
 
@@ -103,6 +116,7 @@ export default function LogisticaIntegracaoPage() {
       await LogisticaIntegracaoService.criarRegra({
         ...form,
         marketplace_integration_id: Number(form.marketplace_integration_id),
+        horario_limite: form.horario_coleta,
         ponto_coleta_id: form.ponto_coleta_id === 'none' ? null : Number(form.ponto_coleta_id)
       });
       toast.success('Regra logística criada');
@@ -152,8 +166,10 @@ export default function LogisticaIntegracaoPage() {
               <Select value={form.modalidade} onValueChange={(v) => setForm((p) => ({ ...p, modalidade: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="STANDARD">STANDARD</SelectItem>
                   <SelectItem value="FLEX">FLEX</SelectItem>
+                  <SelectItem value="STANDARD">Normal</SelectItem>
+                  <SelectItem value="FULFILLMENT">FULFILLMENT</SelectItem>
+                  <SelectItem value="RETIRADA">RETIRADA</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -168,12 +184,16 @@ export default function LogisticaIntegracaoPage() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Horário limite</Label>
-              <Input type="time" value={form.horario_limite} onChange={(e) => setForm((p) => ({ ...p, horario_limite: e.target.value }))} />
+              <Label>Hora de corte</Label>
+              <Input type="time" value={form.horario_corte} onChange={(e) => setForm((p) => ({ ...p, horario_corte: e.target.value }))} />
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="space-y-2">
+              <Label>Hora de coleta/entrega</Label>
+              <Input type="time" value={form.horario_coleta} onChange={(e) => setForm((p) => ({ ...p, horario_coleta: e.target.value }))} />
+            </div>
             <div className="space-y-2">
               <Label>Ponto de coleta</Label>
               <Select value={form.ponto_coleta_id} onValueChange={(v) => setForm((p) => ({ ...p, ponto_coleta_id: v }))}>
@@ -203,9 +223,9 @@ export default function LogisticaIntegracaoPage() {
           <div className="space-y-2">
             <Label>Dias de atendimento</Label>
             <div className="flex flex-wrap gap-3">
-              {diasLabel.map((dia, idx) => (
+              {Object.entries(diasLabel).map(([idx, dia]) => (
                 <label key={dia} className="flex items-center gap-2 text-sm">
-                  <Checkbox checked={form.dias_semana.includes(idx)} onCheckedChange={() => onDiaToggle(idx)} />
+                  <Checkbox checked={form.dias_semana.includes(Number(idx))} onCheckedChange={() => onDiaToggle(Number(idx))} />
                   {dia}
                 </label>
               ))}
@@ -252,8 +272,8 @@ export default function LogisticaIntegracaoPage() {
                 <TableRow key={r.id}>
                   <TableCell>{r.installed_integrations?.instance_name || `#${r.marketplace_integration_id}`}</TableCell>
                   <TableCell>{r.modalidade}</TableCell>
-                  <TableCell>{r.tipo_envio} até {r.horario_limite?.slice(0, 5)} {r.pontos_coleta?.nome ? `(${r.pontos_coleta.nome})` : ''}</TableCell>
-                  <TableCell>{(r.dias_semana || []).map((d) => diasLabel[d]).join(', ')}</TableCell>
+                  <TableCell>Corte {r.horario_corte?.slice(0, 5) || '--:--'} · Coleta {r.horario_coleta?.slice(0, 5) || r.horario_limite?.slice(0, 5)} {r.pontos_coleta?.nome ? `(${r.pontos_coleta.nome})` : ''}</TableCell>
+                  <TableCell>{(r.dias_semana || []).map((d) => diasLabel[d]).filter(Boolean).join(', ')}</TableCell>
                   <TableCell>{r.ativo ? <Badge className="bg-green-600 text-white">Ativa</Badge> : <Badge variant="secondary">Inativa</Badge>}</TableCell>
                   <TableCell className="text-right">
                     <Button variant="ghost" size="icon" onClick={() => onDelete(r.id)}>

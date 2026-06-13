@@ -3,6 +3,7 @@ import json
 import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from time import perf_counter
 import unicodedata
 
@@ -20,6 +21,7 @@ from nistiprint_shared.services.canonical_order_status_service import (
 from nistiprint_shared.services.canonical_order_snapshot_service import (
     canonical_order_snapshot_service,
 )
+from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services import flex_classifier_service, fulfillment_classifier_service
@@ -312,6 +314,75 @@ def _compact(value) -> str:
         return json.dumps(value, ensure_ascii=False, default=str, separators=(',', ':'))
     except Exception:
         return str(value)
+
+
+def _parse_datetime(value):
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        converted = unix_to_app_iso(value)
+        return datetime.fromisoformat(converted) if converted else None
+    text = str(value).strip()
+    if not text or text.startswith("0000"):
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            return datetime.fromisoformat(text[:19])
+        except ValueError:
+            return None
+
+
+def _extract_meli_date_approved(order: dict) -> str | None:
+    payments = order.get("payments") or []
+    if not isinstance(payments, list):
+        return None
+    for payment in payments:
+        if not isinstance(payment, dict):
+            continue
+        approved = payment.get("date_approved")
+        if approved:
+            return approved
+    return None
+
+
+def _resolve_marketplace_timestamps(payload: dict, shopee_data=None, meli_data=None) -> dict:
+    order = (meli_data or {}).get("order") if meli_data else {}
+    raw_shopee = (shopee_data or {}).get("raw") if shopee_data else {}
+
+    data_compra = None
+    data_pagamento = None
+    data_envio = None
+    payment_source = None
+
+    if shopee_data:
+        data_compra = shopee_data.get("create_time") or unix_to_app_iso((raw_shopee or {}).get("create_time"))
+        if shopee_data.get("order_status") == "READY_TO_SHIP":
+            data_pagamento = shopee_data.get("pay_time") or unix_to_app_iso((raw_shopee or {}).get("pay_time"))
+            payment_source = "shopee.pay_time"
+        data_envio = shopee_data.get("ship_time") or unix_to_app_iso((raw_shopee or {}).get("ship_time"))
+    elif meli_data:
+        data_compra = order.get("date_created")
+        if order.get("status") == "paid":
+            data_pagamento = _extract_meli_date_approved(order)
+            payment_source = "mercadolivre.payments.date_approved"
+        data_envio = order.get("date_closed")
+
+    if not data_compra:
+        data_compra = _clean_date(payload.get("data"))
+    if not data_pagamento:
+        data_pagamento = data_compra
+        payment_source = "fallback.data_compra_marketplace" if data_compra else None
+
+    return {
+        "data_compra_marketplace": data_compra,
+        "data_pagamento_marketplace": data_pagamento,
+        "data_envio_marketplace": data_envio,
+        "payment_time_source": payment_source,
+    }
 
 
 def _set_stage_details(ctx: dict, message: str | None, details=None):
@@ -1210,6 +1281,7 @@ def _upsert_pedido_meli(meli_data: dict, marketplace_integration_id: int) -> int
         'shipping_type':     shipment.get('shipping_type'),
         'shipping_option_name': shipping_option.get('name'),
         'expected_date':     sla.get('expected_date'),
+        'date_approved':     _extract_meli_date_approved(order),
         'buyer_nickname':    (order.get('buyer') or {}).get('nickname'),
         'raw_order':         order,
         'raw_shipment':      shipment,
@@ -1403,6 +1475,7 @@ def _upsert_pedido_master(payload, *,
 
     # Datas
     data_venda          = _clean_date(payload.get('data'))
+    marketplace_times = _resolve_marketplace_timestamps(payload, shopee_data=shopee_data, meli_data=meli_data)
     
     # Resolver data limite de envio
     data_limite_envio = None
@@ -1414,6 +1487,19 @@ def _upsert_pedido_master(payload, *,
     
     if not data_limite_envio:
         data_limite_envio = _clean_date(payload.get('dataPrevista'))
+
+    coleta_contexto = {}
+    data_coleta = None
+    regra_logistica_integracao_id = None
+    if marketplace_integration_id:
+        coleta_contexto = logistica_coleta_service.calcular_data_coleta(
+            marketplace_integration_id=marketplace_integration_id,
+            modalidade=modalidade,
+            pagamento_dt=_parse_datetime(marketplace_times.get('data_pagamento_marketplace')),
+            compra_dt=_parse_datetime(marketplace_times.get('data_compra_marketplace')),
+        )
+        data_coleta = coleta_contexto.get('data_coleta')
+        regra_logistica_integracao_id = (coleta_contexto.get('regra') or {}).get('id')
 
     # Logística
     transporte = payload.get('transporte') or {}
@@ -1454,6 +1540,11 @@ def _upsert_pedido_master(payload, *,
         # Datas
         'data_venda':                 data_venda,
         'data_limite_envio':          data_limite_envio,
+        'data_compra_marketplace':    marketplace_times.get('data_compra_marketplace'),
+        'data_pagamento_marketplace': marketplace_times.get('data_pagamento_marketplace'),
+        'data_coleta':                data_coleta,
+        'data_envio_marketplace':     marketplace_times.get('data_envio_marketplace'),
+        'regra_logistica_integracao_id': regra_logistica_integracao_id,
 
         # Logística / Flex
         'servico_logistico':          servico,
@@ -1529,6 +1620,14 @@ def _upsert_pedido_master(payload, *,
                 'is_fulfillment': is_fulfillment,
                 'modalidade': modalidade,
                 'deadline': data_limite_envio,
+                'purchase_at': marketplace_times.get('data_compra_marketplace'),
+                'payment_at': marketplace_times.get('data_pagamento_marketplace'),
+                'collection_at': data_coleta,
+                'marketplace_shipped_at': marketplace_times.get('data_envio_marketplace'),
+                'cutoff_time': coleta_contexto.get('horario_corte'),
+                'collection_time': coleta_contexto.get('horario_coleta'),
+                'rule_id': regra_logistica_integracao_id,
+                'payment_time_source': marketplace_times.get('payment_time_source'),
                 'transport': transporte,
             },
             financial={'total': _safe_float(payload.get('total')), 'currency': 'BRL'},
