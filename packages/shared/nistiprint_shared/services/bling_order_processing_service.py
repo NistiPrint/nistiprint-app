@@ -14,6 +14,9 @@ from nistiprint_shared.services.correlation_service import (
 from nistiprint_shared.services.integration_resolution_service import (
     integration_resolution_service,
 )
+from nistiprint_shared.services.canonical_order_status_service import (
+    canonical_order_status_service,
+)
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services import flex_classifier_service, fulfillment_classifier_service
@@ -262,7 +265,7 @@ def _get_webhook_processing_link(bling_integration_id: int | None, loja_id: str 
 
     rows = (
         supabase_db.table('channel_connections')
-        .select('id,process_webhooks,marketplace_integration_id,channel_id')
+        .select('id,process_webhooks,ingest_origin_mode,marketplace_integration_id,channel_id')
         .eq('bling_integration_id', bling_integration_id)
         .eq('aggregator_store_id', str(loja_id))
         .eq('is_active', True)
@@ -480,11 +483,20 @@ def process_webhook(
         if original_loja_id:
             with ingest_step('check_webhook_processing', ingest_ctx):
                 processing_link = _get_webhook_processing_link(bling_inst['id'], original_loja_id)
+                ingest_origin_mode = (processing_link or {}).get('ingest_origin_mode') or 'erp_bling'
+                skip_reason = None
+                event_status = 'skipped'
                 if processing_link and processing_link.get('process_webhooks') is False:
+                    skip_reason = 'process_webhooks=false'
+                elif processing_link and ingest_origin_mode == 'marketplace_direct':
+                    skip_reason = 'inactive_source'
+                    event_status = 'skipped_inactive_source'
+
+                if skip_reason:
                     ingest_ctx['status'] = 'skipped'
                     message = (
                         f"webhook ignorado: vinculo {processing_link.get('id')} "
-                        f"configurado com process_webhooks=false "
+                        f"motivo={skip_reason} ingest_origin_mode={ingest_origin_mode} "
                         f"(bling_integration_id={bling_inst['id']}, loja_id={original_loja_id})"
                     )
                     _set_stage_details(
@@ -495,7 +507,9 @@ def process_webhook(
                             'bling_integration_id': bling_inst['id'],
                             'loja_id': original_loja_id,
                             'numero_loja': original_payload.get('numeroLoja'),
-                            'process_webhooks': False,
+                            'process_webhooks': processing_link.get('process_webhooks'),
+                            'ingest_origin_mode': ingest_origin_mode,
+                            'skip_reason': skip_reason,
                         },
                     )
                     _write_ingest_log(
@@ -513,7 +527,7 @@ def process_webhook(
                         webhook_event_id,
                         bling_id=ingest_ctx.get('payload_summary', {}).get('bling_id'),
                         numero_loja=original_payload.get('numeroLoja'),
-                        last_status='skipped',
+                        last_status=event_status,
                         last_attempt_at=get_now_iso(),
                     )
                     logger.info("[ingest] %s", message)
@@ -523,6 +537,8 @@ def process_webhook(
                         'correlation_id': correlation_id,
                         'bling_integration_id': bling_inst['id'],
                         'numero_loja': original_payload.get('numeroLoja'),
+                        'event_status': event_status,
+                        'skip_reason': skip_reason,
                     }
 
         # 2. Buscar detalhe completo do pedido na API do Bling
@@ -1555,57 +1571,26 @@ def _safe_float(value, default=0.0):
 
 def _resolve_situacao_interna(bling_integration_id, bling_situacao_id):
     """Mapeia status do Bling para status interno via integration_status_mappings."""
-    if not bling_situacao_id:
-        return None
+    resolved = canonical_order_status_service.resolve_bling(
+        bling_situacao_id,
+        integration_id=bling_integration_id,
+    )
+    if resolved.internal_situacao_pedido_id:
+        return resolved.internal_situacao_pedido_id
 
-    try:
-        mapping = None
-        if bling_integration_id:
-            mapping_res = supabase_db.table('integration_status_mappings') \
-                .select('internal_situacao_pedido_id') \
-                .eq('module_id', 'bling') \
-                .eq('integration_id', bling_integration_id) \
-                .eq('external_status_id', str(bling_situacao_id)) \
-                .eq('is_active', True) \
-                .limit(1).execute()
-            rows = _response_data(mapping_res, []) or []
-            mapping = rows[0] if rows else None
-
-        if not mapping:
-            mapping_res = supabase_db.table('integration_status_mappings') \
-                .select('internal_situacao_pedido_id') \
-                .eq('module_id', 'bling') \
-                .is_('integration_id', 'null') \
-                .eq('external_status_id', str(bling_situacao_id)) \
-                .eq('is_active', True) \
-                .limit(1).execute()
-            rows = _response_data(mapping_res, []) or []
-            mapping = rows[0] if rows else None
-    except Exception as e:
-        logger.warning(
-            "[ingest] erro ao resolver situacao Bling status=%s inst=%s: %s",
-            bling_situacao_id,
-            bling_integration_id,
-            e,
-        )
-        return None
-
-    if not mapping and str(bling_situacao_id) == '15':
+    if str(bling_situacao_id) == '15':
         logger.warning(
             "[ingest] sem mapeamento explicito para situacao Bling 15 inst=%s; usando fallback interno 2 (Em Andamento)",
             bling_integration_id,
         )
         return 2
 
-    if not mapping:
-        logger.warning(
-            "[ingest] sem mapeamento de situacao Bling status=%s inst=%s; mantendo status_original e situacao_pedido_id=null",
-            bling_situacao_id,
-            bling_integration_id,
-        )
-        return None
-
-    return mapping.get('internal_situacao_pedido_id')
+    logger.warning(
+        "[ingest] sem mapeamento de situacao Bling status=%s inst=%s; mantendo status_original e situacao_pedido_id=null",
+        bling_situacao_id,
+        bling_integration_id,
+    )
+    return None
 
 def _volume_servico(payload):
     volumes = payload.get('transporte', {}).get('volumes', [])

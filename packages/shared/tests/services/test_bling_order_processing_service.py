@@ -126,6 +126,31 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         self.assertTrue(any(call.kwargs.get('stage') == 'webhook_ignored' for call in write_log.call_args_list))
         self.assertTrue(any(call.kwargs.get('last_status') == 'skipped' for call in update_event.call_args_list))
 
+    def test_process_webhook_skips_when_bling_is_inactive_source(self):
+        payload = {
+            'id': 999,
+            'numero': '1',
+            'numeroLoja': 'ABC',
+            'loja': {'id': 204047801},
+        }
+
+        with patch.object(bos, '_resolve_bling_instance', return_value={'id': 12, 'config': {}}), \
+             patch.object(bos, '_get_webhook_processing_link', return_value={
+                 'id': 'link-1',
+                 'process_webhooks': True,
+                 'ingest_origin_mode': 'marketplace_direct',
+             }), \
+             patch.object(bos, '_fetch_bling_order_detail') as fetch_detail, \
+             patch.object(bos, '_write_ingest_log'), \
+             patch.object(bos, '_update_webhook_event') as update_event:
+            result = bos.process_webhook(payload, company_id='company-1', webhook_event_id=123)
+
+        self.assertEqual(result['status'], 'skipped')
+        self.assertEqual(result['event_status'], 'skipped_inactive_source')
+        self.assertEqual(result['skip_reason'], 'inactive_source')
+        fetch_detail.assert_not_called()
+        self.assertTrue(any(call.kwargs.get('last_status') == 'skipped_inactive_source' for call in update_event.call_args_list))
+
     def test_process_webhook_continues_when_link_allows_webhooks(self):
         payload = {
             'id': 999,

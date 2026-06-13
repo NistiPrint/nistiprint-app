@@ -111,7 +111,8 @@ class ErpMarketplaceLinksService:
         erp_store_id: str,
         store_name: Optional[str],
         config: Optional[Dict[str, Any]] = None,
-        process_webhooks: bool = True
+        process_webhooks: bool = True,
+        ingest_origin_mode: str = "erp_bling",
     ) -> None:
         channel_id = self._ensure_sales_channel(marketplace_module_id)
         if not channel_id:
@@ -128,6 +129,7 @@ class ErpMarketplaceLinksService:
             "aggregator_store_name": store_name or f"{self._module_metadata(marketplace_module_id)['name']} ({erp_store_id})",
             "config": config or {},
             "process_webhooks": process_webhooks is not False,
+            "ingest_origin_mode": ingest_origin_mode or "erp_bling",
             "is_active": True,
             "sync_status": "active",
             "updated_at": datetime.utcnow().isoformat(),
@@ -170,7 +172,8 @@ class ErpMarketplaceLinksService:
         store_name: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         marketplace_module_id: Optional[str] = None,
-        process_webhooks: bool = True
+        process_webhooks: bool = True,
+        ingest_origin_mode: str = "erp_bling",
     ) -> Optional[Dict[str, Any]]:
         """
         Cria vínculo entre ERP e Marketplace.
@@ -202,6 +205,7 @@ class ErpMarketplaceLinksService:
                 "store_name": store_name,
                 "config": config or {},
                 "process_webhooks": process_webhooks is not False,
+                "ingest_origin_mode": ingest_origin_mode or "erp_bling",
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
             }
@@ -221,6 +225,7 @@ class ErpMarketplaceLinksService:
                     store_name=store_name,
                     config=config,
                     process_webhooks=process_webhooks,
+                    ingest_origin_mode=ingest_origin_mode or "erp_bling",
                 )
                 logger.info(
                     "Vínculo criado: ERP=%s, Marketplace=%s, Loja=%s",
@@ -455,7 +460,8 @@ class ErpMarketplaceLinksService:
         self,
         link_id: str,
         config: Dict[str, Any],
-        process_webhooks: Optional[bool] = None
+        process_webhooks: Optional[bool] = None,
+        ingest_origin_mode: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Atualiza configurações de um vínculo.
@@ -484,6 +490,8 @@ class ErpMarketplaceLinksService:
             }
             if process_webhooks is not None:
                 update_payload["process_webhooks"] = process_webhooks is not False
+            if ingest_origin_mode is not None:
+                update_payload["ingest_origin_mode"] = ingest_origin_mode or "erp_bling"
 
             result = supabase_db.table(self.table_name).update(update_payload).eq("id", link_id).execute()
 
@@ -498,6 +506,7 @@ class ErpMarketplaceLinksService:
                     store_name=link.get("store_name"),
                     config=link.get("config"),
                     process_webhooks=link.get("process_webhooks", True),
+                    ingest_origin_mode=link.get("ingest_origin_mode") or "erp_bling",
                 )
                 return link
 

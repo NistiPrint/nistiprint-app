@@ -21,6 +21,7 @@ import { toast } from 'sonner';
 const PAGE_SIZE = 50;
 
 const emptyFilters = {
+  source: 'bling',
   status: '',
   bling_id: '',
   numero_loja: '',
@@ -67,7 +68,7 @@ function WebhooksPage() {
   const [reprocessing, setReprocessing] = useState(false);
 
   const queryString = useMemo(() => {
-    const params = new URLSearchParams({ page: String(page), per_page: String(PAGE_SIZE), source: 'bling' });
+    const params = new URLSearchParams({ page: String(page), per_page: String(PAGE_SIZE) });
     Object.entries(appliedFilters).forEach(([key, value]) => {
       if (value) params.set(key, value);
     });
@@ -157,7 +158,7 @@ function WebhooksPage() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold flex items-center gap-2">
-            <Webhook className="h-8 w-8 text-primary" /> Webhooks Bling
+            <Webhook className="h-8 w-8 text-primary" /> Webhooks
           </h1>
           <p className="text-muted-foreground mt-1">
             Payload recebido, tentativas de processamento e reprocessamento manual de falhas.
@@ -171,10 +172,20 @@ function WebhooksPage() {
       <Card>
         <CardHeader>
           <CardTitle>Filtros</CardTitle>
-          <CardDescription>Use identificadores do Bling, pedido interno ou correlation_id.</CardDescription>
+          <CardDescription>Use origem, status, pedido interno ou correlation_id.</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <select
+              className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={filters.source}
+              onChange={(event) => setFilters({ ...filters, source: event.target.value })}
+            >
+              <option value="bling">Bling</option>
+              <option value="shopee">Shopee</option>
+              <option value="mercadolivre">Mercado Livre</option>
+              <option value="all">Todas origens</option>
+            </select>
             <select
               className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={filters.status}
@@ -185,6 +196,7 @@ function WebhooksPage() {
               <option value="processing">processing</option>
               <option value="success">success</option>
               <option value="skipped">skipped</option>
+              <option value="skipped_inactive_source">skipped_inactive_source</option>
               <option value="failed">failed</option>
               <option value="dead_letter">dead_letter</option>
             </select>

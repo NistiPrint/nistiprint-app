@@ -484,19 +484,19 @@ function PedidosListPage() {
     }
 
     try {
-      const response = await fetch('/api/v2/pedidos/alterar-situacao', {
-        method: 'POST',
+      const response = await fetch('/api/v2/pedidos/bulk-update-status', {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           pedido_ids: pedidosSelecionados,
-          situacao_id: situacaoId,
+          situacao_pedido_id: situacaoId,
           observacoes
         }),
       });
 
       const data = await response.json();
 
-      if (data.success) {
+      if (response.ok) {
         toast.success(`Situação alterada para ${pedidosSelecionados.length} pedido(s)`);
         setAlterarSituacaoModalOpen(false);
         setPedidosSelecionados([]);

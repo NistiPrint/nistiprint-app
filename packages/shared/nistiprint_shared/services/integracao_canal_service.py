@@ -219,6 +219,7 @@ class IntegracaoCanalService:
                 'store_name': row.get('aggregator_store_name') or str(store_id),
                 'config': row.get('config') or row.get('config_json') or {},
                 'process_webhooks': row.get('process_webhooks', True) is not False,
+                'ingest_origin_mode': row.get('ingest_origin_mode') or 'erp_bling',
                 'updated_at': datetime.utcnow().isoformat()
             }, on_conflict='erp_integration_id,erp_store_id').execute()
         except Exception as link_error:
@@ -250,6 +251,7 @@ class IntegracaoCanalService:
                 aggregator_store_name,
                 config,
                 process_webhooks,
+                ingest_origin_mode,
                 sync_status,
                 is_active,
                 canais_venda!inner (
@@ -277,6 +279,7 @@ class IntegracaoCanalService:
                     'plataforma_nome': self._extract_platform_from_store_name(config.get('aggregator_store_name')),
                     'is_primary': str(config.get('sync_status')).lower() in ('true', 'primary'),
                     'process_webhooks': config.get('process_webhooks', True) is not False,
+                    'ingest_origin_mode': config.get('ingest_origin_mode') or 'erp_bling',
                     'canal_nome': canal.get('nome') if canal else None,
                     'canal_slug': canal.get('slug') if canal else None,
                     'canal_ativo': canal.get('ativo', True) if canal else False,
@@ -470,7 +473,7 @@ class IntegracaoCanalService:
         try:
             # 1. Buscar em channel_connections (nova tabela)
             result = supabase_db.table(self.table_name).select(
-                "id, channel_id, integration_id, bling_integration_id, marketplace_integration_id, aggregator_store_id, aggregator_store_name, config, process_webhooks"
+                "id, channel_id, integration_id, bling_integration_id, marketplace_integration_id, aggregator_store_id, aggregator_store_name, config, process_webhooks, ingest_origin_mode"
             ).eq('channel_id', canal_venda_id).eq('is_active', True).order('created_at', desc=True).execute()
 
             if result.data:
@@ -530,6 +533,7 @@ class IntegracaoCanalService:
                     'aggregator_store_id': row.get('aggregator_store_id'),
                     'plataforma_nome': plataforma_nome,
                     'process_webhooks': row.get('process_webhooks', True) is not False,
+                    'ingest_origin_mode': row.get('ingest_origin_mode') or 'erp_bling',
                     'module_id': integration.get('module_id'),
                     'instance_name': integration.get('instance_name'),
                     'is_active': integration.get('is_active', True),
@@ -727,6 +731,7 @@ class IntegracaoCanalService:
                     'is_active': row.get('is_active', True),
                     'is_primary': str(row.get('sync_status')).lower() in ('true', 'primary'),
                     'process_webhooks': row.get('process_webhooks', True) is not False,
+                    'ingest_origin_mode': row.get('ingest_origin_mode') or 'erp_bling',
                     'config_json': row.get('config', {}),
                     'created_at': row.get('created_at'),
                     'updated_at': row.get('updated_at'),
@@ -792,6 +797,7 @@ class IntegracaoCanalService:
                 'aggregator_store_name': f"{plataforma_nome} ({bling_loja_id})",
                 'is_active': True,
                 'process_webhooks': process_webhooks is not False,
+                'ingest_origin_mode': (config_json or {}).get('ingest_origin_mode') or 'erp_bling',
                 'sync_status': 'primary' if is_primary else 'active',
                 'config': config_json or {}
             }
@@ -853,6 +859,8 @@ class IntegracaoCanalService:
                 updates['sync_status'] = 'primary' if updates.pop('is_primary') else 'active'
             if 'process_webhooks' in updates:
                 updates['process_webhooks'] = updates['process_webhooks'] is not False
+            if 'ingest_origin_mode' in updates and not updates['ingest_origin_mode']:
+                updates['ingest_origin_mode'] = 'erp_bling'
 
             if 'integration_id' not in updates:
                 if updates.get('bling_integration_id') is not None:
@@ -926,6 +934,7 @@ class IntegracaoCanalService:
                 'marketplace_integration_id': config.get('marketplace_integration_id'),
                 'plataforma': config.get('plataforma_nome'),
                 'process_webhooks': config.get('process_webhooks', True) is not False,
+                'ingest_origin_mode': config.get('ingest_origin_mode') or 'erp_bling',
                 'resolved_from': config.get('resolved_from') or config.get('fallback') or 'channel_connections',
                 'is_primary': config.get('is_primary', False)
             }
@@ -943,6 +952,7 @@ class IntegracaoCanalService:
                     'marketplace_integration_id': primary.get('marketplace_integration_id'),
                     'plataforma': primary.get('plataforma_nome'),
                     'process_webhooks': primary.get('process_webhooks', True) is not False,
+                    'ingest_origin_mode': primary.get('ingest_origin_mode') or 'erp_bling',
                     'resolved_from': 'plataforma_fallback',
                     'is_primary': primary.get('is_primary', False)
                 }

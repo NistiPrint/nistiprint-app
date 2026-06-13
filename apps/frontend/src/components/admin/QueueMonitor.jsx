@@ -94,6 +94,34 @@ export default function QueueMonitor({ embed = false }) {
     }
   };
 
+  const queueGroups = [
+    {
+      title: 'Bling',
+      queues: [
+        ['Bling Pendentes', 'pendentes', 'pending'],
+        ['Bling Processados', 'processados', 'processed'],
+        ['Bling Falhas', 'falhas', 'failed'],
+        ['Bling Dead Letter', 'dead_letter', 'dead'],
+      ],
+    },
+    {
+      title: 'Shopee',
+      queues: [
+        ['Shopee Pendentes', 'shopee_pendentes', 'pending'],
+        ['Shopee Falhas', 'shopee_falhas', 'failed'],
+        ['Shopee Dead Letter', 'shopee_dead_letter', 'dead'],
+      ],
+    },
+    {
+      title: 'Mercado Livre',
+      queues: [
+        ['Mercado Livre Pendentes', 'mercadolivre_pendentes', 'pending'],
+        ['Mercado Livre Falhas', 'mercadolivre_falhas', 'failed'],
+        ['Mercado Livre Dead Letter', 'mercadolivre_dead_letter', 'dead'],
+      ],
+    },
+  ];
+
   return (
     <div className="space-y-6">
       {!embed && (
@@ -105,41 +133,29 @@ export default function QueueMonitor({ embed = false }) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <StatCard 
-          title="Pendentes" 
-          value={stats.pendentes} 
-          active={activeQueue === 'pendentes'}
-          icon={<Play className="h-6 w-6 text-blue-500" />} 
-          onClick={() => fetchItems('pendentes')}
-          onClear={() => handleClear('pendentes')}
-        />
-        <StatCard 
-          title="Processados" 
-          value={stats.processados} 
-          active={activeQueue === 'processados'}
-          icon={<CheckCircle className="h-6 w-6 text-green-500" />} 
-          onClick={() => fetchItems('processados')}
-          onClear={() => handleClear('processados')}
-        />
-        <StatCard 
-          title="Falhas" 
-          value={stats.falhas} 
-          active={activeQueue === 'falhas'}
-          icon={<ServerCrash className="h-6 w-6 text-red-500" />} 
-          onClick={() => fetchItems('falhas')}
-          onReprocess={() => handleReprocess('falhas')}
-          onClear={() => handleClear('falhas')}
-        />
-        <StatCard 
-          title="Dead Letter" 
-          value={stats.dead_letter} 
-          active={activeQueue === 'dead_letter'}
-          icon={<ServerCrash className="h-6 w-6 text-yellow-500" />} 
-          onClick={() => fetchItems('dead_letter')}
-          onReprocess={() => handleReprocess('dead_letter')}
-          onClear={() => handleClear('dead_letter')}
-        />
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        {queueGroups.map((group) => (
+          <Card key={group.title}>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">{group.title}</CardTitle>
+              <CardDescription>Filas vivas de webhook</CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-2">
+              {group.queues.map(([label, key, type]) => (
+                <QueueRow
+                  key={key}
+                  title={label}
+                  value={stats[key] || 0}
+                  type={type}
+                  active={activeQueue === key}
+                  onClick={() => fetchItems(key)}
+                  onReprocess={['failed', 'dead'].includes(type) ? () => handleReprocess(key) : undefined}
+                  onClear={key === 'processados' ? undefined : () => handleClear(key)}
+                />
+              ))}
+            </CardContent>
+          </Card>
+        ))}
       </div>
 
       <Card>
@@ -197,28 +213,50 @@ export default function QueueMonitor({ embed = false }) {
   );
 }
 
-function StatCard({ title, value, icon, active, onClick, onReprocess, onClear }) {
+function QueueRow({ title, value, type, active, onClick, onReprocess, onClear }) {
+  const icon = {
+    pending: <Play className="h-4 w-4 text-blue-500" />,
+    processed: <CheckCircle className="h-4 w-4 text-green-500" />,
+    failed: <ServerCrash className="h-4 w-4 text-red-500" />,
+    dead: <ServerCrash className="h-4 w-4 text-yellow-500" />,
+  }[type] || <Play className="h-4 w-4 text-blue-500" />;
+
+  const handleKeyDown = (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onClick();
+    }
+  };
+
   return (
-    <Card className={`cursor-pointer transition-colors ${active ? 'border-primary ring-1 ring-primary' : 'hover:bg-muted/50'}`} onClick={onClick}>
-      <CardContent className="p-4">
-        <div className="flex items-center justify-between mb-2">
-          {icon}
-          <div className="flex gap-1">
-            {onReprocess && value > 0 && (
-              <Button variant="ghost" size="icon" className="h-8 w-8 text-blue-500" onClick={(e) => { e.stopPropagation(); onReprocess(); }}>
-                <Repeat className="h-4 w-4" />
-              </Button>
-            )}
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={(e) => { e.stopPropagation(); onClear(); }}>
+    <div
+      role="button"
+      tabIndex={0}
+      className={`flex w-full items-center justify-between rounded-md border px-3 py-2 text-left transition-colors ${
+        active ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:bg-muted/50'
+      }`}
+      onClick={onClick}
+      onKeyDown={handleKeyDown}
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        {icon}
+        <span className="truncate text-sm font-medium">{title}</span>
+      </span>
+      <span className="flex items-center gap-2">
+        <Badge variant="outline" className="min-w-8 justify-center">{value}</Badge>
+        <span className="flex gap-1">
+          {onReprocess && value > 0 && (
+            <Button variant="ghost" size="icon" className="h-7 w-7 text-blue-500" onClick={(e) => { e.stopPropagation(); onReprocess(); }}>
+              <Repeat className="h-4 w-4" />
+            </Button>
+          )}
+          {onClear && (
+            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={(e) => { e.stopPropagation(); onClear(); }}>
               <Trash2 className="h-4 w-4" />
             </Button>
-          </div>
-        </div>
-        <div>
-          <p className="text-sm font-medium text-muted-foreground">{title}</p>
-          <p className="text-2xl font-bold">{value}</p>
-        </div>
-      </CardContent>
-    </Card>
+          )}
+        </span>
+      </span>
+    </div>
   );
 }

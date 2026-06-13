@@ -5,6 +5,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.redis_queue_tasks import (
     BLING_WEBHOOK_QUEUE,
+    WEBHOOK_QUEUE_BY_SOURCE,
     _serialize_queue_item,
     get_redis_client,
 )
@@ -97,8 +98,9 @@ class WebhookMonitoringService:
         return supabase_db.table('webhook_event_attempts').select('*')
 
     def _apply_event_filters(self, query, filters: Dict[str, Any]):
-        source = filters.get('source') or 'bling'
-        query = query.eq('source', source)
+        source = filters.get('source')
+        if source and source != 'all':
+            query = query.eq('source', source)
 
         if filters.get('status'):
             query = query.eq('last_status', filters['status'])
@@ -262,7 +264,9 @@ class WebhookMonitoringService:
         for key in ('last_error', 'last_error_type', 'last_failed_at', 'dead_letter_reason', 'dead_lettered_at'):
             queued_payload.pop(key, None)
 
-        get_redis_client().rpush(BLING_WEBHOOK_QUEUE, _serialize_queue_item(queued_payload))
+        source = event.get('source') or 'bling'
+        target_queue = WEBHOOK_QUEUE_BY_SOURCE.get(source, BLING_WEBHOOK_QUEUE)
+        get_redis_client().rpush(target_queue, _serialize_queue_item(queued_payload))
 
         supabase_db.table('webhook_events').update({
             'last_status': 'pending',
@@ -273,7 +277,7 @@ class WebhookMonitoringService:
             'success': True,
             'webhook_event_id': event_id,
             'queued': True,
-            'queue': BLING_WEBHOOK_QUEUE,
+            'queue': target_queue,
         }
 
 

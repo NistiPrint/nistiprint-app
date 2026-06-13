@@ -68,6 +68,14 @@ celery_app.conf.update(
             'schedule': 30,  # A cada 30 segundos (esvazia até 50 por vez)
         },
         # Drenar falhas do Bling de volta para pendentes
+        'consumir-fila-shopee': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_shopee',
+            'schedule': 30,
+        },
+        'consumir-fila-mercadolivre': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_mercadolivre',
+            'schedule': 30,
+        },
         'drain-bling-webhook-failures': {
             'task': 'services.redis_queue_tasks.drain_bling_webhook_failures',
             'schedule': 300,  # A cada 5 minutos

@@ -298,12 +298,18 @@ function TaskControlCenter() {
     const names = {
       'sync-firestore-tokens': 'Sincronização de Tokens (Firestore)',
       'consumir-fila-bling': 'Consumir Fila Bling (Webhooks)',
+      'consumir-fila-shopee': 'Consumir Fila Shopee (Webhooks)',
+      'consumir-fila-mercadolivre': 'Consumir Fila Mercado Livre (Webhooks)',
       'processar-eventos-producao-periodic': 'Motor de Produção e Estoque',
       'renew-shopee-tokens': 'Renovação de Tokens Shopee',
       'drain-bling-webhook-failures': 'Recuperação de Falhas Bling'
     };
     return names[name] || name;
   };
+
+  const scheduleRows = Object.entries(scheduledTasks)
+    .map(([taskName, config]) => ({ taskName, ...config }))
+    .sort((a, b) => getTaskFriendlyName(a.taskName).localeCompare(getTaskFriendlyName(b.taskName)));
 
   const getStatusBadge = (status) => {
     const badges = {
@@ -368,7 +374,75 @@ function TaskControlCenter() {
             </Card>
           )}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle>Agendamentos do Worker</CardTitle>
+              <CardDescription>Ative, desative e ajuste a frequencia das tasks periodicas do Celery.</CardDescription>
+            </CardHeader>
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[90px]">Ativa</TableHead>
+                    <TableHead>Tarefa</TableHead>
+                    <TableHead className="w-[180px]">Frequencia</TableHead>
+                    <TableHead className="hidden lg:table-cell">Task Celery</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {loading ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
+                        Carregando agendamentos...
+                      </TableCell>
+                    </TableRow>
+                  ) : scheduleRows.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
+                        Nenhum agendamento configurado.
+                      </TableCell>
+                    </TableRow>
+                  ) : scheduleRows.map((config) => (
+                    <TableRow key={config.taskName} className={!config.enabled ? 'bg-muted/30 text-muted-foreground' : ''}>
+                      <TableCell>
+                        <Switch
+                          checked={config.enabled}
+                          onCheckedChange={() => handleToggleTask(config.taskName, config.enabled)}
+                          disabled={saving}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <div className="font-medium">{getTaskFriendlyName(config.taskName)}</div>
+                        <div className="text-xs text-muted-foreground">{config.description || config.taskName}</div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            min="1"
+                            value={localFrequencies[config.taskName] || ''}
+                            onChange={(e) => handleFrequencyChange(config.taskName, e.target.value)}
+                            disabled={saving || !config.enabled}
+                            className="h-8 w-20"
+                          />
+                          <span className="w-14 text-xs text-muted-foreground">
+                            {formatFrequency(localFrequencies[config.taskName])}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="hidden lg:table-cell">
+                        <code className="rounded bg-muted px-2 py-1 text-xs">
+                          {config.task_name || config.taskName}
+                        </code>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          <div className="hidden" aria-hidden="true">
             {Object.entries(scheduledTasks).map(([taskName, config]) => (
               <Card key={taskName} className={!config.enabled ? 'opacity-70 grayscale-[0.5]' : ''}>
                 <CardHeader className="pb-2">

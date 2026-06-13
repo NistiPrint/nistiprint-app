@@ -71,6 +71,30 @@ class TestWebhookMonitoringService(unittest.TestCase):
         self.assertEqual(queued_payload['data']['numeroLoja'], 'ABC')
         self.assertNotIn('last_error', queued_payload)
 
+    def test_reprocess_event_uses_source_specific_queue(self):
+        select_table = MagicMock()
+        select_table.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {
+                'id': 11,
+                'source': 'shopee',
+                'last_status': 'dead_letter',
+                'raw_payload': {'order_sn': 'SN123'},
+            }
+        ]
+
+        update_table = MagicMock()
+        update_table.update.return_value.eq.return_value.execute.return_value.data = [{'id': 11}]
+        redis_client = MagicMock()
+
+        with patch.object(wms.supabase_db, 'table', side_effect=[select_table, update_table]), \
+             patch.object(wms, 'get_redis_client', return_value=redis_client), \
+             patch.object(wms, 'get_now_iso', return_value='2026-06-12T12:00:00-03:00'):
+            result = wms.WebhookMonitoringService().reprocess_event(11)
+
+        self.assertTrue(result['success'])
+        self.assertEqual(result['queue'], rqt.SHOPEE_WEBHOOK_QUEUE)
+        self.assertEqual(redis_client.rpush.call_args.args[0], rqt.SHOPEE_WEBHOOK_QUEUE)
+
 
 class TestRedisQueueWebhookAttempts(unittest.TestCase):
     def test_create_webhook_attempt_increments_event_and_inserts_attempt(self):

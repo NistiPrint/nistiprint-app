@@ -46,6 +46,33 @@ def get_order_detail(integration: Dict, order_ids: List[str]) -> Dict:
     return data
 
 
+def get_payment(integration: Dict, payment_id: str) -> Dict:
+    """
+    Fetches payment details from Mercado Livre/Mercado Pago API.
+    """
+    host = "https://api.mercadolibre.com"
+    credentials = integration.get("credentials", {})
+    access_token = credentials.get("access_token")
+
+    if not access_token:
+        raise ValueError("Access token para Mercado Livre nÃ£o encontrado.")
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    url = f"{host}/payments/{payment_id}"
+    logger.info("[ML Driver] Fetching payment: %s", url)
+
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        logger.error("[ML Driver] Error fetching payment %s: %s - %s", payment_id, response.status_code, response.text)
+        return {"error": f"Erro na API do Mercado Livre (payments): {response.status_code}", "details": response.text}
+
+    return response.json()
+
+
 def get_shipment(integration: Dict, shipment_id: str) -> Dict:
     """
     Fetches shipment details from Mercado Livre API.

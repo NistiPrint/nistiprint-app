@@ -12,6 +12,9 @@ from nistiprint_shared.services.bling_order_processing_service import (
     BlingDetailUnavailableError,
     process_webhook,
 )
+from nistiprint_shared.services.marketplace_webhook_ingest_service import (
+    marketplace_webhook_ingest_service,
+)
 from nistiprint_shared.services.correlation_service import get_correlation_id, set_correlation_id, generate_correlation_id
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.utils.date_utils import get_now_iso
@@ -100,6 +103,30 @@ BLING_WEBHOOK_DEAD_LETTER = 'bling:webhooks:dead-letter'
 BLING_WEBHOOK_FALHAS = 'bling:webhooks:falhas'
 BLING_WEBHOOK_PROCESSADOS = 'bling:webhooks:processados' # Fila para log/histórico
 BLING_WEBHOOK_MAX_RETRIES = int(os.environ.get('BLING_WEBHOOK_MAX_RETRIES', '5'))
+SHOPEE_WEBHOOK_QUEUE = 'shopee:webhooks:pendentes'
+SHOPEE_WEBHOOK_DEAD_LETTER = 'shopee:webhooks:dead-letter'
+SHOPEE_WEBHOOK_FALHAS = 'shopee:webhooks:falhas'
+MERCADOLIVRE_WEBHOOK_QUEUE = 'mercadolivre:webhooks:pendentes'
+MERCADOLIVRE_WEBHOOK_DEAD_LETTER = 'mercadolivre:webhooks:dead-letter'
+MERCADOLIVRE_WEBHOOK_FALHAS = 'mercadolivre:webhooks:falhas'
+
+WEBHOOK_QUEUE_BY_SOURCE = {
+    'bling': BLING_WEBHOOK_QUEUE,
+    'shopee': SHOPEE_WEBHOOK_QUEUE,
+    'mercadolivre': MERCADOLIVRE_WEBHOOK_QUEUE,
+}
+
+LIVE_QUEUE_ALIASES = {
+    'pendentes': BLING_WEBHOOK_QUEUE,
+    'falhas': BLING_WEBHOOK_FALHAS,
+    'dead_letter': BLING_WEBHOOK_DEAD_LETTER,
+    'shopee_pendentes': SHOPEE_WEBHOOK_QUEUE,
+    'shopee_falhas': SHOPEE_WEBHOOK_FALHAS,
+    'shopee_dead_letter': SHOPEE_WEBHOOK_DEAD_LETTER,
+    'mercadolivre_pendentes': MERCADOLIVRE_WEBHOOK_QUEUE,
+    'mercadolivre_falhas': MERCADOLIVRE_WEBHOOK_FALHAS,
+    'mercadolivre_dead_letter': MERCADOLIVRE_WEBHOOK_DEAD_LETTER,
+}
 
 _redis_client = None
 
@@ -121,20 +148,21 @@ def get_queue_stats():
     r = get_redis_client()
     return {
         'pendentes': r.llen(BLING_WEBHOOK_QUEUE),
-        'processados': r.llen(BLING_WEBHOOK_PROCESSADOS),
+        'processados': 0,
         'falhas': r.llen(BLING_WEBHOOK_FALHAS),
-        'dead_letter': r.llen(BLING_WEBHOOK_DEAD_LETTER)
+        'dead_letter': r.llen(BLING_WEBHOOK_DEAD_LETTER),
+        'shopee_pendentes': r.llen(SHOPEE_WEBHOOK_QUEUE),
+        'shopee_falhas': r.llen(SHOPEE_WEBHOOK_FALHAS),
+        'shopee_dead_letter': r.llen(SHOPEE_WEBHOOK_DEAD_LETTER),
+        'mercadolivre_pendentes': r.llen(MERCADOLIVRE_WEBHOOK_QUEUE),
+        'mercadolivre_falhas': r.llen(MERCADOLIVRE_WEBHOOK_FALHAS),
+        'mercadolivre_dead_letter': r.llen(MERCADOLIVRE_WEBHOOK_DEAD_LETTER),
     }
 
 def get_queue_items(queue_name: str, limit: int = 50):
     """Retorna os itens de uma fila específica (sem remover)"""
     r = get_redis_client()
-    actual_queue = {
-        'pendentes': BLING_WEBHOOK_QUEUE,
-        'processados': BLING_WEBHOOK_PROCESSADOS,
-        'falhas': BLING_WEBHOOK_FALHAS,
-        'dead_letter': BLING_WEBHOOK_DEAD_LETTER
-    }.get(queue_name)
+    actual_queue = LIVE_QUEUE_ALIASES.get(queue_name)
     
     if not actual_queue:
         return []
@@ -145,25 +173,25 @@ def get_queue_items(queue_name: str, limit: int = 50):
 def clear_queue(queue_name: str):
     """Limpa uma fila específica"""
     r = get_redis_client()
-    actual_queue = {
-        'pendentes': BLING_WEBHOOK_QUEUE,
-        'processados': BLING_WEBHOOK_PROCESSADOS,
-        'falhas': BLING_WEBHOOK_FALHAS,
-        'dead_letter': BLING_WEBHOOK_DEAD_LETTER
-    }.get(queue_name)
+    actual_queue = LIVE_QUEUE_ALIASES.get(queue_name)
     
     if actual_queue:
         return r.delete(actual_queue)
     return 0
 
 def move_items(source: str, destination: str = 'pendentes'):
-    """Move todos os itens de uma fila para outra (ex: falhas -> pendentes)"""
+    """Move todos os itens de uma fila para outra (ex: falhas -> pendentes)."""
     r = get_redis_client()
-    src_queue = {
-        'falhas': BLING_WEBHOOK_FALHAS,
-        'dead_letter': BLING_WEBHOOK_DEAD_LETTER
-    }.get(source)
-    dest_queue = BLING_WEBHOOK_QUEUE if destination == 'pendentes' else None
+    source_to_destination = {
+        'falhas': BLING_WEBHOOK_QUEUE,
+        'dead_letter': BLING_WEBHOOK_QUEUE,
+        'shopee_falhas': SHOPEE_WEBHOOK_QUEUE,
+        'shopee_dead_letter': SHOPEE_WEBHOOK_QUEUE,
+        'mercadolivre_falhas': MERCADOLIVRE_WEBHOOK_QUEUE,
+        'mercadolivre_dead_letter': MERCADOLIVRE_WEBHOOK_QUEUE,
+    }
+    src_queue = LIVE_QUEUE_ALIASES.get(source)
+    dest_queue = source_to_destination.get(source) if destination == 'pendentes' else LIVE_QUEUE_ALIASES.get(destination)
     
     if not src_queue or not dest_queue:
         return 0
@@ -208,6 +236,7 @@ def _extract_order_context(data: dict):
 def _insert_webhook_event(
     raw_payload: dict,
     *,
+    source: str = 'bling',
     company_id: str | None,
     bling_id,
     numero_loja,
@@ -215,7 +244,7 @@ def _insert_webhook_event(
 ) -> int | None:
     try:
         response = supabase_db.table('webhook_events').insert({
-            'source': 'bling',
+            'source': source,
             'company_id': company_id,
             'bling_id': bling_id,
             'numero_loja': str(numero_loja) if numero_loja is not None else None,
@@ -341,6 +370,7 @@ def _move_failure_to_dead_letter(
     payload: dict,
     reason: str,
     *,
+    dead_letter_queue: str = BLING_WEBHOOK_DEAD_LETTER,
     attempt_id: int | None = None,
     error_type: str | None = None,
     error_message: str | None = None,
@@ -348,7 +378,7 @@ def _move_failure_to_dead_letter(
     dead_letter = dict(payload)
     dead_letter['dead_letter_reason'] = reason
     dead_letter['dead_lettered_at'] = get_now_iso()
-    r.rpush(BLING_WEBHOOK_DEAD_LETTER, _serialize_queue_item(dead_letter))
+    r.rpush(dead_letter_queue, _serialize_queue_item(dead_letter))
     webhook_event_id = dead_letter.get('webhook_event_id')
     if webhook_event_id:
         _update_webhook_event(
@@ -522,6 +552,7 @@ def consumir_fila_bling(correlation_id=None):
                     }
 
                 status_result = result.get('status', 'unknown')
+                event_status = result.get('event_status') or status_result
                 msg_result = result.get('message', '')
                 error_type = result.get('error_type', 'processing_error')
 
@@ -535,7 +566,7 @@ def consumir_fila_bling(correlation_id=None):
                     )
                     _update_webhook_event(
                         webhook_event_id,
-                        last_status=status_result,
+                        last_status=event_status,
                         last_attempt_at=get_now_iso(),
                     )
                     processados += 1
@@ -590,6 +621,177 @@ def consumir_fila_bling(correlation_id=None):
     except Exception as e:
         logger.error(f"Falha no consumer: {str(e)}")
         return {'status': 'error', 'message': str(e)}
+
+
+def _extract_marketplace_context(source: str, data: dict):
+    body = data.get('data') if isinstance(data.get('data'), dict) else data
+    if source == 'shopee':
+        orders = body.get('orders') if isinstance(body.get('orders'), list) else []
+        order_id = (
+            body.get('order_sn')
+            or body.get('ordersn')
+            or body.get('order_id')
+            or ((orders[0] or {}).get('order_sn') if orders else None)
+        )
+        shop_id = body.get('shop_id') or body.get('shopid') or data.get('shop_id')
+        return body, shop_id, order_id
+
+    resource = str(body.get('resource') or body.get('topic') or '')
+    order_id = body.get('order_id') or body.get('id')
+    if not order_id and '/orders/' in resource:
+        order_id = resource.rstrip('/').split('/orders/')[-1]
+    shop_id = body.get('user_id') or body.get('seller_id') or data.get('user_id')
+    return body, shop_id, order_id
+
+
+def _consume_marketplace_queue(source: str, queue_name: str, failure_queue: str, dead_letter_queue: str, correlation_id=None):
+    correlation_id = correlation_id or get_correlation_id()
+    if not correlation_id:
+        correlation_id = str(uuid.uuid4())
+    set_correlation_id(correlation_id)
+
+    r = get_redis_client()
+    processados = 0
+
+    for _ in range(50):
+        mensagem_str = r.lpop(queue_name)
+        if not mensagem_str:
+            break
+
+        data = None
+        attempt_id = None
+        webhook_event_id = None
+        webhook_correlation_id = generate_correlation_id()
+        try:
+            data = _parse_queue_item(mensagem_str)
+            invalid_queue_item = not data or not isinstance(data, dict)
+            if invalid_queue_item:
+                data = {'raw_message': mensagem_str}
+
+            body, shop_id, order_id = _extract_marketplace_context(source, data)
+            webhook_event_id = data.get('webhook_event_id')
+            if not webhook_event_id:
+                webhook_event_id = _insert_webhook_event(
+                    data,
+                    source=source,
+                    company_id=str(shop_id) if shop_id else None,
+                    bling_id=None,
+                    numero_loja=order_id,
+                    correlation_id=webhook_correlation_id,
+                )
+                if webhook_event_id:
+                    data['webhook_event_id'] = webhook_event_id
+
+            attempt_id, _attempt_number = _create_webhook_attempt(
+                webhook_event_id,
+                correlation_id=webhook_correlation_id,
+                queue_name=queue_name,
+            )
+
+            if invalid_queue_item:
+                _move_failure_to_dead_letter(
+                    r,
+                    _mark_failure_payload(data, error_type='invalid_payload', message='payload vazio ou nao-dict'),
+                    reason='invalid_payload',
+                    dead_letter_queue=dead_letter_queue,
+                    attempt_id=attempt_id,
+                    error_type='invalid_payload',
+                    error_message='payload vazio ou nao-dict',
+                )
+                continue
+
+            result = marketplace_webhook_ingest_service.process(
+                source,
+                body,
+                correlation_id=webhook_correlation_id,
+                webhook_event_id=webhook_event_id,
+            )
+            status_result = result.get('status', 'unknown')
+            event_status = result.get('event_status') or status_result
+
+            if status_result == 'success' or status_result == 'skipped':
+                _finish_webhook_attempt(attempt_id, status=status_result, result_summary=result)
+                _update_webhook_event(
+                    webhook_event_id,
+                    pedido_id=result.get('pedido_id'),
+                    numero_loja=result.get('external_order_id') or order_id,
+                    last_status=event_status,
+                    last_attempt_at=get_now_iso(),
+                )
+                processados += 1
+                continue
+
+            failed_payload = _mark_failure_payload(
+                data,
+                error_type=result.get('error_type') or 'processing_error',
+                message=result.get('message') or 'processing_error',
+            )
+            retry_count = int(failed_payload.get('retry_count') or 0)
+            if retry_count >= BLING_WEBHOOK_MAX_RETRIES:
+                _move_failure_to_dead_letter(
+                    r,
+                    failed_payload,
+                    reason=f"retry_count={retry_count} >= max={BLING_WEBHOOK_MAX_RETRIES}",
+                    dead_letter_queue=dead_letter_queue,
+                    attempt_id=attempt_id,
+                    error_type=result.get('error_type') or 'processing_error',
+                    error_message=result.get('message') or 'processing_error',
+                )
+            else:
+                _finish_webhook_attempt(
+                    attempt_id,
+                    status='failed',
+                    error_type=result.get('error_type') or 'processing_error',
+                    error_message=result.get('message') or 'processing_error',
+                    result_summary=result,
+                )
+                _update_webhook_event(webhook_event_id, last_status='failed', last_attempt_at=get_now_iso())
+                r.rpush(failure_queue, _serialize_queue_item(failed_payload))
+        except Exception as e:
+            logger.error("Erro critico ao processar webhook %s: %s", source, e, exc_info=True)
+            failed_payload = _mark_failure_payload(
+                data if isinstance(data, dict) else {'raw_message': mensagem_str},
+                error_type='consumer_exception',
+                message=str(e),
+            )
+            if webhook_event_id and 'webhook_event_id' not in failed_payload:
+                failed_payload['webhook_event_id'] = webhook_event_id
+            _move_failure_to_dead_letter(
+                r,
+                failed_payload,
+                reason='consumer_exception',
+                dead_letter_queue=dead_letter_queue,
+                attempt_id=attempt_id,
+                error_type='consumer_exception',
+                error_message=str(e),
+            )
+
+    return {'status': 'success', 'sent': processados, 'source': source}
+
+
+@shared_task(name='nistiprint_shared.services.redis_queue_tasks.consumir_fila_shopee')
+@log_shared_task_execution(task_type='INTEGRACAO')
+def consumir_fila_shopee(correlation_id=None):
+    return _consume_marketplace_queue(
+        'shopee',
+        SHOPEE_WEBHOOK_QUEUE,
+        SHOPEE_WEBHOOK_FALHAS,
+        SHOPEE_WEBHOOK_DEAD_LETTER,
+        correlation_id=correlation_id,
+    )
+
+
+@shared_task(name='nistiprint_shared.services.redis_queue_tasks.consumir_fila_mercadolivre')
+@log_shared_task_execution(task_type='INTEGRACAO')
+def consumir_fila_mercadolivre(correlation_id=None):
+    return _consume_marketplace_queue(
+        'mercadolivre',
+        MERCADOLIVRE_WEBHOOK_QUEUE,
+        MERCADOLIVRE_WEBHOOK_FALHAS,
+        MERCADOLIVRE_WEBHOOK_DEAD_LETTER,
+        correlation_id=correlation_id,
+    )
+
 
 @shared_task(name='nistiprint_shared.services.redis_queue_tasks.sync_firestore_tokens')
 @log_shared_task_execution(task_type='INTEGRACAO')

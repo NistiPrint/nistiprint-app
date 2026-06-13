@@ -10,9 +10,20 @@ Fluxo correto dos webhooks do Bling:
 Ver: docs/02-features/webhooks_fluxo_correto.md
 """
 
+import os
 from flask import Blueprint, request, jsonify
 from nistiprint_shared.database.supabase_db_service import supabase_db
-from nistiprint_shared.services.redis_queue_tasks import clear_queue, get_queue_items, get_queue_stats, move_items
+from nistiprint_shared.services.redis_queue_tasks import (
+    LIVE_QUEUE_ALIASES,
+    MERCADOLIVRE_WEBHOOK_QUEUE,
+    SHOPEE_WEBHOOK_QUEUE,
+    _serialize_queue_item,
+    clear_queue,
+    get_queue_items,
+    get_queue_stats,
+    get_redis_client,
+    move_items,
+)
 from nistiprint_shared.services.webhook_monitoring_service import webhook_monitoring_service
 from nistiprint_shared.constants import (
     STATUS_PEDIDO_CANCELADO,
@@ -27,6 +38,33 @@ from datetime import datetime, timezone
 logger = logging.getLogger("WebhooksPedidos")
 
 webhooks_bp = Blueprint('webhooks', __name__, url_prefix='/api/v2/webhooks')
+
+
+def _marketplace_webhook_authorized():
+    expected = os.environ.get('MARKETPLACE_WEBHOOK_TOKEN')
+    if not expected:
+        return True
+    provided = request.headers.get('X-Webhook-Token') or request.args.get('token')
+    return provided == expected
+
+
+def _enqueue_marketplace_webhook(source: str, queue_name: str):
+    if not _marketplace_webhook_authorized():
+        return jsonify({'success': False, 'error': 'webhook token invalido'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    get_redis_client().rpush(queue_name, _serialize_queue_item(payload))
+    return jsonify({'success': True, 'source': source, 'queued': True, 'queue': queue_name}), 202
+
+
+@webhooks_bp.route('/shopee', methods=['POST'])
+def receive_shopee_webhook():
+    return _enqueue_marketplace_webhook('shopee', SHOPEE_WEBHOOK_QUEUE)
+
+
+@webhooks_bp.route('/mercadolivre', methods=['POST'])
+def receive_mercadolivre_webhook():
+    return _enqueue_marketplace_webhook('mercadolivre', MERCADOLIVRE_WEBHOOK_QUEUE)
 
 
 @webhooks_bp.route('/events', methods=['GET'])
@@ -125,8 +163,16 @@ def reprocess_webhook_queue():
     try:
         data = request.get_json(silent=True) or {}
         source = data.get('source')
-        if source not in ('falhas', 'dead_letter'):
-            return jsonify({'success': False, 'error': 'source deve ser falhas ou dead_letter'}), 400
+        reprocessable = (
+            'falhas',
+            'dead_letter',
+            'shopee_falhas',
+            'shopee_dead_letter',
+            'mercadolivre_falhas',
+            'mercadolivre_dead_letter',
+        )
+        if source not in reprocessable:
+            return jsonify({'success': False, 'error': 'source deve ser uma fila de falhas ou dead_letter'}), 400
         moved = move_items(source, destination='pendentes')
         return jsonify({'success': True, 'reprocessed': moved})
     except Exception as e:
@@ -141,7 +187,7 @@ def clear_webhook_queue():
         queue = request.args.get('queue')
         if queue == 'processados':
             return jsonify({'success': True, 'deleted': 0, 'message': 'Historico persistido nao e limpo pela fila Redis'})
-        if queue not in ('pendentes', 'falhas', 'dead_letter'):
+        if queue not in LIVE_QUEUE_ALIASES:
             return jsonify({'success': False, 'error': 'queue invalida'}), 400
         deleted = clear_queue(queue)
         return jsonify({'success': True, 'deleted': deleted})

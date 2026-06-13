@@ -67,6 +67,7 @@ interface ErpLink {
   erp_store_id: string;
   store_name: string;
   process_webhooks?: boolean;
+  ingest_origin_mode?: string;
   marketplace?: MarketplaceInstance;
 }
 
@@ -105,6 +106,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
     erp_store_id: '',
     store_name: '',
     process_webhooks: true,
+    ingest_origin_mode: 'erp_bling',
   });
 
   // Estado para campo customizado
@@ -205,6 +207,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
           erp_store_id: newLink.erp_store_id,
           store_name: newLink.store_name || undefined,
           process_webhooks: newLink.process_webhooks,
+          ingest_origin_mode: newLink.ingest_origin_mode,
         }),
       });
 
@@ -217,6 +220,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
           erp_store_id: '',
           store_name: '',
           process_webhooks: true,
+          ingest_origin_mode: 'erp_bling',
         });
         load_data();
       } else {
@@ -248,6 +252,27 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
     } catch (error) {
       console.error('Erro ao atualizar webhooks:', error);
       toast.error('Erro ao atualizar webhooks');
+    }
+  };
+
+  const handleChangeLinkIngestMode = async (link: ErpLink, ingest_origin_mode: string) => {
+    try {
+      const res = await fetch(`/api/v2/erp-links/links/${link.id}/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ingest_origin_mode }),
+      });
+
+      if (res.ok) {
+        toast.success('Origem de ingest atualizada');
+        load_data();
+      } else {
+        const error = await res.json();
+        toast.error(error.message || 'Erro ao atualizar origem de ingest');
+      }
+    } catch (error) {
+      console.error('Erro ao atualizar origem de ingest:', error);
+      toast.error('Erro ao atualizar origem de ingest');
     }
   };
 
@@ -457,6 +482,25 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
                     />
                   </div>
 
+                  <div className="grid gap-2">
+                    <Label>Origem ativa do ingest</Label>
+                    <Select
+                      value={newLink.ingest_origin_mode}
+                      onValueChange={(value) =>
+                        setNewLink({ ...newLink, ingest_origin_mode: value })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecione a origem" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="erp_bling">Bling/ERP autoritativo</SelectItem>
+                        <SelectItem value="marketplace_direct">Marketplace direto autoritativo</SelectItem>
+                        <SelectItem value="erp_only_dummy">Marketplace dummy via Bling</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
                   <Button onClick={handleAddLink} className="w-full">
                     Adicionar Vínculo
                   </Button>
@@ -477,6 +521,7 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
                     <TableHead>Instância</TableHead>
                     <TableHead>ID Loja Bling</TableHead>
                     <TableHead>Nome</TableHead>
+                    <TableHead>Origem Ingest</TableHead>
                     <TableHead>Webhooks</TableHead>
                     <TableHead className="w-[100px]">Ações</TableHead>
                   </TableRow>
@@ -497,6 +542,21 @@ const BlingInstanceConfigModal: React.FC<BlingInstanceConfigModalProps> = ({
                       </TableCell>
                       <TableCell className="font-mono">{link.erp_store_id}</TableCell>
                       <TableCell>{link.store_name || '-'}</TableCell>
+                      <TableCell>
+                        <Select
+                          value={link.ingest_origin_mode || 'erp_bling'}
+                          onValueChange={(value) => handleChangeLinkIngestMode(link, value)}
+                        >
+                          <SelectTrigger className="h-8 w-[190px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="erp_bling">Bling/ERP</SelectItem>
+                            <SelectItem value="marketplace_direct">Marketplace direto</SelectItem>
+                            <SelectItem value="erp_only_dummy">Dummy via Bling</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
                       <TableCell>
                         <Button
                           variant="ghost"

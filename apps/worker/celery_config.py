@@ -42,6 +42,14 @@ def get_default_schedules():
             'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
             'schedule': 30,
         },
+        'consumir-fila-shopee': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_shopee',
+            'schedule': 30,
+        },
+        'consumir-fila-mercadolivre': {
+            'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_mercadolivre',
+            'schedule': 30,
+        },
         'drain-bling-webhook-failures': {
             'task': 'nistiprint_shared.services.redis_queue_tasks.drain_bling_webhook_failures',
             'schedule': 300,
