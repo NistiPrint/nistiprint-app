@@ -96,6 +96,7 @@ export default function TabelaPedidos({
                 <TableHead>Pedido</TableHead>
                 <TableHead>Enviar Até</TableHead>
                 <TableHead>Data</TableHead>
+                <TableHead>Pagamento</TableHead>
                 <TableHead>Cliente</TableHead>
                 <TableHead>Origem</TableHead>
                 <TableHead>Status</TableHead>
@@ -187,6 +188,18 @@ export default function TabelaPedidos({
                     </div>
                   </TableCell>
                   <TableCell>{formatarData(pedido.data_venda)}</TableCell>
+                  <TableCell>
+                    <div className="flex flex-col">
+                      <span className="font-medium">
+                        {formatarDataHora(pedido.data_pagamento_marketplace || pedido.data_compra_marketplace)}
+                      </span>
+                      {pedido.data_compra_marketplace && pedido.data_pagamento_marketplace && (
+                        <span className="text-xs text-muted-foreground">
+                          Compra: {formatarDataHora(pedido.data_compra_marketplace)}
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
                   <TableCell>
                     <div className="flex flex-col">
                       <span className="font-medium">{pedido.cliente_nome || 'N/A'}</span>

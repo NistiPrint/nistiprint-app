@@ -178,6 +178,10 @@ function PedidosListPage() {
           is_flex: order.is_flex || false,
           is_fulfillment: order.is_fulfillment || false,
           is_personalizado: order.is_personalizado || false,
+          data_compra_marketplace: order.data_compra_marketplace,
+          data_pagamento_marketplace: order.data_pagamento_marketplace,
+          data_coleta: order.data_coleta,
+          data_envio_marketplace: order.data_envio_marketplace,
           data_limite_envio: order.data_limite_envio,
           enviar_ate_formatado: order.enviar_ate_formatado,
           // Status com cores dinâmicas

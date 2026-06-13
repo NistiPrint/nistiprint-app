@@ -458,10 +458,9 @@ class MarketplaceWebhookIngestService:
         payment_time_source = "fallback.data_compra_marketplace" if data_venda else None
         modalidade = "STANDARD"
         if source == "shopee":
-            status_key = status_original or (details or {}).get("order_status")
             data_compra_marketplace = (details or {}).get("create_time") or data_venda
-            if status_key == "READY_TO_SHIP":
-                data_pagamento_marketplace = (details or {}).get("pay_time") or data_compra_marketplace
+            if (details or {}).get("pay_time"):
+                data_pagamento_marketplace = (details or {}).get("pay_time")
                 payment_time_source = "shopee.pay_time"
             raw = (details or {}).get("raw") or {}
             data_envio_marketplace = (details or {}).get("ship_time") or unix_to_app_iso(raw.get("ship_time"))
@@ -472,8 +471,8 @@ class MarketplaceWebhookIngestService:
             order = (details or {}).get("order") or {}
             shipment = (details or {}).get("shipment") or {}
             data_compra_marketplace = order.get("date_created") or data_venda
-            if order.get("status") == "paid":
-                data_pagamento_marketplace = _meli_date_approved(order) or data_compra_marketplace
+            if _meli_date_approved(order):
+                data_pagamento_marketplace = _meli_date_approved(order)
                 payment_time_source = "mercadolivre.payments.date_approved"
             data_envio_marketplace = order.get("date_closed")
             option = shipment.get("shipping_option") if isinstance(shipment.get("shipping_option"), dict) else {}

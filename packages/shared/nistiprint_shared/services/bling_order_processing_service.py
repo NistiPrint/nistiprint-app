@@ -360,14 +360,14 @@ def _resolve_marketplace_timestamps(payload: dict, shopee_data=None, meli_data=N
 
     if shopee_data:
         data_compra = shopee_data.get("create_time") or unix_to_app_iso((raw_shopee or {}).get("create_time"))
-        if shopee_data.get("order_status") == "READY_TO_SHIP":
-            data_pagamento = shopee_data.get("pay_time") or unix_to_app_iso((raw_shopee or {}).get("pay_time"))
+        data_pagamento = shopee_data.get("pay_time") or unix_to_app_iso((raw_shopee or {}).get("pay_time"))
+        if data_pagamento:
             payment_source = "shopee.pay_time"
         data_envio = shopee_data.get("ship_time") or unix_to_app_iso((raw_shopee or {}).get("ship_time"))
     elif meli_data:
         data_compra = order.get("date_created")
-        if order.get("status") == "paid":
-            data_pagamento = _extract_meli_date_approved(order)
+        data_pagamento = _extract_meli_date_approved(order)
+        if data_pagamento:
             payment_source = "mercadolivre.payments.date_approved"
         data_envio = order.get("date_closed")
 

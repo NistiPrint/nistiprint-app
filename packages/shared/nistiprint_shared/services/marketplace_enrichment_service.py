@@ -178,7 +178,7 @@ class MarketplaceEnrichmentService:
             shipping_carrier = raw_order.get('shipping_carrier')
             message_to_seller = raw_order.get('message_to_seller')
             data_compra = shopee_data.get('create_time')
-            data_pagamento = shopee_data.get('pay_time') if shopee_data.get('order_status') == 'READY_TO_SHIP' else None
+            data_pagamento = shopee_data.get('pay_time')
 
             logger.info(f"Dados da API Shopee recebidos: buyer_username={buyer_username}, shipping_carrier={shipping_carrier}, message_to_seller={message_to_seller}")
 
