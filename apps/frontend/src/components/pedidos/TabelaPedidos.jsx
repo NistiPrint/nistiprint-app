@@ -279,7 +279,7 @@ export default function TabelaPedidos({
                       size="sm"
                       asChild
                     >
-                      <Link to={`/pedidos/${pedido.id}`}>
+                      <Link to={`/vendas/pedidos/${pedido.id}`}>
                         Ver
                       </Link>
                     </Button>

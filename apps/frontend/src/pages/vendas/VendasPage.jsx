@@ -7,7 +7,7 @@ import { Link, Outlet, useLocation } from 'react-router-dom';
 const vendasMenu = [
   {
     name: 'Pedidos',
-    href: '/pedidos',
+    href: '/vendas/pedidos',
     icon: ClipboardList,
     description: 'Gestão unificada de pedidos e demandas'
   },
@@ -79,7 +79,7 @@ function VendasPage() {
     setLeftSidebarMenuItems(vendasMenu);
 
     return () => {
-      if (!window.location.pathname.startsWith('/vendas') && !window.location.pathname.startsWith('/consolidar') && !window.location.pathname.startsWith('/pedidos')) {
+      if (!location.pathname.startsWith('/vendas') && !location.pathname.startsWith('/consolidar')) {
         setLeftSidebarContent(null);
         setLeftSidebarMenuItems([]);
       }

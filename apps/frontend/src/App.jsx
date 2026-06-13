@@ -81,6 +81,8 @@ import ProdutoFormPage from './pages/produtos/ProdutoFormPage'
 import ProdutoListPage from './pages/produtos/ProdutoListPage'
 import VendasPage from './pages/vendas/VendasPage'
 import VendasPersonalizadasPage from './pages/vendas/VendasPersonalizadasPage'
+import PerfilPage from './pages/PerfilPage'
+
 function App() {
   return (
     <>
@@ -99,13 +101,29 @@ function App() {
           }>
           {/* Dashboard/Home Route */}
           <Route index element={<HomePage />} />
+          <Route path='perfil' element={<PerfilPage />} />
 
-          {/* Produtos Routes */}
+          {/* 1. Produtos (Dados Mestres) */}
           <Route path='produtos' element={<ProdutoListPage />} />
           <Route path='produtos/novo' element={<ProdutoFormPage />} />
           <Route path='produtos/:id/editar' element={<ProdutoFormPage />} />
 
-          {/* Produção Routes */}
+          {/* 2. Comercial (Vendas e Pedidos) */}
+          <Route path='vendas' element={<VendasPage />}>
+            <Route index element={<Navigate to='pedidos' replace />} />
+            <Route
+              path='personalizadas'
+              element={<VendasPersonalizadasPage />}
+            />
+            <Route path='pedidos' element={<PedidosListPage />} />
+            <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
+          </Route>
+
+          <Route path='consolidar' element={<ConsolidarPage />} />
+          <Route path='consolidar/revisao' element={<ConsolidarReviewPage />} />
+          <Route path='consolidar/rascunhos' element={<RascunhosListPage />} />
+
+          {/* 3. Industrial (Produção) */}
           <Route path='producao' element={<ProducaoPage />}>
             <Route index element={<PainelProducaoPage />} />
             <Route path='foco' element={<FocoProducaoPage />} />
@@ -138,32 +156,7 @@ function App() {
             <Route path='impressao' element={<FilaImpressao />} />
           </Route>
 
-          <Route path='vendas' element={<VendasPage />}>
-            <Route index element={<Navigate to='pedidos' replace />} />
-            <Route
-              path='personalizadas'
-              element={<VendasPersonalizadasPage />}
-            />
-            <Route path='pedidos' element={<PedidosListPage />} />
-            <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
-          </Route>
-
-          {/* Rota orfã Logs IA — acessível via URL direta */}
-          <Route path='ai/logs' element={<AILogsPage />} />
-          <Route path='ai' element={<Navigate to='/vendas/personalizadas' replace />} />
-
-          <Route path='pedidos' element={<PedidosListPage />} />
-
-          {/* Configurações */}
-          <Route path='configuracoes'>
-            <Route path='ia' element={<ConfiguracoesIA />} />
-          </Route>
-          <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
-          <Route path='consolidar' element={<ConsolidarPage />} />
-          <Route path='consolidar/revisao' element={<ConsolidarReviewPage />} />
-          <Route path='consolidar/rascunhos' element={<RascunhosListPage />} />
-
-          {/* Estoque Routes */}
+          {/* 4. Logística (Estoque) */}
           <Route path='estoque'>
             <Route index element={<EstoqueDashboardPage />} />
             <Route path='dashboard' element={<EstoqueDashboardPage />} />
@@ -179,7 +172,7 @@ function App() {
             />
           </Route>
 
-          {/* Administração Routes - Protegidas para administradores */}
+          {/* 5. Dados Mestres (Cadastros) */}
           <Route
             path='cadastros'
             element={
@@ -244,6 +237,7 @@ function App() {
             />
           </Route>
 
+          {/* 6. Administração e Sistema */}
           <Route
             path='sistema'
             element={
@@ -280,6 +274,7 @@ function App() {
               path='demanda-permissions'
               element={<PermissoesDemandaPage />}
             />
+            <Route path='ia' element={<ConfiguracoesIA />} />
             <Route path='integracoes' element={<IntegracoesPage />}>
               <Route
                 path='install/:moduleId'
@@ -290,6 +285,7 @@ function App() {
             <Route path='bling' element={<ConfiguracoesBlingPage />} />
           </Route>
 
+          {/* 7. Relatórios e Auditoria */}
           <Route
             path='relatorios'
             element={
@@ -306,11 +302,18 @@ function App() {
             <Route path='historico-coletas' element={<HistoricoColetasPage />} />
             <Route path='fila-estoque' element={<MonitoramentoEstoquePage />} />
             <Route path='monitoramento-estoque' element={<MonitoramentoEstoquePage />} />
-            <Route path='monitoramento' element={<Navigate to='/relatorios/monitoramento-estoque' replace />} />
             <Route path='webhooks' element={<WebhooksPage />} />
             <Route path='auditoria' element={<AuditoriaPage />} />
             <Route path='gerencial-historico' element={<GerencialHistorico />} />
           </Route>
+
+          {/* IA & Utilitários */}
+          <Route path='ai/logs' element={<AILogsPage />} />
+          <Route path='ai' element={<Navigate to='/vendas/personalizadas' replace />} />
+
+          {/* Redirects for legacy routes */}
+          <Route path='pedidos' element={<Navigate to='/vendas/pedidos' replace />} />
+          <Route path='pedidos/:id' element={<Navigate to='/vendas/pedidos/:id' replace />} />
 
           <Route
             path='ferramentas'

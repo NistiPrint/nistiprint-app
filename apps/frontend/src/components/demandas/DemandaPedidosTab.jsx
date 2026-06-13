@@ -51,7 +51,7 @@ export default function DemandaPedidosTab({ demandaId }) {
   }
 
   function handleVerPedido(pedidoId) {
-    navigate(`/pedidos/${pedidoId}`);
+    navigate(`/vendas/pedidos/${pedidoId}`);
   }
 
   function getStatusBadge(status) {

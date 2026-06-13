@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 import requests
 from google.cloud import secretmanager
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.file_archive_service import file_archive_service
 from nistiprint_shared.services.platform_auth_service import platform_auth_service
 from nistiprint_shared.services.integration_resolution_service import integration_resolution_service
 
@@ -99,13 +100,12 @@ class InstalledIntegrationService:
                     self.update_installed(str(integration_id), update_data)
                     
                     # Log Success
-                    self.log_table.insert({
+                    file_archive_service.append('integration_refresh_logs', {
                         'integration_id': integration_id,
                         'status': 'success',
                         'message': 'Token refreshed successfully',
                         'execution_mode': 'scheduled',
-                        'created_at': datetime.now(timezone.utc).isoformat()
-                    }).execute()
+                    }, datetime.now(timezone.utc).isoformat())
                     
                     results["success"] += 1
 
@@ -119,13 +119,12 @@ class InstalledIntegrationService:
                 
                 # Log Error
                 try:
-                    self.log_table.insert({
+                    file_archive_service.append('integration_refresh_logs', {
                         'integration_id': integration_id,
                         'status': 'error',
                         'message': str(e),
                         'execution_mode': 'scheduled',
-                        'created_at': datetime.now(timezone.utc).isoformat()
-                    }).execute()
+                    }, datetime.now(timezone.utc).isoformat())
                 except Exception as log_error:
                     print(f"Failed to write log: {log_error}")
 
@@ -274,13 +273,12 @@ class InstalledIntegrationService:
             raise RuntimeError(f"Falha ao atualizar integração {instance_id} após renovar token")
 
         try:
-            self.log_table.insert({
+            file_archive_service.append('integration_refresh_logs', {
                 'integration_id': instance_id,
                 'status': 'success',
                 'message': 'Token refreshed successfully',
                 'execution_mode': execution_mode,
-                'created_at': now.isoformat()
-            }).execute()
+            }, now.isoformat())
         except Exception as log_error:
             print(f"Failed to write refresh success log for integration {instance_id}: {log_error}")
 

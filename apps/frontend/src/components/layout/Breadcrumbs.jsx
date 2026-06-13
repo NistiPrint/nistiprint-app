@@ -1,0 +1,106 @@
+import React from 'react';
+import { Link, useLocation } from 'react-router-dom';
+import { ChevronRight, Home } from 'lucide-react';
+import { cn } from '@/lib/utils';
+
+const routeLabels = {
+  vendas: 'Comercial',
+  pedidos: 'Pedidos',
+  personalizadas: 'Personalizados',
+  consolidar: 'Consolidação',
+  revisao: 'Revisão',
+  rascunhos: 'Rascunhos',
+  producao: 'Industrial',
+  impressao: 'Fila de Impressão',
+  expedicao: 'Expedição',
+  demanda: 'Demandas',
+  nova: 'Nova',
+  editar: 'Editar',
+  dashboard: 'Dashboard',
+  prioridade: 'Prioridade',
+  calendario: 'Calendário',
+  miolos: 'Miolos',
+  capas: 'Capas',
+  estoque: 'Logística',
+  movimentar: 'Movimentar',
+  posicao: 'Posição',
+  historico: 'Histórico',
+  reservas: 'Reservas',
+  ajuste: 'Ajuste',
+  relatorios: 'Relatórios',
+  produtos: 'Produtos',
+  novo: 'Novo',
+  cadastros: 'Dados Mestres',
+  categoria: 'Categorias',
+  tag: 'Tags',
+  'unidade-medida': 'Unidades de Medida',
+  'uom-conversions': 'Conversão de Unidades',
+  fornecedor: 'Fornecedores',
+  deposito: 'Depósitos',
+  'canal-venda': 'Canais de Venda',
+  plataforma: 'Plataformas',
+  'ponto-coleta': 'Pontos de Coleta',
+  sistema: 'Administração',
+  usuarios: 'Usuários',
+  setores: 'Setores',
+  permissoes: 'Permissões',
+  configuracoes: 'Configurações',
+  ia: 'Inteligência Artificial',
+  integracoes: 'Integrações',
+  roteamento: 'Roteamento',
+  bling: 'Bling',
+  auditoria: 'Auditoria',
+  'gerencial-historico': 'Histórico Gerencial',
+  'ai': 'IA',
+  logs: 'Logs',
+  ferramentas: 'Ferramentas',
+  perfil: 'Meu Perfil',
+};
+
+function Breadcrumbs() {
+  const location = useLocation();
+  const pathnames = location.pathname.split('/').filter((x) => x);
+
+  if (pathnames.length === 0) return null;
+
+  return (
+    <nav className="flex items-center space-x-1 text-sm text-muted-foreground mb-4 overflow-x-auto whitespace-nowrap pb-1 scrollbar-none">
+      <Link
+        to="/"
+        className="flex items-center hover:text-primary transition-colors"
+      >
+        <Home className="h-4 w-4" />
+      </Link>
+
+      {pathnames.map((value, index) => {
+        const last = index === pathnames.length - 1;
+        const to = `/${pathnames.slice(0, index + 1).join('/')}`;
+        const label = routeLabels[value] || value;
+
+        // Skip IDs (UUIDs or numeric)
+        const isId = /^[0-9a-fA-F-]{8,}$/.test(value) || /^\d+$/.test(value);
+        if (isId) return null;
+
+        return (
+          <React.Fragment key={to}>
+            <ChevronRight className="h-4 w-4 shrink-0" />
+            {last ? (
+              <span className="font-medium text-foreground truncate max-w-[150px]">
+                {label}
+              </span>
+            ) : (
+              <Link
+                to={to}
+                className="hover:text-primary transition-colors"
+              >
+                {label}
+              </Link>
+            )}
+          </React.Fragment>
+        );
+      })}
+    </nav>
+  );
+}
+
+export default Breadcrumbs;

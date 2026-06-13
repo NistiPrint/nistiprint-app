@@ -122,7 +122,14 @@ UPDATE public.pedidos p
  WHERE p.pedido_shopee_id = ps.id;
 
 UPDATE public.pedidos p
-   SET data_compra_marketplace = COALESCE(p.data_compra_marketplace, pm.raw_order->>'date_created'),
+   SET data_compra_marketplace = COALESCE(
+           p.data_compra_marketplace,
+           CASE
+               WHEN (pm.raw_order->>'date_created') ~ '^[0-9]+$'
+               THEN to_timestamp((pm.raw_order->>'date_created')::bigint)
+               ELSE NULLIF(pm.raw_order->>'date_created', '')::timestamptz
+           END
+       ),
        data_pagamento_marketplace = COALESCE(p.data_pagamento_marketplace, pm.date_approved)
   FROM public.pedidos_mercadolivre pm
  WHERE p.pedido_mercadolivre_id = pm.id;

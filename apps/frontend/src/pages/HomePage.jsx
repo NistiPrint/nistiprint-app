@@ -2,6 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { useLayout } from '@/contexts/LayoutContext';
 import {
   ArrowRightIcon,
   Boxes,
@@ -14,6 +15,14 @@ import {
 } from 'lucide-react';
 
 function HomePage() {
+  const { setLeftSidebarContent, setLeftSidebarMenuItems } = useLayout();
+
+  React.useEffect(() => {
+    // Garantir que a sidebar seja limpa ao voltar para a home
+    setLeftSidebarContent(null);
+    setLeftSidebarMenuItems([]);
+  }, [setLeftSidebarContent, setLeftSidebarMenuItems]);
+
   const quickActions = [
     {
       title: 'Produtos',

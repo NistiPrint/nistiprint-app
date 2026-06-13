@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { PlusCircle, Edit, Trash2, Tag } from 'lucide-react';
 import { toast } from 'sonner';
 import TagService from '@/services/TagService';
+import PageHeader from '@/components/ui/PageHeader';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -51,24 +52,28 @@ function TagListPage() {
     }
   };
 
-  if (loading) return <div className="text-center py-4">Carregando Tags...</div>;
+  if (loading) return <div className="text-center py-4 text-muted-foreground animate-pulse">Carregando Tags...</div>;
   if (error) return <div className="text-center py-4 text-red-500">Erro: {error}</div>;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Tags</h1>
-        <Button asChild size="sm">
-          <Link to="novo">
-            <PlusCircle className="h-4 w-4 mr-2" /> Nova Tag
-          </Link>
-        </Button>
-      </div>
+      <PageHeader
+        title="Tags"
+        icon={Tag}
+        description="Gerencie as tags para categorização secundária de produtos."
+        actions={
+          <Button asChild size="sm">
+            <Link to="novo">
+              <PlusCircle className="h-4 w-4 mr-2" /> Nova Tag
+            </Link>
+          </Button>
+        }
+      />
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-2">
-            <Tag className="h-5 w-5" /> Lista de Tags
+          <CardTitle className="text-lg font-semibold">
+            Lista de Tags
           </CardTitle>
         </CardHeader>
         <CardContent>

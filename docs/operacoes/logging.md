@@ -176,6 +176,36 @@ docker logs nistiprint-n8n 2>&1 | grep -i error
 
 ## 6. Atalhos recomendados
 
+---
+
+## 7. Arquivo de logs sem UI
+
+Alguns logs operacionais foram movidos para arquivo no host para reduzir volume no banco:
+
+- `system_events_log`
+- `webhook_logs`
+- `integration_refresh_logs`
+
+Eles passam a ser gravados em JSONL no diretório configurado por:
+
+```ini
+NISTIPRINT_LOG_ARCHIVE_DIR=/var/log/nistiprint/archive
+```
+
+Padrão local de desenvolvimento:
+
+```text
+./temp/log-archive
+```
+
+Cada fonte ganha sua própria pasta, com separação por dia:
+
+```text
+archive/webhook_logs/dt=2026-06-13/events.jsonl
+archive/system_events_log/dt=2026-06-13/events.jsonl
+archive/integration_refresh_logs/dt=2026-06-13/events.jsonl
+```
+
 Adicione ao `~/.bashrc` do seu user de operação:
 
 ```bash

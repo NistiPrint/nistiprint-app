@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import PageHeader from '@/components/ui/PageHeader';
 import CategoryService from '@/services/CategoryService';
 import { Edit, PlusCircle, Tags, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -51,24 +52,28 @@ function CategoriaListPage() {
     }
   };
 
-  if (loading) return <div className="text-center py-4">Carregando Categorias...</div>;
+  if (loading) return <div className="text-center py-4 text-muted-foreground animate-pulse">Carregando Categorias...</div>;
   if (error) return <div className="text-center py-4 text-red-500">Erro: {error}</div>;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Categorias</h1>
-        <Button asChild size="sm">
-          <Link to="/cadastros/categoria/novo">
-            <PlusCircle className="h-4 w-4 mr-2" /> Nova Categoria
-          </Link>
-        </Button>
-      </div>
+      <PageHeader
+        title="Categorias"
+        icon={Tags}
+        description="Gerencie as categorias de produtos sincronizadas com o Bling."
+        actions={
+          <Button asChild size="sm">
+            <Link to="/cadastros/categoria/novo">
+              <PlusCircle className="h-4 w-4 mr-2" /> Nova Categoria
+            </Link>
+          </Button>
+        }
+      />
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-2">
-            <Tags className="h-5 w-5" /> Lista de Categorias
+          <CardTitle className="text-lg font-semibold">
+            Lista de Categorias
           </CardTitle>
         </CardHeader>
         <CardContent>

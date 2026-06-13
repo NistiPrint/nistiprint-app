@@ -12,10 +12,11 @@ import {
 import { Input } from '@/components/ui/input';
 import ProductSelector from '@/components/ui/ProductSelector';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import PageHeader from '@/components/ui/PageHeader';
 import UnitService from '@/services/UnitService';
 import UomConversionService from '@/services/UomConversionService';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Edit, Loader2, PlusCircle } from 'lucide-react';
+import { Edit, Loader2, PlusCircle, Scale } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -55,7 +56,6 @@ function UomConversionFormPage() {
     const fetchFormData = async () => {
       setLoadingInitialData(true);
       try {
-        // Fetch units only (products will be loaded by ProductSelector as needed)
         const unitsData = await UnitService.getAll().catch(err => {
             console.error("Erro ao buscar unidades", err);
             return [];
@@ -88,10 +88,10 @@ function UomConversionFormPage() {
     try {
       if (isEditing) {
         await UomConversionService.update(conversionId, data);
-        toast.success('Proporção atualizada com sucesso!');
+        toast.success('Conversão atualizada com sucesso!');
       } else {
         await UomConversionService.create(data);
-        toast.success('Proporção criada com sucesso!');
+        toast.success('Conversão criada com sucesso!');
       }
       navigate('..');
     } catch (error) {
@@ -101,115 +101,123 @@ function UomConversionFormPage() {
     }
   };
 
-  if (loadingInitialData && isEditing) return <div className="text-center py-4 text-muted-foreground">Carregando Proporção...</div>;
+  if (loadingInitialData && isEditing) return <div className="text-center py-4 text-muted-foreground animate-pulse">Carregando Conversão...</div>;
 
   return (
-    <Card className="max-w-xl mx-auto">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          {isEditing ? <Edit className="h-5 w-5" /> : <PlusCircle className="h-5 w-5" />}
-          {isEditing ? 'Editar Proporção' : 'Nova Proporção'}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-            <FormField
-              control={form.control}
-              name="product_id"
-              render={({ field: { onChange: formOnChange, value, ...field } }) => (
-                <FormItem>
-                  <FormLabel>Produto *</FormLabel>
-                  <FormControl>
-                    <ProductSelector
-                      value={value}
-                      onChange={formOnChange}
-                      placeholder="Buscar e selecionar produto..."
-                      disabled={isEditing}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            
-            <div className="grid grid-cols-2 gap-4">
-                <FormField
-                  control={form.control}
-                  name="from_unit_id"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Unidade Origem *</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value || ''}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione..." />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {units.map(u => (
-                            <SelectItem key={u.id} value={u.id.toString()}>{u.name} ({u.symbol})</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+    <div className="container mx-auto py-6 max-w-3xl">
+      <PageHeader
+        title={isEditing ? 'Editar Conversão' : 'Nova Conversão'}
+        icon={Scale}
+        description={isEditing ? 'Atualize as regras de conversão para este produto.' : 'Defina uma nova regra de conversão de unidades para um produto.'}
+      />
 
-                <FormField
-                  control={form.control}
-                  name="to_unit_id"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Unidade Destino *</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value || ''}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Selecione..." />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {units.map(u => (
-                            <SelectItem key={u.id} value={u.id.toString()}>{u.name} ({u.symbol})</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-            </div>
+      <Card className="border-muted/50 shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-lg font-semibold flex items-center gap-2">
+            {isEditing ? <Edit className="h-5 w-5" /> : <PlusCircle className="h-5 w-5" />}
+            Formulário de Conversão
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+              <FormField
+                control={form.control}
+                name="product_id"
+                render={({ field: { onChange: formOnChange, value, ...field } }) => (
+                  <FormItem>
+                    <FormLabel>Produto *</FormLabel>
+                    <FormControl>
+                      <ProductSelector
+                        value={value}
+                        onChange={formOnChange}
+                        placeholder="Buscar e selecionar produto..."
+                        disabled={isEditing}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <FormField
+                    control={form.control}
+                    name="from_unit_id"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Unidade Origem *</FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value || ''}>
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Selecione..." />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            {units.map(u => (
+                              <SelectItem key={u.id} value={u.id.toString()}>{u.name} ({u.symbol})</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
 
-            <FormField
-              control={form.control}
-              name="conversion_factor"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Fator de Conversão *</FormLabel>
-                  <FormControl>
-                    <Input type="number" step="0.000001" {...field} value={field.value || 1} onChange={e => field.onChange(parseFloat(e.target.value))} />
-                  </FormControl>
-                  <FormDescription>
-                    Ex: 1 Unidade Origem = X Unidades Destino
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <div className="flex gap-4">
-              <Button type="submit" disabled={loadingSubmit} className="flex-1">
-                {loadingSubmit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Salvar Proporção
-              </Button>
-              <Button type="button" variant="outline" onClick={() => navigate('..')} className="flex-1">
-                Cancelar
-              </Button>
-            </div>
-          </form>
-        </Form>
-      </CardContent>
-    </Card>
+                  <FormField
+                    control={form.control}
+                    name="to_unit_id"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Unidade Destino *</FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value || ''}>
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Selecione..." />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            {units.map(u => (
+                              <SelectItem key={u.id} value={u.id.toString()}>{u.name} ({u.symbol})</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+              </div>
+
+              <FormField
+                control={form.control}
+                name="conversion_factor"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Fator de Conversão *</FormLabel>
+                    <FormControl>
+                      <Input type="number" step="0.000001" {...field} value={field.value || 1} onChange={e => field.onChange(parseFloat(e.target.value))} />
+                    </FormControl>
+                    <FormDescription>
+                      Ex: 1 Unidade Origem = X Unidades Destino (ex: 1 KG = 1000 G, fator = 1000)
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <div className="flex gap-4 pt-4">
+                <Button type="button" variant="outline" onClick={() => navigate('..')} className="flex-1">
+                  Cancelar
+                </Button>
+                <Button type="submit" disabled={loadingSubmit} className="flex-1">
+                  {loadingSubmit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {isEditing ? 'Salvar Alterações' : 'Criar Conversão'}
+                </Button>
+              </div>
+            </form>
+          </Form>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 

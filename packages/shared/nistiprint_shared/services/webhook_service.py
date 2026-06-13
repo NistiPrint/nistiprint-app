@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.models.webhook_log import WebhookLog
+from nistiprint_shared.services.file_archive_service import file_archive_service
 
 class WebhookService:
     """
@@ -14,31 +15,35 @@ class WebhookService:
     def __init__(self):
         self.table = supabase_db.table('webhook_logs')
 
-    def log_webhook(self, plataforma: str, payload: Dict[str, Any], headers: Dict[str, Any], instance_id: str = None) -> int:
+    def log_webhook(self, plataforma: str, payload: Dict[str, Any], headers: Dict[str, Any], instance_id: str = None) -> str | int | None:
         """
-        Log an incoming webhook to the database
+        Log an incoming webhook to a host file archive.
         """
+        webhook_log = {
+            'plataforma': plataforma,
+            'instance_id': instance_id,
+            'evento': self._detect_event_type(plataforma, payload),
+            'payload': payload,
+            'headers': headers,
+            'status': 'PENDENTE',
+            'created_at': datetime.utcnow().isoformat()
+        }
         try:
-            # Detect event type if possible based on platform
-            evento = self._detect_event_type(plataforma, payload)
-            
-            webhook_log = {
-                'plataforma': plataforma,
-                'instance_id': instance_id,
-                'evento': evento,
-                'payload': payload,
-                'headers': headers,
-                'status': 'PENDENTE',
-                'created_at': datetime.utcnow().isoformat()
-            }
-            
-            response = self.table.insert(webhook_log).execute()
-            
-            if response.data:
-                return response.data[0]['id']
-            return None
+            archive_path = file_archive_service.append('webhook_logs', webhook_log, webhook_log['created_at'])
+            print(f"[webhook-log] archived to {archive_path}")
+            return archive_path
         except Exception as e:
             print(f"Error logging webhook from {plataforma}: {e}")
+            try:
+                response = self.table.insert({
+                    **webhook_log,
+                    'payload': json.dumps(payload, default=str),
+                    'headers': json.dumps(headers, default=str),
+                }).execute()
+                if response.data:
+                    return response.data[0]['id']
+            except Exception as db_error:
+                print(f"Error persisting webhook log to database: {db_error}")
             return None
 
     def _detect_event_type(self, plataforma: str, payload: Dict[str, Any]) -> str:
@@ -80,8 +85,11 @@ class WebhookService:
         }
         if error_msg:
             update_data['mensagem_erro'] = error_msg
-            
-        self.table.update(update_data).eq('id', log_id).execute()
+        file_archive_service.append(
+            'webhook_logs_updates',
+            {'log_id': log_id, 'update_data': update_data},
+            datetime.utcnow().isoformat(),
+        )
 
 # Global instance
 webhook_service = WebhookService()

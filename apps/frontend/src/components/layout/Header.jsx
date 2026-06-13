@@ -1,4 +1,3 @@
-// Import removed - using static URL instead
 import { NotificationManager } from '@/components/NotificationManager';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -14,6 +13,13 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from '@/components/ui/sheet';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 import {
@@ -27,14 +33,17 @@ import {
   Menu,
   ScrollText,
   Settings,
+  ShoppingCart,
   User,
   Users,
   Warehouse,
   Wrench
 } from 'lucide-react';
+import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 
 const navigation = [
+// ... (rest of navigation array)
   {
     name: 'Home',
     href: '/',
@@ -42,14 +51,32 @@ const navigation = [
     type: 'link'
   },
   {
-    name: 'Produtos',
-    href: '/produtos',
-    icon: Boxes,
-    type: 'link',
-    permission: { a: 'produtos', I: 'ler' }
+    name: 'Comercial',
+    icon: ShoppingCart,
+    type: 'collapsible',
+    children: [
+      {
+        name: 'Pedidos',
+        href: '/vendas/pedidos',
+        type: 'link',
+        permission: { a: 'vendas', I: 'ler' }
+      },
+      {
+        name: 'Personalizados',
+        href: '/vendas/personalizadas',
+        type: 'link',
+        permission: { a: 'vendas', I: 'ler' }
+      },
+      {
+        name: 'Consolidar',
+        href: '/consolidar',
+        type: 'link',
+        permission: { a: 'vendas', I: 'ler' }
+      },
+    ]
   },
   {
-    name: 'Operação',
+    name: 'Industrial',
     icon: Cog,
     type: 'collapsible',
     children: [
@@ -60,15 +87,21 @@ const navigation = [
         permission: { a: 'producao', I: 'ler' }
       },
       {
-        name: 'Vendas',
-        href: '/vendas/pedidos',
+        name: 'Fila de Impressão',
+        href: '/producao/impressao',
         type: 'link',
-        permission: { a: 'vendas', I: 'ler' }
+        permission: { a: 'producao', I: 'ler' }
+      },
+      {
+        name: 'Expedição',
+        href: '/producao/expedicao',
+        type: 'link',
+        permission: { a: 'producao', I: 'ler' }
       },
     ]
   },
   {
-    name: 'Estoque',
+    name: 'Logística',
     icon: Warehouse,
     type: 'collapsible',
     permission: { a: 'estoque', I: 'ler' },
@@ -83,17 +116,40 @@ const navigation = [
     ]
   },
   {
-    name: 'Administração',
-    icon: Wrench,
+    name: 'Dados Mestres',
+    icon: Boxes,
     type: 'collapsible',
     children: [
       {
-        name: 'Cadastros',
+        name: 'Produtos',
+        href: '/produtos',
+        type: 'link',
+        permission: { a: 'produtos', I: 'ler' }
+      },
+      {
+        name: 'Cadastros Base',
         href: '/cadastros',
-        icon: Boxes,
         type: 'link',
         permission: { a: 'cadastros', I: 'ler' }
       },
+    ]
+  },
+  {
+    name: 'Relatórios & IA',
+    icon: ScrollText,
+    type: 'collapsible',
+    children: [
+      { name: 'Índice de Relatórios', href: '/relatorios', type: 'link', permission: { a: 'relatorios', I: 'ler' } },
+      { name: 'Auditoria', href: '/relatorios/auditoria', type: 'link', adminOnly: true },
+      { name: 'Histórico Gerencial', href: '/relatorios/gerencial-historico', type: 'link', adminOnly: true },
+      { name: 'Logs de IA', href: '/ai/logs', type: 'link', adminOnly: true },
+    ]
+  },
+  {
+    name: 'Configurações',
+    icon: Settings,
+    type: 'collapsible',
+    children: [
       {
         name: 'Controle de Acesso',
         href: '/sistema',
@@ -102,13 +158,12 @@ const navigation = [
         adminOnly: true
       },
       {
-        name: 'Configurações',
+        name: 'Sistema',
         href: '/configuracoes/producao',
         icon: Settings,
         type: 'link',
         permission: { a: 'configuracoes', I: 'ler' }
       },
-      { name: 'Relatórios', href: '/relatorios', icon: ScrollText, type: 'link', permission: { a: 'relatorios', I: 'ler' } },
       {
         name: 'Utilitários',
         icon: Wrench,
@@ -281,11 +336,60 @@ function Header() {
         </nav>
       </div>
 
-      {/* Mobile Menu Toggle */}
+      {/* Mobile Menu */}
       <div className="flex items-center gap-2 md:hidden">
-        <Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg">
-          <Menu className="h-5 w-5" />
-        </Button>
+        <Sheet>
+          <SheetTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg">
+              <Menu className="h-5 w-5" />
+            </Button>
+          </SheetTrigger>
+          <SheetContent side="left" className="w-[300px] sm:w-[350px]">
+            <SheetHeader>
+              <SheetTitle className="text-left">Nisti Print</SheetTitle>
+            </SheetHeader>
+            <div className="flex flex-col gap-4 mt-8">
+              {navigation
+                .filter(checkItemVisibility)
+                .map((item, index) => {
+                  const Icon = item.icon;
+                  if (item.type === 'link') {
+                    return (
+                      <Link
+                        key={item.name + index}
+                        to={item.href}
+                        className="flex items-center gap-3 text-lg font-medium hover:text-primary transition-colors py-2"
+                      >
+                        {Icon && <Icon className="h-5 w-5" />}
+                        {item.name}
+                      </Link>
+                    );
+                  }
+                  return (
+                    <div key={item.name + index} className="flex flex-col gap-2">
+                      <div className="flex items-center gap-3 text-lg font-bold text-muted-foreground py-2">
+                        {Icon && <Icon className="h-5 w-5" />}
+                        {item.name}
+                      </div>
+                      <div className="flex flex-col gap-2 pl-8 border-l ml-2.5">
+                        {item.children
+                          .filter(checkItemVisibility)
+                          .map((child, cIdx) => (
+                            <Link
+                              key={child.name + cIdx}
+                              to={child.href}
+                              className="text-base font-medium hover:text-primary transition-colors py-1"
+                            >
+                              {child.name}
+                            </Link>
+                          ))}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </SheetContent>
+        </Sheet>
       </div>
 
       <div className="ml-auto flex items-center gap-2 lg:gap-3">

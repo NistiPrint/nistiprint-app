@@ -94,7 +94,7 @@ export default function AlertasDashboard({ compact = false }) {
   }
 
   function handleVerPedidosOrfaos() {
-    navigate('/pedidos');
+    navigate('/vendas/pedidos');
   }
 
   function handleVerDemandasAtrasadas() {

@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import PageHeader from '@/components/ui/PageHeader';
 import UomConversionService from '@/services/UomConversionService';
 import { Edit, PlusCircle, Scale, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -31,7 +32,7 @@ function UomConversionsListPage() {
       setConversions(data || []);
     } catch (e) {
       setError(e.message);
-      toast.error(`Erro ao carregar proporções de unidade: ${e.message}`);
+      toast.error(`Erro ao carregar conversões de unidade: ${e.message}`);
     } finally {
       setLoading(false);
     }
@@ -44,37 +45,41 @@ function UomConversionsListPage() {
   const handleDeleteConversion = async (id) => {
     try {
       await UomConversionService.delete(id);
-      toast.success('Proporção deletada com sucesso!');
+      toast.success('Conversão deletada com sucesso!');
       fetchConversions();
     } catch (e) {
-      toast.error(`Erro ao deletar proporção: ${e.message}`);
+      toast.error(`Erro ao deletar conversão: ${e.message}`);
     }
   };
 
-  if (loading) return <div className="text-center py-4 text-muted-foreground">Carregando Proporções de Unidade...</div>;
+  if (loading) return <div className="text-center py-4 text-muted-foreground animate-pulse">Carregando Conversões de Unidade...</div>;
   if (error) return <div className="text-center py-4 text-red-500">Erro: {error}</div>;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Proporções de Unidade</h1>
-        <Button asChild size="sm">
-          <Link to="new">
-            <PlusCircle className="h-4 w-4 mr-2" /> Nova Proporção
-          </Link>
-        </Button>
-      </div>
+      <PageHeader
+        title="Conversão de Unidades"
+        icon={Scale}
+        description="Gerencie as regras de conversão entre diferentes unidades de medida para produtos específicos."
+        actions={
+          <Button asChild size="sm">
+            <Link to="new">
+              <PlusCircle className="h-4 w-4 mr-2" /> Nova Conversão
+            </Link>
+          </Button>
+        }
+      />
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-2">
-            <Scale className="h-5 w-5" /> Proporções de Unidade por Produto
+          <CardTitle className="text-lg font-semibold">
+            Regras de Conversão por Produto
           </CardTitle>
         </CardHeader>
         <CardContent>
           {conversions.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
-              Nenhuma proporção de unidade encontrada.
+              Nenhuma conversão de unidade encontrada.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -115,7 +120,7 @@ function UomConversionsListPage() {
                               <AlertDialogHeader>
                                 <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
                                 <AlertDialogDescription>
-                                  Tem certeza que deseja deletar esta proporção?
+                                  Tem certeza que deseja deletar esta conversão?
                                   Esta ação não pode ser desfeita.
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
