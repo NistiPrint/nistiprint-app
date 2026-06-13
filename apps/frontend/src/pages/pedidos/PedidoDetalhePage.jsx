@@ -3,6 +3,7 @@ import PedidoHeader from '@/components/pedidos/PedidoHeader';
 import PedidoLogsModal from '@/components/pedidos/PedidoLogsModal';
 import PedidoIntegracoesCard from '@/components/pedidos/PedidoIntegracoesCard';
 import PedidoItensList from '@/components/pedidos/PedidoItensList';
+import PedidoPlatformFieldsCard from '@/components/pedidos/PedidoPlatformFieldsCard';
 import PedidoResumoCards from '@/components/pedidos/PedidoResumoCards';
 import PedidoTimeline from '@/components/pedidos/PedidoTimeline';
 import * as pedidoService from '@/services/pedidoService';
@@ -173,6 +174,8 @@ export default function PedidoDetalhePage() {
             
             {/* Integrações */}
             <PedidoIntegracoesCard integracoes={pedido.integracoes} />
+
+            <PedidoPlatformFieldsCard pedido={pedido} />
             
             {/* Timeline */}
             <PedidoTimeline

@@ -17,6 +17,9 @@ from nistiprint_shared.services.integration_resolution_service import (
 from nistiprint_shared.services.canonical_order_status_service import (
     canonical_order_status_service,
 )
+from nistiprint_shared.services.canonical_order_snapshot_service import (
+    canonical_order_snapshot_service,
+)
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services import flex_classifier_service, fulfillment_classifier_service
@@ -1485,6 +1488,65 @@ def _upsert_pedido_master(payload, *,
     # Upsert itens do pedido
     if pedido_id:
         _upsert_itens_pedido(pedido_id, payload.get('itens', []))
+        snapshot_items = [
+            {
+                'sku': item.get('codigo'),
+                'name': item.get('descricao'),
+                'quantity': _safe_float(item.get('quantidade'), 1.0),
+                'unit_price': _safe_float(item.get('valor')),
+                'subtotal': _safe_float(item.get('valor')) * _safe_float(item.get('quantidade'), 1.0),
+                'raw': item,
+            }
+            for item in (payload.get('itens') or [])
+        ]
+        marketplace_slug = None
+        if shopee_data:
+            marketplace_slug = 'shopee'
+        elif meli_data:
+            marketplace_slug = 'mercadolivre'
+
+        canonical_order_snapshot_service.upsert_snapshot(
+            pedido_id=pedido_id,
+            ingest_source='bling',
+            marketplace=marketplace_slug,
+            marketplace_order_id=codigo_externo,
+            marketplace_integration_id=marketplace_integration_id,
+            bling_integration_id=bling_integration_id,
+            bling_order_id=bling_id,
+            bling_order_number=bling_numero,
+            customer={
+                'name': contato.get('nome'),
+                'document': contato.get('numeroDocumento'),
+                'phone': contato.get('telefone') or contato.get('celular'),
+                'email': contato.get('email'),
+                'raw': contato,
+            },
+            items=snapshot_items,
+            logistics={
+                'service': servico,
+                'shipping_carrier': data.get('shipping_carrier'),
+                'is_flex': is_flex,
+                'is_fulfillment': is_fulfillment,
+                'modalidade': modalidade,
+                'deadline': data_limite_envio,
+                'transport': transporte,
+            },
+            financial={'total': _safe_float(payload.get('total')), 'currency': 'BRL'},
+            platform_fields={
+                'buyer_username': data.get('buyer_username'),
+                'message_to_seller': data.get('message_to_seller'),
+                'shipping_carrier': data.get('shipping_carrier'),
+                'shopee': shopee_data,
+                'mercadolivre': meli_data,
+            },
+            raw_refs={
+                'bling': payload,
+                'pedido_bling_id': pedido_bling_id,
+                'pedido_shopee_id': pedido_shopee_id,
+                'pedido_mercadolivre_id': pedido_mercadolivre_id,
+            },
+            upsert_items=False,
+        )
 
     return pedido_id
 

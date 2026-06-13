@@ -104,6 +104,7 @@ export function formatarPedido(pedido) {
   if (!pedido) return null;
   
   return {
+    ...pedido,
     cliente: {
       ...pedido.cliente,
       nome: pedido.cliente?.nome || 'Não informado',
@@ -114,7 +115,9 @@ export function formatarPedido(pedido) {
       total: pedido.financeiro?.total || 0,
       moeda: pedido.financeiro?.moeda || 'BRL'
     },
-    itens: pedido.itens || [],
+    itens: pedido.itens || pedido.snapshot?.items || [],
+    snapshot: pedido.snapshot || {},
+    platform_fields: pedido.platform_fields || pedido.snapshot?.platform_fields || {},
     statusFormatado: {
       nome: pedido.status?.nome || 'Pendente',
       cor: pedido.status?.cor || '#f59e0b',

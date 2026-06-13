@@ -282,6 +282,16 @@ def get_pedido_detalhe(pedido_id):
             )
         
         pedido = pedido_response.data
+        snapshot = {}
+        try:
+            snapshot_rows = supabase_db.table('pedido_snapshots') \
+                .select('*') \
+                .eq('pedido_id', pedido_id) \
+                .limit(1) \
+                .execute().data or []
+            snapshot = snapshot_rows[0] if snapshot_rows else {}
+        except Exception as e:
+            logger.warning("Erro ao buscar pedido_snapshots para pedido %s: %s", pedido_id, e)
         
         # Fetch integration_module for marketplace info
         marketplace_info = None
@@ -341,11 +351,12 @@ def get_pedido_detalhe(pedido_id):
                 'descricao': (pedido.get('situacao_pedido') or {}).get('descricao') or ''
             },
             'cliente': {
-                'nome': pedido.get('cliente_nome') or (pedido.get('informacoes_cliente', {}) or {}).get('nome'),
-                'documento': pedido.get('cliente_documento') or (pedido.get('informacoes_cliente', {}) or {}).get('numeroDocumento'),
-                'telefone': pedido.get('cliente_telefone'),
-                'email': pedido.get('cliente_email'),
-                'informacoes_adicionais': pedido.get('informacoes_cliente', {})
+                'nome': pedido.get('cliente_nome') or (snapshot.get('customer') or {}).get('name') or (pedido.get('informacoes_cliente', {}) or {}).get('nome'),
+                'documento': pedido.get('cliente_documento') or (snapshot.get('customer') or {}).get('document') or (pedido.get('informacoes_cliente', {}) or {}).get('numeroDocumento'),
+                'telefone': pedido.get('cliente_telefone') or (snapshot.get('customer') or {}).get('phone'),
+                'email': pedido.get('cliente_email') or (snapshot.get('customer') or {}).get('email'),
+                'username': pedido.get('buyer_username') or (snapshot.get('customer') or {}).get('username') or (snapshot.get('customer') or {}).get('nickname'),
+                'informacoes_adicionais': snapshot.get('customer') or pedido.get('informacoes_cliente', {})
             },
             'financeiro': {
                 'total': float(pedido.get('total_pedido') or 0),
@@ -361,12 +372,26 @@ def get_pedido_detalhe(pedido_id):
             },
             'logistica': {
                 'is_flex': pedido.get('is_flex', False),
+                'is_fulfillment': pedido.get('is_fulfillment', False),
                 'servico_logistico': pedido.get('servico_logistico'),
+                'shipping_carrier': pedido.get('shipping_carrier') or (snapshot.get('logistics') or {}).get('shipping_carrier'),
+                'detalhes': snapshot.get('logistics') or {},
                 'canal_venda': canal_payload,
                 'marketplace': marketplace_info
             },
-            'itens': pedido.get('itens_pedido', []),
+            'itens': pedido.get('itens_pedido') or snapshot.get('items') or [],
             'integracoes': pedido.get('integracoes', []),
+            'snapshot': {
+                'identity': snapshot.get('identity') or {},
+                'customer': snapshot.get('customer') or {},
+                'items': snapshot.get('items') or [],
+                'logistics': snapshot.get('logistics') or {},
+                'financial': snapshot.get('financial') or {},
+                'platform_fields': snapshot.get('platform_fields') or {},
+                'raw_refs': snapshot.get('raw_refs') or {},
+                'source_history': snapshot.get('source_history') or [],
+            },
+            'platform_fields': snapshot.get('platform_fields') or {},
             'timeline': sorted(
                 pedido.get('eventos', []),
                 key=lambda x: x.get('created_at', ''),

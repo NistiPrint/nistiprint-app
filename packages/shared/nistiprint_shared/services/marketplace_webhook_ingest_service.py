@@ -7,6 +7,9 @@ from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.canonical_order_status_service import (
     canonical_order_status_service,
 )
+from nistiprint_shared.services.canonical_order_snapshot_service import (
+    canonical_order_snapshot_service,
+)
 from nistiprint_shared.services.correlation_service import generate_correlation_id, set_correlation_id
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
@@ -153,14 +156,16 @@ class MarketplaceWebhookIngestService:
             source="shopee",
             external_order_id=str(order_sn),
             marketplace_integration_id=marketplace_inst.get("id"),
+            bling_integration_id=(link or {}).get("bling_integration_id"),
             channel_id=(link or {}).get("channel_id"),
             situacao_pedido_id=status.internal_situacao_pedido_id,
             status_original=detail.get("order_status") or body.get("order_status"),
             mirror_fields={"pedido_shopee_id": pedido_shopee_id},
-            raw_customer={"buyer_username": detail.get("buyer_username"), "buyer_user_id": detail.get("buyer_user_id")},
+            raw_customer=self._shopee_customer(detail),
             total=detail.get("total"),
             currency=detail.get("currency") or "BRL",
             data_venda=detail.get("create_time"),
+            details=detail,
         )
 
         return {
@@ -253,14 +258,16 @@ class MarketplaceWebhookIngestService:
             source="mercadolivre",
             external_order_id=str(order_id),
             marketplace_integration_id=marketplace_inst.get("id"),
+            bling_integration_id=(link or {}).get("bling_integration_id"),
             channel_id=(link or {}).get("channel_id"),
             situacao_pedido_id=status.internal_situacao_pedido_id,
             status_original=f"payment:{payment_status or '-'}|shipping:{shipping_status or '-'}",
             mirror_fields={"pedido_mercadolivre_id": pedido_meli_id},
-            raw_customer=order.get("buyer") or {},
+            raw_customer=self._meli_customer(order),
             total=order.get("total_amount"),
             currency=order.get("currency_id") or "BRL",
             data_venda=order.get("date_created"),
+            details=detail,
         )
 
         return {
@@ -404,6 +411,7 @@ class MarketplaceWebhookIngestService:
         source: str,
         external_order_id: str,
         marketplace_integration_id: int | None,
+        bling_integration_id: int | None,
         channel_id: int | None,
         situacao_pedido_id: int | None,
         status_original: str | None,
@@ -412,15 +420,21 @@ class MarketplaceWebhookIngestService:
         total: Any,
         currency: str,
         data_venda: str | None,
+        details: dict | None = None,
     ) -> int | None:
         if not external_order_id:
             return None
 
+        bling_ref = self._lookup_bling_order(
+            bling_integration_id=bling_integration_id,
+            external_order_id=str(external_order_id),
+        )
         row = {
             "numero_pedido": f"{source.upper()}-{external_order_id}",
             "codigo_pedido_externo": str(external_order_id),
             "origem": source.upper(),
             "marketplace_integration_id": marketplace_integration_id,
+            "bling_integration_id": bling_integration_id,
             "canal_venda_id": channel_id,
             "situacao_pedido_id": situacao_pedido_id,
             "status_original": status_original,
@@ -429,6 +443,10 @@ class MarketplaceWebhookIngestService:
             "total_pedido": total,
             "moeda": currency or "BRL",
             "data_venda": data_venda,
+            "marketplace_order_id": str(external_order_id),
+            "bling_order_id": bling_ref.get("bling_order_id"),
+            "bling_order_number": bling_ref.get("bling_order_number"),
+            "ingest_source": source,
             "updated_at": get_now_iso(),
             **{key: value for key, value in mirror_fields.items() if value is not None},
         }
@@ -440,22 +458,55 @@ class MarketplaceWebhookIngestService:
         )
         if existing:
             response = supabase_db.table("pedidos").update(row).eq("id", existing["id"]).execute()
-            return (response.data or [{}])[0].get("id") or existing["id"]
+            pedido_id = (response.data or [{}])[0].get("id") or existing["id"]
+        else:
+            response = supabase_db.table("pedidos").insert(row).execute()
+            pedido_id = (response.data or [{}])[0].get("id")
 
-        response = supabase_db.table("pedidos").insert(row).execute()
-        return (response.data or [{}])[0].get("id")
+        self._write_snapshot_for_marketplace(
+            source=source,
+            pedido_id=pedido_id,
+            external_order_id=str(external_order_id),
+            marketplace_integration_id=marketplace_integration_id,
+            bling_integration_id=bling_integration_id,
+            bling_order_id=bling_ref.get("bling_order_id"),
+            bling_order_number=bling_ref.get("bling_order_number"),
+            customer=raw_customer or {},
+            total=total,
+            currency=currency,
+            details=details or {},
+            mirror_fields={**mirror_fields, "bling_lookup": bling_ref},
+        )
+        return pedido_id
 
     def _find_existing_pedido(self, *, external_order_id: str, marketplace_integration_id: int | None) -> dict | None:
         query = (
             supabase_db.table("pedidos")
             .select("id")
-            .eq("codigo_pedido_externo", str(external_order_id))
+            .eq("marketplace_order_id", str(external_order_id))
         )
         if marketplace_integration_id:
             query = query.eq("marketplace_integration_id", marketplace_integration_id)
         rows = query.limit(1).execute().data or []
         if rows:
             return rows[0]
+
+        if marketplace_integration_id:
+            rows = (
+                supabase_db.table("pedidos")
+                .select("id")
+                .eq("codigo_pedido_externo", str(external_order_id))
+                .eq("marketplace_integration_id", marketplace_integration_id)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            if rows:
+                return rows[0]
+
+        if marketplace_integration_id:
+            return None
 
         rows = (
             supabase_db.table("pedidos")
@@ -475,9 +526,169 @@ class MarketplaceWebhookIngestService:
             return customer.get("nickname")
         if customer.get("buyer_username"):
             return customer.get("buyer_username")
+        if customer.get("username"):
+            return customer.get("username")
         first = customer.get("first_name")
         last = customer.get("last_name")
         return " ".join(part for part in (first, last) if part) or None
+
+    def _shopee_customer(self, detail: dict) -> dict:
+        address = detail.get("recipient_address") or {}
+        return {
+            "name": address.get("name") or detail.get("buyer_username"),
+            "phone": address.get("phone"),
+            "username": detail.get("buyer_username"),
+            "buyer_username": detail.get("buyer_username"),
+            "buyer_user_id": detail.get("buyer_user_id"),
+            "address": address,
+        }
+
+    def _meli_customer(self, order: dict) -> dict:
+        buyer = order.get("buyer") or {}
+        return {
+            "name": buyer.get("nickname") or " ".join(part for part in (buyer.get("first_name"), buyer.get("last_name")) if part),
+            "nickname": buyer.get("nickname"),
+            "buyer_user_id": buyer.get("id"),
+            "raw": buyer,
+        }
+
+    def _write_snapshot_for_marketplace(
+        self,
+        *,
+        source: str,
+        pedido_id: int | None,
+        external_order_id: str,
+        marketplace_integration_id: int | None,
+        bling_integration_id: int | None,
+        bling_order_id: Any = None,
+        bling_order_number: Any = None,
+        customer: dict,
+        total: Any,
+        currency: str,
+        details: dict,
+        mirror_fields: dict,
+    ) -> None:
+        if not pedido_id:
+            return
+
+        if source == "shopee":
+            items = self._normalize_shopee_items(details)
+            logistics = {
+                "shipping_carrier": details.get("shipping_carrier"),
+                "service": details.get("shipping_carrier"),
+                "is_fulfillment": str(details.get("fulfillment_flag") or "").lower() in ("fulfilled_by_shopee", "true", "full"),
+                "fulfillment_flag": details.get("fulfillment_flag"),
+                "package_list": details.get("package_list"),
+                "ship_by_date": details.get("ship_by_date"),
+                "address": details.get("recipient_address"),
+            }
+            platform_fields = {
+                "buyer_username": details.get("buyer_username"),
+                "buyer_user_id": details.get("buyer_user_id"),
+                "message_to_seller": (details.get("raw") or {}).get("message_to_seller"),
+                "shipping_carrier": details.get("shipping_carrier"),
+                "shopee": details,
+            }
+        else:
+            order = details.get("order") or {}
+            shipment = details.get("shipment") or {}
+            sla = details.get("sla") or {}
+            items = self._normalize_meli_items(order)
+            logistics = {
+                "shipment_id": (order.get("shipping") or {}).get("id") or shipment.get("id"),
+                "shipping_status": shipment.get("status"),
+                "shipping_carrier": shipment.get("mode"),
+                "service": shipment.get("shipping_option", {}).get("name") if isinstance(shipment.get("shipping_option"), dict) else None,
+                "expected_date": sla.get("expected_date"),
+                "address": shipment.get("receiver_address"),
+            }
+            platform_fields = {
+                "buyer_username": (order.get("buyer") or {}).get("nickname"),
+                "mercadolivre": details,
+            }
+
+        canonical_order_snapshot_service.upsert_snapshot(
+            pedido_id=pedido_id,
+            ingest_source=source,
+            marketplace=source,
+            marketplace_order_id=external_order_id,
+            marketplace_integration_id=marketplace_integration_id,
+            bling_integration_id=bling_integration_id,
+            bling_order_id=bling_order_id,
+            bling_order_number=bling_order_number,
+            customer=customer,
+            items=items,
+            logistics=logistics,
+            financial={"total": total, "currency": currency or "BRL"},
+            platform_fields=platform_fields,
+            raw_refs={**mirror_fields, source: details},
+            upsert_items=True,
+        )
+
+    def _lookup_bling_order(self, *, bling_integration_id: int | None, external_order_id: str) -> dict:
+        result = {
+            "status": "not_found",
+            "numero_loja": external_order_id,
+            "bling_integration_id": bling_integration_id,
+        }
+        if not bling_integration_id or not external_order_id:
+            return result
+        try:
+            rows = (
+                supabase_db.table("pedidos_bling")
+                .select("id,bling_id,numero_pedido,numero_loja")
+                .eq("bling_integration_id", bling_integration_id)
+                .eq("numero_loja", str(external_order_id))
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            if rows:
+                row = rows[0]
+                return {
+                    **result,
+                    "status": "found",
+                    "pedido_bling_id": row.get("id"),
+                    "bling_order_id": row.get("bling_id"),
+                    "bling_order_number": row.get("numero_pedido"),
+                }
+        except Exception as exc:
+            logger.warning("[marketplace-ingest] erro ao buscar pedido Bling por numero_loja=%s: %s", external_order_id, exc)
+            result["status"] = "error"
+            result["error"] = str(exc)
+        return result
+
+    def _normalize_shopee_items(self, detail: dict) -> list[dict]:
+        rows = []
+        for item in detail.get("item_list") or []:
+            quantity = item.get("model_quantity_purchased") or item.get("quantity") or 1
+            price = item.get("model_discounted_price") or item.get("model_original_price") or item.get("item_price")
+            rows.append({
+                "sku": item.get("model_sku") or item.get("item_sku"),
+                "name": item.get("item_name") or item.get("model_name"),
+                "quantity": quantity,
+                "unit_price": price,
+                "subtotal": float(quantity or 0) * float(price or 0) if price is not None else None,
+                "raw": item,
+            })
+        return rows
+
+    def _normalize_meli_items(self, order: dict) -> list[dict]:
+        rows = []
+        for item in order.get("order_items") or []:
+            item_info = item.get("item") or {}
+            quantity = item.get("quantity") or 1
+            price = item.get("unit_price")
+            rows.append({
+                "sku": item_info.get("seller_sku") or item_info.get("id"),
+                "name": item_info.get("title"),
+                "quantity": quantity,
+                "unit_price": price,
+                "subtotal": float(quantity or 0) * float(price or 0) if price is not None else None,
+                "raw": item,
+            })
+        return rows
 
     def _update_webhook_event_from_result(self, webhook_event_id: int | None, result: dict):
         if not webhook_event_id:
