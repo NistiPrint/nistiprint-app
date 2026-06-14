@@ -344,6 +344,11 @@ def get_pedido_detalhe(pedido_id):
             'numero_pedido': pedido.get('numero_pedido'),
             'codigo_pedido_externo': pedido.get('codigo_pedido_externo'),
             'origem': pedido.get('origem'),
+            'data_compra_marketplace': pedido.get('data_compra_marketplace'),
+            'data_pagamento_marketplace': pedido.get('data_pagamento_marketplace'),
+            'data_coleta': pedido.get('data_coleta'),
+            'data_envio_marketplace': pedido.get('data_envio_marketplace'),
+            'data_limite_envio': pedido.get('data_limite_envio'),
             'status': {
                 'id': pedido.get('situacao_pedido_id'),
                 'nome': (pedido.get('situacao_pedido') or {}).get('nome') or 'Pendente',
@@ -368,7 +373,11 @@ def get_pedido_detalhe(pedido_id):
                 'venda': pedido.get('data_venda'),
                 'criacao': pedido.get('created_at'),
                 'atualizacao': pedido.get('updated_at'),
-                'limite_envio': pedido.get('data_limite_envio')
+                'limite_envio': pedido.get('data_limite_envio'),
+                'compra_marketplace': pedido.get('data_compra_marketplace'),
+                'pagamento_marketplace': pedido.get('data_pagamento_marketplace'),
+                'coleta': pedido.get('data_coleta'),
+                'envio_marketplace': pedido.get('data_envio_marketplace'),
             },
             'logistica': {
                 'is_flex': pedido.get('is_flex', False),
