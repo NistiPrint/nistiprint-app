@@ -377,6 +377,18 @@ def _resolve_marketplace_timestamps(payload: dict, shopee_data=None, meli_data=N
         data_pagamento = data_compra
         payment_source = "fallback.data_compra_marketplace" if data_compra else None
 
+    logger.info(
+        "[bling-ingest] marketplace timestamps resolved source=%s payload_id=%s result=%s",
+        "shopee" if shopee_data else ("mercadolivre" if meli_data else "bling_only"),
+        payload.get("numeroLoja") or payload.get("id"),
+        {
+            "data_compra_marketplace": data_compra,
+            "data_pagamento_marketplace": data_pagamento,
+            "data_envio_marketplace": data_envio,
+            "payment_time_source": payment_source,
+        },
+    )
+
     return {
         "data_compra_marketplace": data_compra,
         "data_pagamento_marketplace": data_pagamento,
@@ -1500,6 +1512,17 @@ def _upsert_pedido_master(payload, *,
         )
         data_coleta = coleta_contexto.get('data_coleta')
         regra_logistica_integracao_id = (coleta_contexto.get('regra') or {}).get('id')
+        logger.info(
+            "[bling-ingest] coleta calculada codigo_externo=%s modalidade=%s contexto=%s",
+            codigo_externo,
+            modalidade,
+            {
+                "data_coleta": data_coleta,
+                "horario_corte": coleta_contexto.get("horario_corte"),
+                "horario_coleta": coleta_contexto.get("horario_coleta"),
+                "regra_id": regra_logistica_integracao_id,
+            },
+        )
 
     # Logística
     transporte = payload.get('transporte') or {}

@@ -1,3 +1,25 @@
+# WEBHOOKS
+
+### Exemplo de atualização de pedido
+
+```
+{
+  "msg_id": "64ca21a1542dfa1148325c4e47e9da00",
+  "data": {
+    "completed_scenario": "NORMAL",
+    "ordersn": "260605AUHAT90E",
+    "status": "COMPLETED",
+    "update_time": 1781406305
+  },
+  "shop_id": 376221706,
+  "code": 3,
+  "timestamp": 1781406306
+}
+```
+
+
+# API
+
 **GET** /api/v2/order/get_order_detail Use this api to get order detail.
 
 ## Request Parameters
@@ -119,7 +141,6 @@
     }
 }
 ```
-
 
 ## Error Codes
 

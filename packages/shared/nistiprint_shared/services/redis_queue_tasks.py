@@ -670,6 +670,15 @@ def _consume_marketplace_queue(source: str, queue_name: str, failure_queue: str,
 
             body, shop_id, order_id = _extract_marketplace_context(source, data)
             webhook_event_id = data.get('webhook_event_id')
+            logger.info(
+                "[webhook-queue] consuming source=%s queue=%s webhook_event_id=%s shop_id=%s order_id=%s keys=%s",
+                source,
+                queue_name,
+                webhook_event_id,
+                shop_id,
+                order_id,
+                sorted(body.keys()) if isinstance(body, dict) else [],
+            )
             if not webhook_event_id:
                 webhook_event_id = _insert_webhook_event(
                     data,
@@ -705,6 +714,15 @@ def _consume_marketplace_queue(source: str, queue_name: str, failure_queue: str,
                 body,
                 correlation_id=webhook_correlation_id,
                 webhook_event_id=webhook_event_id,
+            )
+            logger.info(
+                "[webhook-queue] processed source=%s webhook_event_id=%s status=%s pedido_id=%s external_order_id=%s event_status=%s",
+                source,
+                webhook_event_id,
+                result.get("status"),
+                result.get("pedido_id"),
+                result.get("external_order_id"),
+                result.get("event_status"),
             )
             status_result = result.get('status', 'unknown')
             event_status = result.get('event_status') or status_result

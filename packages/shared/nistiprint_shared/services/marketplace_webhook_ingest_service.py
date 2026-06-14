@@ -55,6 +55,15 @@ def _parse_datetime(value):
         return None
 
 
+def _summarize_timestamps(data_compra=None, data_pagamento=None, data_envio=None, status=None):
+    return {
+        "data_compra": data_compra,
+        "data_pagamento": data_pagamento,
+        "data_envio": data_envio,
+        "status": status,
+    }
+
+
 def _meli_date_approved(order: dict) -> str | None:
     payments = order.get("payments") or []
     if not isinstance(payments, list):
@@ -162,6 +171,12 @@ class MarketplaceWebhookIngestService:
 
         detail = self._fetch_shopee_detail(marketplace_inst, str(order_sn))
         if detail.get("error"):
+            logger.warning(
+                "[marketplace-webhook] shopee detail unavailable order_sn=%s integration_id=%s error=%s",
+                order_sn,
+                marketplace_inst.get("id"),
+                detail.get("error"),
+            )
             return {
                 "status": "error",
                 "error_type": "shopee_detail_unavailable",
@@ -169,6 +184,13 @@ class MarketplaceWebhookIngestService:
                 "external_order_id": str(order_sn),
                 "marketplace_integration_id": marketplace_inst.get("id"),
             }
+
+        logger.info(
+            "[marketplace-webhook] shopee detail fetched order_sn=%s status=%s keys=%s",
+            order_sn,
+            detail.get("order_status"),
+            sorted(detail.keys()),
+        )
 
         pedido_shopee_id = self._upsert_shopee_mirror(detail, marketplace_inst.get("id"))
         status = canonical_order_status_service.resolve_shopee(
@@ -189,6 +211,16 @@ class MarketplaceWebhookIngestService:
             currency=detail.get("currency") or "BRL",
             data_venda=detail.get("create_time"),
             details=detail,
+        )
+        logger.info(
+            "[marketplace-webhook] shopee timestamps order_sn=%s %s",
+            order_sn,
+            _summarize_timestamps(
+                data_compra=detail.get("create_time"),
+                data_pagamento=detail.get("pay_time"),
+                data_envio=detail.get("ship_time"),
+                status=detail.get("order_status"),
+            ),
         )
 
         return {
@@ -258,6 +290,12 @@ class MarketplaceWebhookIngestService:
 
         detail = self._fetch_meli_detail(marketplace_inst, str(order_id))
         if detail.get("error"):
+            logger.warning(
+                "[marketplace-webhook] meli detail unavailable order_id=%s integration_id=%s error=%s",
+                order_id,
+                marketplace_inst.get("id"),
+                detail.get("error"),
+            )
             return {
                 "status": "error",
                 "error_type": "mercadolivre_detail_unavailable",
@@ -265,6 +303,13 @@ class MarketplaceWebhookIngestService:
                 "external_order_id": str(order_id),
                 "marketplace_integration_id": marketplace_inst.get("id"),
             }
+
+        logger.info(
+            "[marketplace-webhook] meli detail fetched order_id=%s order_keys=%s shipment_keys=%s",
+            order_id,
+            sorted((detail.get("order") or {}).keys()),
+            sorted((detail.get("shipment") or {}).keys()),
+        )
 
         pedido_meli_id = self._upsert_meli_mirror(detail, marketplace_inst.get("id"))
         order = detail.get("order") or {}
@@ -291,6 +336,16 @@ class MarketplaceWebhookIngestService:
             currency=order.get("currency_id") or "BRL",
             data_venda=order.get("date_created"),
             details=detail,
+        )
+        logger.info(
+            "[marketplace-webhook] meli timestamps order_id=%s %s",
+            order_id,
+            _summarize_timestamps(
+                data_compra=order.get("date_created"),
+                data_pagamento=_meli_date_approved(order),
+                data_envio=order.get("date_closed"),
+                status=order.get("status"),
+            ),
         )
 
         return {
@@ -467,6 +522,18 @@ class MarketplaceWebhookIngestService:
             carrier = str((details or {}).get("shipping_carrier") or "").lower()
             if "entrega rápida" in carrier or "entrega rapida" in carrier:
                 modalidade = "FLEX"
+            logger.info(
+                "[marketplace-webhook] shopee resolve timestamps order_sn=%s status=%s source=%s resolved=%s",
+                external_order_id,
+                status_original,
+                payment_time_source,
+                _summarize_timestamps(
+                    data_compra_marketplace,
+                    data_pagamento_marketplace,
+                    data_envio_marketplace,
+                    status_original,
+                ),
+            )
         elif source == "mercadolivre":
             order = (details or {}).get("order") or {}
             shipment = (details or {}).get("shipment") or {}
@@ -480,12 +547,37 @@ class MarketplaceWebhookIngestService:
             option_name = str(option.get("name") or "").lower()
             if logistic_type == "self_service" and option_name in ("prioritario", "flex"):
                 modalidade = "FLEX"
+            logger.info(
+                "[marketplace-webhook] meli resolve timestamps order_id=%s status=%s source=%s resolved=%s",
+                external_order_id,
+                status_original,
+                payment_time_source,
+                _summarize_timestamps(
+                    data_compra_marketplace,
+                    data_pagamento_marketplace,
+                    data_envio_marketplace,
+                    status_original,
+                ),
+            )
 
         coleta_contexto = logistica_coleta_service.calcular_data_coleta(
             marketplace_integration_id=marketplace_integration_id,
             modalidade=modalidade,
             pagamento_dt=_parse_datetime(data_pagamento_marketplace),
             compra_dt=_parse_datetime(data_compra_marketplace),
+        )
+        logger.info(
+            "[marketplace-webhook] coleta calculada source=%s external_order_id=%s modalidade=%s contexto=%s",
+            source,
+            external_order_id,
+            modalidade,
+            {
+                "data_coleta": coleta_contexto.get("data_coleta"),
+                "horario_corte": coleta_contexto.get("horario_corte"),
+                "horario_coleta": coleta_contexto.get("horario_coleta"),
+                "regra_id": (coleta_contexto.get("regra") or {}).get("id"),
+                "regra_modalidade": (coleta_contexto.get("regra") or {}).get("modalidade"),
+            },
         )
         row = {
             "numero_pedido": f"{source.upper()}-{external_order_id}",
