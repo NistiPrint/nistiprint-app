@@ -7,6 +7,49 @@ from nistiprint_shared.services import pedidos_bling_import_service as import_se
 
 
 class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
+    def test_fetch_shopee_detail_hydrates_integration_before_driver(self):
+        marketplace_inst = {
+            'id': 77,
+            'module_id': 'shopee',
+            'config': {'shop_id': '456'},
+            'credentials': {'access_token': 'token'},
+        }
+        hydrated = {
+            'config': {'shop_id': '456', 'partner_id': '123', 'partner_key': 'secret'},
+            'credentials': {'access_token': 'token'},
+            'access_token': 'token',
+        }
+
+        with patch.object(bos.credential_resolver_service, 'hydrate_integration', return_value=hydrated) as hydrate, \
+             patch.object(bos.shopee_driver, 'get_order_detail', return_value={'external_id': 'ABC'}) as get_detail:
+            result = bos._fetch_shopee_detail(marketplace_inst, 'ABC')
+
+        hydrate.assert_called_once_with(dict(marketplace_inst))
+        get_detail.assert_called_once_with(hydrated, ['ABC'])
+        self.assertEqual(result, {'external_id': 'ABC'})
+
+    def test_fetch_meli_detail_hydrates_integration_before_driver(self):
+        marketplace_inst = {
+            'id': 88,
+            'module_id': 'mercadolivre',
+            'config': {},
+            'credentials': {'access_token': 'token'},
+        }
+        hydrated = {
+            'config': {'client_id': 'ml-client'},
+            'credentials': {'access_token': 'token'},
+            'access_token': 'token',
+        }
+
+        with patch.object(bos.credential_resolver_service, 'hydrate_integration', return_value=hydrated) as hydrate, \
+             patch.object(bos.meli_driver, 'get_order_detail', return_value={'id': 'ML-1', 'shipping': {}}) as get_detail:
+            result = bos._fetch_meli_detail(marketplace_inst, 'ML-1')
+
+        hydrate.assert_called_once_with(dict(marketplace_inst))
+        get_detail.assert_called_once_with(hydrated, ['ML-1'])
+        self.assertEqual(result['external_id'], 'ML-1')
+        self.assertEqual(result['order']['id'], 'ML-1')
+
     def test_resolve_bling_instance_prefers_cached_company_id_alias(self):
         payload = {'id': 999}
 

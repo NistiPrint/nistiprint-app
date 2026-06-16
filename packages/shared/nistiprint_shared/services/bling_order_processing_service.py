@@ -15,6 +15,9 @@ from nistiprint_shared.services.correlation_service import (
 from nistiprint_shared.services.integration_resolution_service import (
     integration_resolution_service,
 )
+from nistiprint_shared.services.credential_resolver_service import (
+    credential_resolver_service,
+)
 from nistiprint_shared.services.canonical_order_status_service import (
     canonical_order_status_service,
 )
@@ -1209,24 +1212,18 @@ def _item_name_indicates_personalized(item: dict | None) -> bool:
     return "personaliz" in normalized.lower()
 
 def _fetch_shopee_detail(marketplace_inst, order_sn):
-    cfg, cred = marketplace_inst['config'], marketplace_inst.get('credentials') or {}
-    integration = {
-        'config':       cfg,
-        'credentials':  cred,
-        'access_token': marketplace_inst.get('access_token') or cred.get('access_token'),
-    }
+    integration = credential_resolver_service.hydrate_integration(
+        dict(marketplace_inst or {})
+    )
     logger.info("[fetch_shopee_detail] Chamando driver com order_sn=%s, integration config keys=%s", order_sn, integration.keys())
     result = shopee_driver.get_order_detail(integration, [order_sn])
     logger.info("[fetch_shopee_detail] Resultado do driver: %s", result)
     return result
 
 def _fetch_meli_detail(marketplace_inst, order_sn):
-    cfg, cred = marketplace_inst['config'], marketplace_inst.get('credentials') or {}
-    integration = {
-        'config':       cfg,
-        'credentials':  cred,
-        'access_token': marketplace_inst.get('access_token') or cred.get('access_token'),
-    }
+    integration = credential_resolver_service.hydrate_integration(
+        dict(marketplace_inst or {})
+    )
     logger.info("[fetch_meli_detail] Chamando driver com order_sn=%s", order_sn)
     
     # 1. Obter detalhes do pedido
