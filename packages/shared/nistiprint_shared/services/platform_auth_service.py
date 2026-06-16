@@ -15,6 +15,9 @@ from urllib.parse import quote_plus
 import requests
 
 from nistiprint_shared.services.credential_resolver_service import CredentialContext
+from nistiprint_shared.services.integration_provider_registry import (
+    normalize_provider_module_id,
+)
 
 
 class PlatformAuthService:
@@ -52,13 +55,14 @@ class PlatformAuthService:
         """
         Generates the authorization URL for a specific platform.
         """
-        if module_id == "shopee" or "shopee" in module_id:
+        module_key = normalize_provider_module_id(module_id)
+        if module_key == "shopee":
             return self._generate_shopee_auth_url(context, redirect_uri, state)
-        if module_id == "mercadolivre":
+        if module_key == "mercadolivre":
             return self._generate_mercadolivre_auth_url(
                 context, redirect_uri, state, code_challenge=code_challenge
             )
-        if module_id == "bling":
+        if module_key == "bling":
             return self._generate_bling_auth_url(
                 context, redirect_uri, state, code_challenge=code_challenge
             )
@@ -154,16 +158,17 @@ class PlatformAuthService:
         """
         Exchanges authorization code for access tokens.
         """
-        if module_id == "shopee" or "shopee" in module_id:
+        module_key = normalize_provider_module_id(module_id)
+        if module_key == "shopee":
             return self._exchange_shopee_token(context, code, shop_id)
-        if module_id == "mercadolivre":
+        if module_key == "mercadolivre":
             return self._exchange_mercadolivre_token(
                 context,
                 code,
                 redirect_uri=redirect_uri,
                 code_verifier=code_verifier,
             )
-        if module_id == "bling":
+        if module_key == "bling":
             return self._exchange_bling_token(
                 context,
                 code,
@@ -320,8 +325,8 @@ class PlatformAuthService:
             return str(explicit_identifier).strip()
 
         raw_response = tokens.get("raw_response") or {}
-        module = str(module_id or "").lower()
-        if module == "shopee" or "shopee" in module:
+        module = normalize_provider_module_id(module_id)
+        if module == "shopee":
             value = (
                 tokens.get("shop_id")
                 or raw_response.get("shop_id")
@@ -385,15 +390,16 @@ class PlatformAuthService:
         if not refresh_token:
             raise ValueError("No refresh token available")
 
-        if module_id == "shopee" or "shopee" in module_id:
+        module_key = normalize_provider_module_id(module_id)
+        if module_key == "shopee":
             return self._refresh_shopee_token(
                 config, credentials, app_secrets, refresh_token
             )
-        if module_id == "mercadolivre":
+        if module_key == "mercadolivre":
             return self._refresh_mercadolivre_token(
                 config, app_secrets, refresh_token
             )
-        if module_id == "bling":
+        if module_key == "bling":
             return self._refresh_bling_token(config, app_secrets, refresh_token)
 
         raise ValueError(f"Refresh not implemented for {module_id}")
@@ -558,11 +564,12 @@ class PlatformAuthService:
         if not access_token:
             raise ValueError("No access token found for integration")
 
-        if module_id == "shopee" or "shopee" in module_id:
+        module_key = normalize_provider_module_id(module_id)
+        if module_key == "shopee":
             return self._test_shopee(integration, test_path, access_token)
-        if module_id == "mercadolivre":
+        if module_key == "mercadolivre":
             return self._test_mercadolivre(test_path, access_token)
-        if module_id == "bling":
+        if module_key == "bling":
             return self._test_bling(test_path, access_token)
 
         return {"error": "Platform testing not implemented yet"}

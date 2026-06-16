@@ -31,7 +31,7 @@ class DecryptedSecret:
 
 class IntegrationSecretService:
     def __init__(self) -> None:
-        self.schema_name = "private"
+        self.schema_name = os.environ.get("INTEGRATION_SECRETS_SCHEMA", "public")
         self.table_name = "integration_secret_values"
         self.key_env_prefix = "INTEGRATION_SECRETS_MASTER_KEY_"
         self.default_key_version = "V1"

@@ -17,6 +17,10 @@ from nistiprint_shared.services.integration_app_profile_service import (
 from nistiprint_shared.services.integration_credentials_service import (
     integration_credentials_service,
 )
+from nistiprint_shared.services.integration_provider_registry import (
+    get_provider_spec,
+    list_provider_specs,
+)
 from nistiprint_shared.services.integration_module_service import (
     integration_module_service,
 )
@@ -642,6 +646,60 @@ def get_credential_status(instance_id):
     )
 
 
+@marketplace_api_bp.route("/installed/<instance_id>/app-profile", methods=["GET", "PUT"])
+@admin_required
+def manage_installation_app_profile(instance_id):
+    inst = installed_integration_service.get_installed_by_id(instance_id)
+    if not inst:
+        return jsonify({"error": "Not found"}), 404
+
+    if request.method == "GET":
+        profiles = integration_app_profile_service.list_profiles(module_id=inst.module_id)
+        return jsonify(
+            {
+                "installation_id": instance_id,
+                "module_id": inst.module_id,
+                "app_profile_id": inst.app_profile_id,
+                "profiles": profiles,
+            }
+        )
+
+    data = request.get_json(silent=True) or {}
+    app_profile_id = data.get("app_profile_id")
+
+    if app_profile_id in (None, "", "none"):
+        installed_integration_service.update_installed(
+            instance_id, {"app_profile_id": None}
+        )
+    else:
+        profile = integration_app_profile_service.get_profile(app_profile_id)
+        if not profile:
+            return jsonify({"error": "App profile not found"}), 404
+        if str(profile.get("module_id") or "") != str(inst.module_id or ""):
+            return (
+                jsonify(
+                    {
+                        "error": "App profile incompatível com o módulo desta instalação"
+                    }
+                ),
+                400,
+            )
+        if not profile.get("is_active", True):
+            return jsonify({"error": "App profile inativo"}), 400
+
+        installed_integration_service.update_installed(
+            instance_id, {"app_profile_id": profile["id"]}
+        )
+
+    updated = installed_integration_service.get_installed_by_id(instance_id)
+    return jsonify(
+        {
+            "success": True,
+            "installation": _public_installation(updated),
+        }
+    )
+
+
 @marketplace_api_bp.route("/installed/<instance_id>/config", methods=["PUT"])
 @login_required
 def update_integration_config(instance_id):
@@ -668,6 +726,9 @@ def app_profiles():
         )
 
     data = request.get_json(silent=True) or {}
+    provider_spec = get_provider_spec(data.get("module_id"))
+    if not provider_spec:
+        return jsonify({"error": "Modulo sem spec de credenciais"}), 400
     payload = {
         "module_id": data.get("module_id"),
         "name": data.get("name"),
@@ -681,10 +742,8 @@ def app_profiles():
     secrets_payload = {
         key: value
         for key, value in {
-            "client_id": data.get("client_id"),
-            "client_secret": data.get("client_secret"),
-            "partner_id": data.get("partner_id"),
-            "partner_key": data.get("partner_key"),
+            field.secret_kind: data.get(field.secret_kind)
+            for field in provider_spec.app_profile_secret_fields
         }.items()
         if value not in (None, "")
     }
@@ -692,6 +751,16 @@ def app_profiles():
         payload, secrets=secrets_payload
     )
     return jsonify({"profile": profile}), 201
+
+
+@marketplace_api_bp.route("/app-profile-specs", methods=["GET"])
+@admin_required
+def app_profile_specs():
+    module_id = request.args.get("module_id")
+    if module_id:
+        spec = get_provider_spec(module_id)
+        return jsonify({"spec": spec.to_dict() if spec else None})
+    return jsonify({"specs": list_provider_specs()})
 
 
 @marketplace_api_bp.route("/app-profiles/<profile_id>", methods=["GET", "PUT"])
@@ -704,6 +773,13 @@ def app_profile_detail(profile_id):
         return jsonify({"profile": profile})
 
     data = request.get_json(silent=True) or {}
+    module_id = data.get("module_id")
+    current_profile = integration_app_profile_service.get_profile(profile_id)
+    provider_spec = get_provider_spec(module_id or (current_profile or {}).get("module_id"))
+    if not current_profile:
+        return jsonify({"error": "Not found"}), 404
+    if not provider_spec:
+        return jsonify({"error": "Modulo sem spec de credenciais"}), 400
     payload = {
         key: value
         for key, value in {
@@ -720,10 +796,8 @@ def app_profile_detail(profile_id):
     secrets_payload = {
         key: value
         for key, value in {
-            "client_id": data.get("client_id"),
-            "client_secret": data.get("client_secret"),
-            "partner_id": data.get("partner_id"),
-            "partner_key": data.get("partner_key"),
+            field.secret_kind: data.get(field.secret_kind)
+            for field in provider_spec.app_profile_secret_fields
         }.items()
         if value not in (None, "")
     }
@@ -739,9 +813,21 @@ def app_profile_detail(profile_id):
 @admin_required
 def backfill_secrets():
     insts = installed_integration_service.get_all_installed()
-    migrated = 0
+    migrated_secrets = 0
+    linked_profiles = 0
     for inst in insts:
         installation = {**inst.to_dict(), "id": inst.id}
+
+        if not installation.get("app_profile_id"):
+            default_profile = integration_app_profile_service.get_default_profile(
+                installation.get("module_id")
+            )
+            if default_profile:
+                installed_integration_service.update_installed(
+                    inst.id, {"app_profile_id": default_profile["id"]}
+                )
+                linked_profiles += 1
+
         for kind in ("access_token", "refresh_token"):
             value = installation.get(kind) or (installation.get("credentials") or {}).get(
                 kind
@@ -750,8 +836,14 @@ def backfill_secrets():
                 integration_secret_service.put_secret(
                     "installed_integration", inst.id, kind, value
                 )
-                migrated += 1
-    return jsonify({"status": "success", "migrated": migrated})
+                migrated_secrets += 1
+    return jsonify(
+        {
+            "status": "success",
+            "migrated": migrated_secrets,
+            "linked_profiles": linked_profiles,
+        }
+    )
 
 
 @marketplace_api_bp.route("/orders/list", methods=["POST"])

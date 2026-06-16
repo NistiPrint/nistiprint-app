@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import MarketplaceService from '@/services/MarketplaceService';
 import { ChevronDown, Database, MoreHorizontal, Plus, RefreshCw, Trash2, Zap } from 'lucide-react';
 
 import LinkForm from './LinkForm';
@@ -17,6 +19,7 @@ export interface IntegrationInstance {
   module_id: string;
   instance_name: string;
   is_active: boolean;
+  app_profile_id?: string | number | null;
   config?: Record<string, any>;
   credential_status?: {
     token_status?: string;
@@ -50,6 +53,14 @@ interface IntegrationCardProps {
   onRenewToken?: (id: number, name: string) => void;
   onTest?: (id: number) => void;
   testingId?: number | null;
+}
+
+interface AppProfile {
+  id: string | number;
+  name: string;
+  environment?: string;
+  is_default?: boolean;
+  is_active?: boolean;
 }
 
 const TOKEN_LABELS: Record<string, string> = {
@@ -105,6 +116,12 @@ export default function IntegrationCard({
   const [customFieldId, setCustomFieldId] = useState('');
   const [companyId, setCompanyId] = useState('');
   const [savingParams, setSavingParams] = useState(false);
+  const [appProfiles, setAppProfiles] = useState<AppProfile[]>([]);
+  const [loadingProfiles, setLoadingProfiles] = useState(false);
+  const [selectedAppProfileId, setSelectedAppProfileId] = useState(
+    integration.app_profile_id ? String(integration.app_profile_id) : 'none'
+  );
+  const [savingAppProfile, setSavingAppProfile] = useState(false);
 
   const nfeLinks = useMemo(
     () => links.filter((link) => (link.nf_emission_mode || 'bling') === 'bling'),
@@ -175,6 +192,29 @@ export default function IntegrationCard({
     }
   }, [isErp, integration.config]);
 
+  useEffect(() => {
+    setSelectedAppProfileId(integration.app_profile_id ? String(integration.app_profile_id) : 'none');
+  }, [integration.app_profile_id]);
+
+  const loadAppProfiles = useCallback(async () => {
+    try {
+      setLoadingProfiles(true);
+      const data = await MarketplaceService.getInstallationAppProfiles(integration.id);
+      setAppProfiles(data.profiles || []);
+      setSelectedAppProfileId(data.app_profile_id ? String(data.app_profile_id) : 'none');
+    } catch (error) {
+      console.error('Erro ao carregar app profiles:', error);
+    } finally {
+      setLoadingProfiles(false);
+    }
+  }, [integration.id]);
+
+  useEffect(() => {
+    if (open) {
+      loadAppProfiles();
+    }
+  }, [open, loadAppProfiles]);
+
   async function handleSaveParams() {
     try {
       setSavingParams(true);
@@ -223,6 +263,23 @@ export default function IntegrationCard({
       toast.error('Erro ao salvar emissor de NF');
     } finally {
       setSavingNfe(false);
+    }
+  }
+
+  async function handleSaveAppProfile() {
+    try {
+      setSavingAppProfile(true);
+      await MarketplaceService.updateInstallationAppProfile(
+        integration.id,
+        selectedAppProfileId === 'none' ? null : selectedAppProfileId
+      );
+      toast.success('App OAuth atualizado');
+      await loadAppProfiles();
+      onRefresh();
+    } catch (error: any) {
+      toast.error(error?.error || error?.message || 'Erro ao atualizar app OAuth');
+    } finally {
+      setSavingAppProfile(false);
     }
   }
 
@@ -406,6 +463,45 @@ export default function IntegrationCard({
                 </CollapsibleContent>
               </Collapsible>
             )}
+
+            <div className="rounded-lg border p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <span className="text-sm font-medium">App OAuth vinculado</span>
+                  <p className="text-xs text-muted-foreground">
+                    Escolhe qual aplicacao do provedor esta associada a esta instalacao.
+                  </p>
+                </div>
+                <Badge variant="outline" className="text-[10px] uppercase">
+                  {integration.module_id}
+                </Badge>
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto]">
+                <Select value={selectedAppProfileId} onValueChange={setSelectedAppProfileId}>
+                  <SelectTrigger disabled={loadingProfiles || savingAppProfile}>
+                    <SelectValue placeholder={loadingProfiles ? 'Carregando perfis...' : 'Selecione um app OAuth'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Sem app profile</SelectItem>
+                    {appProfiles.map((profile) => (
+                      <SelectItem key={profile.id} value={String(profile.id)}>
+                        {profile.name}
+                        {profile.environment ? ` (${profile.environment})` : ''}
+                        {profile.is_default ? ' - padrao' : ''}
+                        {!profile.is_active ? ' - inativo' : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="outline"
+                  onClick={handleSaveAppProfile}
+                  disabled={loadingProfiles || savingAppProfile}
+                >
+                  {savingAppProfile ? 'Salvando...' : 'Salvar app'}
+                </Button>
+              </div>
+            </div>
 
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium">{isErp ? 'Vinculos' : 'ERPs vinculados'}</span>

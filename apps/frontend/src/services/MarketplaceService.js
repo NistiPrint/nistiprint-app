@@ -220,12 +220,43 @@ export const updateInstallation = async (instanceId, data) => {
   }
 };
 
+export const getInstallationAppProfiles = async (instanceId) => {
+  try {
+    const response = await api.get(`${BASE_URL}/installed/${instanceId}/app-profile`);
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+export const updateInstallationAppProfile = async (instanceId, appProfileId) => {
+  try {
+    const response = await api.put(`${BASE_URL}/installed/${instanceId}/app-profile`, {
+      app_profile_id: appProfileId,
+    });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
 export const getAppProfiles = async (moduleId = null) => {
   try {
     const response = await api.get(`${BASE_URL}/app-profiles`, {
       params: moduleId ? { module_id: moduleId } : {}
     });
     return response.data.profiles || [];
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+export const getAppProfileSpecs = async (moduleId = null) => {
+  try {
+    const response = await api.get(`${BASE_URL}/app-profile-specs`, {
+      params: moduleId ? { module_id: moduleId } : {}
+    });
+    return moduleId ? response.data.spec : (response.data.specs || []);
   } catch (error) {
     throw error.response?.data || error;
   }
@@ -276,7 +307,10 @@ const MarketplaceService = {
   listIntegracaoCanaisConfigs,
   importarPedidosEmAndamento,
   updateInstallation,
+  getInstallationAppProfiles,
+  updateInstallationAppProfile,
   getAppProfiles,
+  getAppProfileSpecs,
   createAppProfile,
   updateAppProfile,
   backfillIntegrationSecrets,
