@@ -10,13 +10,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import MarketplaceService from '@/services/MarketplaceService';
 
-const moduleOptions = [
-  { value: 'bling', label: 'Bling' },
-  { value: 'mercadolivre', label: 'Mercado Livre' },
-  { value: 'shopee', label: 'Shopee' },
-  { value: 'amazon', label: 'Amazon' },
-];
-
 const initialForm = {
   module_id: 'mercadolivre',
   name: '',
@@ -24,9 +17,6 @@ const initialForm = {
   redirect_uri: '',
   auth_base_url: '',
   token_url: '',
-  client_id: '',
-  client_secret: '',
-  partner_key: '',
   is_default: true,
   is_active: true,
 };
@@ -37,10 +27,16 @@ export default function IntegrationAppProfilesPage() {
   const [saving, setSaving] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   const [form, setForm] = useState(initialForm);
+  const [providerSpecs, setProviderSpecs] = useState([]);
+  const [secretValues, setSecretValues] = useState({});
 
   useEffect(() => {
-    loadProfiles();
+    loadInitialData();
   }, []);
+
+  useEffect(() => {
+    setSecretValues({});
+  }, [form.module_id]);
 
   const groupedProfiles = useMemo(() => {
     return profiles.reduce((acc, profile) => {
@@ -50,6 +46,35 @@ export default function IntegrationAppProfilesPage() {
       return acc;
     }, {});
   }, [profiles]);
+
+  const moduleOptions = useMemo(
+    () => providerSpecs.map((spec) => ({ value: spec.module_id, label: spec.display_name })),
+    [providerSpecs]
+  );
+
+  const activeProviderSpec = useMemo(
+    () => providerSpecs.find((spec) => spec.module_id === form.module_id) || null,
+    [providerSpecs, form.module_id]
+  );
+
+  async function loadInitialData() {
+    try {
+      setLoading(true);
+      const [profilesData, specsData] = await Promise.all([
+        MarketplaceService.getAppProfiles(),
+        MarketplaceService.getAppProfileSpecs(),
+      ]);
+      setProfiles(profilesData);
+      setProviderSpecs(specsData);
+      if (!initialForm.module_id && specsData[0]?.module_id) {
+        setForm((prev) => ({ ...prev, module_id: specsData[0].module_id }));
+      }
+    } catch (error) {
+      toast.error(error.error || error.message || 'Erro ao carregar configuracoes de OAuth');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function loadProfiles() {
     try {
@@ -70,11 +95,31 @@ export default function IntegrationAppProfilesPage() {
     }));
   }
 
+  function updateSecretValue(secretKind, value) {
+    setSecretValues((prev) => ({
+      ...prev,
+      [secretKind]: value,
+    }));
+  }
+
   async function handleSubmit(event) {
     event.preventDefault();
 
     if (!form.module_id || !form.name.trim() || !form.redirect_uri.trim()) {
       toast.error('Preencha modulo, nome e redirect URI.');
+      return;
+    }
+
+    if (!activeProviderSpec) {
+      toast.error('Modulo sem spec de credenciais.');
+      return;
+    }
+
+    const missingSecret = activeProviderSpec.app_profile_secret_fields.find(
+      (field) => field.required && !String(secretValues[field.secret_kind] || '').trim()
+    );
+    if (missingSecret) {
+      toast.error(`Preencha o campo ${missingSecret.label}.`);
       return;
     }
 
@@ -86,12 +131,13 @@ export default function IntegrationAppProfilesPage() {
         redirect_uri: form.redirect_uri.trim(),
         auth_base_url: form.auth_base_url.trim(),
         token_url: form.token_url.trim(),
-        client_id: form.client_id.trim(),
-        client_secret: form.client_secret.trim(),
-        partner_key: form.partner_key.trim(),
+        ...Object.fromEntries(
+          Object.entries(secretValues).map(([key, value]) => [key, String(value || '').trim()])
+        ),
       });
       toast.success('App OAuth salvo com sucesso.');
       setForm(initialForm);
+      setSecretValues({});
       await loadProfiles();
     } catch (error) {
       toast.error(error.error || error.message || 'Erro ao salvar app profile');
@@ -165,6 +211,13 @@ export default function IntegrationAppProfilesPage() {
                         <div>Redirect URI: {profile.redirect_uri || '-'}</div>
                         <div>Auth URL: {profile.auth_base_url || '-'}</div>
                         <div>Token URL: {profile.token_url || '-'}</div>
+                        {profile.module_id && (
+                          <div>
+                            Campos secretos: {(
+                              providerSpecs.find((spec) => spec.module_id === profile.module_id)?.app_profile_secret_fields || []
+                            ).map((field) => field.label).join(', ') || '-'}
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -234,9 +287,11 @@ export default function IntegrationAppProfilesPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
-                <Label>Client ID</Label>
-                <Input value={form.client_id} onChange={(event) => updateField('client_id', event.target.value)} />
+              <div className="rounded-lg border p-3">
+                <div className="text-sm font-medium">{activeProviderSpec?.display_name || 'Provedor'}</div>
+                <p className="text-xs text-muted-foreground">
+                  PKCE: {activeProviderSpec?.supports_pkce ? 'sim' : 'nao'} · Identificador: {activeProviderSpec?.account_identifier_kind || '-'}
+                </p>
               </div>
             </div>
 
@@ -255,23 +310,23 @@ export default function IntegrationAppProfilesPage() {
               <Input value={form.token_url} onChange={(event) => updateField('token_url', event.target.value)} />
             </div>
 
-            <div className="space-y-2">
-              <Label>Client secret</Label>
-              <Input
-                type="password"
-                value={form.client_secret}
-                onChange={(event) => updateField('client_secret', event.target.value)}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label>Partner key / partner id</Label>
-              <Input
-                type="password"
-                value={form.partner_key}
-                onChange={(event) => updateField('partner_key', event.target.value)}
-              />
-            </div>
+            {activeProviderSpec?.app_profile_secret_fields?.map((field) => (
+              <div key={field.secret_kind} className="space-y-2">
+                <Label>
+                  {field.label}
+                  {field.required ? ' *' : ''}
+                </Label>
+                <Input
+                  type={field.input_type || 'text'}
+                  placeholder={field.placeholder || ''}
+                  value={secretValues[field.secret_kind] || ''}
+                  onChange={(event) => updateSecretValue(field.secret_kind, event.target.value)}
+                />
+                {field.help_text ? (
+                  <p className="text-xs text-muted-foreground">{field.help_text}</p>
+                ) : null}
+              </div>
+            ))}
 
             <div className="grid gap-4 md:grid-cols-2">
               <div className="flex items-center justify-between rounded-lg border p-3">

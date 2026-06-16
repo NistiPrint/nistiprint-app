@@ -9,6 +9,11 @@ from nistiprint_shared.services.integration_secret_service import (
 
 
 class IntegrationSecretServiceTest(unittest.TestCase):
+    def test_defaults_to_public_schema_for_postgrest_compatibility(self):
+        service = IntegrationSecretService()
+
+        self.assertEqual(service.schema_name, "public")
+
     @patch.dict(
         "os.environ",
         {

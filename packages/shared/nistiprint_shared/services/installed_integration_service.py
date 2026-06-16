@@ -345,19 +345,24 @@ class InstalledIntegrationService:
 
         normalized_inst = self._normalized_payload({**inst.to_dict(), 'id': inst.id})
         integration_credentials_service.ensure_refresh_allowed(normalized_inst)
+        credential_context = credential_resolver_service.resolve_for_installation(
+            normalized_inst
+        )
         now = datetime.utcnow()
-        tokens = platform_auth_service.refresh_access_token(inst.module_id, normalized_inst)
+        tokens = platform_auth_service.refresh_access_token(
+            inst.module_id, credential_context
+        )
         expires_in = tokens.get('expires_in')
         credential_resolver_service.persist_installation_tokens(instance_id, tokens)
 
-        merged_credentials = dict(normalized_inst.get('credentials') or {})
+        merged_credentials = dict(credential_context.credentials or {})
         merged_credentials.pop('access_token', None)
         merged_credentials.pop('refresh_token', None)
         if expires_in is not None:
             merged_credentials['expires_in'] = expires_in
 
         update_data = {
-            'config': normalized_inst.get('config') or {},
+            'config': credential_context.config or {},
             'credentials': merged_credentials,
             'access_token': None,
             'refresh_token': None,

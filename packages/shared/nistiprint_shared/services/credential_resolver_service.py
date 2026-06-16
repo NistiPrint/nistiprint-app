@@ -6,6 +6,9 @@ from typing import Any
 from nistiprint_shared.services.integration_app_profile_service import (
     integration_app_profile_service,
 )
+from nistiprint_shared.services.integration_provider_registry import (
+    get_provider_spec,
+)
 from nistiprint_shared.services.integration_secret_service import (
     integration_secret_service,
 )
@@ -51,6 +54,7 @@ class CredentialResolverService:
 
     def resolve_for_installation(self, installation: dict) -> CredentialContext:
         module_id = str(installation.get("module_id") or "")
+        provider_spec = get_provider_spec(module_id)
         app_profile_id = installation.get("app_profile_id")
         app_profile = None
         if app_profile_id:
@@ -73,22 +77,21 @@ class CredentialResolverService:
         )
 
         # Compatibility fallback while the backfill is still underway.
-        for target, keys in (
-            ("access_token", ("access_token",)),
-            ("refresh_token", ("refresh_token",)),
-            ("partner_id", ("partner_id", "app_id")),
-            ("partner_key", ("partner_key", "app_secret", "secret")),
-            ("client_id", ("client_id",)),
-            ("client_secret", ("client_secret",)),
-        ):
-            if target not in installation_secrets and target in {"access_token", "refresh_token"}:
-                legacy = self._find_legacy_value(installation, *keys)
+        for target in ("access_token", "refresh_token"):
+            if target not in installation_secrets:
+                legacy = self._find_legacy_value(installation, target)
                 if legacy not in (None, ""):
                     installation_secrets[target] = legacy
-            if target not in app_secrets and target not in {"access_token", "refresh_token"}:
-                legacy = self._find_legacy_value(installation, *keys)
+
+        if provider_spec:
+            for field in provider_spec.app_profile_secret_fields:
+                if field.secret_kind in app_secrets:
+                    continue
+                legacy = self._find_legacy_value(
+                    installation, field.secret_kind, *field.aliases
+                )
                 if legacy not in (None, ""):
-                    app_secrets[target] = legacy
+                    app_secrets[field.secret_kind] = legacy
 
         return CredentialContext(
             module_id=module_id,
