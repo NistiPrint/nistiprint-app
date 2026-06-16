@@ -4,6 +4,47 @@ from typing import List, Dict, Optional
 
 logger = logging.getLogger("MercadoLivreDriver")
 
+
+def _resolve_access_token(integration: Dict) -> Optional[str]:
+    credentials = integration.get("credentials", {}) or {}
+    legacy_credentials = integration.get("_legacy_credentials", {}) or {}
+    return (
+        integration.get("access_token")
+        or credentials.get("access_token")
+        or legacy_credentials.get("access_token")
+    )
+
+
+def _auth_headers(integration: Dict) -> Dict:
+    access_token = _resolve_access_token(integration)
+    if not access_token:
+        raise ValueError("Access token para Mercado Livre nao encontrado.")
+
+    return {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+
+def test_connection(integration: Dict, path: Optional[str] = None) -> Dict:
+    """
+    Tests Mercado Livre connectivity using the same token source as the driver.
+    """
+    host = "https://api.mercadolibre.com"
+    response = requests.get(f"{host}{path or '/users/me'}", headers=_auth_headers(integration))
+    if response.status_code != 200:
+        return {
+            "success": False,
+            "message": f"Erro na API do Mercado Livre: {response.status_code}",
+            "details": response.text,
+        }
+    return {
+        "success": True,
+        "message": "Conexao estabelecida com sucesso.",
+        "details": response.json(),
+    }
+
+
 def get_order_detail(integration: Dict, order_ids: List[str]) -> Dict:
     """
     Fetches order details from Mercado Livre API for a given integration instance.
@@ -11,17 +52,7 @@ def get_order_detail(integration: Dict, order_ids: List[str]) -> Dict:
     # Base URL for Mercado Livre API
     host = "https://api.mercadolibre.com"
 
-    # Extract credentials
-    credentials = integration.get("credentials", {})
-    access_token = credentials.get("access_token")
-
-    if not access_token:
-        raise ValueError("Access token para Mercado Livre não encontrado.")
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
+    headers = _auth_headers(integration)
 
     # Since Mercado Livre API typically accepts one order ID at a time,
     # we'll fetch details for the first order in the list
@@ -51,16 +82,7 @@ def get_payment(integration: Dict, payment_id: str) -> Dict:
     Fetches payment details from Mercado Livre/Mercado Pago API.
     """
     host = "https://api.mercadolibre.com"
-    credentials = integration.get("credentials", {})
-    access_token = credentials.get("access_token")
-
-    if not access_token:
-        raise ValueError("Access token para Mercado Livre nÃ£o encontrado.")
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
+    headers = _auth_headers(integration)
 
     url = f"{host}/payments/{payment_id}"
     logger.info("[ML Driver] Fetching payment: %s", url)
@@ -78,16 +100,7 @@ def get_shipment(integration: Dict, shipment_id: str) -> Dict:
     Fetches shipment details from Mercado Livre API.
     """
     host = "https://api.mercadolibre.com"
-    credentials = integration.get("credentials", {})
-    access_token = credentials.get("access_token")
-
-    if not access_token:
-        raise ValueError("Access token para Mercado Livre não encontrado.")
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
+    headers = _auth_headers(integration)
 
     url = f"{host}/shipments/{shipment_id}"
     logger.info(f"[ML Driver] Fetching shipment: {url}")
@@ -111,16 +124,7 @@ def get_shipment_sla(integration: Dict, shipment_id: str) -> Dict:
     Used to get the expected_date (shipping limit).
     """
     host = "https://api.mercadolibre.com"
-    credentials = integration.get("credentials", {})
-    access_token = credentials.get("access_token")
-
-    if not access_token:
-        raise ValueError("Access token para Mercado Livre não encontrado.")
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
+    headers = _auth_headers(integration)
 
     url = f"{host}/shipments/{shipment_id}/sla"
     logger.info(f"[ML Driver] Fetching shipment SLA: {url}")
@@ -145,17 +149,7 @@ def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[D
     # Base URL for Mercado Livre API
     host = "https://api.mercadolibre.com"
 
-    # Extract credentials
-    credentials = integration.get("credentials", {})
-    access_token = credentials.get("access_token")
-
-    if not access_token:
-        raise ValueError("Access token para Mercado Livre não encontrado.")
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
+    headers = _auth_headers(integration)
 
     # Prepare URL and parameters
     url = f"{host}/orders/search"

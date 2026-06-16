@@ -1,4 +1,5 @@
 import logging
+import os
 import traceback
 from datetime import datetime
 from time import perf_counter
@@ -15,6 +16,11 @@ from nistiprint_shared.services.correlation_service import generate_correlation_
 from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
+from nistiprint_shared.services.marketplace_account_identity import (
+    account_identity_matches,
+    has_account_identity,
+    normalize_account_identifier,
+)
 from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso
 
 logger = logging.getLogger(__name__)
@@ -155,19 +161,19 @@ class MarketplaceWebhookIngestService:
                 "message": "Webhook Shopee sem order_sn",
             }
 
-        marketplace_inst = self._find_marketplace_integration("shopee", shop_id=shop_id)
-        if not marketplace_inst:
-            return {
-                "status": "error",
-                "error_type": "marketplace_integration_not_found",
-                "message": f"Integracao Shopee nao encontrada para shop_id={shop_id}",
-                "external_order_id": str(order_sn),
-            }
+        marketplace_inst, resolution_error = self._resolve_marketplace_integration(
+            "shopee",
+            account_identifier=shop_id,
+            external_order_id=str(order_sn),
+        )
+        if resolution_error:
+            return resolution_error
 
-        link = self._find_channel_connection(marketplace_inst.get("id"))
+        link = self._find_direct_ingest_link(marketplace_inst.get("id"))
         inactive = self._inactive_source_result("shopee", link, str(order_sn), marketplace_inst)
         if inactive:
             return inactive
+        nfe_link = self._find_default_nfe_link(marketplace_inst)
 
         detail = self._fetch_shopee_detail(marketplace_inst, str(order_sn))
         if detail.get("error"):
@@ -201,7 +207,8 @@ class MarketplaceWebhookIngestService:
             source="shopee",
             external_order_id=str(order_sn),
             marketplace_integration_id=marketplace_inst.get("id"),
-            bling_integration_id=(link or {}).get("bling_integration_id"),
+            bling_integration_id=(nfe_link or {}).get("erp_integration_id"),
+            bling_loja_id=(nfe_link or {}).get("erp_store_id"),
             channel_id=(link or {}).get("channel_id"),
             situacao_pedido_id=status.internal_situacao_pedido_id,
             status_original=detail.get("order_status") or body.get("order_status"),
@@ -243,16 +250,20 @@ class MarketplaceWebhookIngestService:
         )
         shipment_id = _first_present(body.get("shipment_id"), _extract_resource_id(resource, "/shipments/"))
         payment_id = _first_present(body.get("payment_id"), _extract_resource_id(resource, "/payments/"))
-        seller_id = _first_present(body.get("user_id"), body.get("seller_id"), body.get("application_id"))
+        seller_id = _first_present(
+            body.get("user_id"),
+            body.get("seller_id"),
+            payload.get("user_id"),
+            payload.get("seller_id"),
+        )
 
-        marketplace_inst = self._find_marketplace_integration("mercadolivre", shop_id=seller_id)
-        if not marketplace_inst:
-            return {
-                "status": "error",
-                "error_type": "marketplace_integration_not_found",
-                "message": f"Integracao Mercado Livre nao encontrada para seller/user={seller_id}",
-                "external_order_id": str(order_id),
-            }
+        marketplace_inst, resolution_error = self._resolve_marketplace_integration(
+            "mercadolivre",
+            account_identifier=seller_id,
+            external_order_id=str(order_id) if order_id else None,
+        )
+        if resolution_error:
+            return resolution_error
 
         integration = self._meli_integration(marketplace_inst)
         derived_payment_status = None
@@ -283,10 +294,11 @@ class MarketplaceWebhookIngestService:
                 "marketplace_integration_id": marketplace_inst.get("id"),
             }
 
-        link = self._find_channel_connection(marketplace_inst.get("id"))
+        link = self._find_direct_ingest_link(marketplace_inst.get("id"))
         inactive = self._inactive_source_result("mercadolivre", link, str(order_id), marketplace_inst)
         if inactive:
             return inactive
+        nfe_link = self._find_default_nfe_link(marketplace_inst)
 
         detail = self._fetch_meli_detail(marketplace_inst, str(order_id))
         if detail.get("error"):
@@ -326,7 +338,8 @@ class MarketplaceWebhookIngestService:
             source="mercadolivre",
             external_order_id=str(order_id),
             marketplace_integration_id=marketplace_inst.get("id"),
-            bling_integration_id=(link or {}).get("bling_integration_id"),
+            bling_integration_id=(nfe_link or {}).get("erp_integration_id"),
+            bling_loja_id=(nfe_link or {}).get("erp_store_id"),
             channel_id=(link or {}).get("channel_id"),
             situacao_pedido_id=status.internal_situacao_pedido_id,
             status_original=f"payment:{payment_status or '-'}|shipping:{shipping_status or '-'}",
@@ -385,7 +398,57 @@ class MarketplaceWebhookIngestService:
             }
         return None
 
-    def _find_marketplace_integration(self, module_id: str, *, shop_id: Any = None) -> dict | None:
+    def _find_default_nfe_link(self, marketplace_inst: dict | None) -> dict | None:
+        if not marketplace_inst or not marketplace_inst.get("id"):
+            return None
+
+        config = marketplace_inst.get("config") or {}
+        default_link_id = _first_present(config.get("default_nfe_link_id"), config.get("default_nfe_erp_link_id"))
+        default_erp_id = _first_present(
+            config.get("default_nfe_erp_integration_id"),
+            config.get("default_nfe_bling_integration_id"),
+        )
+        default_shop_id = _first_present(config.get("default_nfe_shop_id"), config.get("default_nfe_erp_store_id"))
+
+        links = (
+            supabase_db.table("erp_marketplace_links")
+            .select("*")
+            .eq("marketplace_integration_id", marketplace_inst.get("id"))
+            .execute()
+            .data
+            or []
+        )
+        links = [
+            dict(link)
+            for link in links
+            if (link.get("nf_emission_mode") or (link.get("config") or {}).get("nf_emission_mode") or "bling") == "bling"
+        ]
+
+        if default_link_id:
+            match = next((link for link in links if str(link.get("id")) == str(default_link_id)), None)
+            if match:
+                return match
+
+        if default_erp_id:
+            matches = [
+                link for link in links
+                if str(link.get("erp_integration_id")) == str(default_erp_id)
+                and (not default_shop_id or str(link.get("erp_store_id")) == str(default_shop_id))
+            ]
+            if len(matches) == 1:
+                return matches[0]
+
+        if len(links) == 1:
+            return links[0]
+
+        logger.warning(
+            "[marketplace-webhook] default NF route missing/ambiguous integration_id=%s candidates=%s",
+            marketplace_inst.get("id"),
+            [link.get("id") for link in links],
+        )
+        return None
+
+    def _active_marketplace_integrations(self, module_id: str) -> list[dict]:
         rows = (
             supabase_db.table("installed_integrations")
             .select("*")
@@ -395,31 +458,125 @@ class MarketplaceWebhookIngestService:
             .data
             or []
         )
-        if not rows:
-            return None
+        return rows
 
-        normalized_shop_id = str(shop_id or "").strip()
-        if normalized_shop_id:
-            for row in rows:
-                cfg = row.get("config") or {}
-                candidates = [
-                    cfg.get("shop_id"),
-                    cfg.get("seller_id"),
-                    cfg.get("user_id"),
-                    cfg.get("bling_loja_id"),
-                ]
-                candidates.extend(cfg.get("shop_ids") or [])
-                if normalized_shop_id in {str(candidate).strip() for candidate in candidates if candidate not in (None, "")}:
-                    return row
+    def _find_marketplace_integration(self, module_id: str, *, shop_id: Any = None) -> dict | None:
+        integration, _error = self._resolve_marketplace_integration(
+            module_id,
+            account_identifier=shop_id,
+        )
+        return integration
+
+    def _resolve_marketplace_integration(
+        self,
+        module_id: str,
+        *,
+        account_identifier: Any = None,
+        external_order_id: str | None = None,
+    ) -> tuple[dict | None, dict | None]:
+        rows = self._active_marketplace_integrations(module_id)
+        if not rows:
+            return None, self._marketplace_resolution_error(
+                module_id,
+                "marketplace_integration_not_found",
+                account_identifier,
+                external_order_id,
+                "Nenhuma integracao ativa encontrada para o marketplace",
+            )
+
+        normalized_identifier = normalize_account_identifier(account_identifier)
+        if normalized_identifier:
+            matches = [row for row in rows if account_identity_matches(row, normalized_identifier)]
+            if len(matches) == 1:
+                return matches[0], None
+            if len(matches) > 1:
+                return None, self._marketplace_resolution_error(
+                    module_id,
+                    "marketplace_integration_ambiguous",
+                    normalized_identifier,
+                    external_order_id,
+                    "Mais de uma integracao corresponde ao identificador do marketplace",
+                    candidates=matches,
+                )
+            return None, self._marketplace_resolution_error(
+                module_id,
+                "marketplace_integration_not_found",
+                normalized_identifier,
+                external_order_id,
+                "Nenhuma integracao corresponde ao identificador do marketplace",
+            )
 
         non_dummy = [row for row in rows if not (row.get("config") or {}).get("dummy")]
-        if len(non_dummy) == 1:
-            return non_dummy[0]
-        return rows[0] if len(rows) == 1 else None
+        candidates = non_dummy or rows
+        if len(candidates) > 1:
+            return None, self._marketplace_resolution_error(
+                module_id,
+                "marketplace_integration_ambiguous",
+                normalized_identifier,
+                external_order_id,
+                "Webhook sem identificador confiavel e multiplas instancias ativas",
+                candidates=candidates,
+            )
 
-    def _find_channel_connection(self, marketplace_integration_id: int | None) -> dict | None:
+        only_candidate = candidates[0]
+        allow_legacy_single_fallback = os.getenv("MARKETPLACE_WEBHOOK_ALLOW_SINGLE_UNIDENTIFIED_FALLBACK", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if has_account_identity(only_candidate) or allow_legacy_single_fallback:
+            return only_candidate, None
+
+        return None, self._marketplace_resolution_error(
+            module_id,
+            "marketplace_integration_ambiguous",
+            normalized_identifier,
+            external_order_id,
+            "Instancia unica sem identidade de webhook configurada",
+            candidates=candidates,
+        )
+
+    def _marketplace_resolution_error(
+        self,
+        module_id: str,
+        error_type: str,
+        account_identifier: Any,
+        external_order_id: str | None,
+        message: str,
+        *,
+        candidates: list[dict] | None = None,
+    ) -> dict:
+        return {
+            "status": "error",
+            "event_status": error_type,
+            "error_type": error_type,
+            "message": message,
+            "module_id": module_id,
+            "account_identifier": normalize_account_identifier(account_identifier),
+            "external_order_id": external_order_id,
+            "candidate_integration_ids": [row.get("id") for row in candidates or [] if row.get("id") is not None],
+        }
+
+    def _find_direct_ingest_link(self, marketplace_integration_id: int | None) -> dict | None:
         if not marketplace_integration_id:
             return None
+
+        link_rows = (
+            supabase_db.table("erp_marketplace_links")
+            .select("id,erp_integration_id,marketplace_integration_id,process_webhooks,ingest_origin_mode,erp_store_id")
+            .eq("marketplace_integration_id", marketplace_integration_id)
+            .eq("ingest_origin_mode", "marketplace_direct")
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if link_rows:
+            link = dict(link_rows[0])
+            link["bling_integration_id"] = link.get("erp_integration_id")
+            link["aggregator_store_id"] = link.get("erp_store_id")
+            return link
+
         rows = (
             supabase_db.table("channel_connections")
             .select("id,channel_id,bling_integration_id,marketplace_integration_id,process_webhooks,ingest_origin_mode,aggregator_store_id")
@@ -490,6 +647,7 @@ class MarketplaceWebhookIngestService:
         external_order_id: str,
         marketplace_integration_id: int | None,
         bling_integration_id: int | None,
+        bling_loja_id: str | None,
         channel_id: int | None,
         situacao_pedido_id: int | None,
         status_original: str | None,
@@ -585,6 +743,7 @@ class MarketplaceWebhookIngestService:
             "origem": source.upper(),
             "marketplace_integration_id": marketplace_integration_id,
             "bling_integration_id": bling_integration_id,
+            "bling_loja_id": str(bling_loja_id) if bling_loja_id not in (None, "") else None,
             "canal_venda_id": channel_id,
             "situacao_pedido_id": situacao_pedido_id,
             "status_original": status_original,

@@ -174,6 +174,7 @@ class ErpMarketplaceLinksService:
         marketplace_module_id: Optional[str] = None,
         process_webhooks: bool = True,
         ingest_origin_mode: str = "erp_bling",
+        nf_emission_mode: str = "bling",
     ) -> Optional[Dict[str, Any]]:
         """
         Cria vínculo entre ERP e Marketplace.
@@ -189,6 +190,9 @@ class ErpMarketplaceLinksService:
             Dicionário com dados do vínculo criado ou None se falhar
         """
         try:
+            if not marketplace_integration_id:
+                raise ValueError("marketplace_integration_id e obrigatorio para novos vinculos")
+
             marketplace_module_id = (
                 self._normalize_module_id(marketplace_module_id)
                 or self._get_marketplace_module_from_integration(marketplace_integration_id)
@@ -206,6 +210,7 @@ class ErpMarketplaceLinksService:
                 "config": config or {},
                 "process_webhooks": process_webhooks is not False,
                 "ingest_origin_mode": ingest_origin_mode or "erp_bling",
+                "nf_emission_mode": nf_emission_mode or "bling",
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
             }
@@ -325,7 +330,7 @@ class ErpMarketplaceLinksService:
         try:
             result = supabase_db.table(self.table_name).select("""
                 *,
-                erp:installed_integrations (
+                erp:installed_integrations!erp_marketplace_links_erp_integration_id_fkey (
                     id,
                     module_id,
                     instance_name,
@@ -349,7 +354,8 @@ class ErpMarketplaceLinksService:
     def get_erp_store_for_marketplace(
         self,
         erp_integration_id: int,
-        marketplace_integration_id: int
+        marketplace_integration_id: int,
+        erp_store_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Retorna vínculo específico ERP ↔ Marketplace.
@@ -362,15 +368,24 @@ class ErpMarketplaceLinksService:
             Dicionário com dados do vínculo ou None se não encontrado
         """
         try:
-            result = supabase_db.table(self.table_name).select("*") \
+            query = supabase_db.table(self.table_name).select("*") \
                 .eq("erp_integration_id", erp_integration_id) \
-                .eq("marketplace_integration_id", marketplace_integration_id) \
-                .execute()
+                .eq("marketplace_integration_id", marketplace_integration_id)
+            if erp_store_id is not None:
+                query = query.eq("erp_store_id", str(erp_store_id))
+            result = query.execute()
 
-            if result.data:
+            if len(result.data or []) == 1:
                 link = dict(result.data[0])
                 link["id"] = str(link.get("id"))
                 return link
+            if len(result.data or []) > 1:
+                logger.warning(
+                    "Vinculo ERP/marketplace ambiguo: erp=%s marketplace=%s store=%s",
+                    erp_integration_id,
+                    marketplace_integration_id,
+                    erp_store_id,
+                )
 
             return None
 
@@ -396,7 +411,7 @@ class ErpMarketplaceLinksService:
         try:
             result = supabase_db.table(self.table_name).select("""
                 *,
-                marketplace:installed_integrations (
+                marketplace:installed_integrations!erp_marketplace_links_marketplace_integration_id_fkey (
                     id,
                     module_id,
                     instance_name,
@@ -462,6 +477,10 @@ class ErpMarketplaceLinksService:
         config: Dict[str, Any],
         process_webhooks: Optional[bool] = None,
         ingest_origin_mode: Optional[str] = None,
+        nf_emission_mode: Optional[str] = None,
+        erp_integration_id: Optional[int] = None,
+        erp_store_id: Optional[str] = None,
+        store_name: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Atualiza configurações de um vínculo.
@@ -492,6 +511,14 @@ class ErpMarketplaceLinksService:
                 update_payload["process_webhooks"] = process_webhooks is not False
             if ingest_origin_mode is not None:
                 update_payload["ingest_origin_mode"] = ingest_origin_mode or "erp_bling"
+            if nf_emission_mode is not None:
+                update_payload["nf_emission_mode"] = nf_emission_mode or "bling"
+            if erp_integration_id is not None:
+                update_payload["erp_integration_id"] = int(erp_integration_id)
+            if erp_store_id is not None:
+                update_payload["erp_store_id"] = str(erp_store_id)
+            if store_name is not None:
+                update_payload["store_name"] = store_name or None
 
             result = supabase_db.table(self.table_name).update(update_payload).eq("id", link_id).execute()
 

@@ -87,8 +87,9 @@ def create_erp_link(erp_integration_id):
         config = data.get('config', {})
         process_webhooks = data.get('process_webhooks', True)
         ingest_origin_mode = data.get('ingest_origin_mode') or 'erp_bling'
+        nf_emission_mode = data.get('nf_emission_mode') or 'bling'
 
-        if not erp_store_id or not (marketplace_integration_id or marketplace_module_id):
+        if not erp_store_id or not marketplace_integration_id:
             return ApiResponse.error(
                 message="marketplace_integration_id e erp_store_id são obrigatórios",
                 status_code=400
@@ -103,6 +104,7 @@ def create_erp_link(erp_integration_id):
             config=config,
             process_webhooks=process_webhooks,
             ingest_origin_mode=ingest_origin_mode,
+            nf_emission_mode=nf_emission_mode,
         )
 
         if link:
@@ -169,11 +171,19 @@ def update_erp_link_config(link_id):
 
         process_webhooks = data.pop('process_webhooks', None)
         ingest_origin_mode = data.pop('ingest_origin_mode', None)
+        nf_emission_mode = data.pop('nf_emission_mode', None)
+        erp_integration_id = data.pop('erp_integration_id', None) or data.pop('bling_integration_id', None)
+        erp_store_id = data.pop('erp_store_id', None) or data.pop('shop_id', None)
+        store_name = data.pop('store_name', None)
         link = erp_marketplace_links_service.update_config(
             link_id,
             data,
             process_webhooks=process_webhooks,
             ingest_origin_mode=ingest_origin_mode,
+            nf_emission_mode=nf_emission_mode,
+            erp_integration_id=erp_integration_id,
+            erp_store_id=erp_store_id,
+            store_name=store_name,
         )
 
         if link:
@@ -261,4 +271,43 @@ def get_marketplace_links(marketplace_integration_id):
         return ApiResponse.success(data=links)
     except Exception as e:
         logger.error(f"Erro ao buscar vínculos: {e}")
+        return ApiResponse.error(message=str(e), status_code=500)
+
+
+@erp_links_bp.route('/marketplace/<marketplace_integration_id>/links', methods=['POST'])
+def create_marketplace_link(marketplace_integration_id):
+    """
+    Cria um vinculo a partir da configuracao da instancia marketplace.
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return ApiResponse.error(message="Payload e obrigatorio", status_code=400)
+
+        erp_integration_id = data.get('erp_integration_id') or data.get('bling_integration_id')
+        erp_store_id = data.get('erp_store_id') or data.get('shop_id')
+        if not erp_integration_id or not erp_store_id:
+            return ApiResponse.error(
+                message="erp_integration_id e shop_id sao obrigatorios",
+                status_code=400
+            )
+
+        link = erp_marketplace_links_service.create_link(
+            erp_integration_id=int(erp_integration_id),
+            marketplace_integration_id=int(marketplace_integration_id),
+            marketplace_module_id=data.get('marketplace_module_id'),
+            erp_store_id=str(erp_store_id),
+            store_name=data.get('store_name'),
+            config=data.get('config', {}),
+            process_webhooks=data.get('process_webhooks', True),
+            ingest_origin_mode=data.get('ingest_origin_mode') or 'erp_bling',
+            nf_emission_mode=data.get('nf_emission_mode') or 'bling',
+        )
+
+        if link:
+            return ApiResponse.success(data=link, status_code=201)
+        return ApiResponse.error(message="Falha ao criar vinculo", status_code=400)
+
+    except Exception as e:
+        logger.error(f"Erro ao criar vinculo por marketplace: {e}")
         return ApiResponse.error(message=str(e), status_code=500)

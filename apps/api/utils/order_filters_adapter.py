@@ -167,31 +167,26 @@ def resolve_order_ids_from_origin(
 
 def build_origin_options(supabase_db) -> List[Dict[str, Any]]:
     """Build canonical marketplace source options with live order counts."""
-    order_rows = (
-        supabase_db.table("pedidos")
-        .select("id, marketplace_integration_id, bling_loja_id, pedido_bling_id")
+    marketplace_rows = (
+        supabase_db.table("installed_integrations")
+        .select("id,instance_name,module_id,is_active")
+        .eq("is_active", True)
         .execute()
         .data
         or []
     )
-    if not order_rows:
+    if not marketplace_rows:
         return []
 
     marketplace_ids = sorted(
-        {row.get("marketplace_integration_id") for row in order_rows if row.get("marketplace_integration_id") is not None}
+        {
+            row.get("id")
+            for row in marketplace_rows
+            if row.get("id") is not None
+        }
     )
-    if not marketplace_ids:
-        return []
 
-    integration_rows = (
-        supabase_db.table("installed_integrations")
-        .select("id,instance_name,module_id")
-        .in_("id", marketplace_ids)
-        .execute()
-        .data
-        or []
-    )
-    module_ids = sorted({row.get("module_id") for row in integration_rows if row.get("module_id")})
+    module_ids = sorted({row.get("module_id") for row in marketplace_rows if row.get("module_id")})
     module_slug_map: Dict[str, str] = {}
     if module_ids:
         module_rows = (
@@ -205,11 +200,20 @@ def build_origin_options(supabase_db) -> List[Dict[str, Any]]:
         module_slug_map = {row["id"]: row.get("slug") for row in module_rows}
 
     integration_map: Dict[int, Dict[str, Optional[str]]] = {}
-    for row in integration_rows:
+    for row in marketplace_rows:
         integration_map[row["id"]] = {
             "nome": row.get("instance_name") or f"Marketplace {row['id']}",
             "slug": module_slug_map.get(row.get("module_id")),
         }
+
+    order_rows = (
+        supabase_db.table("pedidos")
+        .select("id, marketplace_integration_id, bling_loja_id, pedido_bling_id")
+        .in_("marketplace_integration_id", marketplace_ids)
+        .execute()
+        .data
+        or []
+    )
 
     pb_ids = sorted({row.get("pedido_bling_id") for row in order_rows if row.get("pedido_bling_id") is not None})
     pb_store_map: Dict[int, str] = {}

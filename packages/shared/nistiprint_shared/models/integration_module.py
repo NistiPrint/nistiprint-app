@@ -151,8 +151,10 @@ class InstalledIntegration:
         parent_integration_id: int = None,
         is_default: bool = False,
         functional_scopes: List[str] = None,
+        app_profile_id: int = None,
         # Novo campo da Fase 1
-        platform_slug: str = None
+        platform_slug: str = None,
+        legacy_credentials: Dict = None
     ):
         self.id = id
         self.module_id = module_id
@@ -174,6 +176,8 @@ class InstalledIntegration:
         self.parent_integration_id = parent_integration_id
         self.is_default = is_default
         self.functional_scopes = functional_scopes or []
+        self.app_profile_id = app_profile_id
+        self.legacy_credentials = legacy_credentials or {}
         # Novo campo da Fase 1
         self.platform_slug = platform_slug or (module_id.lower().replace(' ', '') if module_id else None)
 
@@ -198,6 +202,7 @@ class InstalledIntegration:
             'parent_integration_id': self.parent_integration_id,
             'is_default': self.is_default,
             'functional_scopes': self.functional_scopes,
+            'app_profile_id': self.app_profile_id,
             # Novo campo da Fase 1
             'platform_slug': self.platform_slug
         }
@@ -221,6 +226,20 @@ class InstalledIntegration:
         # Map installation_date to created_at if not present
         created_at = parse_datetime(data.get('created_at')) if data.get('created_at') else datetime.utcnow()
         installation_date = parse_datetime(data.get('installation_date')) if data.get('installation_date') else created_at
+        legacy_credentials = {}
+        for field in (
+            'partner_id',
+            'partner_key',
+            'shop_id',
+            'merchant_id',
+            'client_id',
+            'client_secret',
+            'seller_id',
+            'account_id',
+            'cnpj',
+        ):
+            if data.get(field) not in (None, ''):
+                legacy_credentials[field] = data.get(field)
 
         return cls(
             id=instance_id,
@@ -243,6 +262,8 @@ class InstalledIntegration:
             parent_integration_id=data.get('parent_integration_id'),
             is_default=data.get('is_default', False),
             functional_scopes=data.get('functional_scopes', []),
+            app_profile_id=data.get('app_profile_id'),
             # Novo campo da Fase 1
-            platform_slug=data.get('platform_slug')
+            platform_slug=data.get('platform_slug'),
+            legacy_credentials=legacy_credentials
         )

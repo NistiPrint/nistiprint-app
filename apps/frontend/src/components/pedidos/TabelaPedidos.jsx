@@ -8,7 +8,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ArrowUpRight, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { formatAppDate, formatAppDateTime } from '@/lib/dateTime';
+import { formatAppDateTime } from '@/lib/dateTime';
+import { getOrderTimestamps } from '@/lib/orderTimestamps';
 import { useEffect, useState } from 'react';
 import MarketplaceService from '@/services/MarketplaceService';
 
@@ -45,14 +46,9 @@ export default function TabelaPedidos({
   const totalPages = Math.ceil(total / limit);
   const todosSelecionados = pedidos.length > 0 && pedidosSelecionados.length === pedidos.length;
 
-  // Formatador de data
-  const formatarData = (dataStr) => {
-    return formatAppDate(dataStr);
-  };
-
   // Formatador de data/hora para "Enviar Até"
   const formatarDataHora = (dataStr) => {
-    return formatAppDateTime(dataStr);
+    return formatAppDateTime(dataStr, { fallback: dataStr || '-' });
   };
 
   if (loading) {
@@ -95,7 +91,6 @@ export default function TabelaPedidos({
                 </TableHead>
                 <TableHead>Pedido</TableHead>
                 <TableHead>Enviar Até</TableHead>
-                <TableHead>Data</TableHead>
                 <TableHead>Pagamento</TableHead>
                 <TableHead>Cliente</TableHead>
                 <TableHead>Origem</TableHead>
@@ -121,6 +116,7 @@ export default function TabelaPedidos({
                       : isCanalProximo
                         ? 'bg-blue-50/20 hover:bg-blue-50'
                         : '';
+                const timestamps = getOrderTimestamps(pedido);
 
                 return (
                 <TableRow key={pedido.id} className={rowClass}>
@@ -169,45 +165,42 @@ export default function TabelaPedidos({
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-col gap-1">
-                      {isCanalProximo && (
-                        <Badge variant="outline" className="w-fit bg-blue-100 text-blue-700 border-blue-300 text-xs">
-                          🕐 Coleta Próxima
-                        </Badge>
-                      )}
-                      <span className="font-medium">#{pedido.numero_pedido}</span>
-                      {pedido.codigo_pedido_externo && (
-                        <span className="text-xs text-muted-foreground font-mono">
-                          {pedido.codigo_pedido_externo}
-                        </span>
-                      )}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold">#{pedido.numero_pedido}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        {pedido.codigo_pedido_externo && <span className="font-mono">{pedido.codigo_pedido_externo}</span>}
+                      </div>
                     </div>
                   </TableCell>
                   <TableCell>
-                    <div className={pedido.is_flex ? 'font-semibold text-orange-700' : ''}>
-                      {formatarDataHora(pedido.data_limite_envio || pedido.enviar_ate_formatado)}
+                    <div className={pedido.is_flex ? 'font-semibold text-orange-700' : 'font-medium'}>
+                      {formatarDataHora(timestamps.limite)}
                     </div>
+                    {timestamps.coleta && (
+                      <div className="text-xs text-muted-foreground">
+                        Coleta {formatarDataHora(timestamps.coleta)}
+                      </div>
+                    )}
                   </TableCell>
-                  <TableCell>{formatarData(pedido.data_venda)}</TableCell>
                   <TableCell>
                     <div className="flex flex-col">
                       <span className="font-medium">
-                        {formatarDataHora(pedido.data_pagamento_marketplace || pedido.data_compra_marketplace)}
+                        {timestamps.pagamento ? formatarDataHora(timestamps.pagamento) : 'Pagamento não informado'}
                       </span>
-                      {pedido.data_compra_marketplace && pedido.data_pagamento_marketplace && (
-                        <span className="text-xs text-muted-foreground">
-                          Compra: {formatarDataHora(pedido.data_compra_marketplace)}
-                        </span>
-                      )}
                     </div>
                   </TableCell>
                   <TableCell>
-                    <div className="flex flex-col">
-                      <span className="font-medium">{pedido.cliente_nome || 'N/A'}</span>
-                      {pedido.cliente_documento && (
-                        <span className="text-xs text-muted-foreground">
-                          {pedido.cliente_documento}
-                        </span>
-                      )}
+                    <div className="flex flex-col gap-0.5">
+                      <span className="font-medium truncate max-w-[220px]">{pedido.cliente_nome || 'N/A'}</span>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        {pedido.cliente_documento && <span className="font-mono">{pedido.cliente_documento}</span>}
+                        {pedido.total_pedido !== undefined && pedido.total_pedido !== null && (
+                          <span>
+                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(pedido.total_pedido) || 0)}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </TableCell>
                   <TableCell>

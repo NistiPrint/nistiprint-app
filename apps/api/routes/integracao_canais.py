@@ -13,6 +13,7 @@ Rotas:
 from flask import request, Blueprint, jsonify
 from routes.auth import login_required
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
+from nistiprint_shared.services.marketplace_account_identity import has_account_identity
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from datetime import datetime
 import logging
@@ -20,6 +21,95 @@ import logging
 logger = logging.getLogger("IntegracaoCanaisAPI")
 
 integracao_canais_bp = Blueprint('integracao_canais', __name__, url_prefix='/api/v2/integracao-canais')
+
+
+def _get_installed_integration_row(integration_id):
+    if not integration_id:
+        return None
+    result = (
+        supabase_db.table('installed_integrations')
+        .select('id,module_id,instance_name,instance_color,config,credentials,is_active')
+        .eq('id', integration_id)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+def _merge_ingest_origin_mode(data):
+    config_json = dict(data.get('config_json') or {})
+    if data.get('ingest_origin_mode'):
+        config_json['ingest_origin_mode'] = data.get('ingest_origin_mode')
+    return config_json
+
+
+def _hydrate_channel_fields_from_integration(data):
+    if data.get('canal_venda_id') and data.get('plataforma_nome'):
+        return data
+
+    integration_id = data.get('marketplace_integration_id') or data.get('integration_id')
+    integration = _get_installed_integration_row(integration_id)
+    if not integration or integration.get('module_id') == 'bling':
+        return data
+
+    module_id = integration.get('module_id')
+    platform_rows = (
+        supabase_db.client.table('plataformas')
+        .select('id,nome')
+        .ilike('nome', f"%{module_id}%")
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    platform = platform_rows[0] if platform_rows else None
+    platform_name = platform.get('nome') if platform else module_id
+
+    if not data.get('plataforma_nome'):
+        data['plataforma_nome'] = platform_name
+
+    if data.get('canal_venda_id'):
+        return data
+
+    channel_name = integration.get('instance_name') or f"{platform_name} {integration_id}"
+    channel_rows = (
+        supabase_db.client.table('canais_venda')
+        .select('id')
+        .eq('nome', channel_name)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if channel_rows:
+        data['canal_venda_id'] = channel_rows[0]['id']
+        return data
+
+    insert_payload = {
+        'nome': channel_name,
+        'slug': f"{module_id}-{integration_id}",
+        'ativo': True,
+        'color': integration.get('instance_color') or '#64748b',
+    }
+    if platform:
+        insert_payload['plataforma_id'] = platform['id']
+
+    inserted = supabase_db.client.table('canais_venda').insert(insert_payload).execute().data
+    if inserted:
+        data['canal_venda_id'] = inserted[0]['id']
+    return data
+
+
+def _marketplace_direct_identity_error(marketplace_integration_id):
+    row = _get_installed_integration_row(marketplace_integration_id)
+    if not row:
+        return 'Integracao de marketplace nao encontrada para ativar marketplace_direct'
+    if row.get('module_id') == 'bling':
+        return 'marketplace_direct exige uma integracao de marketplace, nao uma integracao ERP'
+    if not has_account_identity(row):
+        return 'Configure o identificador da conta no marketplace antes de ativar marketplace_direct'
+    return None
 
 
 @integracao_canais_bp.route('/configuracoes', methods=['GET'])
@@ -79,6 +169,7 @@ def criar_vinculo():
     """
     try:
         data = request.get_json()
+        data = _hydrate_channel_fields_from_integration(data)
         
         # Validações básicas
         required_fields = ['canal_venda_id', 'bling_loja_id', 'plataforma_nome']
@@ -104,6 +195,14 @@ def criar_vinculo():
                 'error': 'Já existe um vínculo para este canal e loja Bling'
             }), 409
         
+        config_json = _merge_ingest_origin_mode(data)
+        if config_json.get('ingest_origin_mode') == 'marketplace_direct':
+            identity_error = _marketplace_direct_identity_error(
+                data.get('marketplace_integration_id') or data.get('integration_id')
+            )
+            if identity_error:
+                return jsonify({'success': False, 'error': identity_error}), 400
+
         config = integracao_canal_service.criar_vinculo(
             canal_venda_id=data['canal_venda_id'],
             bling_loja_id=data['bling_loja_id'],
@@ -113,7 +212,7 @@ def criar_vinculo():
             marketplace_integration_id=data.get('marketplace_integration_id'),
             is_primary=data.get('is_primary', False),
             process_webhooks=data.get('process_webhooks', True),
-            config_json=data.get('config_json', {})
+            config_json=config_json
         )
         
         if config:
@@ -167,8 +266,19 @@ def atualizar_vinculo(config_id):
         # Campos permitidos para atualização
         allowed_fields = ['canal_venda_id', 'bling_loja_id', 'plataforma_nome',
                          'integration_id', 'bling_integration_id', 'marketplace_integration_id',
-                         'is_primary', 'is_active', 'process_webhooks', 'config_json']
+                         'is_primary', 'is_active', 'process_webhooks', 'config_json',
+                         'ingest_origin_mode']
         updates = {k: v for k, v in data.items() if k in allowed_fields}
+        if data.get('ingest_origin_mode') == 'marketplace_direct':
+            marketplace_integration_id = (
+                data.get('marketplace_integration_id')
+                or existing.get('marketplace_integration_id')
+                or data.get('integration_id')
+                or existing.get('integration_id')
+            )
+            identity_error = _marketplace_direct_identity_error(marketplace_integration_id)
+            if identity_error:
+                return jsonify({'success': False, 'error': identity_error}), 400
         
         config = integracao_canal_service.atualizar_vinculo(config_id, updates)
         

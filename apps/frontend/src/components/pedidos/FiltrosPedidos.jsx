@@ -147,21 +147,20 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
     const origemKey = filtroContextual.origem_pedido_key
       || (filtroContextual.marketplace_integration_id != null
         ? `source:${filtroContextual.marketplace_integration_id}`
-        : (filtroContextual.canal_venda_id != null ? `canal:${filtroContextual.canal_venda_id}` : null));
-    const canalFallback = origemKey?.startsWith('source:') ? null : filtroContextual.canal_venda_id;
+        : null);
 
     switch (filtroContextual.tipo) {
       case 'canal':
-        novosFiltros.canal_venda_id = canalFallback ?? null;
+        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id ?? null;
         novosFiltros.origem_pedido_key = origemKey;
         break;
       case 'flex':
-        novosFiltros.canal_venda_id = canalFallback ?? null;
+        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id ?? null;
         novosFiltros.origem_pedido_key = origemKey;
         novosFiltros.is_flex = true;
         break;
       case 'sem_demanda':
-        novosFiltros.canal_venda_id = canalFallback ?? null;
+        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id ?? null;
         novosFiltros.origem_pedido_key = origemKey;
         novosFiltros.has_demanda = false;
         break;

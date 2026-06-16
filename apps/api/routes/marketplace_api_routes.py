@@ -1,406 +1,814 @@
-from flask import jsonify, request, redirect, url_for
 from datetime import datetime, timedelta
-from nistiprint_shared.services.integration_module_service import integration_module_service
-from nistiprint_shared.services.installed_integration_service import installed_integration_service
-from nistiprint_shared.services.platform_auth_service import platform_auth_service
-from nistiprint_shared.services.platform_api_service import platform_api_service
-from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
-from nistiprint_shared.database.supabase_db_service import supabase_db
-from utils.api_response import ApiResponse
 import os
-from .marketplace_api_base import marketplace_api_bp
 
-@marketplace_api_bp.route('/auth/init/<module_id>', methods=['POST'])
+from flask import jsonify, redirect, request, url_for
+
+from routes.auth import admin_required, login_required
+from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.credential_resolver_service import (
+    credential_resolver_service,
+)
+from nistiprint_shared.services.integracao_canal_service import (
+    integracao_canal_service,
+)
+from nistiprint_shared.services.integration_app_profile_service import (
+    integration_app_profile_service,
+)
+from nistiprint_shared.services.integration_credentials_service import (
+    integration_credentials_service,
+)
+from nistiprint_shared.services.integration_module_service import (
+    integration_module_service,
+)
+from nistiprint_shared.services.integration_secret_service import (
+    integration_secret_service,
+)
+from nistiprint_shared.services.installed_integration_service import (
+    installed_integration_service,
+)
+from nistiprint_shared.services.marketplace_account_identity import (
+    account_identity_kind,
+    merge_account_identity_config,
+)
+from nistiprint_shared.services.oauth_authorization_session_service import (
+    OAuthSessionError,
+    oauth_authorization_session_service,
+)
+from nistiprint_shared.services.platform_api_service import platform_api_service
+from nistiprint_shared.services.platform_auth_service import platform_auth_service
+from .marketplace_api_base import marketplace_api_bp
+from utils.api_response import ApiResponse
+
+
+def _public_installation(inst):
+    return integration_credentials_service.sanitize_installation(
+        {**inst.to_dict(), "id": inst.id}
+    )
+
+
+def _auth_payload_for_test(inst):
+    return credential_resolver_service.hydrate_integration(
+        {**inst.to_dict(), "id": inst.id}
+    )
+
+
+def _auth_update_payload(inst, platform, tokens, explicit_identifier=None):
+    identifier = platform_auth_service.resolve_account_identity(
+        platform,
+        tokens,
+        explicit_identifier=explicit_identifier,
+    )
+    config = merge_account_identity_config(
+        inst.config or {},
+        platform,
+        identifier,
+        source="oauth" if identifier else "manual",
+        kind=account_identity_kind(platform),
+    )
+    credentials = {**(inst.credentials or {})}
+    credentials.pop("access_token", None)
+    credentials.pop("refresh_token", None)
+    credentials["expires_in"] = tokens.get("expires_in")
+    if identifier:
+        credentials[account_identity_kind(platform)] = identifier
+        if platform == "shopee" or "shopee" in str(platform):
+            credentials["shop_id"] = identifier
+        if platform == "mercadolivre":
+            credentials["user_id"] = identifier
+
+    return {
+        "access_token": None,
+        "refresh_token": None,
+        "expires_at": (
+            datetime.utcnow() + timedelta(seconds=tokens.get("expires_in") or 0)
+        ).isoformat(),
+        "credentials": credentials,
+        "config": config,
+        "sync_status": "active",
+        "is_active": True,
+    }
+
+
+def _callback_redirect_url(platform):
+    if os.environ.get("PUBLIC_URL"):
+        return (
+            f"{os.environ.get('PUBLIC_URL', '').rstrip('/')}"
+            f"{url_for('marketplace_api.auth_callback', platform=platform)}"
+        )
+    return url_for("marketplace_api.auth_callback", platform=platform, _external=True)
+
+
+def _persist_oauth_tokens(instance_id, tokens):
+    credential_resolver_service.persist_installation_tokens(instance_id, tokens)
+
+
+@marketplace_api_bp.route("/auth/init/<module_id>", methods=["POST"])
+@login_required
 def init_auth(module_id):
     try:
-        data = request.get_json()
-        redirect_uri = data.get('redirect_uri') or (f"{os.environ.get('PUBLIC_URL', '').rstrip('/')}{url_for('marketplace_api.auth_callback', platform=module_id)}" if os.environ.get('PUBLIC_URL') else url_for('marketplace_api.auth_callback', platform=module_id, _external=True))
-        auth_url = platform_auth_service.generate_auth_url(module_id, data.get('config', {}), redirect_uri, state=data.get('instance_id'))
-        return jsonify({'auth_url': auth_url}) if auth_url else jsonify({'error': 'URL inválida'}), 400
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        data = request.get_json(silent=True) or {}
+        instance_id = data.get("instance_id")
+        inst = installed_integration_service.get_installed_by_id(instance_id)
+        if not inst:
+            return jsonify({"error": "Instalacao nao encontrada"}), 404
 
-@marketplace_api_bp.route('/auth/exchange/<platform>', methods=['POST'])
+        hydrated = credential_resolver_service.hydrate_integration(
+            {**inst.to_dict(), "id": inst.id}
+        )
+        context = credential_resolver_service.resolve_for_installation(hydrated)
+        if not context.app_profile:
+            return (
+                jsonify(
+                    {"error": "Nenhum app profile ativo encontrado para este modulo."}
+                ),
+                400,
+            )
+
+        redirect_uri = context.redirect_uri or _callback_redirect_url(module_id)
+        code_verifier = None
+        code_challenge = None
+        if module_id in {"mercadolivre", "bling"}:
+            code_verifier, code_challenge = platform_auth_service.generate_pkce_pair()
+
+        state, _session = oauth_authorization_session_service.create_session(
+            module_id=module_id,
+            app_profile_id=context.app_profile["id"],
+            installed_integration_id=inst.id,
+            redirect_uri=redirect_uri,
+            return_to=data.get("return_to") or "/configuracoes/integracoes",
+            code_verifier=code_verifier,
+        )
+        auth_url = platform_auth_service.generate_auth_url(
+            module_id,
+            context,
+            redirect_uri,
+            state=state,
+            code_challenge=code_challenge,
+        )
+        if not auth_url:
+            return jsonify({"error": "URL invalida"}), 400
+        return jsonify({"auth_url": auth_url})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@marketplace_api_bp.route("/auth/exchange/<platform>", methods=["POST"])
 def auth_exchange_manual(platform):
-    try:
-        data = request.get_json()
-        inst = installed_integration_service.get_installed_by_id(data['instance_id'])
-        if not inst: return jsonify({'error': 'Instalação não encontrada'}), 404
-        tokens = platform_auth_service.exchange_code_for_token(platform, inst.config, data['code'], data.get('shop_id'))
-        installed_integration_service.update_installed(data['instance_id'], {'credentials': {'access_token': tokens.get('access_token'), 'refresh_token': tokens.get('refresh_token'), 'expires_in': tokens.get('expires_in'), 'shop_id': data.get('shop_id')}, 'sync_status': 'active', 'is_active': True})
-        return jsonify({'success': True}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return (
+        jsonify(
+            {"error": "Fluxo manual descontinuado. Use o callback OAuth normal."}
+        ),
+        410,
+    )
 
-@marketplace_api_bp.route('/auth/callback/<platform>', methods=['GET'])
+
+@marketplace_api_bp.route("/auth/callback/<platform>", methods=["GET"])
 def auth_callback(platform):
     try:
-        code, inst_id, shop_id = request.args.get('code'), request.args.get('state'), request.args.get('shop_id')
-        if not code or not inst_id: return "Error", 400
-        inst = installed_integration_service.get_installed_by_id(inst_id)
-        if not inst: return "Error", 404
-        tokens = platform_auth_service.exchange_code_for_token(platform, inst.config, code, shop_id)
-        installed_integration_service.update_installed(inst_id, {'access_token': tokens.get('access_token'), 'refresh_token': tokens.get('refresh_token'), 'expires_at': (datetime.utcnow() + timedelta(seconds=tokens.get('expires_in', 0))).isoformat(), 'credentials': {'shop_id': shop_id}, 'sync_status': 'active', 'is_active': True})
-        return redirect(f"{request.url_root.rstrip('/')}/configuracoes/integracoes?status=success&platform={platform}")
-    except Exception as e:
-        return str(e), 500
+        code = request.args.get("code")
+        state = request.args.get("state")
+        shop_id = request.args.get("shop_id")
+        if not code or not state:
+            return "Error", 400
 
-@marketplace_api_bp.route('/modules', methods=['GET'])
+        session_row = oauth_authorization_session_service.get_session_by_state(
+            platform, state
+        )
+        inst = installed_integration_service.get_installed_by_id(
+            session_row["installed_integration_id"]
+        )
+        if not inst:
+            oauth_authorization_session_service.mark_error(
+                session_row["id"], "Instalacao nao encontrada"
+            )
+            return "Error", 404
+
+        hydrated = credential_resolver_service.hydrate_integration(
+            {**inst.to_dict(), "id": inst.id}
+        )
+        context = credential_resolver_service.resolve_for_installation(hydrated)
+        tokens = platform_auth_service.exchange_code_for_token(
+            platform,
+            context,
+            code,
+            shop_id,
+            redirect_uri=session_row.get("redirect_uri"),
+            code_verifier=oauth_authorization_session_service.decode_code_verifier(
+                session_row
+            ),
+        )
+        _persist_oauth_tokens(inst.id, tokens)
+        installed_integration_service.update_installed(
+            inst.id,
+            _auth_update_payload(inst, platform, tokens, explicit_identifier=shop_id),
+        )
+        oauth_authorization_session_service.mark_consumed(session_row["id"])
+        return_to = session_row.get("return_to") or "/configuracoes/integracoes"
+        return redirect(
+            f"{request.url_root.rstrip('/')}{return_to}"
+            f"?status=success&platform={platform}"
+        )
+    except OAuthSessionError as exc:
+        return str(exc), 400
+    except Exception as exc:
+        try:
+            if "session_row" in locals():
+                oauth_authorization_session_service.mark_error(
+                    session_row["id"], str(exc)
+                )
+        except Exception:
+            pass
+        return str(exc), 500
+
+
+@marketplace_api_bp.route("/modules", methods=["GET"])
 def get_available_modules():
     try:
-        cat, tags = request.args.get('category'), request.args.get('tags')
-        modules = integration_module_service.get_modules_by_category(cat) if cat else (integration_module_service.get_modules_by_tags(tags.split(',')) if tags else integration_module_service.get_all_modules())
-        return jsonify({'modules': [{**m.to_dict(), 'id': m.id} for m in modules]}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        cat, tags = request.args.get("category"), request.args.get("tags")
+        modules = (
+            integration_module_service.get_modules_by_category(cat)
+            if cat
+            else (
+                integration_module_service.get_modules_by_tags(tags.split(","))
+                if tags
+                else integration_module_service.get_all_modules()
+            )
+        )
+        return jsonify({"modules": [{**m.to_dict(), "id": m.id} for m in modules]}), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
-@marketplace_api_bp.route('/modules/<module_id>', methods=['GET'])
+
+@marketplace_api_bp.route("/modules/<module_id>", methods=["GET"])
 def get_module_details(module_id):
     mod = integration_module_service.get_module_by_id(module_id)
-    return jsonify({'module': {**mod.to_dict(), 'id': mod.id}}) if mod else (jsonify({'error': 'Not found'}), 404)
+    if mod:
+        return jsonify({"module": {**mod.to_dict(), "id": mod.id}})
+    return jsonify({"error": "Not found"}), 404
 
-@marketplace_api_bp.route('/install', methods=['POST'])
+
+@marketplace_api_bp.route("/install", methods=["POST"])
+@login_required
 def install_module():
-    """Install a new instance of an integration module"""
     try:
         data = request.get_json()
-        
-        # Validation
-        if not all([data.get('module_id'), data.get('instance_name'), data.get('user_id')]):
-            return jsonify({'error': 'Faltando campos obrigatórios: module_id, instance_name, user_id'}), 400
-            
-        # Install the module
-        instance_id = installed_integration_service.install_module(
-            user_id=data['user_id'],
-            module_id=data['module_id'],
-            instance_name=data['instance_name'],
-            config=data.get('config', {}),
-            credentials=data.get('credentials', {}),
-            instance_color=data.get('instance_color', '#64748b'),
-            description=data.get('description')
+
+        if not all([data.get("module_id"), data.get("instance_name"), data.get("user_id")]):
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "Faltando campos obrigatorios: module_id, instance_name, "
+                            "user_id"
+                        )
+                    }
+                ),
+                400,
+            )
+
+        module = integration_module_service.get_module_by_id(data["module_id"])
+        is_dummy_module = bool(
+            module
+            and (
+                module.auth_flow == "dummy"
+                or (module.data_mapping_spec or {}).get("dummy") is True
+            )
         )
-        
-        # New fields: Update with linking and delegation
+        install_config = dict(data.get("config") or {})
+        if is_dummy_module:
+            install_config.update(
+                {
+                    "dummy": True,
+                    "is_placeholder": True,
+                    "capabilities": {
+                        **(install_config.get("capabilities") or {}),
+                        "order_import": "erp_bling",
+                        "order_update": "erp_bling",
+                        "invoicing": "erp_bling",
+                    },
+                }
+            )
+
+        instance_id = installed_integration_service.install_module(
+            user_id=data["user_id"],
+            module_id=data["module_id"],
+            instance_name=data["instance_name"],
+            config=install_config,
+            credentials=data.get("credentials", {}),
+            instance_color=data.get("instance_color", "#64748b"),
+            description=data.get("description"),
+        )
+
         update_fields = {}
-        if data.get('parent_integration_id'):
-            update_fields['parent_integration_id'] = data.get('parent_integration_id')
-        if 'is_default' in data:
-            update_fields['is_default'] = bool(data.get('is_default'))
-        if data.get('functional_scopes'):
-            update_fields['functional_scopes'] = data.get('functional_scopes')
-            
+        if data.get("parent_integration_id"):
+            update_fields["parent_integration_id"] = data.get("parent_integration_id")
+        if "is_default" in data:
+            update_fields["is_default"] = bool(data.get("is_default"))
+        if data.get("functional_scopes"):
+            update_fields["functional_scopes"] = data.get("functional_scopes")
+        elif is_dummy_module:
+            update_fields["functional_scopes"] = [
+                "ORDER_IMPORT",
+                "ORDER_UPDATE",
+                "INVOICING",
+            ]
+
         if update_fields:
             installed_integration_service.update_installed(instance_id, update_fields)
-        
-        # Original Auto-Provision logic (kept for compatibility)
+
         try:
-            res = supabase_db.client.table('plataformas').select('id, nome').ilike('nome', f"%{data['module_id']}%").limit(1).execute()
+            res = (
+                supabase_db.client.table("plataformas")
+                .select("id, nome")
+                .ilike("nome", f"%{data['module_id']}%")
+                .limit(1)
+                .execute()
+            )
             if res.data:
-                p = res.data[0]
-                res_canal = supabase_db.client.table('canais_venda').select('id').eq('nome', data['instance_name']).execute()
-                canal_id = res_canal.data[0]['id'] if res_canal.data else supabase_db.client.table('canais_venda').insert({
-                    'nome': data['instance_name'], 
-                    'slug': f"{data['module_id']}-{int(datetime.utcnow().timestamp())}", 
-                    'plataforma_id': p['id'], 
-                    'ativo': True, 
-                    'color': data.get('instance_color', '#64748b')
-                }).execute().data[0]['id']
-                
-                if data.get('config', {}).get('bling_loja_id'):
+                plataforma = res.data[0]
+                res_canal = (
+                    supabase_db.client.table("canais_venda")
+                    .select("id")
+                    .eq("nome", data["instance_name"])
+                    .execute()
+                )
+                canal_id = (
+                    res_canal.data[0]["id"]
+                    if res_canal.data
+                    else supabase_db.client.table("canais_venda")
+                    .insert(
+                        {
+                            "nome": data["instance_name"],
+                            "slug": (
+                                f"{data['module_id']}-{int(datetime.utcnow().timestamp())}"
+                            ),
+                            "plataforma_id": plataforma["id"],
+                            "ativo": True,
+                            "color": data.get("instance_color", "#64748b"),
+                        }
+                    )
+                    .execute()
+                    .data[0]["id"]
+                )
+
+                if install_config.get("bling_loja_id"):
                     try:
                         integracao_canal_service.criar_vinculo(
-                            canal_venda_id=canal_id, 
-                            bling_loja_id=int(data['config']['bling_loja_id']), 
-                            plataforma_nome=p['nome'], 
-                            integration_id=int(instance_id), 
-                            is_primary=False, 
-                            config_json={}
+                            canal_venda_id=canal_id,
+                            bling_loja_id=int(install_config["bling_loja_id"]),
+                            plataforma_nome=plataforma["nome"],
+                            integration_id=int(instance_id),
+                            is_primary=False,
+                            config_json={},
                         )
-                    except:
+                    except Exception:
                         pass
-        except Exception as e:
-            print(f"Erro no provisionamento automático: {e}")
-        
-        # Return the created instance
-        inst = installed_integration_service.get_installed_by_id(instance_id)
-        return jsonify({
-            'success': True, 
-            'instance_id': instance_id, 
-            'installation': {**inst.to_dict(), 'id': inst.id}
-        }), 201
-    except Exception as e:
-        print(f"Erro na instalação: {e}")
-        return jsonify({'error': str(e)}), 500
+        except Exception as exc:
+            print(f"Erro no provisionamento automatico: {exc}")
 
-@marketplace_api_bp.route('/installed', methods=['GET'])
+        inst = installed_integration_service.get_installed_by_id(instance_id)
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "instance_id": instance_id,
+                    "installation": _public_installation(inst),
+                }
+            ),
+            201,
+        )
+    except Exception as exc:
+        print(f"Erro na instalacao: {exc}")
+        return jsonify({"error": str(exc)}), 500
+
+
+@marketplace_api_bp.route("/installed", methods=["GET"])
+@login_required
 def get_installed_integrations():
-    """Get all installed integrations, optionally filtered by module_id or category"""
     try:
-        user_id = request.args.get('user_id')
-        module_id = request.args.get('module_id')
-        category = request.args.get('category')
-        
-        # Get all installations
+        user_id = request.args.get("user_id")
+        module_id = request.args.get("module_id")
+        category = request.args.get("category")
+
         insts = installed_integration_service.get_all_installed(user_id=user_id)
-        
-        # Filter by module_id if provided
+
         if module_id:
             insts = [i for i in insts if i.module_id == module_id]
-            
-        # Filter by category if provided
+
         if category:
-            from nistiprint_shared.services.integration_module_service import integration_module_service
             modules = integration_module_service.get_modules_by_category(category)
             module_ids = [m.id for m in modules]
             insts = [i for i in insts if i.module_id in module_ids]
-            
-        return jsonify({
-            'installations': [{**i.to_dict(), 'id': i.id} for i in insts]
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
-@marketplace_api_bp.route('/installed/<instance_id>', methods=['GET', 'PUT', 'DELETE'])
+        return jsonify({"installations": [_public_installation(i) for i in insts]})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@marketplace_api_bp.route("/installed/<instance_id>", methods=["GET", "PUT", "DELETE"])
+@login_required
 def installed_crud(instance_id):
-    """CRUD operations for a specific installed integration"""
-    if request.method == 'GET':
+    if request.method == "GET":
         inst = installed_integration_service.get_installed_by_id(instance_id)
         if not inst:
-            return jsonify({'error': 'Não encontrado'}), 404
-        return jsonify({'installation': {**inst.to_dict(), 'id': inst.id}})
-        
-    if request.method == 'PUT':
+            return jsonify({"error": "Nao encontrado"}), 404
+        return jsonify({"installation": _public_installation(inst)})
+
+    if request.method == "PUT":
         data = request.get_json()
-        
-        # Allowed fields for update
         update_data = {}
         allowed_fields = {
-            'config', 'credentials', 'is_active', 'instance_name', 
-            'parent_integration_id', 'is_default', 'functional_scopes',
-            'instance_color', 'description'
+            "config",
+            "credentials",
+            "is_active",
+            "instance_name",
+            "parent_integration_id",
+            "is_default",
+            "functional_scopes",
+            "instance_color",
+            "description",
+            "app_profile_id",
         }
-        
+
         for field in allowed_fields:
             if field in data:
                 update_data[field] = data[field]
-                
+
         if update_data:
             installed_integration_service.update_installed(instance_id, update_data)
-            
+
         inst = installed_integration_service.get_installed_by_id(instance_id)
-        return jsonify({
-            'success': True, 
-            'installation': {**inst.to_dict(), 'id': inst.id}
-        })
-        
-    if request.method == 'DELETE':
+        return jsonify({"success": True, "installation": _public_installation(inst)})
+
+    if request.method == "DELETE":
         installed_integration_service.uninstall(instance_id)
-        return jsonify({'success': True})
-        
-    return jsonify({'error': 'Método não permitido'}), 405
+        return jsonify({"success": True})
 
-@marketplace_api_bp.route('/bling/config-helpers/<instance_id>', methods=['GET'])
+    return jsonify({"error": "Metodo nao permitido"}), 405
+
+
+@marketplace_api_bp.route("/bling/config-helpers/<instance_id>", methods=["GET"])
+@login_required
 def get_bling_config_helpers(instance_id):
-    """Helper to fetch Bling statuses and stores for configuration UI"""
     try:
         inst = installed_integration_service.get_installed_by_id(instance_id)
-        if not inst or inst.module_id != 'bling':
-            return jsonify({'error': 'Instância Bling não encontrada'}), 404
-            
-        from nistiprint_shared.services.bling.bling_client_updated import BlingClient
-        
-        # Convert InstalledIntegration to account_data dict format BlingClient expects
-        account_data = inst.to_dict()
-        account_data['id'] = inst.id
-        # Client needs these top-level or in credentials
-        if 'access_token' not in account_data and inst.access_token:
-            account_data['access_token'] = inst.access_token
-        if 'refresh_token' not in account_data and inst.refresh_token:
-            account_data['refresh_token'] = inst.refresh_token
-            
-        client = BlingClient(account_data)
-        
-        return jsonify({
-            'situacoes': client.get_situacoes(modulo="vendas"),
-            'lojas': client.get_stores()
-        }), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        if not inst or inst.module_id != "bling":
+            return jsonify({"error": "Instancia Bling nao encontrada"}), 404
 
-@marketplace_api_bp.route('/bling/orders/search', methods=['GET'])
-def search_bling_orders():
-    """Search orders in a specific Bling instance"""
-    try:
-        instance_id = request.args.get('instance_id')
-        status_id = request.args.get('status_id')
-        store_id = request.args.get('store_id')
-        start_date = request.args.get('start_date')
-        end_date = request.args.get('end_date')
-        
-        if not instance_id:
-            return jsonify({'error': 'instance_id é obrigatório'}), 400
-            
-        inst = installed_integration_service.get_installed_by_id(instance_id)
-        if not inst or inst.module_id != 'bling':
-            return jsonify({'error': 'Instância Bling não encontrada'}), 404
-            
         from nistiprint_shared.services.bling.bling_client_updated import BlingClient
-        
-        account_data = inst.to_dict()
-        account_data['id'] = inst.id
-        if inst.access_token: account_data['access_token'] = inst.access_token
-        if inst.refresh_token: account_data['refresh_token'] = inst.refresh_token
-            
+
+        account_data = credential_resolver_service.hydrate_integration(
+            {**inst.to_dict(), "id": inst.id}
+        )
         client = BlingClient(account_data)
-        
-        # Default dates if not provided
+
+        return jsonify(
+            {
+                "situacoes": client.get_situacoes(modulo="vendas"),
+                "lojas": client.get_stores(),
+            }
+        ), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@marketplace_api_bp.route("/bling/orders/search", methods=["GET"])
+@login_required
+def search_bling_orders():
+    try:
+        instance_id = request.args.get("instance_id")
+        status_id = request.args.get("status_id")
+        store_id = request.args.get("store_id")
+        start_date = request.args.get("start_date")
+        end_date = request.args.get("end_date")
+
+        if not instance_id:
+            return jsonify({"error": "instance_id e obrigatorio"}), 400
+
+        inst = installed_integration_service.get_installed_by_id(instance_id)
+        if not inst or inst.module_id != "bling":
+            return jsonify({"error": "Instancia Bling nao encontrada"}), 404
+
+        from nistiprint_shared.services.bling.bling_client_updated import BlingClient
+
+        account_data = credential_resolver_service.hydrate_integration(
+            {**inst.to_dict(), "id": inst.id}
+        )
+        client = BlingClient(account_data)
+
         if not start_date:
-            start_date = (datetime.utcnow() - timedelta(days=7)).strftime('%Y-%m-%d')
+            start_date = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
         if not end_date:
-            end_date = datetime.utcnow().strftime('%Y-%m-%d')
-            
+            end_date = datetime.utcnow().strftime("%Y-%m-%d")
+
         orders = client.get_orders_by_status(
             status_id=status_id,
             store_id=store_id,
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
         )
-        
-        return jsonify({'orders': orders}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
-@marketplace_api_bp.route('/bling/orders/import', methods=['POST'])
+        return jsonify({"orders": orders}), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@marketplace_api_bp.route("/bling/orders/import", methods=["POST"])
+@login_required
 def import_bling_orders():
-    """Import selected orders from Bling to the system"""
     try:
         data = request.get_json()
-        instance_id = data.get('instance_id')
-        order_ids = data.get('order_ids', []) # List of Bling internal order IDs
-        
+        instance_id = data.get("instance_id")
+        order_ids = data.get("order_ids", [])
+
         if not instance_id or not order_ids:
-            return jsonify({'error': 'instance_id e order_ids são obrigatórios'}), 400
-            
+            return jsonify({"error": "instance_id e order_ids sao obrigatorios"}), 400
+
         inst = installed_integration_service.get_installed_by_id(instance_id)
-        if not inst or inst.module_id != 'bling':
-            return jsonify({'error': 'Instância Bling não encontrada'}), 404
-            
+        if not inst or inst.module_id != "bling":
+            return jsonify({"error": "Instancia Bling nao encontrada"}), 404
+
         from nistiprint_shared.services.bling.bling_client_updated import BlingClient
+        from nistiprint_shared.services.bling_order_processing_service import (
+            BlingOrderProcessingService,
+        )
         from nistiprint_shared.services.order_sync_service import order_sync_service
-        from nistiprint_shared.services.bling_order_processing_service import BlingOrderProcessingService
-        
-        account_data = inst.to_dict()
-        account_data['id'] = inst.id
-        if inst.access_token: account_data['access_token'] = inst.access_token
-        if inst.refresh_token: account_data['refresh_token'] = inst.refresh_token
-            
+
+        account_data = credential_resolver_service.hydrate_integration(
+            {**inst.to_dict(), "id": inst.id}
+        )
         client = BlingClient(account_data)
         processor = BlingOrderProcessingService()
-        
+
         results = []
         for oid in order_ids:
             try:
-                # Fetch full details
                 full_order = client.get_order(oid)
                 if not full_order:
-                    results.append({'id': oid, 'status': 'error', 'message': 'Não foi possível obter detalhes do pedido'})
+                    results.append(
+                        {
+                            "id": oid,
+                            "status": "error",
+                            "message": "Nao foi possivel obter detalhes do pedido",
+                        }
+                    )
                     continue
-                
-                # Sync using standard service
-                sync_result = order_sync_service.sync_bling_order(full_order)
-                
-                # Save to legacy DB for compatibility
-                processor._save_order_to_db(full_order)
-                
-                results.append({
-                    'id': oid, 
-                    'status': 'success', 
-                    'numero': full_order.get('numero'),
-                    'internal_id': sync_result.get('id') if sync_result else None
-                })
-            except Exception as oid_err:
-                results.append({'id': oid, 'status': 'error', 'message': str(oid_err)})
-                
-        return jsonify({'results': results}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
-@marketplace_api_bp.route('/installed/<instance_id>/test', methods=['POST'])
+                sync_result = order_sync_service.sync_bling_order(full_order)
+                processor._save_order_to_db(full_order)
+
+                results.append(
+                    {
+                        "id": oid,
+                        "status": "success",
+                        "numero": full_order.get("numero"),
+                        "internal_id": sync_result.get("id") if sync_result else None,
+                    }
+                )
+            except Exception as oid_err:
+                results.append(
+                    {"id": oid, "status": "error", "message": str(oid_err)}
+                )
+
+        return jsonify({"results": results}), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@marketplace_api_bp.route("/installed/<instance_id>/test", methods=["POST"])
+@login_required
 def test_integration(instance_id):
     inst = installed_integration_service.get_installed_by_id(instance_id)
-    return jsonify({'success': True, 'result': platform_auth_service.call_test_endpoint(inst.module_id, {**inst.to_dict(), 'id': instance_id})}) if inst else (jsonify({'error': 'Not found'}), 404)
+    if not inst:
+        return jsonify({"error": "Not found"}), 404
+    payload = _auth_payload_for_test(inst)
+    module = integration_module_service.get_module_by_id(inst.module_id)
+    test_path = module.data_mapping_spec.get("test_endpoint") if module else None
+    driver_result = platform_api_service.test_connection(
+        payload, module_id=inst.module_id, path=test_path
+    )
+    if not driver_result.get("error"):
+        return jsonify({"success": True, "result": driver_result})
+    return jsonify(
+        {
+            "success": True,
+            "result": platform_auth_service.call_test_endpoint(inst.module_id, payload),
+        }
+    )
 
-@marketplace_api_bp.route('/installed/<instance_id>/sync', methods=['POST'])
+
+@marketplace_api_bp.route("/installed/<instance_id>/sync", methods=["POST"])
+@login_required
 def trigger_sync(instance_id):
-    installed_integration_service.update_sync_status(instance_id, 'syncing')
-    installed_integration_service.update_sync_status(instance_id, 'success')
-    return jsonify({'success': True})
+    installed_integration_service.update_sync_status(instance_id, "syncing")
+    installed_integration_service.update_sync_status(instance_id, "success")
+    return jsonify({"success": True})
 
-@marketplace_api_bp.route('/installed/<instance_id>/renew', methods=['POST'])
+
+@marketplace_api_bp.route("/installed/<instance_id>/renew", methods=["POST"])
+@login_required
 def renew_token(instance_id):
     try:
-        installed_integration_service.renew_integration_token(instance_id, execution_mode='manual')
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        installed_integration_service.update_installed(instance_id, {'refresh_error': str(e)})
-        return jsonify({'error': str(e)}), 500
+        inst = installed_integration_service.get_installed_by_id(instance_id)
+        if not inst:
+            return jsonify({"error": "Not found"}), 404
+        integration_credentials_service.ensure_refresh_allowed(
+            {**inst.to_dict(), "id": inst.id}
+        )
+        installed_integration_service.renew_integration_token(
+            instance_id, execution_mode="manual"
+        )
+        refreshed = installed_integration_service.get_installed_by_id(instance_id)
+        return jsonify({"status": "success", "installation": _public_installation(refreshed)})
+    except Exception as exc:
+        installed_integration_service.update_installed(
+            instance_id, {"refresh_error": str(exc)}
+        )
+        return jsonify({"error": str(exc)}), 500
 
-@marketplace_api_bp.route('/installed/<instance_id>/config', methods=['PUT'])
-def update_integration_config(instance_id):
-    """Atualiza o config de uma integração instalada"""
+
+@marketplace_api_bp.route("/installed/<instance_id>/credential-status", methods=["GET"])
+@login_required
+def get_credential_status(instance_id):
     inst = installed_integration_service.get_installed_by_id(instance_id)
     if not inst:
-        return jsonify({'error': 'Not found'}), 404
-    
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(
+        {
+            "credential_status": integration_credentials_service.public_view(
+                {**inst.to_dict(), "id": inst.id}
+            )
+        }
+    )
+
+
+@marketplace_api_bp.route("/installed/<instance_id>/config", methods=["PUT"])
+@login_required
+def update_integration_config(instance_id):
+    inst = installed_integration_service.get_installed_by_id(instance_id)
+    if not inst:
+        return jsonify({"error": "Not found"}), 404
+
     data = request.get_json()
-    config_update = data.get('config', {})
-    
-    # Mesclar com config existente
+    config_update = data.get("config", {})
     current_config = inst.config or {}
     updated_config = {**current_config, **config_update}
-    
-    installed_integration_service.update_installed(instance_id, {'config': updated_config})
-    return jsonify({'success': True, 'config': updated_config})
 
-@marketplace_api_bp.route('/orders/list', methods=['POST'])
+    installed_integration_service.update_installed(instance_id, {"config": updated_config})
+    return jsonify({"success": True, "config": updated_config})
+
+
+@marketplace_api_bp.route("/app-profiles", methods=["GET", "POST"])
+@admin_required
+def app_profiles():
+    if request.method == "GET":
+        module_id = request.args.get("module_id")
+        return jsonify(
+            {"profiles": integration_app_profile_service.list_profiles(module_id=module_id)}
+        )
+
+    data = request.get_json(silent=True) or {}
+    payload = {
+        "module_id": data.get("module_id"),
+        "name": data.get("name"),
+        "environment": data.get("environment") or "production",
+        "redirect_uri": data.get("redirect_uri"),
+        "auth_base_url": data.get("auth_base_url"),
+        "token_url": data.get("token_url"),
+        "is_default": bool(data.get("is_default", False)),
+        "is_active": bool(data.get("is_active", True)),
+    }
+    secrets_payload = {
+        key: value
+        for key, value in {
+            "client_id": data.get("client_id"),
+            "client_secret": data.get("client_secret"),
+            "partner_id": data.get("partner_id"),
+            "partner_key": data.get("partner_key"),
+        }.items()
+        if value not in (None, "")
+    }
+    profile = integration_app_profile_service.create_profile(
+        payload, secrets=secrets_payload
+    )
+    return jsonify({"profile": profile}), 201
+
+
+@marketplace_api_bp.route("/app-profiles/<profile_id>", methods=["GET", "PUT"])
+@admin_required
+def app_profile_detail(profile_id):
+    if request.method == "GET":
+        profile = integration_app_profile_service.get_profile(profile_id)
+        if not profile:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify({"profile": profile})
+
+    data = request.get_json(silent=True) or {}
+    payload = {
+        key: value
+        for key, value in {
+            "name": data.get("name"),
+            "environment": data.get("environment"),
+            "redirect_uri": data.get("redirect_uri"),
+            "auth_base_url": data.get("auth_base_url"),
+            "token_url": data.get("token_url"),
+            "is_default": data.get("is_default"),
+            "is_active": data.get("is_active"),
+        }.items()
+        if value is not None
+    }
+    secrets_payload = {
+        key: value
+        for key, value in {
+            "client_id": data.get("client_id"),
+            "client_secret": data.get("client_secret"),
+            "partner_id": data.get("partner_id"),
+            "partner_key": data.get("partner_key"),
+        }.items()
+        if value not in (None, "")
+    }
+    profile = integration_app_profile_service.update_profile(
+        profile_id, payload, secrets=secrets_payload
+    )
+    if not profile:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"profile": profile})
+
+
+@marketplace_api_bp.route("/admin/backfill-secrets", methods=["POST"])
+@admin_required
+def backfill_secrets():
+    insts = installed_integration_service.get_all_installed()
+    migrated = 0
+    for inst in insts:
+        installation = {**inst.to_dict(), "id": inst.id}
+        for kind in ("access_token", "refresh_token"):
+            value = installation.get(kind) or (installation.get("credentials") or {}).get(
+                kind
+            )
+            if value not in (None, ""):
+                integration_secret_service.put_secret(
+                    "installed_integration", inst.id, kind, value
+                )
+                migrated += 1
+    return jsonify({"status": "success", "migrated": migrated})
+
+
+@marketplace_api_bp.route("/orders/list", methods=["POST"])
 def get_orders_list():
     data = request.get_json(silent=True) or {}
-    result = platform_api_service.get_orders_list(instance_id=data.get('instance_id') or request.args.get('instance_id'), module_id=data.get('module_id') or request.args.get('module_id') or "shopee", filters=data.get('filters', {}))
-    return ApiResponse.success(data=result) if not (isinstance(result, list) and result and 'error' in result[0]) else ApiResponse.error(message=result[0]['error'], errors=result[0], status_code=500)
+    result = platform_api_service.get_orders_list(
+        instance_id=data.get("instance_id") or request.args.get("instance_id"),
+        module_id=data.get("module_id") or request.args.get("module_id") or "shopee",
+        filters=data.get("filters", {}),
+    )
+    if isinstance(result, list) and result and "error" in result[0]:
+        return ApiResponse.error(
+            message=result[0]["error"], errors=result[0], status_code=500
+        )
+    return ApiResponse.success(data=result)
 
-@marketplace_api_bp.route('/orders/detail', methods=['POST'])
+
+@marketplace_api_bp.route("/orders/detail", methods=["POST"])
 def get_order_detail():
     data = request.get_json(silent=True) or {}
-    order_sn = data.get('order_sn_list') or request.args.get('order_sn_list')
-    if not order_sn: return ApiResponse.error(message="Required", status_code=400)
-    result = platform_api_service.get_order_detail([sn.strip() for sn in order_sn.split(',') if sn.strip()], instance_id=data.get('instance_id') or request.args.get('instance_id'), module_id=data.get('module_id') or request.args.get('module_id') or "shopee")
-    return ApiResponse.success(data=result) if not (result.get("error") and result.get("error") != "") else ApiResponse.error(message=result["error"], errors=result, status_code=500)
+    order_sn = data.get("order_sn_list") or request.args.get("order_sn_list")
+    if not order_sn:
+        return ApiResponse.error(message="Required", status_code=400)
+    result = platform_api_service.get_order_detail(
+        [sn.strip() for sn in order_sn.split(",") if sn.strip()],
+        instance_id=data.get("instance_id") or request.args.get("instance_id"),
+        module_id=data.get("module_id") or request.args.get("module_id") or "shopee",
+    )
+    if result.get("error") and result.get("error") != "":
+        return ApiResponse.error(
+            message=result["error"], errors=result, status_code=500
+        )
+    return ApiResponse.success(data=result)
 
-@marketplace_api_bp.route('/instances', methods=['GET'])
+
+@marketplace_api_bp.route("/instances", methods=["GET"])
+@login_required
 def get_marketplace_instances():
-    """Get all marketplace instances (non-Bling), optionally filtered by active status"""
     try:
-        from nistiprint_shared.services.installed_integration_service import installed_integration_service
-        
-        active = request.args.get('active', 'false').lower() == 'true'
-        
-        # Get all installed integrations
+        active = request.args.get("active", "false").lower() == "true"
         insts = installed_integration_service.get_all_installed()
-        
-        # Filter out Bling (ERP) instances
-        insts = [i for i in insts if i.module_id != 'bling']
-        
-        # Filter by active status if requested
+        insts = [i for i in insts if i.module_id != "bling"]
         if active:
             insts = [i for i in insts if i.is_active]
-        
-        return jsonify({
-            'data': [{
-                'id': i.id,
-                'module_id': i.module_id,
-                'instance_name': i.instance_name,
-                'is_active': i.is_active,
-            } for i in insts]
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+
+        return jsonify(
+            {
+                "data": [
+                    {
+                        "id": i.id,
+                        "module_id": i.module_id,
+                        "instance_name": i.instance_name,
+                        "is_active": i.is_active,
+                    }
+                    for i in insts
+                ]
+            }
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500

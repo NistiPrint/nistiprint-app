@@ -263,8 +263,11 @@ __marimo__/
 # Firebase credentials
 firebase*.json
 
+# IA
+.agents/
 .gemini/
-.qwen/
-.roo/
+.claude/
 .cline/
+.roo/
+.qwen/
 .codex/

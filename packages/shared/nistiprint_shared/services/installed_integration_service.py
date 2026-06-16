@@ -7,6 +7,13 @@ import requests
 from google.cloud import secretmanager
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.file_archive_service import file_archive_service
+from nistiprint_shared.services.credential_resolver_service import (
+    credential_resolver_service,
+)
+from nistiprint_shared.services.integration_app_profile_service import (
+    integration_app_profile_service,
+)
+from nistiprint_shared.services.integration_credentials_service import integration_credentials_service
 from nistiprint_shared.services.platform_auth_service import platform_auth_service
 from nistiprint_shared.services.integration_resolution_service import integration_resolution_service
 
@@ -19,6 +26,72 @@ class InstalledIntegrationService:
     def __init__(self):
         self.table = supabase_db.table('installed_integrations')
         self.log_table = supabase_db.table('integration_refresh_logs')
+
+    def _normalized_payload(self, payload: Dict | None) -> Dict:
+        """Normalize legacy credential placement into config/credentials."""
+        data = dict(payload or {})
+        module_id = str(data.get('module_id') or '').lower()
+        config = dict(data.get('config') or {})
+        credentials = dict(data.get('credentials') or {})
+        legacy_credentials = dict(data.get('legacy_credentials') or {})
+        legacy_credentials.update(dict(data.get('_legacy_credentials') or {}))
+
+        for field in (
+            'partner_id',
+            'partner_key',
+            'shop_id',
+            'merchant_id',
+            'client_id',
+            'client_secret',
+            'seller_id',
+            'account_id',
+            'cnpj',
+        ):
+            value = data.get(field)
+            if value in (None, ''):
+                value = legacy_credentials.get(field)
+            if value not in (None, ''):
+                config.setdefault(field, value)
+                credentials.setdefault(field, value)
+
+        if module_id == 'shopee' or 'shopee' in module_id:
+            identity = config.get('shop_id') or credentials.get('shop_id')
+            if identity not in (None, ''):
+                config['shop_id'] = identity
+                credentials['shop_id'] = identity
+        elif module_id == 'mercadolivre':
+            identity = (
+                config.get('user_id')
+                or credentials.get('user_id')
+                or config.get('seller_id')
+                or credentials.get('seller_id')
+            )
+            if identity not in (None, ''):
+                config.setdefault('user_id', identity)
+                credentials.setdefault('user_id', identity)
+
+        data['config'] = config
+        data['credentials'] = credentials
+        return data
+
+    def _should_normalize_update(self, update_data: Dict) -> bool:
+        credential_fields = {
+            'config',
+            'credentials',
+            'legacy_credentials',
+            '_legacy_credentials',
+            'partner_id',
+            'partner_key',
+            'shop_id',
+            'shopid',
+            'merchant_id',
+            'client_id',
+            'client_secret',
+            'seller_id',
+            'account_id',
+            'cnpj',
+        }
+        return any(field in update_data for field in credential_fields)
 
     def _get_secret(self, secret_id: str, version_id: str = "latest") -> str:
         """
@@ -142,7 +215,7 @@ class InstalledIntegrationService:
 
         installations = []
         for row in response.data:
-            installation_data = dict(row)
+            installation_data = self._normalized_payload(dict(row))
             instance_id = str(installation_data.get('id'))
             from nistiprint_shared.models.integration_module import InstalledIntegration
             installation = InstalledIntegration.from_dict(installation_data, instance_id)
@@ -155,7 +228,7 @@ class InstalledIntegrationService:
         response = self.table.select("*").eq('id', instance_id).execute()
 
         if response.data:
-            installation_data = dict(response.data[0])
+            installation_data = self._normalized_payload(dict(response.data[0]))
             from nistiprint_shared.models.integration_module import InstalledIntegration
             return InstalledIntegration.from_dict(installation_data, instance_id)
 
@@ -167,7 +240,7 @@ class InstalledIntegrationService:
 
         installations = []
         for row in response.data:
-            installation_data = dict(row)
+            installation_data = self._normalized_payload(dict(row))
             instance_id = str(installation_data.get('id'))
             from nistiprint_shared.models.integration_module import InstalledIntegration
             installation = InstalledIntegration.from_dict(installation_data, instance_id)
@@ -181,7 +254,7 @@ class InstalledIntegrationService:
 
         installations = []
         for row in response.data:
-            installation_data = dict(row)
+            installation_data = self._normalized_payload(dict(row))
             instance_id = str(installation_data.get('id'))
             from nistiprint_shared.models.integration_module import InstalledIntegration
             installation = InstalledIntegration.from_dict(installation_data, instance_id)
@@ -206,17 +279,32 @@ class InstalledIntegrationService:
 
         # Create new installation
         from nistiprint_shared.models.integration_module import InstalledIntegration
+        default_profile = integration_app_profile_service.get_default_profile(module_id)
+
         installation = InstalledIntegration(
             user_id=user_id,
             module_id=module_id,
             instance_name=instance_name,
-            config=config or {},
-            credentials=credentials or {},
+            config=self._normalized_payload({
+                'module_id': module_id,
+                'config': config or {},
+                'credentials': credentials or {},
+            })['config'],
+            credentials=self._normalized_payload({
+                'module_id': module_id,
+                'config': config or {},
+                'credentials': credentials or {},
+            })['credentials'],
             installation_date=datetime.utcnow(),
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             instance_color=instance_color,
-            description=description
+            description=description,
+            app_profile_id=default_profile['id'] if default_profile else None,
+            legacy_credentials={
+                **(config or {}),
+                **(credentials or {}),
+            }
         )
 
         installation_data = installation.to_dict()
@@ -228,10 +316,18 @@ class InstalledIntegrationService:
 
     def update_installed(self, instance_id: str, update_data: Dict) -> bool:
         """Update an existing installed integration"""
-        update_data['updated_at'] = datetime.utcnow().isoformat()
+        update_payload = dict(update_data)
+        if self._should_normalize_update(update_payload):
+            current = self.get_installed_by_id(instance_id)
+            current_data = {**current.to_dict(), 'id': current.id} if current else {}
+            normalized = self._normalized_payload({**current_data, **update_payload})
+            for field in ('config', 'credentials'):
+                if field in update_payload or field in normalized:
+                    update_payload[field] = normalized[field]
+        update_payload['updated_at'] = datetime.utcnow().isoformat()
 
         try:
-            response = self.table.update(update_data).eq('id', instance_id).execute()
+            response = self.table.update(update_payload).eq('id', instance_id).execute()
             if response.data:
                 integration_resolution_service.invalidate()
             return len(response.data) > 0
@@ -247,22 +343,24 @@ class InstalledIntegrationService:
         if not inst:
             raise ValueError("Integração não encontrada")
 
+        normalized_inst = self._normalized_payload({**inst.to_dict(), 'id': inst.id})
+        integration_credentials_service.ensure_refresh_allowed(normalized_inst)
         now = datetime.utcnow()
-        tokens = platform_auth_service.refresh_access_token(inst.module_id, inst.to_dict())
+        tokens = platform_auth_service.refresh_access_token(inst.module_id, normalized_inst)
         expires_in = tokens.get('expires_in')
+        credential_resolver_service.persist_installation_tokens(instance_id, tokens)
 
-        merged_credentials = {
-            **(inst.credentials or {}),
-            'access_token': tokens.get('access_token'),
-            'refresh_token': tokens.get('refresh_token'),
-        }
+        merged_credentials = dict(normalized_inst.get('credentials') or {})
+        merged_credentials.pop('access_token', None)
+        merged_credentials.pop('refresh_token', None)
         if expires_in is not None:
             merged_credentials['expires_in'] = expires_in
 
         update_data = {
+            'config': normalized_inst.get('config') or {},
             'credentials': merged_credentials,
-            'access_token': tokens.get('access_token'),
-            'refresh_token': tokens.get('refresh_token'),
+            'access_token': None,
+            'refresh_token': None,
             'last_refresh_attempt': now.isoformat(),
             'refresh_error': None,
         }
@@ -315,6 +413,17 @@ class InstalledIntegrationService:
         Returns:
             InstalledIntegration: The integration instance responsible for the function, or None.
         """
+        try:
+            from nistiprint_shared.services.integration_capability_service import integration_capability_service
+            resolved = integration_capability_service.resolve_integration(
+                marketplace_integration_id,
+                function_scope,
+            )
+            if resolved:
+                return resolved
+        except Exception as e:
+            print(f"Error resolving integration capability route: {e}")
+
         from nistiprint_shared.models.integration_module import InstalledIntegration
         
         # 1. Check if the marketplace integration has a direct parent linked

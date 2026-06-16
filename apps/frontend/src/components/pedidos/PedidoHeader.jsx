@@ -19,7 +19,8 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { formatAppDate } from '@/lib/dateTime';
+import { formatAppDateTime } from '@/lib/dateTime';
+import { getOrderTimestamps } from '@/lib/orderTimestamps';
 
 /**
  * Cabeçalho da página de detalhe do pedido
@@ -35,6 +36,7 @@ export default function PedidoHeader({
   isReprocessing,
 }) {
   const navigate = useNavigate();
+  const timestamps = getOrderTimestamps(pedido);
 
   const handleCopyNumero = () => {
     const texto = `${pedido.numero_pedido} (${pedido.codigo_pedido_externo})`;
@@ -121,9 +123,15 @@ export default function PedidoHeader({
             )}
             <span>•</span>
             <span className="text-sm">
-              {pedido.datas?.venda
-                ? formatAppDate(pedido.datas.venda)
+              {timestamps.compra || pedido.datas?.venda
+                ? `Compra: ${formatAppDateTime(timestamps.compra || pedido.datas?.venda, { fallback: String(timestamps.compra || pedido.datas?.venda) })}`
                 : '-'}
+            </span>
+            <span>â€¢</span>
+            <span className="text-sm">
+              {timestamps.pagamento
+                ? `Pagamento: ${formatAppDateTime(timestamps.pagamento, { fallback: String(timestamps.pagamento) })}`
+                : 'Pagamento não informado'}
             </span>
           </div>
         </div>

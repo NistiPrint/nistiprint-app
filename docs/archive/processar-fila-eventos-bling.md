@@ -1,45 +1,49 @@
+> Documento legado.
+> Este fluxo historico nao define sozinho a arquitetura atual de ingest.
+> Fonte atual: [Spec de Pedidos](../specs/02-domains/pedidos/spec.md), [Spec de Integracoes](../specs/02-domains/integracoes/spec.md) e [Arquitetura Tecnica](../tecnico/ARQUITETURA.md).
+
 # Processamento de Fila de Eventos Bling - Webhooks Shopee
 
-## Visão Geral
+## VisÃ£o Geral
 
-Este documento descreve o fluxo de processamento de webhooks da Bling para pedidos da Shopee, com foco em acumular registros de pedidos no sistema para consolidar demandas de produção.
+Este documento descreve o fluxo de processamento de webhooks da Bling para pedidos da Shopee, com foco em acumular registros de pedidos no sistema para consolidar demandas de produÃ§Ã£o.
 
 ---
 
 ## Arquitetura Atual
 
 ```
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│   Bling     │ ───► │   n8n       │ ───► │   Redis     │ ───► │   Worker    │
-│  (webhook)  │      │  (externo)  │      │  (fila)     │      │  (Celery)   │
-└─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
-                                              │                      │
-                                              │                      ▼
-                                              │            ┌─────────────────┐
-                                              │            │ bling_order_    │
-                                              │            │ processing_     │
-                                              │            │ service.py      │
-                                              │            └─────────────────┘
-                                              │                      │
-                                              │                      ▼
-                                              │            ┌─────────────────┐
-                                              │            │ order_service   │
-                                              │            │ (pedidos)       │
-                                              │            └─────────────────┘
-                                              │
-                                              │ (opcional: log)
-                                              ▼
-                                     ┌─────────────────┐
-                                     │ webhook_logs    │
-                                     │ (Supabase)      │
-                                     └─────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”      â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚   Bling     â”‚ â”€â”€â”€â–º â”‚   n8n       â”‚ â”€â”€â”€â–º â”‚   Redis     â”‚ â”€â”€â”€â–º â”‚   Worker    â”‚
+â”‚  (webhook)  â”‚      â”‚  (externo)  â”‚      â”‚  (fila)     â”‚      â”‚  (Celery)   â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜      â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜      â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜      â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                              â”‚                      â”‚
+                                              â”‚                      â–¼
+                                              â”‚            â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                                              â”‚            â”‚ bling_order_    â”‚
+                                              â”‚            â”‚ processing_     â”‚
+                                              â”‚            â”‚ service.py      â”‚
+                                              â”‚            â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                              â”‚                      â”‚
+                                              â”‚                      â–¼
+                                              â”‚            â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                                              â”‚            â”‚ order_service   â”‚
+                                              â”‚            â”‚ (pedidos)       â”‚
+                                              â”‚            â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                              â”‚
+                                              â”‚ (opcional: log)
+                                              â–¼
+                                     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                                     â”‚ webhook_logs    â”‚
+                                     â”‚ (Supabase)      â”‚
+                                     â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 ### Componentes
 
 | Componente | Responsabilidade |
 |------------|------------------|
-| **Bling** | Envia webhook quando pedido muda de situação |
+| **Bling** | Envia webhook quando pedido muda de situaÃ§Ã£o |
 | **n8n (externo)** | Recebe webhook, valida e enqueue no Redis |
 | **Redis** | Fila `bling:webhooks:pendentes` |
 | **Worker Celery** | Consome fila a cada 30s (`consumir_fila_bling`) |
@@ -47,19 +51,19 @@ Este documento descreve o fluxo de processamento de webhooks da Bling para pedid
 
 ---
 
-## Requisitos de Negócio
+## Requisitos de NegÃ³cio
 
-### 1. Filtro por Situação do Pedido
+### 1. Filtro por SituaÃ§Ã£o do Pedido
 
-Apenas pedidos com **situação ID 15 (Em Andamento)** devem ser processados:
+Apenas pedidos com **situaÃ§Ã£o ID 15 (Em Andamento)** devem ser processados:
 
-| ID | Situação | Ação |
+| ID | SituaÃ§Ã£o | AÃ§Ã£o |
 |----|----------|------|
-| 15 | Em Andamento | ✅ Processar completo (buscar detalhes, produtos, Shopee) |
-| 6 | Em Aberto | ℹ️ Apenas atualizar status |
-| 9 | Atendido | ℹ️ Apenas atualizar status |
-| 12 | Cancelado | ⏭️ Ignorar |
-| Outros | - | ⏭️ Ignorar |
+| 15 | Em Andamento | âœ… Processar completo (buscar detalhes, produtos, Shopee) |
+| 6 | Em Aberto | â„¹ï¸ Apenas atualizar status |
+| 9 | Atendido | â„¹ï¸ Apenas atualizar status |
+| 12 | Cancelado | â­ï¸ Ignorar |
+| Outros | - | â­ï¸ Ignorar |
 
 ### 2. Filtro por Loja Shopee
 
@@ -76,20 +80,20 @@ Apenas pedidos das lojas Shopee devem ser processados:
 ### 3. Dados a Serem Coletados
 
 #### Da Bling (API V3)
-- ✅ ID do pedido
-- ✅ Número do pedido (numeroLoja)
-- ✅ Situação
-- ✅ Contato (cliente)
-- ✅ **Itens do pedido** (produtos, quantidades, SKUs)
-- ✅ Totais
+- âœ… ID do pedido
+- âœ… NÃºmero do pedido (numeroLoja)
+- âœ… SituaÃ§Ã£o
+- âœ… Contato (cliente)
+- âœ… **Itens do pedido** (produtos, quantidades, SKUs)
+- âœ… Totais
 
 #### Da Shopee (API V2)
-- ✅ `buyer_username` (nome de usuário do comprador)
-- ✅ `pay_time` (data limite para postagem)
-- ✅ `order_status` (status original Shopee)
-- ✅ `item_list` (detalhes dos itens)
+- âœ… `buyer_username` (nome de usuÃ¡rio do comprador)
+- âœ… `pay_time` (data limite para postagem)
+- âœ… `order_status` (status original Shopee)
+- âœ… `item_list` (detalhes dos itens)
 
-### 4. Associação de Produtos
+### 4. AssociaÃ§Ã£o de Produtos
 
 Para cada item do pedido, tentar associar com cadastro interno:
 
@@ -102,48 +106,48 @@ match = product_service.resolve_variation(
 ```
 
 **Resultado:**
-- ✅ **Mapeado:** `produto_id` interno vinculado
-- ⚠️ **Não Mapeado:** Registro como órfão para revisão posterior
+- âœ… **Mapeado:** `produto_id` interno vinculado
+- âš ï¸ **NÃ£o Mapeado:** Registro como Ã³rfÃ£o para revisÃ£o posterior
 
 ---
 
 ## Fluxo de Processamento
 
-### Diagrama de Sequência
+### Diagrama de SequÃªncia
 
 ```
 Worker (Celery)
-    │
-    ├─► 1. Recebe payload do Redis
-    │    {data: {id: 123, situacao: {id: 15}, loja: {id: 204047801}}}
-    │
-    ├─► 2. Filtra por situação (id == 15?)
-    │    └─► NÃO: Retorna skipped
-    │    └─► SIM: Continua
-    │
-    ├─► 3. Filtra por loja Shopee (loja.id ∈ BLING_ID_LOJA_SHOPEE?)
-    │    └─► NÃO: Retorna skipped
-    │    └─► SIM: Continua
-    │
-    ├─► 4. Busca detalhes na Bling API V3
-    │    GET /pedidos/vendas/{order_id}
-    │    └─► Retorna: itens, contato, totais
-    │
-    ├─► 5. Para cada item, associa produto interno
-    │    product_service.resolve_variation(sku, plataforma, nome)
-    │    └─► Adiciona produto_id se encontrado
-    │
-    ├─► 6. Busca dados adicionais na Shopee API V2
-    │    GET /api/v2/order/get_order_detail
-    │    └─► Retorna: buyer_username, pay_time, order_status
-    │
-    ├─► 7. Persiste no banco unificado
-    │    order_service.upsert_order(...)
-    │    ├─► tabela: pedidos (core)
-    │    ├─► tabela: vinculos_integracao_pedido (link)
-    │    └─► tabela: itens_pedido (itens)
-    │
-    └─► 8. Gera demanda de produção
+    â”‚
+    â”œâ”€â–º 1. Recebe payload do Redis
+    â”‚    {data: {id: 123, situacao: {id: 15}, loja: {id: 204047801}}}
+    â”‚
+    â”œâ”€â–º 2. Filtra por situaÃ§Ã£o (id == 15?)
+    â”‚    â””â”€â–º NÃƒO: Retorna skipped
+    â”‚    â””â”€â–º SIM: Continua
+    â”‚
+    â”œâ”€â–º 3. Filtra por loja Shopee (loja.id âˆˆ BLING_ID_LOJA_SHOPEE?)
+    â”‚    â””â”€â–º NÃƒO: Retorna skipped
+    â”‚    â””â”€â–º SIM: Continua
+    â”‚
+    â”œâ”€â–º 4. Busca detalhes na Bling API V3
+    â”‚    GET /pedidos/vendas/{order_id}
+    â”‚    â””â”€â–º Retorna: itens, contato, totais
+    â”‚
+    â”œâ”€â–º 5. Para cada item, associa produto interno
+    â”‚    product_service.resolve_variation(sku, plataforma, nome)
+    â”‚    â””â”€â–º Adiciona produto_id se encontrado
+    â”‚
+    â”œâ”€â–º 6. Busca dados adicionais na Shopee API V2
+    â”‚    GET /api/v2/order/get_order_detail
+    â”‚    â””â”€â–º Retorna: buyer_username, pay_time, order_status
+    â”‚
+    â”œâ”€â–º 7. Persiste no banco unificado
+    â”‚    order_service.upsert_order(...)
+    â”‚    â”œâ”€â–º tabela: pedidos (core)
+    â”‚    â”œâ”€â–º tabela: vinculos_integracao_pedido (link)
+    â”‚    â””â”€â–º tabela: itens_pedido (itens)
+    â”‚
+    â””â”€â–º 8. Gera demanda de produÃ§Ã£o
          demanda_producao_service.create_from_order()
 ```
 
@@ -168,7 +172,7 @@ Worker (Celery)
       "id": 204047801
     },
     "contato": {
-      "nome": "João Silva",
+      "nome": "JoÃ£o Silva",
       "numeroDocumento": "123.456.789-00"
     },
     "itens": [
@@ -191,7 +195,7 @@ Worker (Celery)
     'numero_pedido': '12345',
     'codigo_pedido_externo': '204047801-SP240313ABC123',
     'origem': 'SHOPEE',
-    'cliente_nome': 'João Silva',
+    'cliente_nome': 'JoÃ£o Silva',
     'cliente_documento': '123.456.789-00',
     'data_venda': '2026-03-13T10:30:00',
     'status_unificado': 'PAGO',  # mapeado de situacao.id=15
@@ -208,7 +212,7 @@ Worker (Celery)
 }
 ```
 
-### Vínculo de Integração (tabela: `vinculos_integracao_pedido`)
+### VÃ­nculo de IntegraÃ§Ã£o (tabela: `vinculos_integracao_pedido`)
 
 ```python
 {
@@ -230,7 +234,7 @@ Worker (Celery)
     {
         'id': <item_id>,
         'pedido_id': <core_id>,
-        'produto_id': <id_produto_interno>,  # null se não mapeado
+        'produto_id': <id_produto_interno>,  # null se nÃ£o mapeado
         'sku_externo': 'MIOLO-AGENDA-2026',
         'descricao': 'Miolo Agenda 2026 - Floral',
         'quantidade': 2,
@@ -243,18 +247,18 @@ Worker (Celery)
 
 ---
 
-## Implementação
+## ImplementaÃ§Ã£o
 
 ### Arquivos Envolvidos
 
 | Arquivo | Responsabilidade |
 |---------|------------------|
 | `packages/shared/nistiprint_shared/services/bling_order_processing_service.py` | Processamento principal |
-| `packages/shared/nistiprint_shared/services/order_sync_service.py` | Sincronização com modelo unificado |
-| `packages/shared/nistiprint_shared/services/order_service.py` | Persistência no banco |
-| `packages/shared/nistiprint_shared/services/product_service.py` | Associação de produtos |
+| `packages/shared/nistiprint_shared/services/order_sync_service.py` | SincronizaÃ§Ã£o com modelo unificado |
+| `packages/shared/nistiprint_shared/services/order_service.py` | PersistÃªncia no banco |
+| `packages/shared/nistiprint_shared/services/product_service.py` | AssociaÃ§Ã£o de produtos |
 | `packages/shared/nistiprint_shared/services/platform_drivers/shopee.py` | API Shopee V2 |
-| `apps/worker/worker_entrypoint.py` | Configuração Celery |
+| `apps/worker/worker_entrypoint.py` | ConfiguraÃ§Ã£o Celery |
 | `packages/shared/nistiprint_shared/services/redis_queue_tasks.py` | Consumer da fila |
 
 ### Constantes
@@ -277,7 +281,7 @@ SITUACOES_PEDIDOS_BLING = {
 }
 ```
 
-### Pseudocódigo do Processamento
+### PseudocÃ³digo do Processamento
 
 ```python
 class BlingOrderProcessingService:
@@ -290,13 +294,13 @@ class BlingOrderProcessingService:
         situacao = data.get('situacao', {})
         situacao_id = situacao.get('id')
         
-        # 1. Filtrar por situação
+        # 1. Filtrar por situaÃ§Ã£o
         if situacao_id != 15:
-            return {"status": "skipped", "message": f"Situação {situacao_id} ignorada"}
+            return {"status": "skipped", "message": f"SituaÃ§Ã£o {situacao_id} ignorada"}
         
         # 2. Filtrar por loja Shopee
         if loja_id not in BLING_ID_LOJA_SHOPEE:
-            return {"status": "skipped", "message": f"Loja {loja_id} não é Shopee"}
+            return {"status": "skipped", "message": f"Loja {loja_id} nÃ£o Ã© Shopee"}
         
         # 3. Buscar detalhes na Bling
         client = self._get_bling_client_for_details()
@@ -372,18 +376,18 @@ class BlingOrderProcessingService:
 
 ---
 
-## Critérios de Aceite
+## CritÃ©rios de Aceite
 
-- [ ] Pedidos de outras lojas (Amazon, Mercado Livre) são ignorados
-- [ ] Pedidos com situação diferente de 15 são ignorados
-- [ ] Detalhes completos do pedido são buscados da Bling
-- [ ] Produtos são associados ao cadastro interno quando possível
-- [ ] Dados da Shopee (username, pay_time) são coletados
-- [ ] Pedido é persistido na tabela `pedidos` (core)
-- [ ] Vínculo é criado em `vinculos_integracao_pedido`
-- [ ] Itens são salvos em `itens_pedido`
-- [ ] Demanda de produção é gerada automaticamente
-- [ ] Logs adequados são gerados para monitoramento
+- [ ] Pedidos de outras lojas (Amazon, Mercado Livre) sÃ£o ignorados
+- [ ] Pedidos com situaÃ§Ã£o diferente de 15 sÃ£o ignorados
+- [ ] Detalhes completos do pedido sÃ£o buscados da Bling
+- [ ] Produtos sÃ£o associados ao cadastro interno quando possÃ­vel
+- [ ] Dados da Shopee (username, pay_time) sÃ£o coletados
+- [ ] Pedido Ã© persistido na tabela `pedidos` (core)
+- [ ] VÃ­nculo Ã© criado em `vinculos_integracao_pedido`
+- [ ] Itens sÃ£o salvos em `itens_pedido`
+- [ ] Demanda de produÃ§Ã£o Ã© gerada automaticamente
+- [ ] Logs adequados sÃ£o gerados para monitoramento
 
 ---
 
@@ -392,25 +396,25 @@ class BlingOrderProcessingService:
 ### Logs Esperados
 
 ```
-📄 Processando Evento Bling - Pedido: 987654321, Situação: 15
-🏪 Loja: 204047801 (Shopee)
-🚀 Pedido 987654321 em ANDAMENTO. Buscando detalhes na Conta 01...
-📦 Itens encontrados: 3
-🔗 Associando produtos internos...
-  ✅ SKU 'MIOLO-AGENDA-2026' → Produto ID: 456
-  ⚠️ SKU 'CUSTOM-XYZ' → Não mapeado
-🦐 Buscando dados Shopee para: SP240313ABC123
-  ✅ buyer_username: joao.silva
-  ✅ pay_time: 2026-03-15T23:59:59
-💾 Persistindo pedido no banco unificado...
-  ✅ Core ID: 789
-  ✅ Vínculo criado
-  ✅ 3 itens salvos
-🏭 Gerando demanda de produção...
-  ✅ Demanda criada: DEM-2026-00123
+ðŸ“„ Processando Evento Bling - Pedido: 987654321, SituaÃ§Ã£o: 15
+ðŸª Loja: 204047801 (Shopee)
+ðŸš€ Pedido 987654321 em ANDAMENTO. Buscando detalhes na Conta 01...
+ðŸ“¦ Itens encontrados: 3
+ðŸ”— Associando produtos internos...
+  âœ… SKU 'MIOLO-AGENDA-2026' â†’ Produto ID: 456
+  âš ï¸ SKU 'CUSTOM-XYZ' â†’ NÃ£o mapeado
+ðŸ¦ Buscando dados Shopee para: SP240313ABC123
+  âœ… buyer_username: joao.silva
+  âœ… pay_time: 2026-03-15T23:59:59
+ðŸ’¾ Persistindo pedido no banco unificado...
+  âœ… Core ID: 789
+  âœ… VÃ­nculo criado
+  âœ… 3 itens salvos
+ðŸ­ Gerando demanda de produÃ§Ã£o...
+  âœ… Demanda criada: DEM-2026-00123
 ```
 
-### Queries de Verificação
+### Queries de VerificaÃ§Ã£o
 
 ```sql
 -- Verificar pedidos processados hoje
@@ -428,7 +432,7 @@ WHERE p.origem = 'SHOPEE'
   AND p.created_at >= CURRENT_DATE
 GROUP BY p.id;
 
--- Verificar itens não mapeados
+-- Verificar itens nÃ£o mapeados
 SELECT 
     ip.sku_externo,
     ip.descricao,
@@ -439,7 +443,7 @@ WHERE ip.produto_id IS NULL
 GROUP BY ip.sku_externo, ip.descricao
 ORDER BY ocorrencias DESC;
 
--- Verificar vínculos de integração
+-- Verificar vÃ­nculos de integraÃ§Ã£o
 SELECT 
     p.numero_pedido,
     vip.plataforma,
@@ -454,25 +458,25 @@ LIMIT 10;
 
 ---
 
-## Próximos Passos da Evolução
+## PrÃ³ximos Passos da EvoluÃ§Ã£o
 
-1. ✅ **Acumular registros de pedidos** (este documento)
-2. ⏳ **Consolidar demandas de produção** (próxima fase)
-3. ⏳ **Dashboard de acompanhamento** (pedidos, produção, estoque)
-4. ⏳ **Alertas de atraso** (data limite postagem vs. status)
-5. ⏳ **Relatórios de conversão** (pedidos por período, produto, plataforma)
+1. âœ… **Acumular registros de pedidos** (este documento)
+2. â³ **Consolidar demandas de produÃ§Ã£o** (prÃ³xima fase)
+3. â³ **Dashboard de acompanhamento** (pedidos, produÃ§Ã£o, estoque)
+4. â³ **Alertas de atraso** (data limite postagem vs. status)
+5. â³ **RelatÃ³rios de conversÃ£o** (pedidos por perÃ­odo, produto, plataforma)
 
 ---
 
-## Referências
+## ReferÃªncias
 
 - [API Bling V3 - Pedidos](https://developer.bling.com.br/referencia#/Pedidos%20Vendas)
 - [Shopee Partner API V2](https://open.shopee.com/documents?version=2)
-- [Documentação order_service](./order_service.md)
-- [Documentação product_service](./product_service.md)
+- [DocumentaÃ§Ã£o order_service](./order_service.md)
+- [DocumentaÃ§Ã£o product_service](./product_service.md)
 
 ---
 
-**Última atualização:** 2026-03-13  
+**Ãšltima atualizaÃ§Ã£o:** 2026-03-13  
 **Autor:** Equipe NistiPrint  
-**Status:** Em implementação
+**Status:** Em implementaÃ§Ã£o

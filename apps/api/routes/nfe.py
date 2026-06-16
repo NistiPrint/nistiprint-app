@@ -1,6 +1,7 @@
 import json
 from flask import request, jsonify, Blueprint, Response, stream_with_context
 from nistiprint_shared.services.installed_integration_service import installed_integration_service
+from nistiprint_shared.services.integration_capability_service import INVOICING, integration_capability_service
 from nistiprint_shared.services.bling.bling_client_updated import BlingClient
 from nistiprint_shared.database.supabase_db_service import supabase_db
 
@@ -14,9 +15,19 @@ def generate_nfe():
         bling_orders = data.get('bling_orders', [])
         # Permite passar explicitamente qual instância usar
         instance_id = data.get('instance_id')
+        request_context = {
+            'bling_integration_id': data.get('bling_integration_id') or data.get('erp_integration_id'),
+            'erp_store_id': data.get('erp_store_id') or data.get('shop_id') or data.get('bling_loja_id'),
+            'external_order_id': data.get('external_order_id') or data.get('numeroLoja'),
+        }
     else:  # GET request (for EventSource)
         platform = request.args.get('platform')
         instance_id = request.args.get('instance_id')
+        request_context = {
+            'bling_integration_id': request.args.get('bling_integration_id') or request.args.get('erp_integration_id'),
+            'erp_store_id': request.args.get('erp_store_id') or request.args.get('shop_id') or request.args.get('bling_loja_id'),
+            'external_order_id': request.args.get('external_order_id') or request.args.get('numeroLoja'),
+        }
         try:
             bling_orders = json.loads(request.args.get('bling_orders', '[]'))
         except json.JSONDecodeError:
@@ -36,12 +47,13 @@ def generate_nfe():
             for numero_loja in (_extract_numero_loja(order) for order in bling_orders)
             if numero_loja
         ]
+        request_context = {k: v for k, v in request_context.items() if v not in (None, '')}
 
         # Se não vier instance_id explícito, tenta resolver pela origem dos pedidos já persistidos.
         if not instance_id and numero_loja_list:
             pedidos_res = (
                 supabase_db.table('pedidos')
-                .select('codigo_pedido_externo, bling_integration_id')
+                .select('codigo_pedido_externo, bling_integration_id, marketplace_integration_id, bling_loja_id')
                 .in_('codigo_pedido_externo', numero_loja_list)
                 .execute()
             )
@@ -59,6 +71,48 @@ def generate_nfe():
                 return jsonify({
                     'error': 'Pedidos pertencem a múltiplas contas Bling. Gere NF por conta separadamente.'
                 }), 400
+            else:
+                marketplace_ids = sorted(
+                    {
+                        int(row['marketplace_integration_id'])
+                        for row in rows
+                        if row.get('marketplace_integration_id') is not None
+                    }
+                )
+                if len(marketplace_ids) == 1:
+                    resolved_ids = set()
+                    ambiguous = False
+                    for row in rows:
+                        if row.get('marketplace_integration_id') is None:
+                            continue
+                        resolved = integration_capability_service.resolve(
+                            row['marketplace_integration_id'],
+                            INVOICING,
+                            context={
+                                'erp_store_id': row.get('bling_loja_id'),
+                                'external_order_id': row.get('codigo_pedido_externo'),
+                                **request_context,
+                            },
+                        )
+                        if resolved.reason == 'ambiguous_erp_link':
+                            ambiguous = True
+                            break
+                        if resolved.responsible_integration:
+                            resolved_ids.add(int(resolved.integration_id))
+                    if ambiguous:
+                        return jsonify({
+                            'error': 'Pedido possui mais de uma conta Bling possivel. Informe shop.id/conta Bling para gerar NF.'
+                        }), 400
+                    if len(resolved_ids) == 1:
+                        instance_id = str(next(iter(resolved_ids)))
+                    elif len(resolved_ids) > 1:
+                        return jsonify({
+                            'error': 'Pedidos resolvem para multiplas contas Bling. Gere NF por conta separadamente.'
+                        }), 400
+                elif len(marketplace_ids) > 1:
+                    return jsonify({
+                        'error': 'Pedidos pertencem a multiplas contas de marketplace. Gere NF por conta separadamente.'
+                    }), 400
 
         # 1. Tentar encontrar a instância responsável pela emissão de NF
         bling_instance = None
@@ -72,10 +126,16 @@ def generate_nfe():
             marketplace_insts = installed_integration_service.get_installed_by_module(platform.lower())
             if marketplace_insts:
                 # Usar a primeira (ou poderíamos filtrar por nome de instância se tivéssemos)
-                bling_instance = installed_integration_service.get_routing_for_function(
-                    marketplace_insts[0].id, 
-                    'INVOICING'
+                resolved = integration_capability_service.resolve(
+                    marketplace_insts[0].id,
+                    INVOICING,
+                    context=request_context,
                 )
+                if resolved.reason == 'ambiguous_erp_link':
+                    return jsonify({
+                        'error': 'Mais de uma conta Bling atende esta origem. Informe shop.id/conta Bling para gerar NF.'
+                    }), 400
+                bling_instance = resolved.responsible_integration
         
         # 2. Se não encontrou via novo sistema, retorna erro
         if not bling_instance:

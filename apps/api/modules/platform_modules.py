@@ -4,6 +4,23 @@ Module definitions for supported platforms in the integration marketplace
 from nistiprint_shared.models.integration_module import IntegrationModule
 
 
+def dummy_marketplace_schema(title):
+    return {
+        "title": title,
+        "type": "object",
+        "required": [],
+        "properties": {}
+    }
+
+
+def dummy_marketplace_mapping():
+    return {
+        "dummy": True,
+        "order_ingest": "erp_bling",
+        "invoicing": "erp_bling"
+    }
+
+
 def get_shopee_module_definition():
     """Get the module definition for Shopee integration"""
     return IntegrationModule(
@@ -81,7 +98,7 @@ def get_amazon_fba_classic_module_definition():
         category="Marketplace",
         tags=["amazon", "fba", "fulfillment", "orders", "inventory"],
         tipo="MARKETPLACE",
-        auth_flow="oauth2",
+        auth_flow="dummy",
         config_schema={
             "title": "Configuração Amazon FBA Classic",
             "type": "object",
@@ -272,31 +289,17 @@ def get_tiktok_shop_module_definition():
     return IntegrationModule(
         id="tiktokshop",
         name="TikTok Shop",
-        description="Official integration for TikTok Shop marketplace.",
+        description="Canal dummy para identificar pedidos TikTok Shop via Bling e configurar vinculos ERP.",
         version="1.0.0",
         author="NistiPrint Team",
         icon_url="https://app.nistiprint.com.br/assets/img/tiktok.svg",
         category="Marketplace",
         tags=["tiktok", "e-commerce", "orders", "inventory"],
         tipo="MARKETPLACE",
-        auth_flow="oauth2",
-        config_schema={
-            "title": "TikTok Shop Configuration",
-            "type": "object",
-            "required": ["app_key", "app_secret", "shop_id"],
-            "properties": {
-                "app_key": { "type": "string", "title": "App Key" },
-                "app_secret": { "type": "string", "title": "App Secret" },
-                "shop_id": { "type": "string", "title": "Shop ID / Shop Cipher" }
-            }
-        },
-        auth_config={
-            "oauth_authorization_url": "https://auth.tiktok-shops.com/oauth/authorize",
-            "oauth_token_url": "https://auth.tiktok-shops.com/api/v2/token/get"
-        },
-        data_mapping_spec={
-            "test_endpoint": "/api/orders/list"
-        }
+        auth_flow="dummy",
+        config_schema=dummy_marketplace_schema("TikTok Shop"),
+        auth_config={},
+        data_mapping_spec=dummy_marketplace_mapping()
     )
 
 def get_kwai_module_definition():
@@ -311,7 +314,7 @@ def get_kwai_module_definition():
         category="Marketplace",
         tags=["kwai", "e-commerce", "orders", "inventory"],
         tipo="MARKETPLACE",
-        auth_flow="oauth2",
+        auth_flow="dummy",
         config_schema={
             "title": "Configuração Kwai Shop",
             "type": "object",
@@ -371,7 +374,7 @@ def get_amazon_fulfillment_module_definition():
         category="Marketplace",
         tags=["amazon", "fulfillment", "logistics", "inventory", "shipping"],
         tipo="MARKETPLACE",
-        auth_flow="oauth2",
+        auth_flow="dummy",
         config_schema={
             "title": "Configuração Amazon Fulfillment",
             "type": "object",
@@ -462,7 +465,7 @@ def get_loja_integrada_module_definition():
         category="Marketplace",
         tags=["lojaintegrada", "e-commerce", "api", "orders", "inventory"],
         tipo="MARKETPLACE",
-        auth_flow="api_key",
+        auth_flow="dummy",
         config_schema={
             "title": "Configuração Loja Integrada",
             "type": "object",
@@ -489,7 +492,7 @@ def get_magazine_luiza_module_definition():
         category="Marketplace",
         tags=["magazineluiza", "magalu", "e-commerce", "orders", "inventory"],
         tipo="MARKETPLACE",
-        auth_flow="api_key",
+        auth_flow="dummy",
         config_schema={
             "title": "Configuracao Magazine Luiza",
             "type": "object",

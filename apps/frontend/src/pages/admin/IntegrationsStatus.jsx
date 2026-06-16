@@ -1,480 +1,193 @@
-import LiveOrderConsultation from '@/components/marketplace/LiveOrderConsultation';
-import { Badge } from '@/components/ui/badge';
+import { useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
+
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import BlingInstanceConfigModal from '@/pages/integracoes/BlingInstanceConfigModal';
 import MarketplaceService from '@/services/MarketplaceService';
 import * as integracaoCanalService from '@/services/integracaoCanalService';
-import { AlertCircle, Building2, CheckCircle2, Database, HelpCircle, Package, Plus, RefreshCw, Settings, Trash2, X, Zap, Pencil, Check } from 'lucide-react';
-import { useEffect, useState, useRef } from 'react';
-import { toast } from 'sonner';
+import IntegrationCard from '@/pages/integracoes/IntegrationCard';
+import { Database, RefreshCw, ShoppingCart, Sparkles } from 'lucide-react';
 
 export default function IntegrationsStatus({ onAddClick }) {
   const [integrations, setIntegrations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [testingId, setTestingId] = useState(null);
   const [syncing, setSyncing] = useState(false);
-  const [moduleFilter, setModuleFilter] = useState('all');
-  const [configModalOpen, setConfigModalOpen] = useState(false);
-  const [selectedIntegrationId, setSelectedIntegrationId] = useState(null);
-  const [shopeeConfigModalOpen, setShopeeConfigModalOpen] = useState(false);
-  const [selectedShopeeIntegration, setSelectedShopeeIntegration] = useState(null);
-  const [shopeeConfig, setShopeeConfig] = useState({ partner_id: '', partner_key: '', shop_id: '' });
-  const [savingConfig, setSavingConfig] = useState(false);
-  const [editingId, setEditingId] = useState(null);
-  const [editName, setEditName] = useState('');
   const [moduleIcons, setModuleIcons] = useState({});
-  const editInputRef = useRef(null);
-
-  const fetchModules = async () => {
-    try {
-      const modules = await MarketplaceService.getAvailableModules();
-      const icons = {};
-      modules.forEach(m => {
-        icons[m.id] = m.icon_url;
-      });
-      setModuleIcons(icons);
-    } catch (error) {
-      console.error('Erro ao carregar ícones:', error);
-    }
-  };
 
   useEffect(() => {
     fetchIntegrations();
     fetchModules();
   }, []);
 
-  const cancelEditing = () => {
-    setEditingId(null);
-    setEditName('');
-  };
+  const erps = useMemo(
+    () => integrations.filter((item) => item.module_id === 'bling'),
+    [integrations]
+  );
+  const marketplaces = useMemo(
+    () => integrations.filter((item) => item.module_id !== 'bling'),
+    [integrations]
+  );
 
-  const saveName = async (item) => {
-    if (editName === item.instance_name) {
-      cancelEditing();
-      return;
-    }
+  async function fetchModules() {
     try {
-      await MarketplaceService.updateInstallation(item.id, { instance_name: editName });
-      toast.success('Nome atualizado com sucesso!');
-      fetchIntegrations();
-      cancelEditing();
+      const modules = await MarketplaceService.getAvailableModules();
+      const icons = {};
+      modules.forEach((module) => {
+        icons[module.id] = module.icon_url;
+      });
+      setModuleIcons(icons);
     } catch (error) {
-      toast.error('Erro ao salvar nome');
+      console.error('Erro ao carregar icones:', error);
     }
-  };
+  }
 
-  const handleOpenConfig = (id) => {
-    setSelectedIntegrationId(id);
-    setConfigModalOpen(true);
-  };
-
-  const handleOpenShopeeConfig = (integration) => {
-    setSelectedShopeeIntegration(integration);
-    setShopeeConfig({
-      partner_id: integration.config?.partner_id || '',
-      partner_key: integration.config?.partner_key || '',
-      shop_id: integration.config?.shop_id || ''
-    });
-    setShopeeConfigModalOpen(true);
-  };
-
-  const handleSaveShopeeConfig = async () => {
-    if (!selectedShopeeIntegration) return;
-    
-    setSavingConfig(true);
-    try {
-      await integracaoCanalService.updateIntegrationConfig(selectedShopeeIntegration.id, shopeeConfig);
-      toast.success('Configuração Shopee atualizada com sucesso!');
-      setShopeeConfigModalOpen(false);
-      fetchIntegrations();
-    } catch (error) {
-      console.error('Erro ao salvar config Shopee:', error);
-      toast.error('Erro ao salvar configuração: ' + (error.message || 'Tente novamente'));
-    } finally {
-      setSavingConfig(false);
-    }
-  };
-
-  const fetchIntegrations = async () => {
+  async function fetchIntegrations() {
     try {
       setLoading(true);
       const data = await MarketplaceService.getInstalledIntegrations();
-      if (data.success === false) {
-        setIntegrations([]);
-      } else {
-        setIntegrations(data.installations || []);
-      }
+      setIntegrations(data.success === false ? [] : data.installations || []);
     } catch (error) {
       console.error(error);
-      toast.error("Erro ao carregar integrações");
+      toast.error('Erro ao carregar integracoes');
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  useEffect(() => {
-    fetchIntegrations();
-  }, []);
-
-  const handleTest = async (id) => {
+  async function handleTest(id) {
     try {
       setTestingId(id);
-      toast.info("Executando teste de conexão...");
+      toast.info('Executando teste de conexao...');
       const data = await MarketplaceService.testIntegration(id);
-
-      if (data.success) {
-        const result = data.result;
-        const isError = result.error || result.err_code || (result.message && result.message.includes("error"));
-
-        if (!isError) {
-          toast.success("Teste concluído: Conexão OK!");
-        } else {
-          toast.error(`Falha no teste: ${result.message || result.error || "Erro na API"}`);
-        }
+      const result = data?.result || {};
+      const isError = result.error || result.err_code || (result.message && result.message.includes('error'));
+      if (isError) {
+        toast.error(`Falha no teste: ${result.message || result.error || 'Erro na API'}`);
+      } else {
+        toast.success('Teste concluido: conexao OK');
       }
     } catch (error) {
-      const errorMsg = error.response?.data?.error || "Erro ao executar teste";
-      toast.error(errorMsg);
+      toast.error(error.response?.data?.error || error.message || 'Erro ao executar teste');
     } finally {
       setTestingId(null);
     }
-  };
+  }
 
-  const handleDelete = async (id, name) => {
-    if (!confirm(`Tem certeza que deseja remover a integração "${name}"?`)) return;
-
+  async function handleRenewToken(instanceId, instanceName) {
+    if (!confirm(`Deseja renovar o token da integracao "${instanceName}"?`)) return;
     try {
-      toast.info("Removendo integração...");
-      await MarketplaceService.uninstallModule(id);
-      toast.success("Integração removida com sucesso");
-      fetchIntegrations();
+      toast.info('Renovando token...');
+      await integracaoCanalService.renewToken(instanceId);
+      toast.success('Token renovado com sucesso');
+      await fetchIntegrations();
     } catch (error) {
-      toast.error("Erro ao remover integração");
+      toast.error(`Erro ao renovar token: ${error.message || 'Tente novamente'}`);
     }
-  };
+  }
 
-  const handleSyncFirestore = async () => {
+  async function handleDelete(id, name) {
+    if (!confirm(`Tem certeza que deseja remover a integracao "${name}"?`)) return;
+    try {
+      await MarketplaceService.uninstallModule(id);
+      toast.success('Integracao removida com sucesso');
+      await fetchIntegrations();
+    } catch (error) {
+      toast.error('Erro ao remover integracao');
+    }
+  }
+
+  async function handleSyncFirestore() {
     setSyncing(true);
     try {
       const result = await integracaoCanalService.syncFirestore();
       if (result.status === 'success') {
-        toast.success('Tokens sincronizados com sucesso do Firestore!');
-        fetchIntegrations(); // Refresh para atualizar status
+        toast.success('Credenciais sincronizadas');
+        await fetchIntegrations();
       } else {
-        toast.error('Falha ao sincronizar tokens. Verifique os logs.');
+        toast.error('Falha ao sincronizar credenciais');
       }
-    } catch (err) {
-      console.error('Erro ao sincronizar Firestore:', err);
-      toast.error('Falha ao sincronizar tokens do Firestore.');
+    } catch (error) {
+      toast.error('Falha ao sincronizar credenciais');
     } finally {
       setSyncing(false);
     }
-  };
+  }
 
-  const handleRenewToken = async (instanceId, instanceName) => {
-    if (!confirm(`Deseja renovar o token da integração "${instanceName}"?`)) return;
+  function renderEmptyState(type) {
+    return (
+      <div className="rounded-lg border border-dashed bg-muted/20 p-5 text-center">
+        <p className="text-sm text-muted-foreground">
+          {type === 'erp'
+            ? 'Nenhuma conta ERP conectada.'
+            : 'Nenhum canal de venda conectado.'}
+        </p>
+      </div>
+    );
+  }
 
-    try {
-      toast.info("Renovando token...");
-      await integracaoCanalService.renewToken(instanceId);
-      toast.success('Token renovado com sucesso!');
-      fetchIntegrations(); // Refresh para atualizar status
-    } catch (error) {
-      console.error('Erro ao renovar token:', error);
-      toast.error(`Erro ao renovar token: ${error.message || 'Tente novamente'}`);
-    }
-  };
+  function renderSection(title, icon, items, type) {
+    return (
+      <section className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {icon}
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+          </div>
+          <span className="text-xs text-muted-foreground">{items.length}</span>
+        </div>
 
-  // Filtrar integrações por módulo
-  const filteredIntegrations = moduleFilter === 'all' 
-    ? integrations 
-    : integrations.filter(i => {
-        if (moduleFilter === 'bling') return i.module_id === 'bling';
-        if (moduleFilter === 'marketplace') return i.module_id !== 'bling';
-        return true;
-      });
-
-  // Contadores
-  const totalBling = integrations.filter(i => i.module_id === 'bling').length;
-  const totalMarketplace = integrations.filter(i => i.module_id !== 'bling').length;
+        {items.length === 0 ? (
+          renderEmptyState(type)
+        ) : (
+          <div className="space-y-2">
+            {items.map((integration) => (
+              <IntegrationCard
+                key={integration.id}
+                integration={integration}
+                type={type}
+                moduleIcons={moduleIcons}
+                erpAccounts={erps}
+                onDelete={handleDelete}
+                onRefresh={fetchIntegrations}
+                onRenewToken={handleRenewToken}
+                onTest={handleTest}
+                testingId={testingId}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  }
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center gap-4 flex-wrap">
-        <div className="flex items-center gap-2">
-          <h2 className="text-xl font-semibold">Integrações Instaladas</h2>
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger>
-                <HelpCircle className="h-4 w-4 text-muted-foreground" />
-              </TooltipTrigger>
-              <TooltipContent className="max-w-md">
-                <p className="text-sm">
-                  <strong>Integrações</strong> são conexões configuradas com plataformas externas.
-                </p>
-                <ul className="text-xs mt-2 space-y-1">
-                  <li>• <strong>Bling (ERP):</strong> Gerencia pedidos, produtos e notas fiscais</li>
-                  <li>• <strong>Marketplaces:</strong> Shopee, Amazon, Mercado Livre, etc.</li>
-                </ul>
-                <p className="text-xs mt-2 text-muted-foreground">
-                  💡 Dica: Você precisa de pelo menos uma integração Bling e uma de marketplace para importar pedidos.
-                </p>
-                <p className="text-xs mt-2 text-blue-600 font-medium">
-                  🔑 <strong>Renovar Token:</strong> Use o botão "Renovar" nos cards de marketplace.
-                </p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold">Integracoes</h2>
+          <p className="text-sm text-muted-foreground">Contas, vinculos e rotas de NF.</p>
         </div>
-        <div className="flex gap-2">
-          {totalBling > 0 && (
-            <Button
-              variant="outline"
-              onClick={handleSyncFirestore}
-              disabled={syncing}
-              className="gap-2"
-            >
-              <Database className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
-              {syncing ? 'Sincronizando...' : 'Sincronizar Bling'}
-            </Button>
-          )}
-          <Button onClick={onAddClick} className="flex items-center gap-2">
-            <Plus className="h-4 w-4" />
-            Nova Integração
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={handleSyncFirestore} disabled={syncing}>
+            <RefreshCw className={`mr-2 h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
+            Sincronizar credenciais
+          </Button>
+          <Button onClick={onAddClick}>
+            <Sparkles className="mr-2 h-4 w-4" />
+            Nova integracao
           </Button>
         </div>
       </div>
 
-      {/* Filtros por tipo de integração */}
-      <Tabs value={moduleFilter} onValueChange={setModuleFilter} className="w-full">
-        <TabsList className="grid w-full max-w-md grid-cols-3">
-          <TabsTrigger value="all" className="flex items-center gap-2">
-            <Package className="h-4 w-4" />
-            Todas ({integrations.length})
-          </TabsTrigger>
-          <TabsTrigger value="bling" className="flex items-center gap-2">
-            <Building2 className="h-4 w-4" />
-            ERP (Bling) ({totalBling})
-          </TabsTrigger>
-          <TabsTrigger value="marketplace" className="flex items-center gap-2">
-            <Package className="h-4 w-4" />
-            Marketplaces ({totalMarketplace})
-          </TabsTrigger>
-        </TabsList>
-
-        <div className="grid gap-6 mt-4">
-          {loading ? (
-            <div className="flex justify-center p-12">
-              <RefreshCw className="h-8 w-8 animate-spin text-primary" />
-            </div>
-          ) : filteredIntegrations.length === 0 ? (
-            <Card>
-              <CardContent className="p-12 text-center flex flex-col items-center gap-4">
-                <p className="text-muted-foreground">
-                  {moduleFilter === 'bling' 
-                    ? 'Nenhuma integração Bling encontrada.' 
-                    : moduleFilter === 'marketplace'
-                    ? 'Nenhuma integração de marketplace encontrada.'
-                    : 'Nenhuma integração encontrada.'}
-                </p>
-                <Button onClick={onAddClick} variant="outline">
-                  Adicionar Integração
-                </Button>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {filteredIntegrations.map((item) => (
-                <Card key={item.id} className="overflow-hidden border-t-4" style={{ borderTopColor: item.instance_color || '#64748b' }}>
-                  <CardHeader className="bg-muted/30 pb-4">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <Badge variant="outline" className="mb-2 uppercase text-[10px]" style={{ color: item.instance_color }}>
-                          {item.module_id}
-                        </Badge>
-                        <div className="flex items-center gap-3 group">
-                          {moduleIcons[item.module_id] && (
-                            <img src={moduleIcons[item.module_id]} alt={item.module_id} className="w-8 h-8 rounded-full bg-white p-1" />
-                          )}
-                          <div>
-                            <div className="flex items-center gap-2">
-                              {editingId === item.id ? (
-                                <div className="flex items-center gap-1">
-                                  <input
-                                    ref={editInputRef}
-                                    type="text"
-                                    value={editName}
-                                    onChange={(e) => setEditName(e.target.value)}
-                                    className="px-2 py-1 rounded border text-sm w-full"
-                                    autoFocus
-                                  />
-                                  <Button size="sm" variant="ghost" onClick={() => saveName(item)}>
-                                    <Check className="h-4 w-4 text-green-500" />
-                                  </Button>
-                                  <Button size="sm" variant="ghost" onClick={cancelEditing}>
-                                    <X className="h-4 w-4 text-red-500" />
-                                  </Button>
-                                </div>
-                              ) : (
-                                <>
-                                  <CardTitle className="text-lg">{item.instance_name}</CardTitle>
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="opacity-0 group-hover:opacity-100 transition-opacity"
-                                    onClick={() => startEditing(item)}
-                                  >
-                                    <Pencil className="h-3 w-3" />
-                                  </Button>
-                                </>
-                              )}
-                            </div>
-                            {item.description && <p className="text-xs text-muted-foreground mt-1">{item.description}</p>}
-                          </div>
-                        </div>
-
-                      </div>
-                      <div className="flex gap-1">
-                        {item.is_active ? (
-                          <CheckCircle2 className="h-5 w-5 text-green-500" />
-                        ) : (
-                          <AlertCircle className="h-5 w-5 text-red-500" />
-                        )}
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="pt-4 space-y-4">
-                    <div className="text-xs space-y-2 text-muted-foreground">
-                      <div className="flex justify-between">
-                        <span>Status Sync:</span>
-                        <span className="font-medium text-foreground capitalize">{item.sync_status || 'Pendente'}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Último Sync:</span>
-                        <span className="font-medium text-foreground">
-                          {item.last_sync ? new Date(item.last_sync).toLocaleString() : 'Nunca'}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Ações para Bling (ERP) */}
-                    {item.module_id === 'bling' ? (
-                      <div className="grid grid-cols-2 gap-2 pt-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleOpenConfig(item.id)}
-                          className="gap-2 col-span-2"
-                        >
-                          <Settings className="h-3 w-3" /> Configurar
-                        </Button>
-                        <LiveOrderConsultation integrationId={item.id} moduleName={item.instance_name} moduleId={item.module_id} />
-                        <Button variant="ghost" size="sm" onClick={() => handleDelete(item.id, item.instance_name)} className="text-destructive gap-2">
-                          <Trash2 className="h-3 w-3" /> Excluir
-                        </Button>
-                      </div>
-                    ) : (
-                      /* Ações para Marketplace (com botão Renovar Token) */
-                      <div className="grid grid-cols-2 gap-2 pt-2">
-                        {item.module_id === 'shopee' && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleOpenShopeeConfig(item)}
-                            className="gap-2 col-span-2"
-                          >
-                            <Settings className="h-3 w-3" /> Configurar
-                          </Button>
-                        )}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleRenewToken(item.id, item.instance_name)}
-                          className="gap-2 col-span-2"
-                        >
-                          <RefreshCw className="h-3 w-3" /> Renovar Token
-                        </Button>
-                        <LiveOrderConsultation integrationId={item.id} moduleName={item.instance_name} moduleId={item.module_id} />
-                        <Button variant="secondary" size="sm" onClick={() => handleTest(item.id)} disabled={testingId === item.id} className="gap-2">
-                          <Zap className="h-3 w-3" /> Testar
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => handleDelete(item.id, item.instance_name)} className="text-destructive gap-2 col-span-2">
-                          <Trash2 className="h-3 w-3" /> Excluir
-                        </Button>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
+      {loading ? (
+        <div className="rounded-xl border p-8 text-center text-sm text-muted-foreground">
+          Carregando integracoes...
         </div>
-      </Tabs>
-
-      {/* Modal de Configuração Bling */}
-      {selectedIntegrationId && (
-        <BlingInstanceConfigModal
-          integrationId={selectedIntegrationId}
-          open={configModalOpen}
-          onOpenChange={setConfigModalOpen}
-        />
-      )}
-
-      {/* Modal de Configuração Shopee */}
-      {shopeeConfigModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-lg max-w-md w-full p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">Configurar Shopee</h3>
-              <Button variant="ghost" size="sm" onClick={() => setShopeeConfigModalOpen(false)}>
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-1">Partner ID</label>
-                <input
-                  type="text"
-                  value={shopeeConfig.partner_id}
-                  onChange={(e) => setShopeeConfig({ ...shopeeConfig, partner_id: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-md"
-                  placeholder="ID do parceiro Shopee"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Partner Key</label>
-                <input
-                  type="password"
-                  value={shopeeConfig.partner_key}
-                  onChange={(e) => setShopeeConfig({ ...shopeeConfig, partner_key: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-md"
-                  placeholder="Chave do parceiro Shopee"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Shop ID</label>
-                <input
-                  type="text"
-                  value={shopeeConfig.shop_id}
-                  onChange={(e) => setShopeeConfig({ ...shopeeConfig, shop_id: e.target.value })}
-                  className="w-full px-3 py-2 border rounded-md"
-                  placeholder="ID da loja Shopee"
-                />
-              </div>
-              <div className="flex gap-2 justify-end pt-4">
-                <Button variant="outline" onClick={() => setShopeeConfigModalOpen(false)}>
-                  Cancelar
-                </Button>
-                <Button onClick={handleSaveShopeeConfig} disabled={savingConfig}>
-                  {savingConfig ? 'Salvando...' : 'Salvar'}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
+      ) : (
+        <>
+          {renderSection('Contas ERP', <Database className="h-4 w-4 text-muted-foreground" />, erps, 'erp')}
+          {renderSection('Canais de Venda', <ShoppingCart className="h-4 w-4 text-muted-foreground" />, marketplaces, 'marketplace')}
+        </>
       )}
     </div>
   );

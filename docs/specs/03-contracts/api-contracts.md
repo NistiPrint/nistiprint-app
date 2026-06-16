@@ -1,38 +1,118 @@
 # API Contracts
 
-Last updated: 2026-05-28
+Last updated: 2026-06-16
 
-Status: draft
+Status: target-state
 
-## Current API Surface
+## Scope
 
-The Flask app registers blueprints in `apps/api/main.py`. The product API
-surface is a mix of current `/api/v2/*` endpoints, admin/debug endpoints, and
-legacy web routes.
+This document captures the public contracts that matter for integrations,
+orders origin resolution and ERP routing. Route names may still evolve, but the
+behavior documented here is the expected contract for frontend and worker code.
 
-## Primary `/api/v2` Areas
+## Main API areas
 
 | Area | Prefixes |
 | --- | --- |
-| Orders | `/api/v2/pedidos`, `/api/v2/order`, `/api/v2/orders`, `/api/admin/orders` |
-| Production | `/api/v2/demandas`, `/api/v2/demanda_producao`, `/api/v2/producao`, `/api/v2/producao-contexto` |
-| Stock | `/api/v2/estoque`, `/api/v2/auditoria` |
-| Integrations | `/api/v2/marketplace`, `/api/v2/integracoes`, `/api/v2/integracao-canais`, `/api/v2/erp-links`, `/api/v2/webhooks` |
-| Admin/config | `/api/v2/cadastros`, `/api/v2/configuracoes`, `/api/v2/usuarios-setores`, `/api/v2/produtos` |
-| Monitoring | `/api/v2/tasks`, `/api/v2/admin/task-schedules`, `/api/v2/notifications`, `/api/v2/alertas`, `/api/v2/relatorios` |
-| Printing/personalized | `/api/v2/printing`, `/api/v2/pedidos/impressao`, `/api/v2/personalizados` |
+| Orders | `/api/v2/pedidos`, `/api/v2/orders`, `/api/v2/order` |
+| Integrations | `/api/v2/marketplace`, `/api/v2/integracoes`, `/api/v2/erp-links`, `/api/v2/integracao-canais` |
+| Webhooks | `/api/v2/webhooks` |
 
-## Contract Rules
+## Integration contracts
 
-- Each endpoint used by frontend services should have request, response, auth,
-  error, and pagination semantics documented.
-- Legacy web routes should be labeled `legacy-web` or `active-web`.
-- Endpoint names should not be considered stable until they are referenced from
-  a domain spec and test plan.
+### Installed integrations
 
-## Gaps
+- List installed integrations returns installed instances, not bare modules.
+- Response items should expose enough information for UI status:
+  - `id`
+  - `module_id`
+  - `platform_slug`
+  - `instance_name`
+  - `is_active`
+  - `sync_status`
+  - `credential_status`
+  - `functional_scopes`
+  - `config`
+  - `credentials` when the caller is allowed to inspect them
 
-- No generated OpenAPI contract is currently identified.
-- Duplicate order prefixes need consolidation or ownership labels.
-- Error envelope consistency needs audit.
+### Install/test/refresh
 
+- Marketplace install routes must support:
+  - direct marketplace modules with auth flow
+  - dummy marketplace modules with no auth flow
+- Test endpoints must execute the platform driver strategy first when the module
+  has a driver.
+- Refresh endpoints must only be shown and enabled when the credential strategy
+  supports local refresh.
+- Bling must be documented as externally synchronized for credentials.
+
+### ERP to marketplace links
+
+The link payload contract must use these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `marketplace_integration_id` | Installed marketplace instance that owns the sale |
+| `erp_integration_id` | Installed ERP instance, currently Bling |
+| `erp_store_id` | `shop.id` / store identifier inside the ERP account |
+| `ingest_via` | `erp` or `marketplace` |
+| `supports_invoicing` | Whether this ERP can emit NF for that marketplace link |
+
+Rules:
+
+- `marketplace_integration_id + erp_integration_id + erp_store_id` identifies a
+  routing line.
+- Multiple routing lines may exist for the same marketplace.
+- A marketplace configuration is the authority for creating/editing the link.
+- The ERP screen may expose the links as read-only operational visibility.
+
+## Orders contracts
+
+### `GET /api/v2/pedidos/origens`
+
+This endpoint exists to populate the `origem da venda` filter.
+
+Behavior:
+
+- Returns only installed marketplace instances that are active sales origins.
+- Does not return ERP instances.
+- Does not return technical import routes.
+- Does not return legacy channel labels as canonical origin keys.
+
+Response contract per item:
+
+| Field | Meaning |
+| --- | --- |
+| `key` | Canonical key in the form `source:<marketplace_integration_id>` |
+| `nome` | Installed marketplace instance name |
+| `tipo` | Always `marketplace` for this endpoint |
+| `marketplace_integration_id` | Installed marketplace ID |
+| `slug` | Module slug |
+| `color` | Optional UI color |
+| `total` | Optional order count |
+
+### Order list and detail
+
+- Order list and detail responses must preserve:
+  - `marketplace_integration_id`
+  - `bling_integration_id`
+  - `bling_loja_id`
+  - `codigo_pedido_externo`
+  - marketplace presentation metadata when available
+- `origem_pedido_key` should resolve from `marketplace_integration_id` in the
+  form `source:<id>` whenever the sales origin is known.
+
+## Error semantics
+
+- NF routing ambiguity must be explicit and actionable.
+- Test/refresh endpoints must expose whether failure was caused by:
+  - missing credentials
+  - expired credentials
+  - unsupported strategy
+  - ambiguous routing
+  - upstream API failure
+
+## Open transition notes
+
+- Some duplicate order prefixes still exist for legacy compatibility.
+- No generated OpenAPI contract is currently maintained in the repository.

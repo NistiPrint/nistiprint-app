@@ -25,7 +25,7 @@ from nistiprint_shared.services.logistica_coleta_service import logistica_coleta
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services import flex_classifier_service, fulfillment_classifier_service
-from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso
+from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso, parse_datetime, normalize_to_iso
 
 logger = logging.getLogger("bling_order_processing")
 
@@ -317,23 +317,7 @@ def _compact(value) -> str:
 
 
 def _parse_datetime(value):
-    if value in (None, ""):
-        return None
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, (int, float)):
-        converted = unix_to_app_iso(value)
-        return datetime.fromisoformat(converted) if converted else None
-    text = str(value).strip()
-    if not text or text.startswith("0000"):
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        try:
-            return datetime.fromisoformat(text[:19])
-        except ValueError:
-            return None
+    return parse_datetime(value)
 
 
 def _extract_meli_date_approved(order: dict) -> str | None:
@@ -1523,8 +1507,13 @@ def _upsert_pedido_master(payload, *,
                 "regra_id": regra_logistica_integracao_id,
             },
         )
+    data_venda_iso = normalize_to_iso(data_venda)
+    data_limite_envio_iso = normalize_to_iso(data_limite_envio)
+    data_compra_marketplace_iso = normalize_to_iso(marketplace_times.get('data_compra_marketplace'))
+    data_pagamento_marketplace_iso = normalize_to_iso(marketplace_times.get('data_pagamento_marketplace'))
+    data_coleta_iso = normalize_to_iso(data_coleta)
+    data_envio_marketplace_iso = normalize_to_iso(marketplace_times.get('data_envio_marketplace'))
 
-    # Logística
     transporte = payload.get('transporte') or {}
     volumes    = transporte.get('volumes') or []
     servico    = volumes[0].get('servico') if volumes else None
@@ -1561,12 +1550,12 @@ def _upsert_pedido_master(payload, *,
         'moeda':                      'BRL',
 
         # Datas
-        'data_venda':                 data_venda,
-        'data_limite_envio':          data_limite_envio,
-        'data_compra_marketplace':    marketplace_times.get('data_compra_marketplace'),
-        'data_pagamento_marketplace': marketplace_times.get('data_pagamento_marketplace'),
-        'data_coleta':                data_coleta,
-        'data_envio_marketplace':     marketplace_times.get('data_envio_marketplace'),
+        'data_venda':                 data_venda_iso,
+        'data_limite_envio':          data_limite_envio_iso,
+        'data_compra_marketplace':    data_compra_marketplace_iso,
+        'data_pagamento_marketplace': data_pagamento_marketplace_iso,
+        'data_coleta':                data_coleta_iso,
+        'data_envio_marketplace':     data_envio_marketplace_iso,
         'regra_logistica_integracao_id': regra_logistica_integracao_id,
 
         # Logística / Flex
@@ -1582,8 +1571,7 @@ def _upsert_pedido_master(payload, *,
 
         'updated_at':                 get_now_iso(),
     }
-
-    # filtra None para não sobrescrever em update
+    # filtra None para nao sobrescrever em update
     data = {k: v for k, v in data.items() if v is not None}
 
     existing_pedido = _find_existing_pedido_master_for_update(
@@ -1642,11 +1630,11 @@ def _upsert_pedido_master(payload, *,
                 'is_flex': is_flex,
                 'is_fulfillment': is_fulfillment,
                 'modalidade': modalidade,
-                'deadline': data_limite_envio,
-                'purchase_at': marketplace_times.get('data_compra_marketplace'),
-                'payment_at': marketplace_times.get('data_pagamento_marketplace'),
-                'collection_at': data_coleta,
-                'marketplace_shipped_at': marketplace_times.get('data_envio_marketplace'),
+                'deadline': data_limite_envio_iso,
+                'purchase_at': data_compra_marketplace_iso,
+                'payment_at': data_pagamento_marketplace_iso,
+                'collection_at': data_coleta_iso,
+                'marketplace_shipped_at': data_envio_marketplace_iso,
                 'cutoff_time': coleta_contexto.get('horario_corte'),
                 'collection_time': coleta_contexto.get('horario_coleta'),
                 'rule_id': regra_logistica_integracao_id,

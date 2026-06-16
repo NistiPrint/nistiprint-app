@@ -9,13 +9,15 @@ import {
   Calendar,
   Zap
 } from 'lucide-react';
-import { formatAppDate } from '@/lib/dateTime';
+import { formatAppDateTime } from '@/lib/dateTime';
+import { getOrderTimestamps } from '@/lib/orderTimestamps';
 
 /**
  * Cards de resumo do pedido (3 colunas)
  */
 export default function PedidoResumoCards({ pedido }) {
-  const { financeiro, cliente, logistica, datas } = pedido;
+  const { financeiro, cliente, logistica } = pedido;
+  const timestamps = getOrderTimestamps(pedido);
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -39,6 +41,14 @@ export default function PedidoResumoCards({ pedido }) {
             <span>{financeiro?.total_itens || 0} {financeiro?.total_itens === 1 ? 'item' : 'itens'}</span>
             <span>•</span>
             <span>{financeiro?.total_quantidade || 0} un.</span>
+          </div>
+          <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+            <div>
+              Compra: {timestamps.compra ? formatAppDateTime(timestamps.compra, { fallback: String(timestamps.compra) }) : 'Não informado'}
+            </div>
+            <div>
+              Pagamento: {timestamps.pagamento ? formatAppDateTime(timestamps.pagamento, { fallback: String(timestamps.pagamento) }) : 'Não informado'}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -81,12 +91,17 @@ export default function PedidoResumoCards({ pedido }) {
           <div className="flex items-center gap-2">
             <Calendar className="w-4 h-4 text-muted-foreground" />
             <span className="font-medium">
-              {datas?.limite_envio 
-                ? formatAppDate(datas.limite_envio)
+              {timestamps.limite
+                ? formatAppDateTime(timestamps.limite, { fallback: String(timestamps.limite) })
                 : 'Não definido'
               }
             </span>
           </div>
+          {timestamps.coleta && (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Coleta: {formatAppDateTime(timestamps.coleta, { fallback: String(timestamps.coleta) })}
+            </div>
+          )}
           <div className="flex items-center gap-2 mt-2">
             {logistica?.is_flex && (
               <Badge className="bg-amber-500 text-white text-xs gap-1">

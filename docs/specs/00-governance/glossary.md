@@ -1,24 +1,25 @@
 # Glossary
 
-Last updated: 2026-05-28
+Last updated: 2026-06-16
 
 | Term | Meaning |
 | --- | --- |
-| Pedido | Normalized order in `public.pedidos`; operational order record used by the app. |
-| Pedido Bling | Raw or mirrored Bling order in `public.pedidos_bling`. |
-| Pedido Shopee | Shopee enrichment/mirror in `public.pedidos_shopee`. |
-| Demanda | Production demand/order of work in `public.demandas_producao`. |
-| Rascunho | Draft demand that can still receive compatible orders. |
-| Canal de venda | Legacy/commercial sales channel in `public.canais_venda`. |
-| Integration module | Connector catalog entry in `public.integration_modules`. |
-| Installed integration | Active integration instance in `public.installed_integrations`. |
-| Channel connection | Explicit channel/integration link in `public.channel_connections`. |
-| Bling loja ID | Store identifier from Bling payload, now an important origin pivot. |
-| Marketplace integration ID | Installed marketplace integration used as canonical source key. |
-| Flex | Fast same-day/urgent shipping classification. |
-| Fulfillment | External fulfillment/replenishment classification. |
-| BOM | Bill of materials, represented mainly by `public.ficha_tecnica`. |
-| RLS | Row Level Security in Supabase/Postgres. |
-| Drift | Observable disagreement between code, docs, local migrations, and production database. |
-| Gap | Missing detail that must be specified before safe implementation. |
-
+| Integration module | Connector catalog entry in `integration_modules`. |
+| Installed integration | Installed ERP or marketplace instance in `installed_integrations`. |
+| Direct marketplace integration | Installed marketplace with its own driver and webhook/auth strategy. |
+| Dummy marketplace integration | Installed marketplace origin without a direct API driver; it still exists as a sales origin and routing identity. |
+| ERP integration | Installed ERP account, currently Bling. |
+| Sales origin | Marketplace instance that owns the commercial sale. |
+| Ingest origin | Technical source that delivered the event or import, such as Bling webhook or direct marketplace webhook. |
+| ERP store ID | `shop.id` or `erp_store_id` that identifies a marketplace account inside a specific ERP/Bling account. |
+| Company ID | Bling `companyId`, used to identify which ERP account sent or owns a webhook context. |
+| Canonical order | Operational order represented by `pedidos` plus its normalized snapshot. |
+| Mirror table | Provider-specific audit/raw table such as `pedidos_bling`, `pedidos_shopee` or `pedidos_mercadolivre`. |
+| Platform fields | Provider-specific attributes stored in `pedido_snapshots.platform_fields`. |
+| Marketplace integration ID | Installed marketplace identity used as the canonical sales-origin key. |
+| Bling integration ID | Installed ERP identity used to resolve NF and ERP-side actions. |
+| Bling loja ID | Store identifier used by Bling to identify the marketplace account within a Bling account. |
+| Dummy origin | Sales origin created by installing a dummy marketplace module. |
+| NF routing | Logic that chooses which ERP account can emit the invoice for a given order. |
+| Ambiguous ERP resolution | Situation where the system cannot choose a unique ERP account from the available order and routing context. |
+| Drift | Disagreement between docs, code, local migrations and production behavior. |

@@ -5,6 +5,7 @@
 
 import api from './api';
 import { formatAppDate } from '@/lib/dateTime';
+import { getOrderTimestamps } from '@/lib/orderTimestamps';
 
 const BASE_URL = '/pedidos';
 
@@ -102,9 +103,16 @@ export function copiarNumeroPedido(numero, tipo = 'interno') {
  */
 export function formatarPedido(pedido) {
   if (!pedido) return null;
+
+  const timestamps = getOrderTimestamps(pedido);
   
   return {
     ...pedido,
+    data_compra_marketplace: timestamps.compra,
+    data_pagamento_marketplace: timestamps.pagamento,
+    data_coleta: timestamps.coleta,
+    data_envio_marketplace: timestamps.envio,
+    data_limite_envio: timestamps.limite,
     cliente: {
       ...pedido.cliente,
       nome: pedido.cliente?.nome || 'Não informado',
@@ -138,8 +146,8 @@ export function formatarPedido(pedido) {
     dataVendaFormatada: pedido.datas?.venda 
       ? formatAppDate(pedido.datas.venda)
       : '-',
-    dataLimiteEnvioFormatada: pedido.datas?.limite_envio
-      ? formatAppDate(pedido.datas.limite_envio)
+    dataLimiteEnvioFormatada: (pedido.data_limite_envio || pedido.datas?.limite_envio)
+      ? formatAppDate(pedido.data_limite_envio || pedido.datas.limite_envio)
       : null
   };
 }

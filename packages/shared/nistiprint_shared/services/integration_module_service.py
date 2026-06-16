@@ -65,18 +65,12 @@ class IntegrationModuleService:
 
     def get_modules_by_category(self, category: str) -> List['IntegrationModule']:
         """Get all modules in a specific category"""
-        from nistiprint_shared.models.integration_module import IntegrationModule
-
-        response = self.table.select("*").eq('category', category).eq('is_active', True).execute()
-
-        modules = []
-        for row in response.data:
-            module_data = dict(row)
-            module_id = str(module_data.get('id'))
-            module = IntegrationModule.from_dict(module_data, module_id)
-            modules.append(module)
-
-        return modules
+        normalized = str(category or '').lower()
+        return [
+            module
+            for module in self.get_all_modules()
+            if str(module.category or '').lower() == normalized
+        ]
 
     def get_modules_by_tags(self, tags: List[str]) -> List['IntegrationModule']:
         """Get modules that match any of the provided tags"""

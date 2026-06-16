@@ -316,6 +316,10 @@ class OrderService:
         orders_formatted = []
         for order in res.data:
             order_dict = dict(order)
+            order_dict['data_compra_marketplace'] = order.get('data_compra_marketplace') or order.get('purchase_at') or order.get('dataCompraMarketplace')
+            order_dict['data_pagamento_marketplace'] = order.get('data_pagamento_marketplace') or order.get('payment_at') or order.get('dataPagamentoMarketplace')
+            order_dict['data_coleta'] = order.get('data_coleta') or order.get('collection_at') or order.get('dataColeta')
+            order_dict['data_envio_marketplace'] = order.get('data_envio_marketplace') or order.get('marketplace_shipped_at') or order.get('dataEnvioMarketplace')
             
             # Garantir formato consistente do status
             situacao = order.get('situacao_pedido')

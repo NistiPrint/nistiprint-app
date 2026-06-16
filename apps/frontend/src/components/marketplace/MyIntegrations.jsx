@@ -4,6 +4,43 @@ import { RefreshCw } from 'lucide-react'
 import LiveOrderConsultation from './LiveOrderConsultation'
 import './Marketplace.css'
 
+const getAccountIdentifier = installation => {
+  const credentialStatus = installation?.credential_status || {}
+  const config = installation?.config || {}
+  const credentials = installation?.credentials || {}
+  return (
+    credentialStatus.account_identifier ||
+    config.account_identifiers?.primary ||
+    config.shop_id ||
+    config.seller_id ||
+    config.user_id ||
+    config.account_id ||
+    credentials.account_identifiers?.primary ||
+    credentials.shop_id ||
+    credentials.seller_id ||
+    credentials.user_id ||
+    credentials.account_id ||
+    ''
+  )
+}
+
+const getTokenStatusLabel = installation => {
+  const status = installation?.credential_status?.token_status || 'unknown'
+  const labels = {
+    valid: 'Valida',
+    expiring_soon: 'Expirando',
+    expired: 'Expirada',
+    missing: 'Ausente',
+    refresh_failed: 'Falha ao renovar',
+    refresh_warning: 'Atencao',
+    external_sync_stale: 'Sync externo atrasado',
+    external_sync_warning: 'Sync externo com alerta',
+    reauth_required: 'Reautorizacao',
+    not_required: 'Nao requerida',
+  }
+  return labels[status] || 'Desconhecida'
+}
+
 const MyIntegrations = () => {
   const [installations, setInstallations] = useState([])
   const [isLoading, setIsLoading] = useState(true)
@@ -123,16 +160,10 @@ const MyIntegrations = () => {
       const data = await response.json()
 
       if (data.status === 'success') {
-        // Update the UI with new token status
         setInstallations(prev =>
           prev.map(installation =>
             installation.id === instanceId
-              ? {
-                  ...installation,
-                  sync_status: 'success',
-                  last_sync: new Date().toISOString(),
-                  refresh_error: null,
-                }
+              ? data.installation || installation
               : installation
           )
         )
@@ -150,8 +181,11 @@ const MyIntegrations = () => {
           installation.id === instanceId
             ? {
                 ...installation,
-                sync_status: 'error',
-                refresh_error: error.message,
+                credential_status: {
+                  ...(installation.credential_status || {}),
+                  token_status: 'refresh_failed',
+                  refresh_error: error.message,
+                },
               }
             : installation
         )
@@ -211,6 +245,12 @@ const MyIntegrations = () => {
                 {installation.module_name}
               </div>
 
+              {getAccountIdentifier(installation) && (
+                <div className='integration-module'>
+                  Webhook: {getAccountIdentifier(installation)}
+                </div>
+              )}
+
               <div className='integration-description'>
                 {installation.module_description}
               </div>
@@ -224,16 +264,20 @@ const MyIntegrations = () => {
                 </span>
 
                 <span>
-                  {installation.sync_status === 'success' ? (
+                  {installation.credential_status?.token_status === 'valid' ? (
                     <React.Fragment>
                       <span className='sync-indicator sync-success'></span> OK
                     </React.Fragment>
-                  ) : installation.sync_status === 'error' ? (
+                  ) : installation.credential_status?.token_status === 'expiring_soon' ? (
+                    <React.Fragment>
+                      <span className='sync-indicator sync-pending'></span> Expirando
+                    </React.Fragment>
+                  ) : installation.credential_status?.token_status === 'expired' || installation.credential_status?.token_status === 'refresh_failed' ? (
                     <React.Fragment>
                       <span className='sync-indicator sync-error'></span> Erro
-                      {installation.refresh_error && (
+                      {installation.credential_status?.refresh_error && (
                         <span className="text-xs text-red-500 ml-2">
-                          {installation.refresh_error}
+                          {installation.credential_status.refresh_error}
                         </span>
                       )}
                     </React.Fragment>
@@ -244,7 +288,7 @@ const MyIntegrations = () => {
                   ) : (
                     <React.Fragment>
                       <span className='sync-indicator sync-pending'></span>{' '}
-                      Pendente
+                      {getTokenStatusLabel(installation)}
                     </React.Fragment>
                   )}
                 </span>
@@ -262,7 +306,7 @@ const MyIntegrations = () => {
                   Sincronizar
                 </button>
                 {/* Botão Renovar Token - Apenas para Shopee */}
-                {installation.module_name.toLowerCase().includes('shopee') && (
+                {installation.credential_status?.actions?.can_refresh && (
                   <button
                     className='btn btn-sm btn-warning'
                     onClick={() => renewToken(installation.id)}

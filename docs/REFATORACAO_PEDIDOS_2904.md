@@ -1,68 +1,72 @@
-# Refatoração da ingestão de pedidos — 2026-04-29
+> Documento legado.
+> Pode descrever uma etapa anterior da refatoracao de pedidos.
+> Fonte atual: [Spec de Pedidos](./specs/02-domains/pedidos/spec.md), [Spec de Integracoes](./specs/02-domains/integracoes/spec.md), [Arquitetura Tecnica](./tecnico/ARQUITETURA.md) e [Modelo de Dados](./tecnico/MODELO-DADOS.md).
 
-Plano de execução para consolidar o ingest de pedidos em uma pipeline única,
-corrigindo os bugs que estão deixando pedidos da Shopee na aplicação web sem
+# RefatoraÃ§Ã£o da ingestÃ£o de pedidos â€” 2026-04-29
+
+Plano de execuÃ§Ã£o para consolidar o ingest de pedidos em uma pipeline Ãºnica,
+corrigindo os bugs que estÃ£o deixando pedidos da Shopee na aplicaÃ§Ã£o web sem
 itens, sem cliente, sem canal e sem total.
 
-Documento companheiro: o diagnóstico completo está nesta conversa (não
-duplicado aqui). Aqui está só o plano de execução.
+Documento companheiro: o diagnÃ³stico completo estÃ¡ nesta conversa (nÃ£o
+duplicado aqui). Aqui estÃ¡ sÃ³ o plano de execuÃ§Ã£o.
 
 ---
 
-## 0. Glossário de identificadores (não confundir)
+## 0. GlossÃ¡rio de identificadores (nÃ£o confundir)
 
-Existem três famílias de identificadores que andam juntas no fluxo. Nunca
+Existem trÃªs famÃ­lias de identificadores que andam juntas no fluxo. Nunca
 misturar.
 
-### 0.1 Identificadores que vêm do Bling
+### 0.1 Identificadores que vÃªm do Bling
 
 | Campo no payload Bling | Significado | Onde usamos hoje |
 |---|---|---|
-| `id` | ID interno do Bling para o pedido (numérico, estável dentro de uma instância Bling). | `pedidos_bling.bling_id` |
-| `numero` | Número do pedido que o usuário do Bling vê em tela. **Não é único entre instâncias Bling diferentes** (Bling reinicia a sequência por conta). | `pedidos_bling.numero_pedido`, `pedidos.numero_pedido` (apenas exibição) |
+| `id` | ID interno do Bling para o pedido (numÃ©rico, estÃ¡vel dentro de uma instÃ¢ncia Bling). | `pedidos_bling.bling_id` |
+| `numero` | NÃºmero do pedido que o usuÃ¡rio do Bling vÃª em tela. **NÃ£o Ã© Ãºnico entre instÃ¢ncias Bling diferentes** (Bling reinicia a sequÃªncia por conta). | `pedidos_bling.numero_pedido`, `pedidos.numero_pedido` (apenas exibiÃ§Ã£o) |
 | `numeroLoja` | ID do pedido no marketplace de origem (ex.: `order_sn` da Shopee). Vazio para pedidos criados direto no Bling. | `pedidos_bling.numero_loja`, `pedidos.codigo_pedido_externo` |
 | `loja.id` | ID da loja Bling. Para pedidos de marketplace, casa com o `shop_id` do marketplace (Shopee). | `pedidos_bling.loja_id`, chave para resolver `marketplace_integration_id` |
-| `intermediador.cnpj` | CNPJ da empresa Bling (instância Bling). | usado para resolver `bling_integration_id` |
+| `intermediador.cnpj` | CNPJ da empresa Bling (instÃ¢ncia Bling). | usado para resolver `bling_integration_id` |
 
-### 0.2 Identificadores que vêm do marketplace (Shopee)
+### 0.2 Identificadores que vÃªm do marketplace (Shopee)
 
 | Campo Shopee | Significado | Onde usamos |
 |---|---|---|
 | `order_sn` | ID do pedido no Shopee. Igual ao `numeroLoja` do Bling. | `pedidos_shopee.codigo_pedido` / `order_sn` |
 | `shop_id` | ID da loja Shopee. Igual ao `loja.id` do Bling. | `pedidos_shopee.shop_id` |
-| `buyer_username`, `buyer_user_id` | Identificação do comprador na Shopee. | `pedidos_shopee.buyer_username` / `buyer_user_id` |
+| `buyer_username`, `buyer_user_id` | IdentificaÃ§Ã£o do comprador na Shopee. | `pedidos_shopee.buyer_username` / `buyer_user_id` |
 
 ### 0.3 Identificadores **internos** do nosso sistema
 
 | Coluna | Significado |
 |---|---|
-| `pedidos.id` | PK interna do pedido normalizado. **Esse é o ID que circula no resto da aplicação** (demandas, eventos, impressões, etc.). |
+| `pedidos.id` | PK interna do pedido normalizado. **Esse Ã© o ID que circula no resto da aplicaÃ§Ã£o** (demandas, eventos, impressÃµes, etc.). |
 | `pedidos.uuid_pedido` | UUID alternativo do pedido (legado, manter). |
-| `pedidos.codigo_pedido_externo` | Chave de unicidade externa do pedido. Convenção: `numeroLoja` quando vier do marketplace, senão `BLING-{bling_id}` (NÃO `BLING-{numero}`, porque `numero` colide entre instâncias Bling). |
-| `pedidos.numero_pedido` | Espelho de `payload.numero` do Bling. Apenas para exibição amigável. **Não é unique** (já foi removido — ver migration `20260327000000_remove_unique_pedidos_numero_pedido.sql`). |
+| `pedidos.codigo_pedido_externo` | Chave de unicidade externa do pedido. ConvenÃ§Ã£o: `numeroLoja` quando vier do marketplace, senÃ£o `BLING-{bling_id}` (NÃƒO `BLING-{numero}`, porque `numero` colide entre instÃ¢ncias Bling). |
+| `pedidos.numero_pedido` | Espelho de `payload.numero` do Bling. Apenas para exibiÃ§Ã£o amigÃ¡vel. **NÃ£o Ã© unique** (jÃ¡ foi removido â€” ver migration `20260327000000_remove_unique_pedidos_numero_pedido.sql`). |
 | `pedidos_bling.id` | PK interna da linha de espelho do payload Bling. |
-| `pedidos_bling.bling_id` | `payload.id` do Bling. Será UNIQUE após a migration. |
+| `pedidos_bling.bling_id` | `payload.id` do Bling. SerÃ¡ UNIQUE apÃ³s a migration. |
 | `pedidos_shopee.id` | PK interna do espelho enriquecido Shopee. |
-| `pedidos_shopee.codigo_pedido` | `order_sn` Shopee. Já é UNIQUE. |
+| `pedidos_shopee.codigo_pedido` | `order_sn` Shopee. JÃ¡ Ã© UNIQUE. |
 | `pedidos.pedido_bling_id` | FK para `pedidos_bling.id`. |
-| `pedidos.pedido_shopee_id` | FK para `pedidos_shopee.id`. NULL para pedidos não-Shopee. |
-| `pedidos.bling_integration_id` | FK para `installed_integrations` (a instância Bling que entregou o pedido). |
-| `pedidos.marketplace_integration_id` | FK para `installed_integrations` (a instância marketplace = "canal de venda" novo). |
+| `pedidos.pedido_shopee_id` | FK para `pedidos_shopee.id`. NULL para pedidos nÃ£o-Shopee. |
+| `pedidos.bling_integration_id` | FK para `installed_integrations` (a instÃ¢ncia Bling que entregou o pedido). |
+| `pedidos.marketplace_integration_id` | FK para `installed_integrations` (a instÃ¢ncia marketplace = "canal de venda" novo). |
 
-> Regra de ouro: nunca usar `numero` do Bling como chave única; nunca tratar
-> `bling_id` como visível ao usuário; nunca confundir `pedidos.id` (interno)
+> Regra de ouro: nunca usar `numero` do Bling como chave Ãºnica; nunca tratar
+> `bling_id` como visÃ­vel ao usuÃ¡rio; nunca confundir `pedidos.id` (interno)
 > com `pedidos_bling.bling_id` (externo).
 
 ---
 
-## 1. Objetivo da refatoração
+## 1. Objetivo da refatoraÃ§Ã£o
 
-1. Pipeline única para todo pedido novo/atualizado:
-   `webhook Redis → fetch detalhe Bling → upsert pedidos_bling → resolve marketplace → (se Shopee) enriquece → upsert pedidos_shopee → upsert pedidos → upsert itens_pedido → cria/atualiza demanda`.
+1. Pipeline Ãºnica para todo pedido novo/atualizado:
+   `webhook Redis â†’ fetch detalhe Bling â†’ upsert pedidos_bling â†’ resolve marketplace â†’ (se Shopee) enriquece â†’ upsert pedidos_shopee â†’ upsert pedidos â†’ upsert itens_pedido â†’ cria/atualiza demanda`.
 2. `pedidos` passa a ter, sozinho, todos os campos que a tela precisa exibir
-   (cliente, total, datas, Flex, marketplace, status). Tela não precisa mais
+   (cliente, total, datas, Flex, marketplace, status). Tela nÃ£o precisa mais
    ler `pedidos_bling` ou `pedidos_shopee`.
-3. `pedidos_bling` e `pedidos_shopee` continuam existindo só como espelho
+3. `pedidos_bling` e `pedidos_shopee` continuam existindo sÃ³ como espelho
    bruto (auditoria e re-processamento).
 4. Aposentar a pipeline paralela `order_sync_service.sync_bling_order` /
    `sync_shopee_order` e a chamada extra a `MarketplaceEnrichmentService`
@@ -70,7 +74,7 @@ misturar.
 
 ---
 
-## 2. Mudanças de schema
+## 2. MudanÃ§as de schema
 
 ### 2.1 Migration nova: `supabase/migrations/20260429000000_pedidos_ingest_consolidacao.sql`
 
@@ -83,13 +87,13 @@ ALTER TABLE public.pedidos_bling
 ALTER TABLE public.pedidos_bling
     ADD CONSTRAINT pedidos_bling_bling_id_key UNIQUE (bling_id);
 -- numero_pedido deixa de ser UNIQUE global porque o mesmo `numero` pode
--- aparecer em instâncias Bling diferentes. Se for necessário garantir,
+-- aparecer em instÃ¢ncias Bling diferentes. Se for necessÃ¡rio garantir,
 -- criar UNIQUE (bling_integration_id, numero_pedido) em fase posterior
--- após backfill.
+-- apÃ³s backfill.
 
--- 2. Garantir colunas em pedidos que a tela já consome mas o ingest
---    novo ainda não preenche. (Várias já existem por migrations anteriores;
---    repetimos com IF NOT EXISTS por idempotência.)
+-- 2. Garantir colunas em pedidos que a tela jÃ¡ consome mas o ingest
+--    novo ainda nÃ£o preenche. (VÃ¡rias jÃ¡ existem por migrations anteriores;
+--    repetimos com IF NOT EXISTS por idempotÃªncia.)
 ALTER TABLE public.pedidos
     ADD COLUMN IF NOT EXISTS cliente_documento  varchar(20),
     ADD COLUMN IF NOT EXISTS cliente_telefone   varchar(50),
@@ -101,38 +105,38 @@ ALTER TABLE public.pedidos
     ADD COLUMN IF NOT EXISTS message_to_seller  text,
     ADD COLUMN IF NOT EXISTS status_original    varchar(50);
 
--- 3. (Opcional) Confirmar UNIQUE em pedidos.codigo_pedido_externo (já existe).
---    Não recria.
+-- 3. (Opcional) Confirmar UNIQUE em pedidos.codigo_pedido_externo (jÃ¡ existe).
+--    NÃ£o recria.
 
--- 4. Tabela de auditoria pedido_ingest_log (já criada na migration
---    'arquitetura_definitiva'; só garantir).
+-- 4. Tabela de auditoria pedido_ingest_log (jÃ¡ criada na migration
+--    'arquitetura_definitiva'; sÃ³ garantir).
 ```
 
-### 2.2 Sem mudança destrutiva nesta fase
-- Não dropar `canal_venda_id` em `pedidos`. O ingest novo passa a preencher
+### 2.2 Sem mudanÃ§a destrutiva nesta fase
+- NÃ£o dropar `canal_venda_id` em `pedidos`. O ingest novo passa a preencher
   os DOIS (`canal_venda_id` derivado de `channel_connections.channel_id` +
-  `marketplace_integration_id`) até a tela estar 100% migrada.
-- Não dropar `canais_venda` ainda. Plano dela está em
+  `marketplace_integration_id`) atÃ© a tela estar 100% migrada.
+- NÃ£o dropar `canais_venda` ainda. Plano dela estÃ¡ em
   `PLANO-REFACTOR-2026-04.md`.
 
 ---
 
-## 3. Mudanças de código
+## 3. MudanÃ§as de cÃ³digo
 
-### 3.1 `bling_order_processing_service.process_webhook` (pipeline única)
+### 3.1 `bling_order_processing_service.process_webhook` (pipeline Ãºnica)
 
 Arquivo: `packages/shared/nistiprint_shared/services/bling_order_processing_service.py`
 
-**Mantém** os passos atuais de resolução de instância Bling, fetch detalhe,
-resolução de marketplace, classificação Flex e criação de demanda.
+**MantÃ©m** os passos atuais de resoluÃ§Ã£o de instÃ¢ncia Bling, fetch detalhe,
+resoluÃ§Ã£o de marketplace, classificaÃ§Ã£o Flex e criaÃ§Ã£o de demanda.
 
 **Corrige**:
 
-1. `_upsert_pedido_bling`: trocar `on_conflict='bling_id'` (já fica correto
-   após a migration) e adicionar `bling_integration_id` no `data`. Conferir
-   que `numero_pedido` é gravado como `str(payload['numero'])` (NÃO mexer no
-   nome — segue padrão de coluna existente; semanticamente é "número de
-   exibição do pedido no Bling").
+1. `_upsert_pedido_bling`: trocar `on_conflict='bling_id'` (jÃ¡ fica correto
+   apÃ³s a migration) e adicionar `bling_integration_id` no `data`. Conferir
+   que `numero_pedido` Ã© gravado como `str(payload['numero'])` (NÃƒO mexer no
+   nome â€” segue padrÃ£o de coluna existente; semanticamente Ã© "nÃºmero de
+   exibiÃ§Ã£o do pedido no Bling").
 2. `_upsert_pedido_shopee`: passa a gravar **todas** as colunas novas
    (`shop_id, order_sn, order_status, buyer_username, buyer_user_id,
    fulfillment_flag, shipping_carrier, package_list, item_list,
@@ -152,11 +156,11 @@ def _upsert_pedido_master(payload, *,
                          ):
     # Identificadores
     bling_id      = payload.get('id')                          # ID interno Bling
-    bling_numero  = str(payload.get('numero') or '')           # número exibido
+    bling_numero  = str(payload.get('numero') or '')           # nÃºmero exibido
     numero_loja   = payload.get('numeroLoja')                  # ID marketplace
     codigo_externo = numero_loja or f"BLING-{bling_id}"
 
-    # Cliente (sempre do Bling — fonte canônica)
+    # Cliente (sempre do Bling â€” fonte canÃ´nica)
     contato = payload.get('contato') or {}
 
     # Datas
@@ -166,7 +170,7 @@ def _upsert_pedido_master(payload, *,
         or payload.get('dataPrevista')
     )
 
-    # Logística
+    # LogÃ­stica
     transporte = payload.get('transporte') or {}
     volumes    = transporte.get('volumes') or []
     servico    = volumes[0].get('servico') if volumes else None
@@ -178,7 +182,7 @@ def _upsert_pedido_master(payload, *,
     )
 
     data = {
-        'numero_pedido':              bling_numero,        # NÃO é unique
+        'numero_pedido':              bling_numero,        # NÃƒO Ã© unique
         'codigo_pedido_externo':      codigo_externo,      # UNIQUE
         'origem':                     'BLING',
         'pedido_bling_id':            pedido_bling_id,
@@ -204,19 +208,19 @@ def _upsert_pedido_master(payload, *,
         'data_venda':                 data_venda,
         'data_limite_envio':          data_limite_envio,
 
-        # Logística / Flex
+        # LogÃ­stica / Flex
         'servico_logistico':          servico,
         'is_flex':                    is_flex,
         'modalidade_logistica':       modalidade,
 
-        # Marketplace (preenchido só se houver enriquecimento)
+        # Marketplace (preenchido sÃ³ se houver enriquecimento)
         'buyer_username':             (shopee_data or {}).get('buyer_username'),
         'shipping_carrier':           (shopee_data or {}).get('shipping_carrier'),
         'message_to_seller':          (shopee_data or {}).get('raw', {}).get('message_to_seller'),
 
         'updated_at':                 now_iso(),
     }
-    # filtra None para não sobrescrever em update
+    # filtra None para nÃ£o sobrescrever em update
     data = {k: v for k, v in data.items() if v is not None}
 
     res = supabase_db.table('pedidos').upsert(
@@ -253,7 +257,7 @@ def _upsert_itens_pedido(pedido_id, itens_bling):
 
 
 def _resolve_produto_interno(codigo, produto_bling_id):
-    # 1ª tentativa: vinculos_bling por bling_id
+    # 1Âª tentativa: vinculos_bling por bling_id
     if produto_bling_id:
         v = (supabase_db.table('vinculos_bling')
              .select('produto_id')
@@ -261,7 +265,7 @@ def _resolve_produto_interno(codigo, produto_bling_id):
              .limit(1).execute().data)
         if v:
             return v[0]['produto_id']
-    # 2ª tentativa: vinculos_bling por SKU
+    # 2Âª tentativa: vinculos_bling por SKU
     if codigo:
         v = (supabase_db.table('vinculos_bling')
              .select('produto_id')
@@ -269,7 +273,7 @@ def _resolve_produto_interno(codigo, produto_bling_id):
              .limit(1).execute().data)
         if v:
             return v[0]['produto_id']
-    # 3ª tentativa: produtos por SKU
+    # 3Âª tentativa: produtos por SKU
     if codigo:
         p = (supabase_db.table('produtos')
              .select('id')
@@ -281,28 +285,28 @@ def _resolve_produto_interno(codigo, produto_bling_id):
 ```
 
 5. **Resolver `canal_venda_id`** pela `channel_connection` ativa (mesmo lookup
-   da resolução de marketplace), e gravar nas duas colunas até `canal_venda_id`
+   da resoluÃ§Ã£o de marketplace), e gravar nas duas colunas atÃ© `canal_venda_id`
    ser aposentado.
 
-6. **Personalizado**: manter chamada a `personalized_order_identifier` após
+6. **Personalizado**: manter chamada a `personalized_order_identifier` apÃ³s
    o upsert do `pedidos`, igual hoje.
 
-7. **Auditoria**: gravar `pedido_ingest_log` (tabela já existe) com
+7. **Auditoria**: gravar `pedido_ingest_log` (tabela jÃ¡ existe) com
    `pedido_id, bling_id, marketplace_integration_id, is_flex, flex_motivo,
    matched_rule_id`.
 
 ### 3.2 Aposentar `order_sync_service.sync_bling_order` / `sync_shopee_order`
 
-- Remover chamadas externas a esses métodos. Os usos atuais estão em:
-  - `pedidos_bling_import_service._sync_bling_order_phase1` →
+- Remover chamadas externas a esses mÃ©todos. Os usos atuais estÃ£o em:
+  - `pedidos_bling_import_service._sync_bling_order_phase1` â†’
     substituir por `process_webhook(full_order, bling_integration_hint=...)`.
-  - `pedidos_bling_import_service._enrich_from_marketplace` → não chamar
-    mais; o enriquecimento agora é feito dentro do `process_webhook`.
-- Não apagar o arquivo no primeiro PR — só remover as chamadas e marcar
-  o módulo como deprecated. Apagar fisicamente em PR posterior, depois
+  - `pedidos_bling_import_service._enrich_from_marketplace` â†’ nÃ£o chamar
+    mais; o enriquecimento agora Ã© feito dentro do `process_webhook`.
+- NÃ£o apagar o arquivo no primeiro PR â€” sÃ³ remover as chamadas e marcar
+  o mÃ³dulo como deprecated. Apagar fisicamente em PR posterior, depois
   de confirmar que nada mais importa.
 
-### 3.3 Fetch periódico vira "rede de segurança" sobre o Redis
+### 3.3 Fetch periÃ³dico vira "rede de seguranÃ§a" sobre o Redis
 
 Arquivo: `packages/shared/nistiprint_shared/services/pedidos_bling_import_service.py`
 
@@ -325,40 +329,40 @@ def run_fetch_pedidos_em_andamento(...):
             redis_client.rpush(BLING_WEBHOOK_QUEUE, json.dumps(payload))
 ```
 
-Vantagens: uma fonte única, sem código duplicado; idempotente (worker já
+Vantagens: uma fonte Ãºnica, sem cÃ³digo duplicado; idempotente (worker jÃ¡
 deduplica por `bling_id` no upsert).
 
 ### 3.4 `order_service.upsert_order` (legado consumido por outros lugares?)
 
 - Remover a chamada interna a `MarketplaceEnrichmentService`
   (`packages/shared/nistiprint_shared/services/order_service.py:206`).
-- Tirar as proteções "uma vez Flex sempre Flex" e "não sobrescrever buyer
-  vazio" — a fonte de verdade do Flex passa a ser o `flex_classifier_service`
+- Tirar as proteÃ§Ãµes "uma vez Flex sempre Flex" e "nÃ£o sobrescrever buyer
+  vazio" â€” a fonte de verdade do Flex passa a ser o `flex_classifier_service`
   rodando no ingest.
 - Verificar callers restantes (planilha de pedidos, import manual). Se
-  algum precisar, redirecionar para `process_webhook` ou para uma função
-  pública nova `ingest_bling_order(payload, bling_integration_id)` extraída
+  algum precisar, redirecionar para `process_webhook` ou para uma funÃ§Ã£o
+  pÃºblica nova `ingest_bling_order(payload, bling_integration_id)` extraÃ­da
   de `process_webhook`.
 
 ### 3.5 Consumidor Redis
 
 Arquivo: `packages/shared/nistiprint_shared/services/redis_queue_tasks.py`
 
-Sem mudança funcional. Apenas garantir que o `data.get('data')` continua
-sendo passado ao `process_webhook` e o `companyId` é repassado.
+Sem mudanÃ§a funcional. Apenas garantir que o `data.get('data')` continua
+sendo passado ao `process_webhook` e o `companyId` Ã© repassado.
 
 ---
 
 ## 4. Frontend / API
 
-Sem mudança nesta fase. As rotas já leem `pedidos` + joins certos
+Sem mudanÃ§a nesta fase. As rotas jÃ¡ leem `pedidos` + joins certos
 (`marketplace_integration`, `canal_venda`, `itens_pedido`,
-`vinculos_integracao_pedido`). Vão voltar a exibir tudo assim que a
-pipeline única popular as colunas.
+`vinculos_integracao_pedido`). VÃ£o voltar a exibir tudo assim que a
+pipeline Ãºnica popular as colunas.
 
-Conferências pós-implementação:
+ConferÃªncias pÃ³s-implementaÃ§Ã£o:
 - `apps/api/routes/pedidos.py` `get_pedido_detalhe`: cliente, financeiro,
-  datas, logística, itens devem aparecer.
+  datas, logÃ­stica, itens devem aparecer.
 - RPC `list_pedidos_filtrados` deve trazer `marketplace_*` populado para
   pedidos de marketplace.
 
@@ -366,51 +370,51 @@ Conferências pós-implementação:
 
 ## 5. Backfill
 
-Após o deploy:
+ApÃ³s o deploy:
 
-1. Rodar `run_fetch_pedidos_em_andamento(dias=14)` para todas as instâncias
-   Bling ativas. Como agora é "lista + enfileira", isso vai re-disparar o
+1. Rodar `run_fetch_pedidos_em_andamento(dias=14)` para todas as instÃ¢ncias
+   Bling ativas. Como agora Ã© "lista + enfileira", isso vai re-disparar o
    ingest unificado para todos os pedidos recentes.
-2. Spot-check em 5 pedidos Shopee e 5 pedidos não-Shopee:
+2. Spot-check em 5 pedidos Shopee e 5 pedidos nÃ£o-Shopee:
    - `pedidos.codigo_pedido_externo` correto (numeroLoja vs `BLING-{id}`).
    - `pedidos_bling`, `pedidos_shopee` com FKs preenchidas em `pedidos`.
-   - `itens_pedido` populados, com `produto_id` quando há vínculo.
+   - `itens_pedido` populados, com `produto_id` quando hÃ¡ vÃ­nculo.
    - Cliente, total, datas, Flex, marketplace na tela.
 
 ---
 
-## 6. Ordem de execução / PRs
+## 6. Ordem de execuÃ§Ã£o / PRs
 
-1. **PR-1 — Schema**: aplicar a migration
-   `20260429000000_pedidos_ingest_consolidacao.sql`. Sem mudança de código.
-   Deploy em produção.
-2. **PR-2 — Pipeline única**: reescrever `_upsert_pedido_master`,
+1. **PR-1 â€” Schema**: aplicar a migration
+   `20260429000000_pedidos_ingest_consolidacao.sql`. Sem mudanÃ§a de cÃ³digo.
+   Deploy em produÃ§Ã£o.
+2. **PR-2 â€” Pipeline Ãºnica**: reescrever `_upsert_pedido_master`,
    `_upsert_itens_pedido`, `_upsert_pedido_shopee`, e fazer o fetch
-   periódico publicar no Redis (3.3). Remover chamadas a
-   `order_sync_service.sync_bling_order`/`sync_shopee_order` e à
-   `MarketplaceEnrichmentService`. Não apagar arquivos.
-3. **PR-3 — Backfill**: script/endpoint para re-disparar o fetch de N dias.
-4. **PR-4 — Limpeza**: apagar `order_sync_service.sync_bling_order`,
-   `sync_shopee_order`, `_save_to_shopee_table`, e o que mais ficou órfão.
+   periÃ³dico publicar no Redis (3.3). Remover chamadas a
+   `order_sync_service.sync_bling_order`/`sync_shopee_order` e Ã 
+   `MarketplaceEnrichmentService`. NÃ£o apagar arquivos.
+3. **PR-3 â€” Backfill**: script/endpoint para re-disparar o fetch de N dias.
+4. **PR-4 â€” Limpeza**: apagar `order_sync_service.sync_bling_order`,
+   `sync_shopee_order`, `_save_to_shopee_table`, e o que mais ficou Ã³rfÃ£o.
    Atualizar docs (`ARQUITETURA.md`, `MODELO-DADOS.md`).
 
 ---
 
-## 7. Critérios de aceitação
+## 7. CritÃ©rios de aceitaÃ§Ã£o
 
 - [ ] Webhook Bling de pedido novo cria 1 linha em `pedidos`, 1 em
       `pedidos_bling`, N em `itens_pedido`, e (se Shopee) 1 em
       `pedidos_shopee`. Todas com FKs corretas.
 - [ ] Tela de detalhe do pedido exibe cliente, telefone, e-mail, total,
-      data de venda, data limite de envio, serviço logístico, marketplace
-      (com cor e nome), Flex e itens com descrição/qtd/preço.
-- [ ] Mesmo pedido recebido duas vezes via webhook não duplica linhas em
-      nenhuma das três tabelas (idempotência por `pedidos_bling.bling_id`,
+      data de venda, data limite de envio, serviÃ§o logÃ­stico, marketplace
+      (com cor e nome), Flex e itens com descriÃ§Ã£o/qtd/preÃ§o.
+- [ ] Mesmo pedido recebido duas vezes via webhook nÃ£o duplica linhas em
+      nenhuma das trÃªs tabelas (idempotÃªncia por `pedidos_bling.bling_id`,
       `pedidos_shopee.codigo_pedido` e `pedidos.codigo_pedido_externo`).
-- [ ] Pedido fora da Shopee (ex.: criado direto no Bling) é exibido com
+- [ ] Pedido fora da Shopee (ex.: criado direto no Bling) Ã© exibido com
       `codigo_pedido_externo = BLING-{bling_id}`, sem `pedido_shopee_id`,
       sem `marketplace_integration_id`, com `origem='BLING'`.
-- [ ] Fetch periódico não chama mais `order_sync_service` — só enfileira
-      no Redis. Logs do worker mostram um único caminho de processamento.
+- [ ] Fetch periÃ³dico nÃ£o chama mais `order_sync_service` â€” sÃ³ enfileira
+      no Redis. Logs do worker mostram um Ãºnico caminho de processamento.
 - [ ] Tabelas `pedidos_bling` e `pedidos_shopee` continuam servindo de
       auditoria (raw payload preservado).

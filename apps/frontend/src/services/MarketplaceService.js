@@ -86,6 +86,18 @@ export const getInstalledIntegrations = async () => {
 };
 
 /**
+ * Get one installed integration by ID
+ */
+export const getInstallation = async (instanceId) => {
+  try {
+    const response = await api.get(`${BASE_URL}/installed/${instanceId}`);
+    return response.data.installation;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+/**
  * Get details of a specific order from a marketplace integration
  */
 export const getMarketplaceOrderDetail = async (instanceId, orderId) => {
@@ -165,10 +177,7 @@ export const getBlingStores = async () => {
  */
 export const createChannelLink = async (linkData) => {
   try {
-    // Note: integracao-canais endpoint is on /api, not /api/v2
-    const response = await api.post('/integracao-canais/configuracoes', linkData, {
-      baseURL: '/api' 
-    });
+    const response = await api.post('/integracao-canais/configuracoes', linkData);
     return response.data;
   } catch (error) {
     throw error.response?.data || error;
@@ -211,6 +220,44 @@ export const updateInstallation = async (instanceId, data) => {
   }
 };
 
+export const getAppProfiles = async (moduleId = null) => {
+  try {
+    const response = await api.get(`${BASE_URL}/app-profiles`, {
+      params: moduleId ? { module_id: moduleId } : {}
+    });
+    return response.data.profiles || [];
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+export const createAppProfile = async (data) => {
+  try {
+    const response = await api.post(`${BASE_URL}/app-profiles`, data);
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+export const updateAppProfile = async (profileId, data) => {
+  try {
+    const response = await api.put(`${BASE_URL}/app-profiles/${profileId}`, data);
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+export const backfillIntegrationSecrets = async () => {
+  try {
+    const response = await api.post(`${BASE_URL}/admin/backfill-secrets`);
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
 const MarketplaceService = {
   getAvailableModules,
   getModuleDetails,
@@ -218,6 +265,7 @@ const MarketplaceService = {
   initAuth,
   exchangeCode,
   getInstalledIntegrations,
+  getInstallation,
   getMarketplaceOrderDetail,
   renewToken,
   testIntegration,
@@ -228,6 +276,10 @@ const MarketplaceService = {
   listIntegracaoCanaisConfigs,
   importarPedidosEmAndamento,
   updateInstallation,
+  getAppProfiles,
+  createAppProfile,
+  updateAppProfile,
+  backfillIntegrationSecrets,
 };
 
 export default MarketplaceService;

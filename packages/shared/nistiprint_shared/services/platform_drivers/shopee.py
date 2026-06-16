@@ -36,6 +36,88 @@ def _generate_sign(partner_id: int, partner_key: str, path: str, timestamp: int,
     ).hexdigest()
     return sign
 
+def _resolve_credentials(integration: Dict) -> Dict:
+    config = integration.get("config", {}) or {}
+    credentials = integration.get("credentials", {}) or {}
+    legacy_credentials = integration.get("_legacy_credentials", {}) or {}
+
+    def find_value(*keys):
+        for container in (config, credentials, legacy_credentials, integration):
+            if not isinstance(container, dict):
+                continue
+            for key in keys:
+                value = container.get(key)
+                if value not in (None, ""):
+                    return value
+        return None
+
+    account_identifiers = config.get("account_identifiers") or credentials.get("account_identifiers") or {}
+    account_shop_id = account_identifiers.get("primary") if isinstance(account_identifiers, dict) else None
+
+    return {
+        "partner_id": find_value("partner_id") or os.getenv("SHOPEE_PARTNER_ID"),
+        "partner_key": find_value("partner_key", "app_secret", "secret") or os.getenv("SHOPEE_PARTNER_KEY"),
+        "shop_id": find_value("shop_id", "shopid", "shop_cipher") or account_shop_id,
+        "access_token": find_value("access_token"),
+    }
+
+def test_connection(integration: Dict, path: Optional[str] = None) -> Dict:
+    """
+    Tests Shopee connectivity using the same credential sources as order ingest.
+    """
+    host = "https://partner.shopeemobile.com"
+    path = path or "/api/v2/shop/get_profile"
+    resolved = _resolve_credentials(integration)
+    partner_id_raw = resolved.get("partner_id")
+    partner_key = resolved.get("partner_key")
+    shop_id_raw = resolved.get("shop_id")
+    access_token = resolved.get("access_token")
+
+    if not all([partner_id_raw, partner_key, shop_id_raw, access_token]):
+        missing = []
+        if not partner_id_raw:
+            missing.append("partner_id")
+        if not partner_key:
+            missing.append("partner_key")
+        if not shop_id_raw:
+            missing.append("shop_id")
+        if not access_token:
+            missing.append("access_token")
+        raise ValueError(
+            "Configuracao da Shopee incompleta "
+            f"({', '.join(missing)} ausentes). Verifique a instalacao e as variaveis "
+            "SHOPEE_PARTNER_ID/SHOPEE_PARTNER_KEY."
+        )
+
+    partner_id = int(partner_id_raw)
+    shop_id = int(shop_id_raw)
+    timestamp = int(time.time())
+    sign = _generate_sign(partner_id, partner_key, path, timestamp, access_token, shop_id)
+    response = requests.get(
+        f"{host}{path}",
+        params={
+            "partner_id": partner_id,
+            "timestamp": timestamp,
+            "sign": sign,
+            "access_token": access_token,
+            "shop_id": shop_id,
+        },
+    )
+
+    if response.status_code != 200:
+        return {"success": False, "message": f"Erro na API da Shopee: {response.status_code}", "details": response.text}
+
+    data = response.json()
+    if data.get("error"):
+        return {
+            "success": False,
+            "message": f"Erro reportado pela Shopee: {data.get('message')}",
+            "code": data.get("error"),
+            "details": data,
+        }
+
+    return {"success": True, "message": "Conexao estabelecida com sucesso.", "details": data}
+
 def get_order_detail(integration: Dict, order_sn_list: List[str]) -> Dict:
     """
     Fetches order details from Shopee V2 API for a given integration instance.

@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import * as pedidoService from '@/services/pedidoService';
 import { formatAppDateTime } from '@/lib/dateTime';
+import { getOrderTimestamps } from '@/lib/orderTimestamps';
 import {
   CalendarClock,
   Clock3,
@@ -18,12 +19,12 @@ import {
   Truck,
   Warehouse
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 function formatValue(value) {
-  return value ? formatAppDateTime(value) : 'Não informado';
+  return value ? formatAppDateTime(value, { fallback: String(value) }) : 'Não informado';
 }
 
 function InfoLine({ label, value, mono = false }) {
@@ -37,7 +38,7 @@ function InfoLine({ label, value, mono = false }) {
   );
 }
 
-function DateCard({ icon: Icon, label, value, hint, tone = 'text-muted-foreground' }) {
+function DateCard({ icon, label, value, hint, tone = 'text-muted-foreground' }) {
   return (
     <Card className="h-full">
       <CardContent className="pt-6">
@@ -48,7 +49,7 @@ function DateCard({ icon: Icon, label, value, hint, tone = 'text-muted-foregroun
             {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
           </div>
           <div className={`rounded-full bg-muted p-2 ${tone}`}>
-            <Icon className="h-4 w-4" />
+            {createElement(icon, { className: 'h-4 w-4' })}
           </div>
         </div>
       </CardContent>
@@ -58,16 +59,7 @@ function DateCard({ icon: Icon, label, value, hint, tone = 'text-muted-foregroun
 
 function OperacaoCard({ pedido }) {
   const logistica = pedido.logistica || {};
-  const timestamps = useMemo(() => {
-    const snapshot = pedido.snapshot?.logistics || {};
-    return {
-      compra: pedido.data_compra_marketplace || snapshot.purchase_at,
-      pagamento: pedido.data_pagamento_marketplace || snapshot.payment_at,
-      coleta: pedido.data_coleta || snapshot.collection_at,
-      envio: pedido.data_envio_marketplace || snapshot.marketplace_shipped_at,
-      limite: pedido.data_limite_envio || snapshot.deadline || snapshot.ship_by_date || snapshot.expected_date,
-    };
-  }, [pedido]);
+  const timestamps = useMemo(() => getOrderTimestamps(pedido), [pedido]);
 
   return (
     <Card>
@@ -209,6 +201,8 @@ export default function PedidoDetalhePage() {
     );
   }
 
+  const timestamps = getOrderTimestamps(pedido);
+
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto max-w-7xl px-4 py-8">
@@ -226,25 +220,25 @@ export default function PedidoDetalhePage() {
           <DateCard
             icon={Package}
             label="Compra"
-            value={formatValue(pedido.data_compra_marketplace || pedido.datas?.venda)}
+            value={formatValue(timestamps.compra || pedido.datas?.venda)}
             hint="Data/hora de criação do pedido"
           />
           <DateCard
             icon={Clock3}
             label="Pagamento"
-            value={formatValue(pedido.data_pagamento_marketplace)}
+            value={formatValue(timestamps.pagamento)}
             hint="Usada para validar a hora de corte"
           />
           <DateCard
             icon={Warehouse}
             label="Coleta"
-            value={formatValue(pedido.data_coleta)}
+            value={formatValue(timestamps.coleta)}
             hint="Coleta pela transportadora ou ponto"
           />
           <DateCard
             icon={Truck}
             label="Envio"
-            value={formatValue(pedido.data_envio_marketplace)}
+            value={formatValue(timestamps.envio)}
             hint="Bipagem no marketplace"
           />
         </div>
@@ -283,7 +277,9 @@ export default function PedidoDetalhePage() {
                 <InfoLine label="Canal" value={pedido.logistica?.canal_venda?.nome} />
                 <InfoLine label="Status" value={pedido.statusFormatado?.nome} />
                 <InfoLine label="Data da venda" value={formatValue(pedido.datas?.venda)} mono />
-                <InfoLine label="Limite de envio" value={formatValue(pedido.data_limite_envio)} mono />
+                <InfoLine label="Compra" value={formatValue(timestamps.compra)} mono />
+                <InfoLine label="Pagamento" value={formatValue(timestamps.pagamento)} mono />
+                <InfoLine label="Limite de envio" value={formatValue(timestamps.limite)} mono />
               </CardContent>
             </Card>
 

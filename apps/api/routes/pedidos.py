@@ -8,6 +8,7 @@ from nistiprint_shared.services.order_service import order_service
 from nistiprint_shared.services.order_reprocess_service import order_reprocess_service
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from utils.api_response import ApiResponse
+from utils.order_timestamp_normalizer import build_order_timestamps
 import logging
 import json
 
@@ -207,6 +208,49 @@ def _resolve_pedido_log_context(pedido: dict):
     }
 
 
+def _missing_operational_timestamps(pedido: dict, snapshot: dict) -> bool:
+    logistics = (snapshot or {}).get('logistics') or {}
+    return any(
+        not (
+            pedido.get(pedido_key)
+            or logistics.get(snapshot_key)
+            or logistics.get(snapshot_fallback_key)
+        )
+        for pedido_key, snapshot_key, snapshot_fallback_key in (
+            ('data_compra_marketplace', 'purchase_at', 'compra_marketplace'),
+            ('data_pagamento_marketplace', 'payment_at', 'pagamento_marketplace'),
+        )
+    )
+
+
+def _fetch_timestamp_mirrors(pedido: dict, snapshot: dict) -> tuple[dict, dict]:
+    if not _missing_operational_timestamps(pedido, snapshot):
+        return {}, {}
+
+    shopee = {}
+    mercadolivre = {}
+
+    if pedido.get('pedido_shopee_id'):
+        try:
+            shopee = supabase_db.table('pedidos_shopee') \
+                .select('data_criacao, data_pagamento, pay_time, raw_payload') \
+                .eq('id', pedido.get('pedido_shopee_id')) \
+                .single().execute().data or {}
+        except Exception as e:
+            logger.warning("Erro ao buscar pedidos_shopee para pedido %s: %s", pedido.get('id'), e)
+
+    if pedido.get('pedido_mercadolivre_id'):
+        try:
+            mercadolivre = supabase_db.table('pedidos_mercadolivre') \
+                .select('date_created, date_approved, date_closed, raw_order') \
+                .eq('id', pedido.get('pedido_mercadolivre_id')) \
+                .single().execute().data or {}
+        except Exception as e:
+            logger.warning("Erro ao buscar pedidos_mercadolivre para pedido %s: %s", pedido.get('id'), e)
+
+    return shopee, mercadolivre
+
+
 @pedidos_bp.route('/<int:pedido_id>', methods=['GET'])
 @login_required
 def get_pedido_detalhe(pedido_id):
@@ -337,6 +381,14 @@ def get_pedido_detalhe(pedido_id):
                 'origem': 'canal_venda_legacy',
             }
 
+        shopee_mirror, mercadolivre_mirror = _fetch_timestamp_mirrors(pedido, snapshot)
+        timestamps = build_order_timestamps(
+            pedido=pedido,
+            snapshot=snapshot,
+            shopee=shopee_mirror,
+            mercadolivre=mercadolivre_mirror,
+        )
+
         # Formatando dados para resposta
         resultado = {
             'id': pedido.get('id'),
@@ -344,11 +396,11 @@ def get_pedido_detalhe(pedido_id):
             'numero_pedido': pedido.get('numero_pedido'),
             'codigo_pedido_externo': pedido.get('codigo_pedido_externo'),
             'origem': pedido.get('origem'),
-            'data_compra_marketplace': pedido.get('data_compra_marketplace'),
-            'data_pagamento_marketplace': pedido.get('data_pagamento_marketplace'),
-            'data_coleta': pedido.get('data_coleta'),
-            'data_envio_marketplace': pedido.get('data_envio_marketplace'),
-            'data_limite_envio': pedido.get('data_limite_envio'),
+            'data_compra_marketplace': timestamps.get('compra'),
+            'data_pagamento_marketplace': timestamps.get('pagamento'),
+            'data_coleta': timestamps.get('coleta'),
+            'data_envio_marketplace': timestamps.get('envio'),
+            'data_limite_envio': timestamps.get('limite'),
             'status': {
                 'id': pedido.get('situacao_pedido_id'),
                 'nome': (pedido.get('situacao_pedido') or {}).get('nome') or 'Pendente',
@@ -370,14 +422,14 @@ def get_pedido_detalhe(pedido_id):
                 'total_quantidade': total_quantidade
             },
             'datas': {
-                'venda': pedido.get('data_venda'),
-                'criacao': pedido.get('created_at'),
-                'atualizacao': pedido.get('updated_at'),
-                'limite_envio': pedido.get('data_limite_envio'),
-                'compra_marketplace': pedido.get('data_compra_marketplace'),
-                'pagamento_marketplace': pedido.get('data_pagamento_marketplace'),
-                'coleta': pedido.get('data_coleta'),
-                'envio_marketplace': pedido.get('data_envio_marketplace'),
+                'venda': _normalize_dt(pedido.get('data_venda')),
+                'criacao': _normalize_dt(pedido.get('created_at')),
+                'atualizacao': _normalize_dt(pedido.get('updated_at')),
+                'limite_envio': timestamps.get('limite'),
+                'compra_marketplace': timestamps.get('compra'),
+                'pagamento_marketplace': timestamps.get('pagamento'),
+                'coleta': timestamps.get('coleta'),
+                'envio_marketplace': timestamps.get('envio'),
             },
             'logistica': {
                 'is_flex': pedido.get('is_flex', False),

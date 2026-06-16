@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import FiltrosPedidos from '@/components/pedidos/FiltrosPedidos';
 import GerarDemandaModal from '@/components/pedidos/GerarDemandaModal';
 import TabelaPedidos from '@/components/pedidos/TabelaPedidos';
+import { getOrderTimestamps } from '@/lib/orderTimestamps';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -150,7 +151,10 @@ function PedidosListPage() {
         const ordersData = responseData.orders || responseData.pedidos || [];
         
         // Mapear campos do backend para o formato esperado pelo frontend
-        const pedidosMapeados = ordersData.map(order => ({
+        const pedidosMapeados = ordersData.map(order => {
+          const timestamps = getOrderTimestamps(order);
+
+          return {
           id: order.id,
           numero_pedido: order.numero_pedido || order.numeroPedido || order.id,
           codigo_pedido_externo: order.codigo_pedido_externo || order.codigoPedidoExterno,
@@ -178,11 +182,11 @@ function PedidosListPage() {
           is_flex: order.is_flex || false,
           is_fulfillment: order.is_fulfillment || false,
           is_personalizado: order.is_personalizado || false,
-          data_compra_marketplace: order.data_compra_marketplace,
-          data_pagamento_marketplace: order.data_pagamento_marketplace,
-          data_coleta: order.data_coleta,
-          data_envio_marketplace: order.data_envio_marketplace,
-          data_limite_envio: order.data_limite_envio,
+          data_compra_marketplace: timestamps.compra,
+          data_pagamento_marketplace: timestamps.pagamento,
+          data_coleta: timestamps.coleta,
+          data_envio_marketplace: timestamps.envio,
+          data_limite_envio: timestamps.limite,
           enviar_ate_formatado: order.enviar_ate_formatado,
           // Status com cores dinâmicas
           status: order.status || {
@@ -190,7 +194,8 @@ function PedidosListPage() {
             nome: order.situacao_nome,
             cor: order.situacao_cor,
           },
-        }));
+          };
+        });
         
         setPedidos(pedidosMapeados);
         setTotal(responseData.total ?? pedidosMapeados.length);

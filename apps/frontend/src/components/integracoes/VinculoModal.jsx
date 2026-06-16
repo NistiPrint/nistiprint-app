@@ -21,7 +21,7 @@ import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Store, Building2, Link, AlertCircle, Package, HelpCircle, Bell } from 'lucide-react';
+import { Store, Building2, Link, AlertCircle, Package, HelpCircle, Bell, FileText, Webhook } from 'lucide-react';
 import * as integracaoCanalService from '@/services/integracaoCanalService';
 
 /**
@@ -44,6 +44,7 @@ export default function VinculoModal({
     plataforma_nome: plataformaFilter || '',
     bling_integration_id: 'none',
     marketplace_integration_id: 'none',
+    ingest_origin_mode: 'erp_bling',
     is_primary: false,
     process_webhooks: true,
     is_active: true
@@ -61,6 +62,7 @@ export default function VinculoModal({
           plataforma_nome: vinculoEdit.plataforma_nome || '',
           bling_integration_id: vinculoEdit.bling_integration_id?.toString() || 'none',
           marketplace_integration_id: vinculoEdit.marketplace_integration_id?.toString() || 'none',
+          ingest_origin_mode: vinculoEdit.ingest_origin_mode || vinculoEdit.config_json?.ingest_origin_mode || 'erp_bling',
           is_primary: vinculoEdit.is_primary || false,
           process_webhooks: vinculoEdit.process_webhooks !== false,
           is_active: vinculoEdit.is_active !== false
@@ -108,6 +110,7 @@ export default function VinculoModal({
         throw new Error('Selecione pelo menos uma integração (Bling ou Marketplace)');
       }
 
+      const existingConfig = vinculoEdit?.config_json || {};
       const payload = {
         canal_venda_id: parseInt(formData.canal_venda_id),
         bling_loja_id: parseInt(formData.bling_loja_id),
@@ -115,7 +118,13 @@ export default function VinculoModal({
         bling_integration_id: hasBling ? parseInt(formData.bling_integration_id) : null,
         marketplace_integration_id: hasMarketplace ? parseInt(formData.marketplace_integration_id) : null,
         is_primary: formData.is_primary,
-        process_webhooks: formData.process_webhooks,
+        process_webhooks: formData.ingest_origin_mode === 'marketplace_direct' ? false : formData.process_webhooks,
+        ingest_origin_mode: formData.ingest_origin_mode,
+        config_json: {
+          ...existingConfig,
+          ingest_origin_mode: formData.ingest_origin_mode,
+          invoicing_mode: hasBling ? 'erp_bling' : 'disabled',
+        },
         is_active: formData.is_active
       };
 
@@ -133,6 +142,7 @@ export default function VinculoModal({
         plataforma_nome: plataformaFilter || '',
         bling_integration_id: 'none',
         marketplace_integration_id: 'none',
+        ingest_origin_mode: 'erp_bling',
         is_primary: false,
         process_webhooks: true,
         is_active: true
@@ -149,6 +159,9 @@ export default function VinculoModal({
   // Filtrar integrações por tipo
   const blingIntegrations = integracoes.filter(i => i.module_id === 'bling');
   const marketplaceIntegrations = integracoes.filter(i => i.module_id !== 'bling');
+  const selectedBling = blingIntegrations.find(i => i.id?.toString() === formData.bling_integration_id?.toString());
+  const selectedMarketplace = marketplaceIntegrations.find(i => i.id?.toString() === formData.marketplace_integration_id?.toString());
+  const canUseMarketplaceDirect = !!selectedMarketplace && ['shopee', 'mercadolivre'].includes(selectedMarketplace.module_id);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -355,7 +368,15 @@ export default function VinculoModal({
               <Package className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Select
                 value={formData.marketplace_integration_id || 'none'}
-                onValueChange={(value) => setFormData(prev => ({ ...prev, marketplace_integration_id: value === 'none' ? null : value }))}
+                onValueChange={(value) => {
+                  const selected = marketplaceIntegrations.find((integ) => integ.id?.toString() === value);
+                  const directAllowed = selected && ['shopee', 'mercadolivre'].includes(selected.module_id);
+                  setFormData(prev => ({
+                    ...prev,
+                    marketplace_integration_id: value === 'none' ? null : value,
+                    ingest_origin_mode: directAllowed ? prev.ingest_origin_mode : 'erp_bling',
+                  }));
+                }}
               >
                 <SelectTrigger className="pl-9">
                   <SelectValue placeholder="Selecione a instância de marketplace" />
@@ -372,6 +393,80 @@ export default function VinculoModal({
             </div>
           </div>
 
+          <div className="space-y-3 rounded-lg border p-3">
+            <div className="flex items-start gap-2">
+              <Webhook className="h-4 w-4 text-muted-foreground mt-0.5" />
+              <div>
+                <Label className="text-sm font-medium">Importacao e atualizacao de pedidos</Label>
+                <p className="text-xs text-muted-foreground">
+                  Define qual sistema cria e atualiza os pedidos deste vinculo.
+                </p>
+              </div>
+            </div>
+            <Select
+              value={formData.ingest_origin_mode}
+              onValueChange={(value) => setFormData(prev => ({
+                ...prev,
+                ingest_origin_mode: value,
+                process_webhooks: value === 'marketplace_direct' ? false : prev.process_webhooks,
+              }))}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Selecione a origem dos pedidos" />
+              </SelectTrigger>
+              <SelectContent>
+                {canUseMarketplaceDirect && (
+                  <SelectItem value="marketplace_direct">Webhook direto do marketplace</SelectItem>
+                )}
+                <SelectItem value="erp_bling">Webhook do Bling vinculado</SelectItem>
+                <SelectItem value="erp_only_dummy">Somente Bling (sem conta direta)</SelectItem>
+              </SelectContent>
+            </Select>
+            {formData.ingest_origin_mode === 'marketplace_direct' && (
+              <Alert className="bg-blue-50 border-blue-200">
+                <Webhook className="h-4 w-4 text-blue-700" />
+                <AlertDescription className="text-blue-900 text-xs">
+                  Pedidos entram pelo webhook da conta {selectedMarketplace?.instance_name || 'do marketplace'}.
+                  O Bling vinculado fica responsavel por nota fiscal e conciliacao.
+                </AlertDescription>
+              </Alert>
+            )}
+            {!canUseMarketplaceDirect && formData.marketplace_integration_id !== 'none' && formData.marketplace_integration_id && (
+              <Alert className="bg-amber-50 border-amber-200">
+                <AlertCircle className="h-4 w-4 text-amber-700" />
+                <AlertDescription className="text-amber-900 text-xs">
+                  Ingest direto esta habilitado inicialmente para Shopee e Mercado Livre. Para esta plataforma,
+                  use o webhook do Bling vinculado.
+                </AlertDescription>
+              </Alert>
+            )}
+          </div>
+
+          <div className="space-y-3 rounded-lg border p-3">
+            <div className="flex items-start gap-2">
+              <FileText className="h-4 w-4 text-muted-foreground mt-0.5" />
+              <div>
+                <Label className="text-sm font-medium">Emissao de nota fiscal</Label>
+                <p className="text-xs text-muted-foreground">
+                  A nota fiscal sera emitida pelo ERP vinculado a esta conta de marketplace.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-md bg-muted/50 px-3 py-2 text-sm">
+              <span className="text-muted-foreground">ERP responsavel</span>
+              <span className="font-medium text-right">
+                {selectedBling ? selectedBling.instance_name : 'Nenhum Bling selecionado'}
+              </span>
+            </div>
+            {!selectedBling && (
+              <Alert className="bg-amber-50 border-amber-200">
+                <AlertCircle className="h-4 w-4 text-amber-700" />
+                <AlertDescription className="text-amber-900 text-xs">
+                  Sem uma integracao Bling vinculada, a emissao de NF fica desabilitada para esta conta.
+                </AlertDescription>
+              </Alert>
+            )}
+          </div>
           {/* Alerta se nenhuma integração selecionada */}
           {(!formData.bling_integration_id || formData.bling_integration_id === 'none') &&
            (!formData.marketplace_integration_id || formData.marketplace_integration_id === 'none') && (
@@ -405,11 +500,14 @@ export default function VinculoModal({
                 Processar webhooks
               </Label>
               <p className="text-xs text-muted-foreground">
-                Desligue quando esta conta Bling receber pedidos duplicados de uma loja ja processada por outro vinculo
+                {formData.ingest_origin_mode === 'marketplace_direct'
+                  ? 'Desativado porque os pedidos serao processados pelo webhook direto do marketplace'
+                  : 'Mantem o webhook do Bling ativo para importar ou atualizar pedidos deste vinculo'}
               </p>
             </div>
             <Switch
-              checked={formData.process_webhooks}
+              checked={formData.ingest_origin_mode === 'marketplace_direct' ? false : formData.process_webhooks}
+              disabled={formData.ingest_origin_mode === 'marketplace_direct'}
               onCheckedChange={(checked) => setFormData(prev => ({ ...prev, process_webhooks: checked }))}
             />
           </div>
