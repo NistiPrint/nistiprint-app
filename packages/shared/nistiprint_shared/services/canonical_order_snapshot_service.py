@@ -163,6 +163,21 @@ class CanonicalOrderSnapshotService:
     def _replace_items(self, pedido_id: int, items: list[dict]) -> None:
         if not items:
             return
+        pedido_rows = (
+            supabase_db.table("pedidos")
+            .select("pedido_bling_id")
+            .eq("id", pedido_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if pedido_rows and pedido_rows[0].get("pedido_bling_id"):
+            logger.info(
+                "[snapshot] skipping item replacement for pedido_id=%s because pedido_bling_id exists",
+                pedido_id,
+            )
+            return
         supabase_db.table("itens_pedido").delete().eq("pedido_id", pedido_id).execute()
         rows = []
         for item in items:

@@ -360,9 +360,6 @@ def _resolve_marketplace_timestamps(payload: dict, shopee_data=None, meli_data=N
 
     if not data_compra:
         data_compra = _clean_date(payload.get("data"))
-    if not data_pagamento:
-        data_pagamento = data_compra
-        payment_source = "fallback.data_compra_marketplace" if data_compra else None
 
     logger.info(
         "[bling-ingest] marketplace timestamps resolved source=%s payload_id=%s result=%s",
@@ -1445,6 +1442,7 @@ def _upsert_pedido_master(payload, *,
                          canal_venda_id,           # derivado de channel_connections
                          is_flex, is_fulfillment=False, modalidade,
                          shopee_data=None, meli_data=None,
+                         ingest_source='bling',
                          ):
     """
     Upsert pedido na tabela pedidos (tabela unificada).
@@ -1521,10 +1519,16 @@ def _upsert_pedido_master(payload, *,
         payload.get('situacao', {}).get('id'),
     )
 
+    marketplace_slug = None
+    if shopee_data:
+        marketplace_slug = 'shopee'
+    elif meli_data:
+        marketplace_slug = 'mercadolivre'
+
     data = {
         'numero_pedido':              bling_numero,        # NÃO é unique
         'codigo_pedido_externo':      codigo_externo,      # UNIQUE
-        'origem':                     'BLING',
+        'origem':                     (marketplace_slug or 'bling').upper(),
         'pedido_bling_id':            pedido_bling_id,
         'pedido_shopee_id':           pedido_shopee_id,
         'pedido_mercadolivre_id':     pedido_mercadolivre_id,
@@ -1565,6 +1569,7 @@ def _upsert_pedido_master(payload, *,
         'buyer_username':             (shopee_data or {}).get('buyer_username') or (meli_data.get('order', {}) if meli_data else {}).get('buyer', {}).get('nickname'),
         'shipping_carrier':           (shopee_data or {}).get('shipping_carrier') or (meli_data.get('shipment', {}) if meli_data else {}).get('mode'),
         'message_to_seller':          (shopee_data or {}).get('raw', {}).get('message_to_seller') or (meli_data.get('order', {}) if meli_data else {}).get('comment'),
+        'ingest_source':              ingest_source,
 
         'updated_at':                 get_now_iso(),
     }
@@ -1598,15 +1603,9 @@ def _upsert_pedido_master(payload, *,
             }
             for item in (payload.get('itens') or [])
         ]
-        marketplace_slug = None
-        if shopee_data:
-            marketplace_slug = 'shopee'
-        elif meli_data:
-            marketplace_slug = 'mercadolivre'
-
         canonical_order_snapshot_service.upsert_snapshot(
             pedido_id=pedido_id,
-            ingest_source='bling',
+            ingest_source=ingest_source,
             marketplace=marketplace_slug,
             marketplace_order_id=codigo_externo,
             marketplace_integration_id=marketplace_integration_id,
@@ -1830,6 +1829,106 @@ def _resolve_produto_interno(codigo, produto_bling_id):
             return p[0]['id']
 
     return None
+
+
+def materialize_marketplace_direct_order(
+    *,
+    source: str,
+    external_order_id: str,
+    marketplace_inst: dict,
+    marketplace_detail: dict,
+    marketplace_mirror_id: int | None,
+    bling_integration_id: int | None,
+    bling_loja_id: str | None = None,
+):
+    if not bling_integration_id or not external_order_id:
+        return {"status": "not_available", "reason": "missing_bling_reference"}
+
+    from nistiprint_shared.services.bling.bling_client import BlingClient
+
+    try:
+        client = BlingClient.create_client_for_integration_id(int(bling_integration_id))
+        matches = client.get_order_numbers_by_store_numbers([str(external_order_id)]) or []
+    except Exception as exc:
+        logger.warning(
+            "[marketplace-direct] falha ao localizar pedido Bling numeroLoja=%s inst=%s: %s",
+            external_order_id,
+            bling_integration_id,
+            exc,
+            exc_info=True,
+        )
+        return {"status": "error", "reason": "bling_lookup_failed", "message": str(exc)}
+
+    if not matches:
+        return {"status": "not_found", "reason": "bling_order_not_found"}
+
+    match = matches[0] or {}
+    original_payload = {
+        "id": match.get("id"),
+        "numero": match.get("numero"),
+        "numeroLoja": str(external_order_id),
+        "loja": {"id": bling_loja_id} if bling_loja_id not in (None, "") else {},
+    }
+    detalhe = _preserve_original_bling_fields(
+        _fetch_bling_order_detail({"id": bling_integration_id}, match.get("id")),
+        original_payload,
+    )
+    pedido_bling_id = _upsert_pedido_bling(detalhe, bling_integration_id)
+
+    loja_id = str(_extract_bling_loja_id(detalhe) or bling_loja_id or "")
+    canal_venda_id = _resolve_canal_venda_id(
+        marketplace_inst.get("id"),
+        bling_integration_id,
+        loja_id,
+    )
+
+    plataforma = marketplace_inst.get("plataforma_slug") or source
+    shopee_data = marketplace_detail if plataforma == "shopee" else None
+    meli_data = marketplace_detail if plataforma == "mercadolivre" else None
+
+    fulfillment = _classify_fulfillment(
+        shopee_data,
+        meli_data,
+        detalhe.get("numeroLoja"),
+        plataforma,
+        canal_venda_id=canal_venda_id,
+        marketplace_integration_id=marketplace_inst.get("id"),
+    )
+    flex = _classify_flex(
+        shopee_data,
+        meli_data,
+        detalhe.get("numeroLoja"),
+        plataforma,
+        is_fulfillment=fulfillment.is_fulfillment,
+    )
+    modalidade = fulfillment.modalidade if fulfillment.is_fulfillment else flex.modalidade
+
+    pedido_id = _upsert_pedido_master(
+        detalhe,
+        pedido_bling_id=pedido_bling_id,
+        pedido_shopee_id=marketplace_mirror_id if plataforma == "shopee" else None,
+        pedido_mercadolivre_id=marketplace_mirror_id if plataforma == "mercadolivre" else None,
+        bling_integration_id=bling_integration_id,
+        marketplace_integration_id=marketplace_inst.get("id"),
+        canal_venda_id=canal_venda_id,
+        is_flex=flex.is_flex,
+        is_fulfillment=fulfillment.is_fulfillment,
+        modalidade=modalidade,
+        shopee_data=shopee_data,
+        meli_data=meli_data,
+        ingest_source=source,
+    )
+    return {
+        "status": "success",
+        "pedido_id": pedido_id,
+        "pedido_bling_id": pedido_bling_id,
+        "bling_order_id": detalhe.get("id"),
+        "bling_order_number": detalhe.get("numero"),
+        "canal_venda_id": canal_venda_id,
+        "is_flex": flex.is_flex,
+        "is_fulfillment": fulfillment.is_fulfillment,
+        "modalidade": modalidade,
+    }
 
 
 def import_single_order_by_shop_id(shopee_order_sn: str):

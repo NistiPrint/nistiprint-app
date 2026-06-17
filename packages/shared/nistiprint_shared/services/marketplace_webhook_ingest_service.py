@@ -6,6 +6,9 @@ from time import perf_counter
 from typing import Any
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.credential_resolver_service import (
+    credential_resolver_service,
+)
 from nistiprint_shared.services.canonical_order_status_service import (
     canonical_order_status_service,
 )
@@ -199,6 +202,26 @@ class MarketplaceWebhookIngestService:
         )
 
         pedido_shopee_id = self._upsert_shopee_mirror(detail, marketplace_inst.get("id"))
+        materialized = self._try_materialize_from_bling(
+            source="shopee",
+            external_order_id=str(order_sn),
+            marketplace_inst=marketplace_inst,
+            marketplace_detail=detail,
+            marketplace_mirror_id=pedido_shopee_id,
+            nfe_link=nfe_link,
+        )
+        if materialized:
+            return {
+                "status": "success",
+                "message": f"Pedido Shopee {order_sn} atualizado via materializacao Bling",
+                "pedido_id": materialized.get("pedido_id"),
+                "external_order_id": str(order_sn),
+                "marketplace_integration_id": marketplace_inst.get("id"),
+                "pedido_bling_id": materialized.get("pedido_bling_id"),
+                "bling_order_id": materialized.get("bling_order_id"),
+                "bling_order_number": materialized.get("bling_order_number"),
+                "materialized_via": "bling_lookup",
+            }
         status = canonical_order_status_service.resolve_shopee(
             detail.get("order_status") or body.get("order_status"),
             integration_id=marketplace_inst.get("id"),
@@ -324,6 +347,26 @@ class MarketplaceWebhookIngestService:
         )
 
         pedido_meli_id = self._upsert_meli_mirror(detail, marketplace_inst.get("id"))
+        materialized = self._try_materialize_from_bling(
+            source="mercadolivre",
+            external_order_id=str(order_id),
+            marketplace_inst=marketplace_inst,
+            marketplace_detail=detail,
+            marketplace_mirror_id=pedido_meli_id,
+            nfe_link=nfe_link,
+        )
+        if materialized:
+            return {
+                "status": "success",
+                "message": f"Pedido Mercado Livre {order_id} atualizado via materializacao Bling",
+                "pedido_id": materialized.get("pedido_id"),
+                "external_order_id": str(order_id),
+                "marketplace_integration_id": marketplace_inst.get("id"),
+                "pedido_bling_id": materialized.get("pedido_bling_id"),
+                "bling_order_id": materialized.get("bling_order_id"),
+                "bling_order_number": materialized.get("bling_order_number"),
+                "materialized_via": "bling_lookup",
+            }
         order = detail.get("order") or {}
         shipment = detail.get("shipment") or {}
         payment = (order.get("payments") or [{}])[0] if isinstance(order.get("payments"), list) else {}
@@ -591,11 +634,12 @@ class MarketplaceWebhookIngestService:
 
     def _fetch_shopee_detail(self, marketplace_inst: dict, order_sn: str) -> dict:
         credentials = marketplace_inst.get("credentials") or {}
-        integration = {
+        integration = credential_resolver_service.hydrate_integration({
+            **dict(marketplace_inst),
             "config": marketplace_inst.get("config") or {},
             "credentials": credentials,
             "access_token": marketplace_inst.get("access_token") or credentials.get("access_token"),
-        }
+        })
         return shopee_driver.get_order_detail(integration, [order_sn])
 
     def _fetch_meli_detail(self, marketplace_inst: dict, order_id: str) -> dict:
@@ -620,11 +664,12 @@ class MarketplaceWebhookIngestService:
 
     def _meli_integration(self, marketplace_inst: dict) -> dict:
         credentials = marketplace_inst.get("credentials") or {}
-        return {
+        return credential_resolver_service.hydrate_integration({
+            **dict(marketplace_inst),
             "config": marketplace_inst.get("config") or {},
             "credentials": credentials,
             "access_token": marketplace_inst.get("access_token") or credentials.get("access_token"),
-        }
+        })
 
     def _upsert_shopee_mirror(self, detail: dict, marketplace_integration_id: int | None) -> int | None:
         if not marketplace_integration_id:
@@ -639,6 +684,43 @@ class MarketplaceWebhookIngestService:
         from nistiprint_shared.services.bling_order_processing_service import _upsert_pedido_meli
 
         return _upsert_pedido_meli(detail, marketplace_integration_id)
+
+    def _try_materialize_from_bling(
+        self,
+        *,
+        source: str,
+        external_order_id: str,
+        marketplace_inst: dict,
+        marketplace_detail: dict,
+        marketplace_mirror_id: int | None,
+        nfe_link: dict | None,
+    ) -> dict | None:
+        bling_integration_id = (nfe_link or {}).get("erp_integration_id")
+        if not bling_integration_id:
+            return None
+
+        from nistiprint_shared.services.bling_order_processing_service import (
+            materialize_marketplace_direct_order,
+        )
+
+        result = materialize_marketplace_direct_order(
+            source=source,
+            external_order_id=str(external_order_id),
+            marketplace_inst=marketplace_inst,
+            marketplace_detail=marketplace_detail,
+            marketplace_mirror_id=marketplace_mirror_id,
+            bling_integration_id=bling_integration_id,
+            bling_loja_id=(nfe_link or {}).get("erp_store_id"),
+        )
+        if result.get("status") != "success":
+            logger.info(
+                "[marketplace-webhook] bling materialization unavailable source=%s external_order_id=%s result=%s",
+                source,
+                external_order_id,
+                {k: v for k, v in result.items() if k != "message"},
+            )
+            return None
+        return result
 
     def _upsert_pedido_status(
         self,
@@ -666,9 +748,9 @@ class MarketplaceWebhookIngestService:
             external_order_id=str(external_order_id),
         )
         data_compra_marketplace = data_venda
-        data_pagamento_marketplace = data_venda
+        data_pagamento_marketplace = None
         data_envio_marketplace = None
-        payment_time_source = "fallback.data_compra_marketplace" if data_venda else None
+        payment_time_source = None
         modalidade = "STANDARD"
         if source == "shopee":
             data_compra_marketplace = (details or {}).get("create_time") or data_venda

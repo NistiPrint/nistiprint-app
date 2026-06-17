@@ -265,6 +265,19 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
         self.assertEqual(timestamps['data_pagamento_marketplace'], '2026-06-13T12:00:00-03:00')
         self.assertEqual(timestamps['payment_time_source'], 'mercadolivre.payments.date_approved')
 
+    def test_resolve_marketplace_timestamps_does_not_infer_payment_from_purchase(self):
+        timestamps = bos._resolve_marketplace_timestamps(
+            {'data': '2026-06-13'},
+            shopee_data={
+                'order_status': 'UNPAID',
+                'create_time': '2026-06-13T09:10:00-03:00',
+            },
+        )
+
+        self.assertEqual(timestamps['data_compra_marketplace'], '2026-06-13T09:10:00-03:00')
+        self.assertIsNone(timestamps['data_pagamento_marketplace'])
+        self.assertIsNone(timestamps['payment_time_source'])
+
     def test_resolve_shipping_carrier_falls_back_to_saved_row(self):
         table = MagicMock()
         table.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
@@ -627,6 +640,45 @@ class TestBlingOrderProcessingServiceHelpers(unittest.TestCase):
 
         insert_data = table.insert.call_args.args[0]
         self.assertEqual(insert_data['data_limite_envio'], '2026-05-06T23:59:59-03:00')
+
+    def test_upsert_pedido_master_marks_marketplace_origin_and_ingest_source(self):
+        payload = {
+            'id': 1,
+            'numero': '123',
+            'numeroLoja': '456',
+            'total': 10,
+            'data': '2026-05-02',
+            'situacao': {'id': 2},
+            'contato': {'nome': 'Cliente'},
+            'itens': [],
+        }
+
+        table = MagicMock()
+        table.insert.return_value.execute.return_value.data = [{'id': 321}]
+
+        with patch.object(bos, '_find_existing_pedido_master_for_update', return_value=None), \
+             patch.object(bos.supabase_db, 'table', return_value=table), \
+             patch.object(bos, '_resolve_situacao_interna', return_value=42), \
+             patch.object(bos, '_upsert_itens_pedido'), \
+             patch.object(bos.logistica_coleta_service, 'calcular_data_coleta', return_value={}), \
+             patch.object(bos.canonical_order_snapshot_service, 'upsert_snapshot'), \
+             patch.object(bos.logger, 'info'):
+            bos._upsert_pedido_master(
+                payload,
+                pedido_bling_id=11,
+                pedido_shopee_id=77,
+                bling_integration_id=22,
+                marketplace_integration_id=33,
+                canal_venda_id=44,
+                is_flex=False,
+                modalidade='STANDARD',
+                shopee_data={'buyer_username': 'cliente', 'item_list': []},
+                ingest_source='shopee',
+            )
+
+        insert_data = table.insert.call_args.args[0]
+        self.assertEqual(insert_data['origem'], 'SHOPEE')
+        self.assertEqual(insert_data['ingest_source'], 'shopee')
 
     def test_upsert_pedido_master_updates_existing_by_pedido_bling_id(self):
         payload = {

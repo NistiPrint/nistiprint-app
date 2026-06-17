@@ -141,3 +141,61 @@ class MarketplaceWebhookIngestServiceTest(TestCase):
         self.assertEqual(link["id"], "link-b")
         self.assertEqual(link["erp_integration_id"], 3)
         self.assertEqual(link["erp_store_id"], "AB")
+
+    def test_fetch_shopee_detail_hydrates_integration_before_driver(self):
+        service = MarketplaceWebhookIngestService()
+        marketplace_inst = {
+            "id": 10,
+            "module_id": "shopee",
+            "config": {"shop_id": "123"},
+            "credentials": {"access_token": "token"},
+        }
+        hydrated = {
+            "config": {"shop_id": "123", "partner_id": "456", "partner_key": "secret"},
+            "credentials": {"access_token": "token"},
+            "access_token": "token",
+        }
+
+        with patch(
+            "nistiprint_shared.services.marketplace_webhook_ingest_service.credential_resolver_service.hydrate_integration",
+            return_value=hydrated,
+        ) as hydrate, patch(
+            "nistiprint_shared.services.marketplace_webhook_ingest_service.shopee_driver.get_order_detail",
+            return_value={"external_id": "SHP-1"},
+        ) as get_detail:
+            result = service._fetch_shopee_detail(marketplace_inst, "SHP-1")
+
+        hydrate.assert_called_once()
+        get_detail.assert_called_once_with(hydrated, ["SHP-1"])
+        self.assertEqual(result["external_id"], "SHP-1")
+
+    def test_process_shopee_prefers_bling_materialization_when_linked(self):
+        service = MarketplaceWebhookIngestService()
+        marketplace_inst = {"id": 7, "module_id": "shopee", "config": {"shop_id": "999"}}
+        shopee_detail = {
+            "external_id": "SHP-1",
+            "order_status": "READY_TO_SHIP",
+            "create_time": "2026-06-17T08:00:00-03:00",
+            "item_list": [],
+        }
+
+        with patch.object(service, "_resolve_marketplace_integration", return_value=(marketplace_inst, None)), \
+             patch.object(service, "_find_direct_ingest_link", return_value={"id": "link-1", "channel_id": 55, "ingest_origin_mode": "marketplace_direct"}), \
+             patch.object(service, "_find_default_nfe_link", return_value={"erp_integration_id": 22, "erp_store_id": "204047801"}), \
+             patch.object(service, "_fetch_shopee_detail", return_value=shopee_detail), \
+             patch.object(service, "_upsert_shopee_mirror", return_value=101), \
+             patch.object(service, "_try_materialize_from_bling", return_value={
+                 "status": "success",
+                 "pedido_id": 5001,
+                 "pedido_bling_id": 9001,
+                 "bling_order_id": 321,
+                 "bling_order_number": "B-321",
+             }) as materialize, \
+             patch.object(service, "_upsert_pedido_status") as upsert_status:
+            result = service._process_shopee({"order_sn": "SHP-1", "shop_id": "999"}, correlation_id="corr")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["pedido_id"], 5001)
+        self.assertEqual(result["materialized_via"], "bling_lookup")
+        materialize.assert_called_once()
+        upsert_status.assert_not_called()

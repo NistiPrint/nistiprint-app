@@ -12,6 +12,7 @@ class TestCanonicalOrderSnapshotService(unittest.TestCase):
 
         pedidos = MagicMock()
         pedidos.update.return_value.eq.return_value.execute.return_value.data = [{'id': 10}]
+        pedidos.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
 
         itens = MagicMock()
         itens.delete.return_value.eq.return_value.execute.return_value.data = []
@@ -59,6 +60,45 @@ class TestCanonicalOrderSnapshotService(unittest.TestCase):
         item_rows = itens.insert.call_args.args[0]
         self.assertEqual(item_rows[0]['sku_externo'], 'SKU1')
         self.assertEqual(item_rows[0]['subtotal'], 25.0)
+
+    def test_replace_items_skips_when_pedido_already_has_bling_source(self):
+        snapshots = MagicMock()
+        snapshots.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        snapshots.insert.return_value.execute.return_value.data = [{'id': 1}]
+
+        pedidos = MagicMock()
+        pedidos.update.return_value.eq.return_value.execute.return_value.data = [{'id': 10}]
+        pedidos.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {'pedido_bling_id': 123}
+        ]
+
+        itens = MagicMock()
+
+        def table_side_effect(name):
+            if name == 'pedido_snapshots':
+                return snapshots
+            if name == 'pedidos':
+                return pedidos
+            if name == 'itens_pedido':
+                return itens
+            raise AssertionError(name)
+
+        service = snapshot_module.CanonicalOrderSnapshotService()
+        with patch.object(snapshot_module.supabase_db, 'table', side_effect=table_side_effect), \
+             patch.object(snapshot_module, 'get_now_iso', return_value='2026-06-13T10:00:00-03:00'):
+            result = service.upsert_snapshot(
+                pedido_id=10,
+                ingest_source='shopee',
+                marketplace='shopee',
+                marketplace_order_id='250613ABC',
+                marketplace_integration_id=77,
+                items=[{'sku': 'SKU1', 'name': 'Produto', 'quantity': 2, 'unit_price': 12.5}],
+                upsert_items=True,
+            )
+
+        self.assertTrue(result['success'])
+        itens.delete.assert_not_called()
+        itens.insert.assert_not_called()
 
 
 if __name__ == '__main__':
