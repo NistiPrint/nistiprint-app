@@ -48,6 +48,13 @@ def get_impressao_data():
             if order:
                 orders_data.append(order)
 
+        orders_data.sort(
+            key=lambda order: (
+                0 if order.get('hasCustomItem') == 0 else 1,
+                str(order.get('numeroLoja') or ''),
+            )
+        )
+
         return ApiResponse.success({
             'orders': orders_data,
             'total': len(orders_data)
@@ -103,10 +110,13 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
                 # Match por item_pedido_id (prioridade) ou descricao (fallback)
                 if (p.get('item_pedido_id') == item.get('id')) or \
                    (p.get('item_pedido_id') is None and p.get('item_description') == item.get('descricao')):
+                    detalhes = p.get('detalhes_personalizacao') or {}
+                    metadata = p.get('metadata') or {}
                     item_pers.append({
                         'customization_name': p.get('customization_name'),
                         'customization_initial': p.get('customization_initial'),
-                        'quantity_to_personalize': (p.get('metadata') or {}).get('quantity_to_personalize', 1),
+                        'quantity_to_personalize': detalhes.get('quantity_to_personalize')
+                            or metadata.get('quantity_to_personalize', 1),
                         'status': p.get('status'),
                     })
 

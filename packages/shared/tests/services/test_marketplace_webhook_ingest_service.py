@@ -199,3 +199,27 @@ class MarketplaceWebhookIngestServiceTest(TestCase):
         self.assertEqual(result["materialized_via"], "bling_lookup")
         materialize.assert_called_once()
         upsert_status.assert_not_called()
+
+    def test_lookup_bling_order_falls_back_to_bling_api_by_numero_loja(self):
+        service = MarketplaceWebhookIngestService()
+
+        table = MagicMock()
+        table.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        client = MagicMock()
+        client.get_order_numbers_by_store_numbers.return_value = [
+            {"id": 321, "numero": "B-321", "numeroLoja": "SHP-1"}
+        ]
+
+        with patch(
+            "nistiprint_shared.services.marketplace_webhook_ingest_service.supabase_db.table",
+            return_value=table,
+        ), patch(
+            "nistiprint_shared.services.bling.bling_client.BlingClient.create_client_for_integration_id",
+            return_value=client,
+        ):
+            result = service._lookup_bling_order(bling_integration_id=22, external_order_id="SHP-1")
+
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["resolved_via"], "bling_api")
+        self.assertEqual(result["bling_order_id"], 321)
+        self.assertEqual(result["bling_order_number"], "B-321")

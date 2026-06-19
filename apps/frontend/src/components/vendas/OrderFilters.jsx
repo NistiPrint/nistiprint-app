@@ -6,16 +6,20 @@ import { Search } from 'lucide-react';
  *
  * Filtros:
  *   - Todos
+ *   - Pendente IA
  *   - Sem Chat
  *   - Nome Identificado (SUCCESS)
  *   - A Revisar (NEEDS_REVIEW)
+ *   - Sem Nome
  */
 function OrderFilters({ searchTerm, onSearchChange, statusFilter, onStatusFilterChange, statusCounts }) {
   const filterOptions = [
     { key: '', label: 'Todos', count: statusCounts?.all ?? 0 },
+    { key: 'pendente_ia', label: 'Pendente IA', count: statusCounts?.pendente_ia ?? 0 },
     { key: 'sem_chat', label: 'Sem Chat', count: statusCounts?.sem_chat ?? 0 },
     { key: 'nome_identificado', label: 'Nome Identificado', count: statusCounts?.nome_identificado ?? 0 },
     { key: 'a_revisar', label: 'A Revisar', count: statusCounts?.a_revisar ?? 0 },
+    { key: 'sem_nome', label: 'Sem Nome', count: statusCounts?.sem_nome ?? 0 },
   ];
 
   return (

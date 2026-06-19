@@ -53,6 +53,15 @@ export const personalizadosService = {
     return res.json();
   },
 
+  reclassificarPersonalizados: async (data = {}) => {
+    const res = await fetch(`${BASE}/reclassificar-personalizado`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return res.json();
+  },
+
   /**
    * Obtém logs de execução da IA para um pedido.
    * @param {string} orderSn

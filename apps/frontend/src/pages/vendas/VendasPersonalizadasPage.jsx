@@ -7,12 +7,29 @@ import { Textarea } from '@/components/ui/textarea';
 import OrderCard from '@/components/vendas/OrderCard';
 import OrderFilters from '@/components/vendas/OrderFilters';
 import { personalizadosService } from '@/services/personalizadosService';
-import { ArrowLeft, Brain, ChevronDown, ChevronRight, Database, FileText, Loader2, RefreshCw, Terminal, ThumbsDown } from 'lucide-react';
+import { ArrowLeft, Brain, ChevronDown, ChevronRight, Database, FileText, Loader2, RefreshCw, Settings, Terminal, ThumbsDown } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 const ITEMS_PER_PAGE = 20;
+
+const hasIdentifiedName = (order) =>
+  order.itens?.some(item =>
+    item.personalizations?.some(p => p.status === 'SUCCESS' && p.customization_name),
+  );
+
+const needsReview = (order) =>
+  order.itens?.some(item =>
+    item.personalizations?.some(p => p.status === 'NEEDS_REVIEW'),
+  );
+
+const hasNoName = (order) =>
+  order.itens?.some(item =>
+    item.personalizations?.some(
+      p => p.status === 'NO_PERSONALIZATION_FOUND' || (!p.customization_name && p.status === 'SUCCESS'),
+    ),
+  );
 
 function VendasPersonalizadasPage() {
   const navigate = useNavigate();
@@ -155,20 +172,16 @@ function VendasPersonalizadasPage() {
     }
 
     // 2. Filtro por status
-    if (statusFilter === 'sem_chat') {
+    if (statusFilter === 'pendente_ia') {
+      result = result.filter(order => order.needs_ai_processing);
+    } else if (statusFilter === 'sem_chat') {
       result = result.filter(order => order.has_chat_messages !== true);
     } else if (statusFilter === 'nome_identificado') {
-      result = result.filter(order =>
-        order.itens?.some(item =>
-          item.personalizations?.some(p => p.status === 'SUCCESS' && p.nome)
-        )
-      );
+      result = result.filter(order => hasIdentifiedName(order));
     } else if (statusFilter === 'a_revisar') {
-      result = result.filter(order =>
-        order.itens?.some(item =>
-          item.personalizations?.some(p => p.status === 'NEEDS_REVIEW')
-        )
-      );
+      result = result.filter(order => needsReview(order));
+    } else if (statusFilter === 'sem_nome') {
+      result = result.filter(order => hasNoName(order));
     }
 
     return result;
@@ -178,25 +191,19 @@ function VendasPersonalizadasPage() {
   const statusCounts = useMemo(() => {
     const counts = {
       all: orders.length,
+      pendente_ia: 0,
       sem_chat: 0,
       nome_identificado: 0,
       a_revisar: 0,
+      sem_nome: 0,
     };
 
     orders.forEach(order => {
+      if (order.needs_ai_processing) counts.pendente_ia++;
       if (order.has_chat_messages !== true) counts.sem_chat++;
-
-      if (order.itens?.some(item =>
-        item.personalizations?.some(p => p.status === 'SUCCESS' && p.nome)
-      )) {
-        counts.nome_identificado++;
-      }
-
-      if (order.itens?.some(item =>
-        item.personalizations?.some(p => p.status === 'NEEDS_REVIEW')
-      )) {
-        counts.a_revisar++;
-      }
+      if (hasIdentifiedName(order)) counts.nome_identificado++;
+      if (needsReview(order)) counts.a_revisar++;
+      if (hasNoName(order)) counts.sem_nome++;
     });
 
     return counts;
@@ -211,15 +218,15 @@ function VendasPersonalizadasPage() {
     setVisibleCount(prev => prev + ITEMS_PER_PAGE);
   };
 
-  const handleProcessAI = async (orderSn) => {
+  const handleProcessAI = async (orderSn, force = false) => {
     if (!orderSn) {
       toast.error('Não é possível processar: Número do pedido Shopee não encontrado.');
       return;
     }
-    const toastId = toast.loading('Processando com IA...');
+    const toastId = toast.loading(force ? 'Reprocessando com IA...' : 'Processando com IA...');
     try {
       // Backend espera 'order_sn', não 'shopee_order_sn'
-      const data = await personalizadosService.processar({ order_sn: orderSn, limit: 1 });
+      const data = await personalizadosService.processar({ order_sn: orderSn, limit: 1, force });
       if (data.success) {
         toast.success(data.message || 'Pedido processado com sucesso!', { id: toastId });
         fetchOrders();
@@ -235,7 +242,9 @@ function VendasPersonalizadasPage() {
   const [loteProgress, setLoteProgress] = useState('');
 
   const handleProcessarLote = async () => {
-    const confirm = window.confirm(`Processar TODOS os pedidos personalizados com IA? Isso pode demorar alguns minutos.`);
+    const confirm = window.confirm(
+      'Processar todos os pedidos Shopee personalizados em andamento que estejam pendentes pela regra da IA? Isso pode demorar alguns minutos.',
+    );
     if (!confirm) return;
 
     setIsProcessingLote(true);
@@ -432,7 +441,7 @@ function VendasPersonalizadasPage() {
         </Button>
         <Button variant="outline" onClick={handleProcessarLote} disabled={isProcessingLote}>
           {isProcessingLote ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Brain className="mr-2 h-4 w-4" />}
-          {isProcessingLote ? (loteProgress || 'Processando...') : 'Extrair nomes (IA)'}
+          {isProcessingLote ? (loteProgress || 'Processando...') : 'Extrair nomes pendentes'}
         </Button>
         <Button
           variant={opMode === 'legacy' ? 'destructive' : 'outline'}
@@ -538,7 +547,7 @@ function VendasPersonalizadasPage() {
                   onClick={() => {
                     setLoadingLogs(true);
                     personalizadosService.getLogs(selectedOrderForLogs).then(data => {
-                      setAiLogs(data.logs || []);
+                      setAiLogs(Array.isArray(data.data?.logs) ? data.data.logs : []);
                       setLoadingLogs(false);
                     }).catch(() => setLoadingLogs(false));
                   }}

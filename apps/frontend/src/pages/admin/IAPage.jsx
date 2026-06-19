@@ -56,8 +56,11 @@ function IAPage() {
   const [testingConfig, setTestingConfig] = useState(false);
   const [promptTemplate, setPromptTemplate] = useState('');
   const [modelName, setModelName] = useState('gemini-2.5-flash');
+  const [allowedModels, setAllowedModels] = useState(MODEL_OPTIONS);
   const [maxProcessing, setMaxProcessing] = useState(50);
   const [testResult, setTestResult] = useState(null);
+  const [repairOrderIds, setRepairOrderIds] = useState('');
+  const [repairingClassification, setRepairingClassification] = useState(false);
 
   // Processing state
   const [aiLimit, setAiLimit] = useState('');
@@ -156,6 +159,12 @@ function IAPage() {
         }
         if (cfg.model_name) setModelName(cfg.model_name.replace(/"/g, ''));
         if (cfg.max_processing) setMaxProcessing(cfg.max_processing);
+        if (Array.isArray(cfg.allowed_models) && cfg.allowed_models.length > 0) {
+          setAllowedModels(cfg.allowed_models.map((value) => ({
+            value,
+            label: MODEL_OPTIONS.find((option) => option.value === value)?.label || value,
+          })));
+        }
       } else {
         setPromptTemplate(DEFAULT_PROMPT);
       }
@@ -210,6 +219,34 @@ function IAPage() {
       toast.error('Erro ao executar teste');
     } finally {
       setTestingConfig(false);
+    }
+  };
+
+  const handleRepairClassification = async () => {
+    setRepairingClassification(true);
+    try {
+      const pedidoIds = repairOrderIds
+        .split(',')
+        .map((value) => parseInt(value.trim(), 10))
+        .filter((value) => Number.isInteger(value));
+
+      const data = await personalizadosService.reclassificarPersonalizados({
+        pedido_ids: pedidoIds.length > 0 ? pedidoIds : undefined,
+        source: 'shopee',
+      });
+
+      if (data.success) {
+        const result = data.data || {};
+        toast.success(
+          `Correção concluída: ${result.updated_orders || 0} pedidos, ${result.updated_items || 0} itens e ${result.updated_bling_orders || 0} pedidos Bling atualizados.`,
+        );
+      } else {
+        toast.error(data.message || 'Erro ao corrigir classificação');
+      }
+    } catch (e) {
+      toast.error(e.message || 'Erro ao corrigir classificação');
+    } finally {
+      setRepairingClassification(false);
     }
   };
 
@@ -430,7 +467,7 @@ function IAPage() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {MODEL_OPTIONS.map((opt) => (
+                          {allowedModels.map((opt) => (
                             <SelectItem key={opt.value} value={opt.value}>
                               {opt.label}
                             </SelectItem>
@@ -547,6 +584,43 @@ function IAPage() {
                     {isProcessing ? 'Processando...' : 'Iniciar Processamento em Lote'}
                   </Button>
                 </form>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Correção de Classificação</CardTitle>
+                <CardDescription>
+                  Reclassifica pedidos Shopee canonizados usando a descrição dos itens. Deixe em branco para corrigir toda a base Shopee afetada.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="repair-order-ids">IDs de pedido (opcional)</Label>
+                  <Input
+                    id="repair-order-ids"
+                    placeholder="Ex: 26893, 26894"
+                    value={repairOrderIds}
+                    onChange={(e) => setRepairOrderIds(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Use IDs da tabela <code>pedidos</code>. Em branco, a correção roda para todos os pedidos Shopee.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleRepairClassification}
+                  disabled={repairingClassification}
+                  className="w-full"
+                >
+                  {repairingClassification ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                  )}
+                  {repairingClassification ? 'Corrigindo classificação...' : 'Corrigir classificação de personalizados'}
+                </Button>
               </CardContent>
             </Card>
 

@@ -1056,6 +1056,7 @@ class MarketplaceWebhookIngestService:
         }
         if not bling_integration_id or not external_order_id:
             return result
+        local_error = None
         try:
             rows = (
                 supabase_db.table("pedidos_bling")
@@ -1078,9 +1079,52 @@ class MarketplaceWebhookIngestService:
                 }
         except Exception as exc:
             logger.warning("[marketplace-ingest] erro ao buscar pedido Bling por numero_loja=%s: %s", external_order_id, exc)
+            local_error = str(exc)
+
+        remote = self._lookup_bling_order_remote(
+            bling_integration_id=bling_integration_id,
+            external_order_id=external_order_id,
+        )
+        if remote:
+            return {**result, **remote}
+
+        if local_error:
             result["status"] = "error"
-            result["error"] = str(exc)
+            result["error"] = local_error
         return result
+
+    def _lookup_bling_order_remote(self, *, bling_integration_id: int, external_order_id: str) -> dict | None:
+        try:
+            from nistiprint_shared.services.bling.bling_client import BlingClient
+
+            client = BlingClient.create_client_for_integration_id(int(bling_integration_id))
+            matches = client.get_order_numbers_by_store_numbers([str(external_order_id)]) or []
+        except Exception as exc:
+            logger.warning(
+                "[marketplace-ingest] erro ao consultar Bling API por numeroLoja=%s integration_id=%s: %s",
+                external_order_id,
+                bling_integration_id,
+                exc,
+            )
+            return None
+
+        for match in matches:
+            if str(match.get("numeroLoja") or "") != str(external_order_id):
+                continue
+            logger.info(
+                "[marketplace-ingest] pedido Bling resolvido via API numeroLoja=%s numero=%s id=%s",
+                external_order_id,
+                match.get("numero"),
+                match.get("id"),
+            )
+            return {
+                "status": "found",
+                "resolved_via": "bling_api",
+                "pedido_bling_id": None,
+                "bling_order_id": match.get("id"),
+                "bling_order_number": match.get("numero"),
+            }
+        return None
 
     def _normalize_shopee_items(self, detail: dict) -> list[dict]:
         rows = []

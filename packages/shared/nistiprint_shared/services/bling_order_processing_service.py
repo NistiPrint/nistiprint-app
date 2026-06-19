@@ -1918,6 +1918,9 @@ def materialize_marketplace_direct_order(
         meli_data=meli_data,
         ingest_source=source,
     )
+    if pedido_id:
+        _detect_and_mark_personalized(detalhe, pedido_id)
+
     return {
         "status": "success",
         "pedido_id": pedido_id,
