@@ -10,6 +10,9 @@ import time
 from typing import List, Dict
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.personalized_classification_service import (
+    normalize_personalization_text,
+)
 from ...constants import PLATFORM_X_CNPJ
 
 
@@ -551,7 +554,7 @@ class BlingClient:
             return False
 
         # Critério 1: Nome do produto (mais rápido, sem API call adicional)
-        if 'personaliza' in product.get('nome', '').lower():
+        if 'personaliz' in normalize_personalization_text(product.get('nome', '')):
             return True
 
         # Critério 2: Campo customizado (requer parsing dos dados)
@@ -609,7 +612,7 @@ class BlingClient:
                 continue
 
             # Critério 1: Nome (rápido)
-            if 'personaliza' in product.get('nome', '').lower():
+            if 'personaliz' in normalize_personalization_text(product.get('nome', '')):
                 results[pid] = True
                 continue
 

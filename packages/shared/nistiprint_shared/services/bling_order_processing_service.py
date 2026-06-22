@@ -25,6 +25,10 @@ from nistiprint_shared.services.canonical_order_snapshot_service import (
     canonical_order_snapshot_service,
 )
 from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
+from nistiprint_shared.services.personalized_classification_service import (
+    item_indicates_personalized,
+    persist_classification_from_payload,
+)
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services import flex_classifier_service, fulfillment_classifier_service
@@ -1126,87 +1130,10 @@ def _detect_and_mark_personalized(payload: dict, pedido_id: int | None = None):
     Evita buscar cadastro de produto no Bling, porque IDs de produto sao
     especificos de cada conta Bling no ingest multi-conta.
     """
-    if not pedido_id:
-        logger.warning(
-            "[ingest] detector de personalizado sem pedido_id para pedido=%s",
-            payload.get('numeroLoja') or payload.get('numero'),
-        )
-        return
-
-    items = payload.get('itens') or []
-    personalized_items = [
-        (idx, item)
-        for idx, item in enumerate(items)
-        if _item_name_indicates_personalized(item)
-    ]
-    is_personalized = bool(personalized_items)
-
-    try:
-        supabase_db.table('pedidos').update({
-            'personalizado': is_personalized,
-            'updated_at': get_now_iso(),
-        }).eq('id', pedido_id).execute()
-
-        pedido_res = supabase_db.table('pedidos') \
-            .select('pedido_bling_id') \
-            .eq('id', pedido_id) \
-            .maybe_single().execute()
-        pedido_row = _response_data(pedido_res) or {}
-        pedido_bling_id = pedido_row.get('pedido_bling_id')
-        if pedido_bling_id:
-            supabase_db.table('pedidos_bling').update({
-                'personalizado': is_personalized,
-                'updated_at': get_now_iso(),
-            }).eq('id', pedido_bling_id).execute()
-
-        if not is_personalized:
-            logger.debug(
-                "[ingest] pedido=%s classificado como nao personalizado por nome",
-                pedido_id,
-            )
-            return
-
-        for _, item in personalized_items:
-            descricao = item.get('descricao')
-            if descricao:
-                supabase_db.table('itens_pedido').update({
-                    'personalizado': True,
-                    'updated_at': get_now_iso(),
-                }).eq('pedido_id', pedido_id).eq('descricao', descricao).execute()
-
-            bling_item_id = item.get('id')
-            if bling_item_id:
-                supabase_db.table('itens_pedido_bling').update({
-                    'personalizado': True,
-                    'updated_at': get_now_iso(),
-                }).eq('bling_item_id', str(bling_item_id)).execute()
-
-        logger.info(
-            "[ingest] pedido=%s marcado como personalizado por nome (%d itens)",
-            pedido_id,
-            len(personalized_items),
-        )
-    except Exception as e:
-        logger.warning(
-            "[ingest] falha ao persistir classificacao personalizada pedido_id=%s: %s",
-            pedido_id,
-            e,
-        )
+    return persist_classification_from_payload(payload, pedido_id, log=logger)
 
 def _item_name_indicates_personalized(item: dict | None) -> bool:
-    if not isinstance(item, dict):
-        return False
-
-    produto = item.get('produto') if isinstance(item.get('produto'), dict) else {}
-    candidates = [
-        item.get('descricao'),
-        item.get('nome'),
-        produto.get('nome'),
-        produto.get('descricao'),
-    ]
-    searchable = " ".join(str(value) for value in candidates if value)
-    normalized = unicodedata.normalize("NFKD", searchable).encode("ascii", "ignore").decode("ascii")
-    return "personaliz" in normalized.lower()
+    return item_indicates_personalized(item)
 
 def _fetch_shopee_detail(marketplace_inst, order_sn):
     integration = credential_resolver_service.hydrate_integration(

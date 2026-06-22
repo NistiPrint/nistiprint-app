@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { CheckCircle2, KeyRound, Loader2, RefreshCw, ShieldEllipsis } from 'lucide-react';
+import { CheckCircle2, KeyRound, Loader2, Pencil, RefreshCw, ShieldEllipsis, X } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -29,6 +29,7 @@ export default function IntegrationAppProfilesPage() {
   const [form, setForm] = useState(initialForm);
   const [providerSpecs, setProviderSpecs] = useState([]);
   const [secretValues, setSecretValues] = useState({});
+  const [editingProfileId, setEditingProfileId] = useState(null);
 
   useEffect(() => {
     loadInitialData();
@@ -102,6 +103,27 @@ export default function IntegrationAppProfilesPage() {
     }));
   }
 
+  function resetFormState() {
+    setForm(initialForm);
+    setSecretValues({});
+    setEditingProfileId(null);
+  }
+
+  function startEditing(profile) {
+    setEditingProfileId(profile.id);
+    setForm({
+      module_id: profile.module_id || initialForm.module_id,
+      name: profile.name || '',
+      environment: profile.environment || 'production',
+      redirect_uri: profile.redirect_uri || '',
+      auth_base_url: profile.auth_base_url || '',
+      token_url: profile.token_url || '',
+      is_default: Boolean(profile.is_default),
+      is_active: profile.is_active !== false,
+    });
+    setSecretValues({});
+  }
+
   async function handleSubmit(event) {
     event.preventDefault();
 
@@ -115,17 +137,19 @@ export default function IntegrationAppProfilesPage() {
       return;
     }
 
-    const missingSecret = activeProviderSpec.app_profile_secret_fields.find(
-      (field) => field.required && !String(secretValues[field.secret_kind] || '').trim()
-    );
-    if (missingSecret) {
-      toast.error(`Preencha o campo ${missingSecret.label}.`);
-      return;
+    if (!editingProfileId) {
+      const missingSecret = activeProviderSpec.app_profile_secret_fields.find(
+        (field) => field.required && !String(secretValues[field.secret_kind] || '').trim()
+      );
+      if (missingSecret) {
+        toast.error(`Preencha o campo ${missingSecret.label}.`);
+        return;
+      }
     }
 
     try {
       setSaving(true);
-      await MarketplaceService.createAppProfile({
+      const payload = {
         ...form,
         name: form.name.trim(),
         redirect_uri: form.redirect_uri.trim(),
@@ -134,10 +158,16 @@ export default function IntegrationAppProfilesPage() {
         ...Object.fromEntries(
           Object.entries(secretValues).map(([key, value]) => [key, String(value || '').trim()])
         ),
-      });
-      toast.success('App OAuth salvo com sucesso.');
-      setForm(initialForm);
-      setSecretValues({});
+      };
+
+      if (editingProfileId) {
+        await MarketplaceService.updateAppProfile(editingProfileId, payload);
+      } else {
+        await MarketplaceService.createAppProfile(payload);
+      }
+
+      toast.success(editingProfileId ? 'App OAuth atualizado com sucesso.' : 'App OAuth salvo com sucesso.');
+      resetFormState();
       await loadProfiles();
     } catch (error) {
       toast.error(error.error || error.message || 'Erro ao salvar app profile');
@@ -193,18 +223,29 @@ export default function IntegrationAppProfilesPage() {
                 <div className="space-y-3">
                   {items.map((profile) => (
                     <div key={profile.id} className="rounded-md border bg-muted/20 p-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{profile.name}</span>
-                        {profile.is_default ? (
-                          <span className="rounded bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                            padrao
-                          </span>
-                        ) : null}
-                        {!profile.is_active ? (
-                          <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                            inativo
-                          </span>
-                        ) : null}
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{profile.name}</span>
+                          {profile.is_default ? (
+                            <span className="rounded bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                              padrao
+                            </span>
+                          ) : null}
+                          {!profile.is_active ? (
+                            <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                              inativo
+                            </span>
+                          ) : null}
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => startEditing(profile)}
+                          disabled={saving}
+                        >
+                          <Pencil className="mr-2 h-4 w-4" />
+                          Editar
+                        </Button>
                       </div>
                       <div className="mt-2 space-y-1 text-xs text-muted-foreground">
                         <div>Ambiente: {profile.environment || 'production'}</div>
@@ -245,16 +286,32 @@ export default function IntegrationAppProfilesPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Novo app profile</CardTitle>
+          <CardTitle>{editingProfileId ? 'Editar app profile' : 'Novo app profile'}</CardTitle>
           <CardDescription>
-            Cadastre as credenciais do aplicativo OAuth. Segredos sao enviados ao backend e gravados criptografados.
+            {editingProfileId
+              ? 'Atualize os dados do app OAuth. Campos de segredo em branco mantem o valor atual criptografado.'
+              : 'Cadastre as credenciais do aplicativo OAuth. Segredos sao enviados ao backend e gravados criptografados.'}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={handleSubmit}>
+            {editingProfileId ? (
+              <div className="flex items-center justify-between rounded-lg border bg-muted/20 p-3 text-sm">
+                <span>Editando o perfil `#{editingProfileId}`.</span>
+                <Button type="button" variant="ghost" size="sm" onClick={resetFormState}>
+                  <X className="mr-2 h-4 w-4" />
+                  Cancelar edicao
+                </Button>
+              </div>
+            ) : null}
+
             <div className="space-y-2">
               <Label>Modulo</Label>
-              <Select value={form.module_id} onValueChange={(value) => updateField('module_id', value)}>
+              <Select
+                value={form.module_id}
+                onValueChange={(value) => updateField('module_id', value)}
+                disabled={Boolean(editingProfileId)}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Selecione o modulo" />
                 </SelectTrigger>
@@ -318,7 +375,11 @@ export default function IntegrationAppProfilesPage() {
                 </Label>
                 <Input
                   type={field.input_type || 'text'}
-                  placeholder={field.placeholder || ''}
+                  placeholder={
+                    editingProfileId
+                      ? `${field.placeholder || field.label} (deixe em branco para manter)`
+                      : (field.placeholder || '')
+                  }
                   value={secretValues[field.secret_kind] || ''}
                   onChange={(event) => updateSecretValue(field.secret_kind, event.target.value)}
                 />
@@ -347,7 +408,7 @@ export default function IntegrationAppProfilesPage() {
 
             <Button className="w-full" type="submit" disabled={saving}>
               {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-              Salvar app OAuth
+              {editingProfileId ? 'Atualizar app OAuth' : 'Salvar app OAuth'}
             </Button>
           </form>
         </CardContent>

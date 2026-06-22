@@ -2,6 +2,9 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.mappers.order_mappers import BlingMapper, ShopeeMapper
+from nistiprint_shared.services.personalized_classification_service import (
+    item_indicates_personalized,
+)
 import logging
 
 class OrderService:
@@ -175,9 +178,8 @@ class OrderService:
                 if existing_items.count == 0:
                     has_personalized_item = False
                     for item in items:
-                        descricao = item.get('descricao', '').lower()
                         # Verificar se o item é personalizado pela descrição
-                        is_personalizado = 'personaliza' in descricao
+                        is_personalizado = item_indicates_personalized(item)
                         if is_personalizado:
                             has_personalized_item = True
 

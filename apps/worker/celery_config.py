@@ -58,8 +58,8 @@ def get_default_schedules():
             'task': 'tasks.eventos_tasks.process_eventos_producao',
             'schedule': 10,
         },
-        'renew-shopee-tokens': {
-            'task': 'tasks.token_renewal_tasks.renew_shopee_tokens',
+        'renew-app-managed-credentials': {
+            'task': 'tasks.token_renewal_tasks.renew_app_managed_credentials',
             'schedule': 7200,
         },
     }

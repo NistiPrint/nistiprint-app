@@ -15,6 +15,9 @@ Otimização:
 from typing import Optional, Dict, Any, List
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.bling.bling_client import BlingClient
+from nistiprint_shared.services.personalized_classification_service import (
+    item_indicates_personalized,
+)
 from nistiprint_shared.services.erp_marketplace_links_service import erp_marketplace_links_service
 from datetime import datetime
 import logging
@@ -169,12 +172,10 @@ class PersonalizedOrderIdentifier:
         item_product_map = {}  # índice → product_id
 
         for idx, item in enumerate(items):
-            descricao = item.get('descricao', '').lower()
+            descricao = item.get('descricao', '')
             produto = item.get('produto', {})
-            nome_item = produto.get('nome', '').lower()
-
             # Critério 1: Descrição do item (já vem no payload do pedido) - MAIS RÁPIDO
-            if 'personaliza' in descricao or 'personaliza' in nome_item:
+            if item_indicates_personalized(item):
                 personalized_indices.append(idx)
                 logger.debug(
                     "Item %d marcado como personalizado por descrição: %s",

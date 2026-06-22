@@ -17,6 +17,9 @@ from nistiprint_shared.services.canonical_order_snapshot_service import (
 )
 from nistiprint_shared.services.correlation_service import generate_correlation_id, set_correlation_id
 from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
+from nistiprint_shared.services.personalized_classification_service import (
+    persist_classification_from_payload,
+)
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 from nistiprint_shared.services.marketplace_account_identity import (
@@ -1046,6 +1049,14 @@ class MarketplaceWebhookIngestService:
             platform_fields=platform_fields,
             raw_refs={**mirror_fields, source: details},
             upsert_items=True,
+        )
+        persist_classification_from_payload(
+            {
+                "numeroLoja": external_order_id,
+                "itens": items,
+            },
+            pedido_id,
+            log=logger,
         )
 
     def _lookup_bling_order(self, *, bling_integration_id: int | None, external_order_id: str) -> dict:
