@@ -205,6 +205,11 @@ class MarketplaceWebhookIngestService:
         )
 
         pedido_shopee_id = self._upsert_shopee_mirror(detail, marketplace_inst.get("id"))
+        status_original = detail.get("order_status") or body.get("order_status")
+        status = canonical_order_status_service.resolve_shopee(
+            status_original,
+            integration_id=marketplace_inst.get("id"),
+        )
         materialized = self._try_materialize_from_bling(
             source="shopee",
             external_order_id=str(order_sn),
@@ -214,21 +219,25 @@ class MarketplaceWebhookIngestService:
             nfe_link=nfe_link,
         )
         if materialized:
+            self._update_materialized_pedido_status(
+                pedido_id=materialized.get("pedido_id"),
+                situacao_pedido_id=status.internal_situacao_pedido_id,
+                status_original=status_original,
+                source="shopee",
+            )
             return {
                 "status": "success",
                 "message": f"Pedido Shopee {order_sn} atualizado via materializacao Bling",
                 "pedido_id": materialized.get("pedido_id"),
                 "external_order_id": str(order_sn),
                 "marketplace_integration_id": marketplace_inst.get("id"),
+                "internal_situacao_pedido_id": status.internal_situacao_pedido_id,
+                "external_status_id": status.external_status_id,
                 "pedido_bling_id": materialized.get("pedido_bling_id"),
                 "bling_order_id": materialized.get("bling_order_id"),
                 "bling_order_number": materialized.get("bling_order_number"),
                 "materialized_via": "bling_lookup",
             }
-        status = canonical_order_status_service.resolve_shopee(
-            detail.get("order_status") or body.get("order_status"),
-            integration_id=marketplace_inst.get("id"),
-        )
         pedido_id = self._upsert_pedido_status(
             source="shopee",
             external_order_id=str(order_sn),
@@ -237,7 +246,7 @@ class MarketplaceWebhookIngestService:
             bling_loja_id=(nfe_link or {}).get("erp_store_id"),
             channel_id=(link or {}).get("channel_id"),
             situacao_pedido_id=status.internal_situacao_pedido_id,
-            status_original=detail.get("order_status") or body.get("order_status"),
+            status_original=status_original,
             mirror_fields={"pedido_shopee_id": pedido_shopee_id},
             raw_customer=self._shopee_customer(detail),
             total=detail.get("total"),
@@ -350,6 +359,17 @@ class MarketplaceWebhookIngestService:
         )
 
         pedido_meli_id = self._upsert_meli_mirror(detail, marketplace_inst.get("id"))
+        order = detail.get("order") or {}
+        shipment = detail.get("shipment") or {}
+        payment = (order.get("payments") or [{}])[0] if isinstance(order.get("payments"), list) else {}
+        payment_status = _first_present(body.get("payment_status"), derived_payment_status, payment.get("status"), order.get("status"))
+        shipping_status = _first_present(body.get("shipping_status"), derived_shipping_status, shipment.get("status"))
+        status_original = f"payment:{payment_status or '-'}|shipping:{shipping_status or '-'}"
+        status = canonical_order_status_service.resolve_mercadolivre(
+            payment_status=payment_status,
+            shipping_status=shipping_status,
+            integration_id=marketplace_inst.get("id"),
+        )
         materialized = self._try_materialize_from_bling(
             source="mercadolivre",
             external_order_id=str(order_id),
@@ -359,27 +379,26 @@ class MarketplaceWebhookIngestService:
             nfe_link=nfe_link,
         )
         if materialized:
+            self._update_materialized_pedido_status(
+                pedido_id=materialized.get("pedido_id"),
+                situacao_pedido_id=status.internal_situacao_pedido_id,
+                status_original=status_original,
+                source="mercadolivre",
+            )
             return {
                 "status": "success",
                 "message": f"Pedido Mercado Livre {order_id} atualizado via materializacao Bling",
                 "pedido_id": materialized.get("pedido_id"),
                 "external_order_id": str(order_id),
                 "marketplace_integration_id": marketplace_inst.get("id"),
+                "internal_situacao_pedido_id": status.internal_situacao_pedido_id,
+                "external_status_id": status.external_status_id,
+                "status_domain": status.status_domain,
                 "pedido_bling_id": materialized.get("pedido_bling_id"),
                 "bling_order_id": materialized.get("bling_order_id"),
                 "bling_order_number": materialized.get("bling_order_number"),
                 "materialized_via": "bling_lookup",
             }
-        order = detail.get("order") or {}
-        shipment = detail.get("shipment") or {}
-        payment = (order.get("payments") or [{}])[0] if isinstance(order.get("payments"), list) else {}
-        payment_status = _first_present(body.get("payment_status"), derived_payment_status, payment.get("status"), order.get("status"))
-        shipping_status = _first_present(body.get("shipping_status"), derived_shipping_status, shipment.get("status"))
-        status = canonical_order_status_service.resolve_mercadolivre(
-            payment_status=payment_status,
-            shipping_status=shipping_status,
-            integration_id=marketplace_inst.get("id"),
-        )
         pedido_id = self._upsert_pedido_status(
             source="mercadolivre",
             external_order_id=str(order_id),
@@ -388,7 +407,7 @@ class MarketplaceWebhookIngestService:
             bling_loja_id=(nfe_link or {}).get("erp_store_id"),
             channel_id=(link or {}).get("channel_id"),
             situacao_pedido_id=status.internal_situacao_pedido_id,
-            status_original=f"payment:{payment_status or '-'}|shipping:{shipping_status or '-'}",
+            status_original=status_original,
             mirror_fields={"pedido_mercadolivre_id": pedido_meli_id},
             raw_customer=self._meli_customer(order),
             total=order.get("total_amount"),
@@ -724,6 +743,37 @@ class MarketplaceWebhookIngestService:
             )
             return None
         return result
+
+    def _update_materialized_pedido_status(
+        self,
+        *,
+        pedido_id: int | None,
+        situacao_pedido_id: int | None,
+        status_original: str | None,
+        source: str,
+    ) -> None:
+        if not pedido_id:
+            return
+
+        fields = {
+            "status_original": status_original,
+            "ingest_source": source,
+            "updated_at": get_now_iso(),
+        }
+        if situacao_pedido_id is not None:
+            fields["situacao_pedido_id"] = situacao_pedido_id
+        fields = {key: value for key, value in fields.items() if value is not None}
+        if not fields:
+            return
+
+        supabase_db.table("pedidos").update(fields).eq("id", pedido_id).execute()
+        logger.info(
+            "[marketplace-webhook] pedido materializado status sincronizado pedido_id=%s source=%s situacao=%s status_original=%s",
+            pedido_id,
+            source,
+            situacao_pedido_id,
+            status_original,
+        )
 
     def _upsert_pedido_status(
         self,

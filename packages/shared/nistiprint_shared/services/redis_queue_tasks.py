@@ -6,6 +6,7 @@
 
 import json
 import logging
+from datetime import timedelta
 from celery import shared_task
 import redis
 from nistiprint_shared.services.bling_order_processing_service import (
@@ -17,7 +18,7 @@ from nistiprint_shared.services.marketplace_webhook_ingest_service import (
 )
 from nistiprint_shared.services.correlation_service import get_correlation_id, set_correlation_id, generate_correlation_id
 from nistiprint_shared.database.supabase_db_service import supabase_db
-from nistiprint_shared.utils.date_utils import get_now_iso
+from nistiprint_shared.utils.date_utils import get_now, get_now_iso, parse_datetime
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,9 @@ BLING_WEBHOOK_DEAD_LETTER = 'bling:webhooks:dead-letter'
 BLING_WEBHOOK_FALHAS = 'bling:webhooks:falhas'
 BLING_WEBHOOK_PROCESSADOS = 'bling:webhooks:processados' # Fila para log/histórico
 BLING_WEBHOOK_MAX_RETRIES = int(os.environ.get('BLING_WEBHOOK_MAX_RETRIES', '5'))
+MARKETPLACE_WEBHOOK_RETRY_BASE_SECONDS = int(os.environ.get('MARKETPLACE_WEBHOOK_RETRY_BASE_SECONDS', '60'))
+MARKETPLACE_WEBHOOK_RETRY_MAX_SECONDS = int(os.environ.get('MARKETPLACE_WEBHOOK_RETRY_MAX_SECONDS', '900'))
+MARKETPLACE_WEBHOOK_QUEUE_LOCK_SECONDS = int(os.environ.get('MARKETPLACE_WEBHOOK_QUEUE_LOCK_SECONDS', '300'))
 SHOPEE_WEBHOOK_QUEUE = 'shopee:webhooks:pendentes'
 SHOPEE_WEBHOOK_DEAD_LETTER = 'shopee:webhooks:dead-letter'
 SHOPEE_WEBHOOK_FALHAS = 'shopee:webhooks:falhas'
@@ -363,6 +367,56 @@ def _mark_failure_payload(data: dict, *, error_type: str, message: str) -> dict:
     failed['last_error_type'] = error_type
     failed['last_failed_at'] = get_now_iso()
     return failed
+
+
+def _retry_delay_seconds(retry_count: int) -> int:
+    retry_count = max(1, int(retry_count or 1))
+    delay = MARKETPLACE_WEBHOOK_RETRY_BASE_SECONDS * (2 ** (retry_count - 1))
+    return min(delay, MARKETPLACE_WEBHOOK_RETRY_MAX_SECONDS)
+
+
+def _mark_retry_in_place_payload(data: dict, *, error_type: str, message: str) -> dict:
+    failed = _mark_failure_payload(data, error_type=error_type, message=message)
+    retry_count = int(failed.get('retry_count') or 0)
+    failed['next_attempt_after'] = (get_now() + timedelta(seconds=_retry_delay_seconds(retry_count))).isoformat()
+    failed['last_queue'] = 'pendentes'
+    return failed
+
+
+def _next_attempt_pending(data: dict) -> bool:
+    next_attempt = parse_datetime(data.get('next_attempt_after'))
+    if not next_attempt:
+        return False
+    return next_attempt > get_now()
+
+
+def _replace_queue_head(r, queue_name: str, payload: dict) -> None:
+    r.lset(queue_name, 0, _serialize_queue_item(payload))
+
+
+def _ack_queue_head(r, queue_name: str) -> str | None:
+    return r.lpop(queue_name)
+
+
+def _acquire_queue_lock(r, queue_name: str) -> tuple[str, str] | tuple[None, None]:
+    lock_key = f"{queue_name}:consumer-lock"
+    lock_value = str(uuid.uuid4())
+    acquired = r.set(lock_key, lock_value, nx=True, ex=MARKETPLACE_WEBHOOK_QUEUE_LOCK_SECONDS)
+    return (lock_key, lock_value) if acquired else (None, None)
+
+
+def _release_queue_lock(r, lock_key: str | None, lock_value: str | None) -> None:
+    if not lock_key or not lock_value:
+        return
+    try:
+        r.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+            1,
+            lock_key,
+            lock_value,
+        )
+    except Exception as exc:
+        logger.warning("Erro ao liberar lock de fila %s: %s", lock_key, exc)
 
 
 def _move_failure_to_dead_letter(
@@ -651,140 +705,159 @@ def _consume_marketplace_queue(source: str, queue_name: str, failure_queue: str,
     set_correlation_id(correlation_id)
 
     r = get_redis_client()
+    lock_key, lock_value = _acquire_queue_lock(r, queue_name)
+    if not lock_key:
+        logger.info("[webhook-queue] source=%s queue=%s ja esta em processamento", source, queue_name)
+        return {'status': 'locked', 'sent': 0, 'source': source}
+
     processados = 0
+    blocked = False
 
-    for _ in range(50):
-        mensagem_str = r.lpop(queue_name)
-        if not mensagem_str:
-            break
+    try:
+        for _ in range(50):
+            mensagem_str = r.lindex(queue_name, 0)
+            if not mensagem_str:
+                break
 
-        data = None
-        attempt_id = None
-        webhook_event_id = None
-        webhook_correlation_id = generate_correlation_id()
-        try:
-            data = _parse_queue_item(mensagem_str)
-            invalid_queue_item = not data or not isinstance(data, dict)
-            if invalid_queue_item:
-                data = {'raw_message': mensagem_str}
+            data = None
+            attempt_id = None
+            webhook_event_id = None
+            webhook_correlation_id = generate_correlation_id()
+            try:
+                data = _parse_queue_item(mensagem_str)
+                invalid_queue_item = not data or not isinstance(data, dict)
+                if invalid_queue_item:
+                    data = {'raw_message': mensagem_str}
 
-            body, shop_id, order_id = _extract_marketplace_context(source, data)
-            webhook_event_id = data.get('webhook_event_id')
-            logger.info(
-                "[webhook-queue] consuming source=%s queue=%s webhook_event_id=%s shop_id=%s order_id=%s keys=%s",
-                source,
-                queue_name,
-                webhook_event_id,
-                shop_id,
-                order_id,
-                sorted(body.keys()) if isinstance(body, dict) else [],
-            )
-            if not webhook_event_id:
-                webhook_event_id = _insert_webhook_event(
-                    data,
-                    source=source,
-                    company_id=str(shop_id) if shop_id else None,
-                    bling_id=None,
-                    numero_loja=order_id,
-                    correlation_id=webhook_correlation_id,
-                )
-                if webhook_event_id:
-                    data['webhook_event_id'] = webhook_event_id
+                if _next_attempt_pending(data):
+                    blocked = True
+                    logger.info(
+                        "[webhook-queue] source=%s queue=%s aguardando retry webhook_event_id=%s next_attempt_after=%s",
+                        source,
+                        queue_name,
+                        data.get('webhook_event_id'),
+                        data.get('next_attempt_after'),
+                    )
+                    break
 
-            attempt_id, _attempt_number = _create_webhook_attempt(
-                webhook_event_id,
-                correlation_id=webhook_correlation_id,
-                queue_name=queue_name,
-            )
-
-            if invalid_queue_item:
-                _move_failure_to_dead_letter(
-                    r,
-                    _mark_failure_payload(data, error_type='invalid_payload', message='payload vazio ou nao-dict'),
-                    reason='invalid_payload',
-                    dead_letter_queue=dead_letter_queue,
-                    attempt_id=attempt_id,
-                    error_type='invalid_payload',
-                    error_message='payload vazio ou nao-dict',
-                )
-                continue
-
-            result = marketplace_webhook_ingest_service.process(
-                source,
-                body,
-                correlation_id=webhook_correlation_id,
-                webhook_event_id=webhook_event_id,
-            )
-            logger.info(
-                "[webhook-queue] processed source=%s webhook_event_id=%s status=%s pedido_id=%s external_order_id=%s event_status=%s",
-                source,
-                webhook_event_id,
-                result.get("status"),
-                result.get("pedido_id"),
-                result.get("external_order_id"),
-                result.get("event_status"),
-            )
-            status_result = result.get('status', 'unknown')
-            event_status = result.get('event_status') or status_result
-
-            if status_result == 'success' or status_result == 'skipped':
-                _finish_webhook_attempt(attempt_id, status=status_result, result_summary=result)
-                _update_webhook_event(
+                body, shop_id, order_id = _extract_marketplace_context(source, data)
+                webhook_event_id = data.get('webhook_event_id')
+                logger.info(
+                    "[webhook-queue] consuming source=%s queue=%s webhook_event_id=%s shop_id=%s order_id=%s keys=%s",
+                    source,
+                    queue_name,
                     webhook_event_id,
-                    pedido_id=result.get('pedido_id'),
-                    numero_loja=result.get('external_order_id') or order_id,
-                    last_status=event_status,
-                    last_attempt_at=get_now_iso(),
+                    shop_id,
+                    order_id,
+                    sorted(body.keys()) if isinstance(body, dict) else [],
                 )
-                processados += 1
-                continue
+                if not webhook_event_id:
+                    webhook_event_id = _insert_webhook_event(
+                        data,
+                        source=source,
+                        company_id=str(shop_id) if shop_id else None,
+                        bling_id=None,
+                        numero_loja=order_id,
+                        correlation_id=webhook_correlation_id,
+                    )
+                    if webhook_event_id:
+                        data['webhook_event_id'] = webhook_event_id
 
-            failed_payload = _mark_failure_payload(
-                data,
-                error_type=result.get('error_type') or 'processing_error',
-                message=result.get('message') or 'processing_error',
-            )
-            retry_count = int(failed_payload.get('retry_count') or 0)
-            if retry_count >= BLING_WEBHOOK_MAX_RETRIES:
-                _move_failure_to_dead_letter(
-                    r,
-                    failed_payload,
-                    reason=f"retry_count={retry_count} >= max={BLING_WEBHOOK_MAX_RETRIES}",
-                    dead_letter_queue=dead_letter_queue,
-                    attempt_id=attempt_id,
-                    error_type=result.get('error_type') or 'processing_error',
-                    error_message=result.get('message') or 'processing_error',
+                attempt_id, _attempt_number = _create_webhook_attempt(
+                    webhook_event_id,
+                    correlation_id=webhook_correlation_id,
+                    queue_name=queue_name,
                 )
-            else:
+
+                if invalid_queue_item:
+                    failed_payload = _mark_retry_in_place_payload(
+                        data,
+                        error_type='invalid_payload',
+                        message='payload vazio ou nao-dict',
+                    )
+                    _finish_webhook_attempt(
+                        attempt_id,
+                        status='failed',
+                        error_type='invalid_payload',
+                        error_message='payload vazio ou nao-dict',
+                        result_summary={'retry_mode': 'in_place'},
+                    )
+                    _update_webhook_event(webhook_event_id, last_status='retry_scheduled', last_attempt_at=get_now_iso())
+                    _replace_queue_head(r, queue_name, failed_payload)
+                    blocked = True
+                    break
+
+                result = marketplace_webhook_ingest_service.process(
+                    source,
+                    body,
+                    correlation_id=webhook_correlation_id,
+                    webhook_event_id=webhook_event_id,
+                )
+                logger.info(
+                    "[webhook-queue] processed source=%s webhook_event_id=%s status=%s pedido_id=%s external_order_id=%s event_status=%s",
+                    source,
+                    webhook_event_id,
+                    result.get("status"),
+                    result.get("pedido_id"),
+                    result.get("external_order_id"),
+                    result.get("event_status"),
+                )
+                status_result = result.get('status', 'unknown')
+                event_status = result.get('event_status') or status_result
+
+                if status_result == 'success' or status_result == 'skipped':
+                    _finish_webhook_attempt(attempt_id, status=status_result, result_summary=result)
+                    _update_webhook_event(
+                        webhook_event_id,
+                        pedido_id=result.get('pedido_id'),
+                        numero_loja=result.get('external_order_id') or order_id,
+                        last_status=event_status,
+                        last_attempt_at=get_now_iso(),
+                    )
+                    _ack_queue_head(r, queue_name)
+                    processados += 1
+                    continue
+
+                failed_payload = _mark_retry_in_place_payload(
+                    data,
+                    error_type=result.get('error_type') or 'processing_error',
+                    message=result.get('message') or 'processing_error',
+                )
                 _finish_webhook_attempt(
                     attempt_id,
                     status='failed',
                     error_type=result.get('error_type') or 'processing_error',
                     error_message=result.get('message') or 'processing_error',
-                    result_summary=result,
+                    result_summary={**result, 'retry_mode': 'in_place'},
                 )
-                _update_webhook_event(webhook_event_id, last_status='failed', last_attempt_at=get_now_iso())
-                r.rpush(failure_queue, _serialize_queue_item(failed_payload))
-        except Exception as e:
-            logger.error("Erro critico ao processar webhook %s: %s", source, e, exc_info=True)
-            failed_payload = _mark_failure_payload(
-                data if isinstance(data, dict) else {'raw_message': mensagem_str},
-                error_type='consumer_exception',
-                message=str(e),
-            )
-            if webhook_event_id and 'webhook_event_id' not in failed_payload:
-                failed_payload['webhook_event_id'] = webhook_event_id
-            _move_failure_to_dead_letter(
-                r,
-                failed_payload,
-                reason='consumer_exception',
-                dead_letter_queue=dead_letter_queue,
-                attempt_id=attempt_id,
-                error_type='consumer_exception',
-                error_message=str(e),
-            )
+                _update_webhook_event(webhook_event_id, last_status='retry_scheduled', last_attempt_at=get_now_iso())
+                _replace_queue_head(r, queue_name, failed_payload)
+                blocked = True
+                break
+            except Exception as e:
+                logger.error("Erro critico ao processar webhook %s: %s", source, e, exc_info=True)
+                failed_payload = _mark_retry_in_place_payload(
+                    data if isinstance(data, dict) else {'raw_message': mensagem_str},
+                    error_type='consumer_exception',
+                    message=str(e),
+                )
+                if webhook_event_id and 'webhook_event_id' not in failed_payload:
+                    failed_payload['webhook_event_id'] = webhook_event_id
+                _finish_webhook_attempt(
+                    attempt_id,
+                    status='failed',
+                    error_type='consumer_exception',
+                    error_message=str(e),
+                    result_summary={'retry_mode': 'in_place'},
+                )
+                _update_webhook_event(webhook_event_id, last_status='retry_scheduled', last_attempt_at=get_now_iso())
+                _replace_queue_head(r, queue_name, failed_payload)
+                blocked = True
+                break
+    finally:
+        _release_queue_lock(r, lock_key, lock_value)
 
-    return {'status': 'success', 'sent': processados, 'source': source}
+    return {'status': 'success', 'sent': processados, 'source': source, 'blocked': blocked}
 
 
 @shared_task(name='nistiprint_shared.services.redis_queue_tasks.consumir_fila_shopee')

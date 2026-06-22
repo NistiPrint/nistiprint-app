@@ -129,6 +129,74 @@ class TestRedisQueueWebhookAttempts(unittest.TestCase):
         self.assertEqual(inserted['attempt_number'], 3)
         self.assertEqual(inserted['status'], 'processing')
 
+    def test_marketplace_consumer_acknowledges_head_only_after_success(self):
+        redis_client = MagicMock()
+        payload = {'order_sn': 'SN123', 'shop_id': 'SHOP1'}
+        redis_client.set.return_value = True
+        redis_client.lindex.side_effect = [json.dumps(payload), None]
+
+        with patch.object(rqt, 'get_redis_client', return_value=redis_client), \
+             patch.object(rqt, '_insert_webhook_event', return_value=10), \
+             patch.object(rqt, '_create_webhook_attempt', return_value=(77, 1)), \
+             patch.object(rqt, '_finish_webhook_attempt') as finish_attempt, \
+             patch.object(rqt, '_update_webhook_event') as update_event, \
+             patch.object(rqt.marketplace_webhook_ingest_service, 'process', return_value={
+                 'status': 'success',
+                 'pedido_id': 99,
+                 'external_order_id': 'SN123',
+             }):
+            result = rqt._consume_marketplace_queue(
+                'shopee',
+                rqt.SHOPEE_WEBHOOK_QUEUE,
+                rqt.SHOPEE_WEBHOOK_FALHAS,
+                rqt.SHOPEE_WEBHOOK_DEAD_LETTER,
+            )
+
+        self.assertEqual(result['sent'], 1)
+        self.assertFalse(result['blocked'])
+        redis_client.lpop.assert_called_once_with(rqt.SHOPEE_WEBHOOK_QUEUE)
+        redis_client.lset.assert_not_called()
+        redis_client.rpush.assert_not_called()
+        finish_attempt.assert_called_once()
+        update_event.assert_called()
+
+    def test_marketplace_consumer_keeps_failed_event_at_queue_head(self):
+        redis_client = MagicMock()
+        payload = {'order_sn': 'SN123', 'shop_id': 'SHOP1'}
+        redis_client.set.return_value = True
+        redis_client.lindex.return_value = json.dumps(payload)
+
+        with patch.object(rqt, 'get_redis_client', return_value=redis_client), \
+             patch.object(rqt, '_insert_webhook_event', return_value=10), \
+             patch.object(rqt, '_create_webhook_attempt', return_value=(77, 1)), \
+             patch.object(rqt, '_finish_webhook_attempt'), \
+             patch.object(rqt, '_update_webhook_event'), \
+             patch.object(rqt.marketplace_webhook_ingest_service, 'process', return_value={
+                 'status': 'error',
+                 'error_type': 'shopee_detail_unavailable',
+                 'message': 'API indisponivel',
+             }):
+            result = rqt._consume_marketplace_queue(
+                'shopee',
+                rqt.SHOPEE_WEBHOOK_QUEUE,
+                rqt.SHOPEE_WEBHOOK_FALHAS,
+                rqt.SHOPEE_WEBHOOK_DEAD_LETTER,
+            )
+
+        self.assertEqual(result['sent'], 0)
+        self.assertTrue(result['blocked'])
+        redis_client.lpop.assert_not_called()
+        redis_client.rpush.assert_not_called()
+        redis_client.lset.assert_called_once()
+        queue_name, index, serialized = redis_client.lset.call_args.args
+        self.assertEqual(queue_name, rqt.SHOPEE_WEBHOOK_QUEUE)
+        self.assertEqual(index, 0)
+        rewritten = json.loads(serialized)
+        self.assertEqual(rewritten['retry_count'], 1)
+        self.assertEqual(rewritten['last_error_type'], 'shopee_detail_unavailable')
+        self.assertEqual(rewritten['last_error'], 'API indisponivel')
+        self.assertIn('next_attempt_after', rewritten)
+
 
 if __name__ == '__main__':
     unittest.main()
