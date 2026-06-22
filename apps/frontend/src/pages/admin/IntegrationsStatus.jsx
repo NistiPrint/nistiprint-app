@@ -101,13 +101,13 @@ export default function IntegrationsStatus({ onAddClick }) {
     try {
       const result = await integracaoCanalService.syncFirestore();
       if (result.status === 'success') {
-        toast.success('Credenciais sincronizadas');
+        toast.success('Credenciais publicadas no Firebase');
         await fetchIntegrations();
       } else {
-        toast.error('Falha ao sincronizar credenciais');
+        toast.error('Falha ao publicar credenciais no Firebase');
       }
     } catch (error) {
-      toast.error('Falha ao sincronizar credenciais');
+      toast.error('Falha ao publicar credenciais no Firebase');
     } finally {
       setSyncing(false);
     }
@@ -170,7 +170,7 @@ export default function IntegrationsStatus({ onAddClick }) {
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={handleSyncFirestore} disabled={syncing}>
             <RefreshCw className={`mr-2 h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
-            Sincronizar credenciais
+            Publicar no Firebase
           </Button>
           <Button onClick={onAddClick}>
             <Sparkles className="mr-2 h-4 w-4" />

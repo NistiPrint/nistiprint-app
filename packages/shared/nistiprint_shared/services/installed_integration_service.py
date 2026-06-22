@@ -3,8 +3,6 @@ Service for managing installed integration instances
 """
 from typing import List, Dict, Optional
 from datetime import datetime, timezone, timedelta
-import requests
-from google.cloud import secretmanager
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.file_archive_service import file_archive_service
 from nistiprint_shared.services.credential_resolver_service import (
@@ -16,6 +14,9 @@ from nistiprint_shared.services.integration_app_profile_service import (
 from nistiprint_shared.services.integration_credentials_service import integration_credentials_service
 from nistiprint_shared.services.platform_auth_service import platform_auth_service
 from nistiprint_shared.services.integration_resolution_service import integration_resolution_service
+from nistiprint_shared.services.token_manager.firebase_projection import (
+    bling_firebase_projection_service,
+)
 
 
 class InstalledIntegrationService:
@@ -93,115 +94,17 @@ class InstalledIntegrationService:
         }
         return any(field in update_data for field in credential_fields)
 
-    def _get_secret(self, secret_id: str, version_id: str = "latest") -> str:
-        """
-        Retrieves a secret from Google Cloud Secret Manager.
-        """
-        # Hardcoded project ID from existing scripts - ideally should be in config
-        resource_project_id = "neolabs-nistiprint"
-        client = secretmanager.SecretManagerServiceClient()
-        name = f"projects/{resource_project_id}/secrets/{secret_id}/versions/{version_id}"
-        
-        response = client.access_secret_version(request={"name": name})
-        return response.payload.data.decode("UTF-8")
-
-    def _refresh_bling_token(self, refresh_token: str, cnpj: str) -> Dict:
-        """
-        Refreshes Bling token using secrets derived from CNPJ.
-        """
-        if not cnpj or len(cnpj) < 5:
-            raise ValueError("Invalid CNPJ for Bling token refresh")
-
-        account_identifier = cnpj[:5]
-        client_id = self._get_secret(f"BLING_CLIENT_ID_{account_identifier}")
-        client_secret = self._get_secret(f"BLING_SECRET_{account_identifier}")
-
-        url = "https://www.bling.com.br/Api/v3/oauth/token"
-        payload = {"grant_type": "refresh_token", "refresh_token": refresh_token}
-        auth = (client_id, client_secret)
-
-        response = requests.post(url, data=payload, auth=auth)
-        response.raise_for_status()
-        return response.json()
-
     def check_and_refresh_tokens(self) -> Dict:
         """
-        Iterates through active integrations and attempts to refresh tokens.
-        Currently supports: Bling.
+        Wrapper legado para renovar credenciais Bling pelo fluxo unificado.
         """
-        results = {
-            "processed": 0,
-            "success": 0,
-            "errors": 0,
-            "skipped": 0
-        }
+        from nistiprint_shared.services.token_renewal_service import (
+            token_renewal_service,
+        )
 
-        # Fetch all active integrations
-        response = self.table.select("*").eq('is_active', True).execute()
-        integrations = response.data
-
-        for integration in integrations:
-            results["processed"] += 1
-            integration_id = integration.get('id')
-            module_id = integration.get('module_id')
-            
-            try:
-                if module_id == 'bling':
-                    config = integration.get('config', {}) or {}
-                    cnpj = config.get('cnpj')
-                    
-                    # Try to get refresh_token from top-level or credentials dict (fallback)
-                    current_refresh_token = integration.get('refresh_token')
-                    if not current_refresh_token:
-                        creds = integration.get('credentials', {}) or {}
-                        current_refresh_token = creds.get('refresh_token')
-
-                    if not current_refresh_token:
-                        raise ValueError("No refresh_token found")
-
-                    # Refresh
-                    new_tokens = self._refresh_bling_token(current_refresh_token, cnpj)
-                    
-                    # Update DB
-                    update_data = {
-                        'access_token': new_tokens['access_token'],
-                        'refresh_token': new_tokens['refresh_token'],
-                        'updated_at': datetime.now(timezone.utc).isoformat(),
-                        # Optionally update 'expires_in' if column exists or put in config/credentials
-                    }
-                    
-                    self.update_installed(str(integration_id), update_data)
-                    
-                    # Log Success
-                    file_archive_service.append('integration_refresh_logs', {
-                        'integration_id': integration_id,
-                        'status': 'success',
-                        'message': 'Token refreshed successfully',
-                        'execution_mode': 'scheduled',
-                    }, datetime.now(timezone.utc).isoformat())
-                    
-                    results["success"] += 1
-
-                else:
-                    # Other modules not yet supported for auto-refresh
-                    results["skipped"] += 1
-
-            except Exception as e:
-                print(f"Error refreshing token for integration {integration_id}: {e}")
-                results["errors"] += 1
-                
-                # Log Error
-                try:
-                    file_archive_service.append('integration_refresh_logs', {
-                        'integration_id': integration_id,
-                        'status': 'error',
-                        'message': str(e),
-                        'execution_mode': 'scheduled',
-                    }, datetime.now(timezone.utc).isoformat())
-                except Exception as log_error:
-                    print(f"Failed to write log: {log_error}")
-
-        return results
+        return token_renewal_service.renew_app_managed_credentials(
+            module_filter='bling'
+        )
 
     def get_all_installed(self, user_id: str = None) -> List['InstalledIntegration']:
         """Get all installed integrations, optionally filtered by user"""
@@ -375,6 +278,12 @@ class InstalledIntegrationService:
         if not self.update_installed(instance_id, update_data):
             raise RuntimeError(f"Falha ao atualizar integração {instance_id} após renovar token")
 
+        firebase_projection = None
+        if str(inst.module_id or '').lower() == 'bling':
+            firebase_projection = bling_firebase_projection_service.publish_installation_by_id(
+                instance_id
+            )
+
         try:
             file_archive_service.append('integration_refresh_logs', {
                 'integration_id': instance_id,
@@ -390,6 +299,7 @@ class InstalledIntegrationService:
             'refresh_token': tokens.get('refresh_token'),
             'expires_in': expires_in,
             'expires_at': update_data.get('expires_at'),
+            'firebase_projection': firebase_projection,
         }
 
     def uninstall(self, instance_id: str) -> bool:

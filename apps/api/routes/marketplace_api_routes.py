@@ -40,6 +40,9 @@ from nistiprint_shared.services.oauth_authorization_session_service import (
 )
 from nistiprint_shared.services.platform_api_service import platform_api_service
 from nistiprint_shared.services.platform_auth_service import platform_auth_service
+from nistiprint_shared.services.token_manager.firebase_projection import (
+    bling_firebase_projection_service,
+)
 from .marketplace_api_base import marketplace_api_bp
 from utils.api_response import ApiResponse
 
@@ -206,6 +209,8 @@ def auth_callback(platform):
             inst.id,
             _auth_update_payload(inst, platform, tokens, explicit_identifier=shop_id),
         )
+        if str(platform or "").lower() == "bling":
+            bling_firebase_projection_service.publish_installation_by_id(inst.id)
         oauth_authorization_session_service.mark_consumed(session_row["id"])
         return_to = session_row.get("return_to") or "/configuracoes/integracoes"
         return redirect(

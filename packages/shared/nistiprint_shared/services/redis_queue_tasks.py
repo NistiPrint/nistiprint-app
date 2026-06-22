@@ -888,7 +888,7 @@ def consumir_fila_mercadolivre(correlation_id=None):
 @log_shared_task_execution(task_type='INTEGRACAO')
 def sync_firestore_tokens(correlation_id=None):
     """
-    Sincroniza tokens do Bling do Firestore para o Supabase.
+    Publica credenciais Bling gerenciadas pelo app no Firebase.
     """
     # Configurar correlation_id
     correlation_id = correlation_id or get_correlation_id()
@@ -897,10 +897,9 @@ def sync_firestore_tokens(correlation_id=None):
     set_correlation_id(correlation_id)
     
     try:
-        from nistiprint_shared.services.token_manager.sync_firestore import sync_bling_to_supabase
-        logger.info("Iniciando task agendada de sincronização com Firestore...")
-        success = sync_bling_to_supabase()
-        return {'status': 'success' if success else 'error'}
+        from nistiprint_shared.services.token_manager.sync_firestore import publish_bling_credentials_to_firebase
+        logger.info("Iniciando task agendada de publicacao app -> Firebase para credenciais Bling...")
+        return publish_bling_credentials_to_firebase()
     except Exception as e:
         logger.error(f"Erro na task sync_firestore_tokens: {str(e)}")
         return {'status': 'error', 'message': str(e)}

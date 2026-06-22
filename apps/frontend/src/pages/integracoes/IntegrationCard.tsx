@@ -397,12 +397,12 @@ export default function IntegrationCard({
           </div>
 
           <div className="hidden items-center gap-1 sm:flex">
-            {!isErp && onTest && (
+            {onTest && (
               <Button variant="ghost" size="sm" onClick={() => onTest(integration.id)} disabled={testingId === integration.id}>
                 <Zap className="h-4 w-4" />
               </Button>
             )}
-            {!isErp && onRenewToken && (
+            {onRenewToken && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -540,12 +540,12 @@ export default function IntegrationCard({
             )}
 
             <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-              {!isErp && onTest && (
+              {onTest && (
                 <Button variant="outline" size="sm" onClick={() => onTest(integration.id)} disabled={testingId === integration.id}>
                   Testar
                 </Button>
               )}
-              {!isErp && onRenewToken && (
+              {onRenewToken && (
                 <Button
                   variant="outline"
                   size="sm"

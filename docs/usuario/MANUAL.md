@@ -105,8 +105,9 @@ Comportamento:
 
 ### Bling
 
-- normalmente nao mostra renovacao local
-- as credenciais sao sincronizadas externamente
+- pode mostrar testar conexao
+- pode mostrar renovar token
+- a aplicacao gerencia a credencial e publica no Firebase apenas como espelho de compatibilidade
 
 ### Shopee e Mercado Livre
 

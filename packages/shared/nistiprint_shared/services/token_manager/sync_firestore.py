@@ -1,121 +1,183 @@
+from __future__ import annotations
+
 import logging
-from datetime import datetime, timedelta
-from nistiprint_shared.services.firebase.firebase import initialize_firebase
+from datetime import datetime, timedelta, timezone
+
 from firebase_admin import firestore
-from nistiprint_shared.database.supabase_db_service import supabase_db
+
+from nistiprint_shared.services.firebase.firebase import initialize_firebase
+from nistiprint_shared.services.installed_integration_service import (
+    installed_integration_service,
+)
+from nistiprint_shared.services.integration_app_profile_service import (
+    integration_app_profile_service,
+)
+from nistiprint_shared.services.integration_secret_service import (
+    integration_secret_service,
+)
+from nistiprint_shared.services.token_manager.firebase_projection import (
+    bling_firebase_projection_service,
+)
+
 
 logger = logging.getLogger("SyncFirestore")
 
-def sync_bling_to_supabase():
+
+def _find_bling_installation_by_cnpj(cnpj: str):
+    installations = installed_integration_service.get_installed_by_module("bling")
+    normalized = str(cnpj or "").strip()
+    for inst in installations:
+        config = inst.config or {}
+        if str(config.get("cnpj") or "").strip() == normalized:
+            return inst
+    return None
+
+
+def _coerce_dt(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _resolve_bling_app_profile_id(inst, firebase_data: dict) -> int | None:
+    if getattr(inst, "app_profile_id", None):
+        return inst.app_profile_id
+
+    profiles = integration_app_profile_service.list_profiles(module_id="bling")
+    instance_name = str(getattr(inst, "instance_name", "") or "").lower()
+    cnpj = str((inst.config or {}).get("cnpj") or firebase_data.get("cnpj") or "").strip()
+
+    for profile in profiles:
+        profile_name = str(profile.get("name") or "").lower()
+        if cnpj and cnpj in profile_name:
+            return profile.get("id")
+        if instance_name and instance_name in profile_name:
+            return profile.get("id")
+
+    default_profile = integration_app_profile_service.get_default_profile("bling")
+    return default_profile.get("id") if default_profile else None
+
+
+def import_bling_credentials_from_firebase() -> dict:
     """
-    Sincroniza as contas do Bling do Firestore para o Supabase (installed_integrations).
-    Otimizado para ler credenciais diretamente do documento e usar a estrutura JSONB.
+    Importa as credenciais atuais do Firebase para o cofre interno do app.
+
+    Este fluxo existe para bootstrap/cutover. O caminho operacional padrão
+    depois do corte é o oposto: app -> Firebase.
     """
-    logger.info("🚀 [SYNC] Iniciando sincronização inteligente Firestore -> Supabase...")
-    
+    logger.info("[SYNC] Iniciando bootstrap Firebase -> app para contas Bling.")
+
     if not initialize_firebase():
-        logger.error("❌ [SYNC] Falha ao inicializar Firebase para sincronização.")
-        return False
+        raise RuntimeError("Falha ao inicializar Firebase para importação de credenciais.")
 
     db = firestore.client()
-    try:
-        accounts_ref = db.collection("bling_accounts")
-        docs = accounts_ref.stream()
+    docs = db.collection("bling_accounts").stream()
 
-        count = 0
-        for doc in docs:
-            data = doc.to_dict()
-            cnpj = data.get("cnpj")
-            if not cnpj:
-                continue
+    processed = 0
+    migrated = 0
+    skipped = 0
+    errors: list[dict[str, str]] = []
 
-            # Mapeamento de campos baseado na estrutura real do Firestore (descoberta via MCP)
-            instance_name = data.get("account_name", f"Bling - {cnpj}")
-            client_id = data.get("client_id")
-            client_secret = data.get("client_secret")
-            access_token = data.get("access_token")
-            refresh_token = data.get("refresh_token")
-            
-            # Cálculo de expiração
-            updated_at_fs = data.get("updated_at") # Timestamp do Firebase
-            expires_in = data.get("expires_in", 21600)
-            
-            expires_at = None
-            if updated_at_fs:
-                # updated_at_fs é um objeto datetime se vier do stream() do firebase_admin
-                expires_at = (updated_at_fs + timedelta(seconds=expires_in)).isoformat()
+    for doc in docs:
+        processed += 1
+        data = doc.to_dict() or {}
+        cnpj = str(data.get("cnpj") or "").strip()
+        if not cnpj:
+            skipped += 1
+            errors.append({"doc_id": doc.id, "error": "cnpj ausente"})
+            continue
 
-            # Prepara objeto para o Supabase
-            integration_data = {
-                "module_id": "bling",
-                "instance_name": instance_name,
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "expires_at": expires_at,
-                "is_active": True,
-                "config": {
+        inst = _find_bling_installation_by_cnpj(cnpj)
+        if not inst:
+            skipped += 1
+            errors.append(
+                {
+                    "doc_id": doc.id,
                     "cnpj": cnpj,
-                    "company_id": data.get("company_id")
-                },
-                "credentials": {
-                    "client_id": client_id,
-                    "client_secret": client_secret
-                },
-                "updated_at": datetime.utcnow().isoformat()
-            }
-
-            # 1. Realiza o UPSERT na tabela moderna (installed_integrations)
-            try:
-                supabase_db.execute_with_retry(
-                    supabase_db.table("installed_integrations").upsert(
-                        integration_data, 
-                        on_conflict="module_id, instance_name"
-                    )
-                )
-                logger.info(f"✅ Sincronizado (installed_integrations): {instance_name} ({cnpj})")
-            except Exception as e:
-                logger.error(f"❌ Erro ao inserir {cnpj} em installed_integrations: {e}")
-
-            # 2. Realiza o UPSERT na tabela legado (contas_bling) para compatibilidade
-            try:
-                # O ID no Firestore deve ser o mesmo ID na tabela contas_bling para manter referências
-                # Se não tivermos o ID do documento, usamos o CNPJ como chave de busca para o ID
-                legacy_id = data.get("id") or doc.id
-                
-                legacy_data = {
-                    "id": legacy_id,
-                    "nome": instance_name,
-                    "cnpj": cnpj,
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                    "expires_in": expires_in,
-                    "platform_name": data.get("platform", "Shopee"), # Fallback
-                    "instance_name": instance_name,
-                    "ativa": True,
-                    "updated_at": datetime.utcnow().isoformat()
+                    "error": "instalacao Bling nao encontrada por cnpj",
                 }
+            )
+            continue
 
-                supabase_db.execute_with_retry(
-                    supabase_db.table("contas_bling").upsert(
-                        legacy_data,
-                        on_conflict="id"
-                    )
-                )
-                logger.info(f"✅ Sincronizado (contas_bling): {instance_name} ({cnpj})")
-                count += 1
-            except Exception as e:
-                logger.error(f"❌ Erro ao inserir {cnpj} em contas_bling: {e}")
+        access_token = data.get("access_token")
+        refresh_token = data.get("refresh_token")
+        if access_token not in (None, ""):
+            integration_secret_service.put_secret(
+                "installed_integration",
+                inst.id,
+                "access_token",
+                access_token,
+            )
+        if refresh_token not in (None, ""):
+            integration_secret_service.rotate_secret(
+                "installed_integration",
+                inst.id,
+                "refresh_token",
+                refresh_token,
+            )
 
-        logger.info(f"Sincronização concluída. {count} contas processadas.")
-        return True
+        updated_at = _coerce_dt(data.get("updated_at")) or _coerce_dt(
+            data.get("last_token_update_utc")
+        )
+        expires_in = int(data.get("token_expires_in") or data.get("expires_in") or 0)
+        expires_at = (
+            (updated_at + timedelta(seconds=expires_in)).isoformat()
+            if updated_at and expires_in > 0
+            else None
+        )
 
-    except Exception as e:
-        logger.error(f"Erro crítico durante a sincronização: {e}")
-        return False
+        current_config = dict(inst.config or {})
+        current_config.setdefault("cnpj", cnpj)
+        current_config["firebase_doc_id"] = doc.id
+        if data.get("company_id") not in (None, ""):
+            current_config["company_id"] = data.get("company_id")
+
+        current_credentials = dict(inst.credentials or {})
+        if expires_in > 0:
+            current_credentials["expires_in"] = expires_in
+
+        installed_integration_service.update_installed(
+            str(inst.id),
+            {
+                "app_profile_id": _resolve_bling_app_profile_id(inst, data),
+                "config": current_config,
+                "credentials": current_credentials,
+                "expires_at": expires_at,
+                "refresh_error": None,
+                "sync_status": "active",
+            },
+        )
+        migrated += 1
+
+    result = {
+        "status": "success" if not errors else "partial_success",
+        "processed": processed,
+        "migrated": migrated,
+        "skipped": skipped,
+        "errors": errors,
+    }
+    logger.info("[SYNC] Bootstrap Firebase -> app finalizado: %s", result)
+    return result
+
+
+def publish_bling_credentials_to_firebase() -> dict:
+    """
+    Publica as credenciais Bling gerenciadas pelo app no Firebase.
+    """
+    logger.info("[SYNC] Publicando credenciais Bling do app para o Firebase.")
+    result = bling_firebase_projection_service.publish_all_active_bling()
+    logger.info("[SYNC] Publicação app -> Firebase finalizada: %s", result)
+    return result
+
+
+def sync_bling_to_supabase():
+    """
+    Compatibilidade legada: mantém o nome antigo para o bootstrap inicial.
+    """
+    return import_bling_credentials_from_firebase()
+
 
 if __name__ == "__main__":
-    # Para execução manual via CLI
-    sync_bling_to_supabase()
-
+    import_bling_credentials_from_firebase()

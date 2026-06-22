@@ -44,7 +44,8 @@ behavior documented here is the expected contract for frontend and worker code.
   has a driver.
 - Refresh endpoints must only be shown and enabled when the credential strategy
   supports local refresh.
-- Bling must be documented as externally synchronized for credentials.
+- Bling credentials are app-managed and may be republished to Firebase only for
+  compatibility consumers.
 
 ### ERP to marketplace links
 

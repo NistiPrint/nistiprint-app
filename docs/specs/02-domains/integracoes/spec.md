@@ -114,8 +114,9 @@ replace the contracts above.
 
 ## Credential rules
 
-- Bling credentials are synchronized externally and are not locally refreshed by
-  this app.
+- Bling credentials are managed by this app and may be refreshed locally.
+- Firebase remains only a compatibility mirror for Bling credentials, not the
+  source of truth.
 - Shopee and Mercado Livre may expose local test and refresh actions.
 - Credential status in UI must reflect:
   - credential source

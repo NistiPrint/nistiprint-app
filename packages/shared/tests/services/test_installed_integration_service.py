@@ -74,14 +74,52 @@ class InstalledIntegrationServiceTest(unittest.TestCase):
              patch("nistiprint_shared.services.installed_integration_service.platform_auth_service.refresh_access_token", return_value={"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}) as refresh_access_token, \
              patch("nistiprint_shared.services.installed_integration_service.credential_resolver_service.persist_installation_tokens") as persist_tokens, \
              patch.object(service, "update_installed", return_value=True), \
+             patch("nistiprint_shared.services.installed_integration_service.bling_firebase_projection_service.publish_installation_by_id") as publish_firebase, \
              patch("nistiprint_shared.services.installed_integration_service.file_archive_service.append"):
             result = service.renew_integration_token("9")
 
         resolve_context.assert_called_once()
         refresh_access_token.assert_called_once_with("shopee", context)
         persist_tokens.assert_called_once()
+        publish_firebase.assert_not_called()
         self.assertEqual(result["access_token"], "new-access")
         self.assertEqual(result["refresh_token"], "new-refresh")
+
+    def test_renew_bling_token_publishes_to_firebase(self):
+        service = InstalledIntegrationService()
+        service.table = MagicMock()
+
+        current = MagicMock()
+        current.id = "11"
+        current.module_id = "bling"
+        current.to_dict.return_value = {
+            "module_id": "bling",
+            "config": {"cnpj": "12345678000199"},
+            "credentials": {"refresh_token": "legacy-refresh"},
+        }
+
+        context = CredentialContext(
+            module_id="bling",
+            installation={"id": "11", "module_id": "bling"},
+            app_profile={"id": "22"},
+            app_secrets={"client_id": "client", "client_secret": "secret"},
+            installation_secrets={"refresh_token": "refresh-123"},
+            config={"cnpj": "12345678000199"},
+            credentials={},
+        )
+
+        with patch.object(service, "get_installed_by_id", return_value=current), \
+             patch("nistiprint_shared.services.installed_integration_service.integration_credentials_service.ensure_refresh_allowed"), \
+             patch("nistiprint_shared.services.installed_integration_service.credential_resolver_service.resolve_for_installation", return_value=context), \
+             patch("nistiprint_shared.services.installed_integration_service.platform_auth_service.refresh_access_token", return_value={"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}), \
+             patch("nistiprint_shared.services.installed_integration_service.credential_resolver_service.persist_installation_tokens"), \
+             patch.object(service, "update_installed", return_value=True), \
+             patch("nistiprint_shared.services.installed_integration_service.bling_firebase_projection_service.publish_installation_by_id", return_value={"doc_id": "12345678000199"}) as publish_firebase, \
+             patch("nistiprint_shared.services.installed_integration_service.file_archive_service.append"):
+            result = service.renew_integration_token("11")
+
+        publish_firebase.assert_called_once_with("11")
+        self.assertEqual(result["firebase_projection"], {"doc_id": "12345678000199"})
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from unittest import TestCase
+from unittest.mock import patch
 
 from nistiprint_shared.services.integration_credentials_service import (
     integration_credentials_service,
@@ -7,7 +8,7 @@ from nistiprint_shared.services.integration_credentials_service import (
 
 
 class IntegrationCredentialsServiceTest(TestCase):
-    def test_bling_is_external_sync_and_cannot_refresh(self):
+    def test_bling_is_app_managed_and_can_refresh(self):
         installation = {
             "id": 1,
             "module_id": "bling",
@@ -19,12 +20,16 @@ class IntegrationCredentialsServiceTest(TestCase):
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        public = integration_credentials_service.public_view(installation)
+        with patch(
+            "nistiprint_shared.services.integration_credentials_service.credential_resolver_service.has_installation_token",
+            side_effect=[True, True],
+        ):
+            public = integration_credentials_service.public_view(installation)
 
-        self.assertEqual(public["management_mode"], "external_sync")
-        self.assertEqual(public["source_system"], "firebase")
-        self.assertFalse(public["actions"]["can_refresh"])
-        self.assertTrue(public["actions"]["can_sync_external"])
+        self.assertEqual(public["management_mode"], "app_managed")
+        self.assertEqual(public["source_system"], "supabase")
+        self.assertTrue(public["actions"]["can_refresh"])
+        self.assertFalse(public["actions"]["can_sync_external"])
 
     def test_expired_marketplace_token_is_reported(self):
         installation = {
@@ -38,7 +43,11 @@ class IntegrationCredentialsServiceTest(TestCase):
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        public = integration_credentials_service.public_view(installation)
+        with patch(
+            "nistiprint_shared.services.integration_credentials_service.credential_resolver_service.has_installation_token",
+            side_effect=[True, True],
+        ):
+            public = integration_credentials_service.public_view(installation)
 
         self.assertEqual(public["token_status"], "expired")
         self.assertTrue(public["actions"]["can_refresh"])
@@ -52,7 +61,11 @@ class IntegrationCredentialsServiceTest(TestCase):
             "credentials": {},
         }
 
-        public = integration_credentials_service.public_view(installation)
+        with patch(
+            "nistiprint_shared.services.integration_credentials_service.credential_resolver_service.has_installation_token",
+            side_effect=[False, False],
+        ):
+            public = integration_credentials_service.public_view(installation)
 
         self.assertEqual(public["token_status"], "not_required")
         self.assertEqual(public["connection_status"], "not_applicable")

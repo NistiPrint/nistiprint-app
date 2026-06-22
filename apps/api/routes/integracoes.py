@@ -73,12 +73,30 @@ def renovar_token(id):
 
 @integracoes_api_bp.route('/sync-firestore', methods=['POST'])
 def sync_firestore():
-    """Aciona sincronização com Firestore."""
+    """Publica credenciais no Firebase ou executa o bootstrap inicial via import."""
     try:
         # Agora aponta para a pasta local services/token_manager
-        from nistiprint_shared.services.token_manager.sync_firestore import sync_bling_to_supabase
-        sync_bling_to_supabase()
-        return jsonify({"status": "success", "message": "Sincronização concluída!"})
+        from nistiprint_shared.services.token_manager.sync_firestore import (
+            import_bling_credentials_from_firebase,
+            publish_bling_credentials_to_firebase,
+        )
+        data = request.get_json(silent=True) or {}
+        mode = data.get('mode') or request.args.get('mode') or 'publish'
+
+        if mode == 'import':
+            result = import_bling_credentials_from_firebase()
+            return jsonify({
+                "status": result.get("status", "success"),
+                "message": "Bootstrap Firebase -> app concluído.",
+                "result": result,
+            })
+
+        result = publish_bling_credentials_to_firebase()
+        return jsonify({
+            "status": result.get("status", "success"),
+            "message": "Credenciais publicadas no Firebase.",
+            "result": result,
+        })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 

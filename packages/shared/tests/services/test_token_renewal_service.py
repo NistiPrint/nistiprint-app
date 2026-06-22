@@ -67,7 +67,7 @@ class TokenRenewalServiceTest(TestCase):
         self.assertEqual(result["by_module"]["shopee"]["renewed"], 1)
         self.assertEqual(result["by_module"]["mercadolivre"]["renewed"], 1)
 
-    def test_skips_unsupported_missing_refresh_and_not_expiring_integrations(self):
+    def test_skips_missing_refresh_and_not_expiring_integrations(self):
         now = datetime.now(timezone.utc)
         integrations = [
             {
@@ -92,7 +92,7 @@ class TokenRenewalServiceTest(TestCase):
         ]
         token_matrix = {
             (1, "access_token"): True,
-            (1, "refresh_token"): True,
+            (1, "refresh_token"): False,
             (6, "access_token"): True,
             (6, "refresh_token"): False,
             (7091, "access_token"): True,
@@ -115,9 +115,42 @@ class TokenRenewalServiceTest(TestCase):
         self.assertEqual(result["processed"], 3)
         self.assertEqual(result["renewed"], 0)
         self.assertEqual(result["skipped"], 3)
-        self.assertEqual(result["skip_reasons"]["unsupported_strategy"], 1)
-        self.assertEqual(result["skip_reasons"]["missing_refresh_token"], 1)
+        self.assertEqual(result["skip_reasons"]["missing_refresh_token"], 2)
+        self.assertNotIn("unsupported_strategy", result["skip_reasons"])
         self.assertEqual(result["skip_reasons"]["not_expiring"], 1)
+
+    def test_renews_expiring_bling_when_app_managed_tokens_exist(self):
+        now = datetime.now(timezone.utc)
+        integrations = [
+            {
+                "id": 1,
+                "module_id": "bling",
+                "instance_name": "Bling ERP",
+                "expires_at": (now + timedelta(hours=1)).isoformat(),
+                "refresh_error": None,
+            }
+        ]
+        token_matrix = {
+            (1, "access_token"): True,
+            (1, "refresh_token"): True,
+        }
+        service = TokenRenewalService()
+
+        with patch(
+            "nistiprint_shared.services.token_renewal_service.supabase_db.client",
+            self._client_with_integrations(integrations),
+        ), patch(
+            "nistiprint_shared.services.token_renewal_service.credential_resolver_service.has_installation_token",
+            side_effect=self._token_side_effect(token_matrix),
+        ), patch(
+            "nistiprint_shared.services.token_renewal_service.installed_integration_service.renew_integration_token"
+        ) as renew_token:
+            result = service.renew_app_managed_credentials(module_filter="bling")
+
+        renew_token.assert_called_once_with("1", execution_mode="scheduled")
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(result["renewed"], 1)
+        self.assertEqual(result["failed"], 0)
 
     def test_respects_retry_cooldown_for_degraded_credentials(self):
         now = datetime.now(timezone.utc)

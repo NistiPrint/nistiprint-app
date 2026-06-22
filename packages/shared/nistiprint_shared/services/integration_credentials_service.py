@@ -44,11 +44,11 @@ class IntegrationCredentialsService:
         if module_id == "bling":
             return CredentialStrategy(
                 auth_type="oauth2",
-                management_mode="external_sync",
-                source_system="firebase",
-                supports_refresh=False,
+                management_mode="app_managed",
+                source_system="supabase",
+                supports_refresh=True,
                 supports_healthcheck=True,
-                supports_external_sync=True,
+                supports_external_sync=False,
                 identity_label="CNPJ",
             )
         if "shopee" in module_id:
