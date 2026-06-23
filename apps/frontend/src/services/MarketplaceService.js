@@ -149,11 +149,32 @@ export const uninstallModule = async (instanceId) => {
 };
 
 /**
- * Sync tokens from Firestore to Supabase
+ * Import tokens from Firebase to the encrypted vault in Supabase
  */
-export const syncFirestore = async () => {
+export const importTokensFromFirebase = async () => {
   try {
-    const response = await api.post('/integracoes/sync-firestore');
+    const response = await api.post('/integracoes/sync-firestore', { mode: 'import' });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+/**
+ * Publish tokens from the encrypted vault back to Firebase on demand
+ */
+export const publishTokensToFirebase = async () => {
+  try {
+    const response = await api.post('/integracoes/sync-firestore', { mode: 'publish' });
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+export const syncFirestore = async (mode = 'import') => {
+  try {
+    const response = await api.post('/integracoes/sync-firestore', { mode });
     return response.data;
   } catch (error) {
     throw error.response?.data || error;
@@ -301,6 +322,8 @@ const MarketplaceService = {
   renewToken,
   testIntegration,
   uninstallModule,
+  importTokensFromFirebase,
+  publishTokensToFirebase,
   syncFirestore,
   getBlingStores,
   createChannelLink,

@@ -11,7 +11,7 @@ export default function IntegrationsStatus({ onAddClick }) {
   const [integrations, setIntegrations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [testingId, setTestingId] = useState(null);
-  const [syncing, setSyncing] = useState(false);
+  const [syncingAction, setSyncingAction] = useState(null);
   const [moduleIcons, setModuleIcons] = useState({});
 
   useEffect(() => {
@@ -96,20 +96,41 @@ export default function IntegrationsStatus({ onAddClick }) {
     }
   }
 
-  async function handleSyncFirestore() {
-    setSyncing(true);
+  async function handleImportFromFirebase() {
+    setSyncingAction('import');
     try {
-      const result = await integracaoCanalService.syncFirestore();
+      const result = await integracaoCanalService.importTokensFromFirebase();
       if (result.status === 'success') {
-        toast.success('Credenciais publicadas no Firebase');
+        toast.success('Tokens importados do Firebase para o cofre');
+        await fetchIntegrations();
+      } else if (result.status === 'partial_success') {
+        toast.warning('Importacao parcial do Firebase concluida');
         await fetchIntegrations();
       } else {
-        toast.error('Falha ao publicar credenciais no Firebase');
+        toast.error('Falha ao importar tokens do Firebase');
       }
     } catch (error) {
-      toast.error('Falha ao publicar credenciais no Firebase');
+      toast.error('Falha ao importar tokens do Firebase');
     } finally {
-      setSyncing(false);
+      setSyncingAction(null);
+    }
+  }
+
+  async function handlePublishToFirebase() {
+    setSyncingAction('publish');
+    try {
+      const result = await integracaoCanalService.publishTokensToFirebase();
+      if (result.status === 'success') {
+        toast.success('Tokens publicados no Firebase');
+      } else if (result.status === 'partial_success') {
+        toast.warning('Publicacao parcial no Firebase concluida');
+      } else {
+        toast.error('Falha ao publicar tokens no Firebase');
+      }
+    } catch (error) {
+      toast.error('Falha ao publicar tokens no Firebase');
+    } finally {
+      setSyncingAction(null);
     }
   }
 
@@ -168,8 +189,12 @@ export default function IntegrationsStatus({ onAddClick }) {
           <p className="text-sm text-muted-foreground">Contas, vinculos e rotas de NF.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={handleSyncFirestore} disabled={syncing}>
-            <RefreshCw className={`mr-2 h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
+          <Button variant="outline" onClick={handleImportFromFirebase} disabled={syncingAction !== null}>
+            <RefreshCw className={`mr-2 h-4 w-4 ${syncingAction === 'import' ? 'animate-spin' : ''}`} />
+            Baixar tokens do Firebase
+          </Button>
+          <Button variant="outline" onClick={handlePublishToFirebase} disabled={syncingAction !== null}>
+            <RefreshCw className={`mr-2 h-4 w-4 ${syncingAction === 'publish' ? 'animate-spin' : ''}`} />
             Publicar no Firebase
           </Button>
           <Button onClick={onAddClick}>

@@ -888,18 +888,18 @@ def consumir_fila_mercadolivre(correlation_id=None):
 @log_shared_task_execution(task_type='INTEGRACAO')
 def sync_firestore_tokens(correlation_id=None):
     """
-    Publica credenciais Bling gerenciadas pelo app no Firebase.
+    Modo de recuperacao: nao sobrescreve automaticamente o Firebase.
     """
     # Configurar correlation_id
     correlation_id = correlation_id or get_correlation_id()
     if not correlation_id:
         correlation_id = str(uuid.uuid4())
     set_correlation_id(correlation_id)
-    
-    try:
-        from nistiprint_shared.services.token_manager.sync_firestore import publish_bling_credentials_to_firebase
-        logger.info("Iniciando task agendada de publicacao app -> Firebase para credenciais Bling...")
-        return publish_bling_credentials_to_firebase()
-    except Exception as e:
-        logger.error(f"Erro na task sync_firestore_tokens: {str(e)}")
-        return {'status': 'error', 'message': str(e)}
+
+    logger.warning(
+        "Task sync_firestore_tokens ignorada em modo de recuperacao para nao sobrescrever tokens no Firebase."
+    )
+    return {
+        'status': 'skipped',
+        'message': 'Sincronizacao automatica com Firebase desativada; use o sync manual para importar tokens validos.',
+    }

@@ -145,11 +145,25 @@ export async function updateIntegrationConfig(instanceId, config) {
 }
 
 /**
- * Sincroniza tokens do Bling do Firestore para o Supabase
- * @returns {Promise<Object>} Resultado da sincronização
+ * Importa tokens do Bling do Firebase para o cofre interno no Supabase
+ * @returns {Promise<Object>} Resultado da sincroniza??o
  */
-export async function syncFirestore() {
-  const response = await api.post('/integracoes/sync-firestore');
+export async function importTokensFromFirebase() {
+  const response = await api.post('/integracoes/sync-firestore', { mode: 'import' });
+  return response.data;
+}
+
+/**
+ * Publica tokens do cofre interno no Firebase sob demanda
+ * @returns {Promise<Object>} Resultado da publica??o
+ */
+export async function publishTokensToFirebase() {
+  const response = await api.post('/integracoes/sync-firestore', { mode: 'publish' });
+  return response.data;
+}
+
+export async function syncFirestore(mode = 'import') {
+  const response = await api.post('/integracoes/sync-firestore', { mode });
   return response.data;
 }
 
@@ -174,6 +188,8 @@ export default {
   listarIntegracoes,
   renewToken,
   updateIntegrationConfig,
+  importTokensFromFirebase,
+  publishTokensToFirebase,
   syncFirestore,
   getAnaliseStatus,
 };
