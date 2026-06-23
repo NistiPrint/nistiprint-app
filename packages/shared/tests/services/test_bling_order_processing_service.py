@@ -49,6 +49,23 @@ class TestBlingOrderProcessingService(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         detect_mock.assert_called_once_with(detalhe, 26893)
 
+    def test_materialize_marketplace_direct_order_requires_bling_number(self):
+        fake_client = MagicMock()
+        fake_client.get_order_numbers_by_store_numbers.return_value = [{"id": 987, "numero": None}]
+
+        with patch("nistiprint_shared.services.bling.bling_client.BlingClient.create_client_for_integration_id", return_value=fake_client):
+            result = service.materialize_marketplace_direct_order(
+                source="shopee",
+                external_order_id="260618E2UXVM97",
+                marketplace_inst={"id": 12, "plataforma_slug": "shopee"},
+                marketplace_detail={"buyer_username": "bruna.karoline_gomes"},
+                marketplace_mirror_id=55,
+                bling_integration_id=99,
+                bling_loja_id="204047801",
+            )
+
+        self.assertEqual(result, {"status": "error", "reason": "bling_order_incomplete"})
+
 
 if __name__ == "__main__":
     unittest.main()

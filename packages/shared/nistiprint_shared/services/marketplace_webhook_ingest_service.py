@@ -218,6 +218,14 @@ class MarketplaceWebhookIngestService:
             marketplace_mirror_id=pedido_shopee_id,
             nfe_link=nfe_link,
         )
+        if materialized.get("status") != "success":
+            return self._bling_materialization_error_result(
+                source="shopee",
+                external_order_id=str(order_sn),
+                marketplace_integration_id=marketplace_inst.get("id"),
+                result=materialized,
+            )
+
         if materialized:
             self._update_materialized_pedido_status(
                 pedido_id=materialized.get("pedido_id"),
@@ -378,6 +386,14 @@ class MarketplaceWebhookIngestService:
             marketplace_mirror_id=pedido_meli_id,
             nfe_link=nfe_link,
         )
+        if materialized.get("status") != "success":
+            return self._bling_materialization_error_result(
+                source="mercadolivre",
+                external_order_id=str(order_id),
+                marketplace_integration_id=marketplace_inst.get("id"),
+                result=materialized,
+            )
+
         if materialized:
             self._update_materialized_pedido_status(
                 pedido_id=materialized.get("pedido_id"),
@@ -719,7 +735,11 @@ class MarketplaceWebhookIngestService:
     ) -> dict | None:
         bling_integration_id = (nfe_link or {}).get("erp_integration_id")
         if not bling_integration_id:
-            return None
+            return {
+                "status": "error",
+                "reason": "missing_bling_reference",
+                "message": "Integracao Bling obrigatoria nao configurada para o marketplace",
+            }
 
         from nistiprint_shared.services.bling_order_processing_service import (
             materialize_marketplace_direct_order,
@@ -741,8 +761,34 @@ class MarketplaceWebhookIngestService:
                 external_order_id,
                 {k: v for k, v in result.items() if k != "message"},
             )
-            return None
+            return result
         return result
+
+    def _bling_materialization_error_result(
+        self,
+        *,
+        source: str,
+        external_order_id: str,
+        marketplace_integration_id: int | None,
+        result: dict,
+    ) -> dict:
+        reason = result.get("reason") or "bling_order_unavailable"
+        messages = {
+            "missing_bling_reference": "Integracao Bling obrigatoria nao configurada para o marketplace",
+            "bling_order_not_found": "Pedido ainda nao encontrado no Bling",
+            "bling_lookup_failed": "Falha ao consultar o pedido no Bling",
+            "bling_order_incomplete": "Pedido retornado pelo Bling sem id ou numero",
+            "bling_detail_incomplete": "Detalhe do pedido Bling sem numero_pedido",
+            "bling_materialization_failed": "Pedido Bling nao foi materializado",
+        }
+        return {
+            "status": "error",
+            "event_status": reason,
+            "error_type": reason,
+            "message": result.get("message") or messages.get(reason) or "Pedido Bling indisponivel para materializacao",
+            "external_order_id": external_order_id,
+            "marketplace_integration_id": marketplace_integration_id,
+        }
 
     def _update_materialized_pedido_status(
         self,
@@ -800,6 +846,10 @@ class MarketplaceWebhookIngestService:
             bling_integration_id=bling_integration_id,
             external_order_id=str(external_order_id),
         )
+        if bling_ref.get("status") != "found" or not bling_ref.get("bling_order_number"):
+            raise RuntimeError(
+                f"Pedido {external_order_id} sem numero_pedido resolvido no Bling: {bling_ref.get('status')}"
+            )
         data_compra_marketplace = data_venda
         data_pagamento_marketplace = None
         data_envio_marketplace = None
@@ -873,7 +923,7 @@ class MarketplaceWebhookIngestService:
             },
         )
         row = {
-            "numero_pedido": f"{source.upper()}-{external_order_id}",
+            "numero_pedido": str(bling_ref["bling_order_number"]),
             "codigo_pedido_externo": str(external_order_id),
             "origem": source.upper(),
             "marketplace_integration_id": marketplace_integration_id,

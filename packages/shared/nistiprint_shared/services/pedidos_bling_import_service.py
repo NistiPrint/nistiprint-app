@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from nistiprint_shared.services.bling.bling_client import BlingClient
+from nistiprint_shared.services.bling_client_resolver_service import bling_client_resolver_service
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
 
 logger = logging.getLogger(__name__)
@@ -94,43 +94,17 @@ def _enqueue_bling_order_to_redis(full_order: Dict[str, Any], cfg: Dict[str, Any
         return {"success": False, "error": str(e), "bling_id": bling_id}
 
 
-def _bling_client_for_config(cfg: Dict[str, Any]) -> BlingClient:
+def _bling_client_for_config(cfg: Dict[str, Any]):
     """
-    Cria cliente Bling para uma configuração específica.
-    Prioriza bling_integration_id se disponível, caso contrário usa a plataforma.
+    Cria cliente Bling para uma configuracao especifica.
+    Prioriza bling_integration_id e usa o mesmo resolver compartilhado da consolidacao.
     """
-    bling_iid = cfg.get("bling_integration_id")
-    if bling_iid:
-        return BlingClient.create_client_for_integration_id(int(bling_iid))
-    
-    # Usar a plataforma real da configuração (sem fallback para shopee)
-    plataforma_nome = cfg.get("plataforma_nome")
-    canal_venda_id = cfg.get("canal_venda_id")
-    
-    if plataforma_nome:
-        return BlingClient.create_client_for_platform(
-            plataforma_nome.lower(),
-            channel_id=canal_venda_id,
-            function_name="ORDER_IMPORT",
-        )
-    
-    # Fallback: tentar obter a plataforma do canal_venda
-    if canal_venda_id:
-        canal_info = integracao_canal_service.get_integration_by_canal(canal_venda_id, expected_module='bling')
-        if canal_info and canal_info.get("plataforma_nome"):
-            return BlingClient.create_client_for_platform(
-                canal_info["plataforma_nome"].lower(),
-                channel_id=canal_venda_id,
-                function_name="ORDER_IMPORT",
-            )
-    
-    # Último fallback: usar shopee (legado)
-    logger.warning("Configuração sem plataforma definida - usando fallback shopee")
-    return BlingClient.create_client_for_platform(
-        "shopee",
-        channel_id=canal_venda_id,
-        function_name="ORDER_IMPORT",
-    )
+    return bling_client_resolver_service.resolve_client(
+        bling_integration_id=cfg.get('bling_integration_id'),
+        platform_name=(cfg.get('plataforma_nome') or '').lower() or None,
+        channel_id=cfg.get('canal_venda_id'),
+        function_name='ORDER_IMPORT',
+    )[0]
 
 
 def run_fetch_pedidos_em_andamento(

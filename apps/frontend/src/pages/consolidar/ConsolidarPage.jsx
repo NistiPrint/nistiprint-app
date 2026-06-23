@@ -10,16 +10,25 @@ import { CheckCircle2, ClipboardList, Copy, Database, Filter, Loader2, Printer, 
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
+const PLATFORM_OPTIONS = [
+  { label: 'Shopee', moduleId: 'shopee' },
+  { label: 'MercadoLivre', moduleId: 'mercadolivre' },
+  { label: 'Amazon', moduleId: 'amazon' },
+  { label: 'Shein', moduleId: 'shein' }
+];
+
 function ConsolidarPage() {
   const [file, setFile] = useState(null);
-  const [selectedChannel, setSelectedChannel] = useState('');
   const [selectedPlatform, setSelectedPlatform] = useState('');
+  const [selectedMarketplaceIntegrationId, setSelectedMarketplaceIntegrationId] = useState('');
+  const [marketplaceIntegrations, setMarketplaceIntegrations] = useState([]);
   const [channels, setChannels] = useState([]);
   const [products, setProducts] = useState([]);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [printOrders, setPrintOrders] = useState(false);
   const [isFlex, setIsFlex] = useState(false);
+  const [persistNewOrders, setPersistNewOrders] = useState(true);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
 
@@ -94,6 +103,39 @@ function ConsolidarPage() {
     fetchBlingAccounts();
   }, []);
 
+  useEffect(() => {
+    const fetchMarketplaceIntegrations = async () => {
+      if (!selectedPlatform) {
+        setMarketplaceIntegrations([]);
+        setSelectedMarketplaceIntegrationId('');
+        return;
+      }
+
+      const platformOption = PLATFORM_OPTIONS.find((item) => item.label === selectedPlatform);
+      if (!platformOption) return;
+
+      try {
+        const response = await fetch(`/api/v2/marketplace/installed?module_id=${encodeURIComponent(platformOption.moduleId)}`);
+        const data = await response.json();
+        const installations = data.installations || [];
+        setMarketplaceIntegrations(installations);
+
+        setSelectedMarketplaceIntegrationId((current) => {
+          if (installations.some((item) => String(item.id) === current)) {
+            return current;
+          }
+          return installations[0] ? String(installations[0].id) : '';
+        });
+      } catch (error) {
+        setMarketplaceIntegrations([]);
+        setSelectedMarketplaceIntegrationId('');
+        toast.error('Erro ao carregar integracoes da plataforma.');
+      }
+    };
+
+    fetchMarketplaceIntegrations();
+  }, [selectedPlatform]);
+
   const toggleOpMode = async () => {
     const newMode = opMode === 'v2' ? 'legacy' : 'v2';
     setUpdatingMode(true);
@@ -121,20 +163,24 @@ function ConsolidarPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!file || !selectedChannel) {
-      toast.error('Selecione o arquivo e o canal.');
+    if (!file || !selectedPlatform) {
+      toast.error('Selecione o arquivo e a plataforma.');
       return;
     }
 
     setLoading(true);
     const formData = new FormData();
     formData.append('file', file);
+    const platformOption = PLATFORM_OPTIONS.find((item) => item.label === selectedPlatform);
     formData.append('platform', selectedPlatform);
-    formData.append('channel', selectedChannel);
+    formData.append('module_id', platformOption?.moduleId || '');
+    if (selectedMarketplaceIntegrationId) formData.append('marketplace_integration_id', selectedMarketplaceIntegrationId);
+    if (selectedBlingAccountId) formData.append('bling_integration_id', selectedBlingAccountId);
     if (startDate) formData.append('start_date', startDate);
     if (endDate) formData.append('end_datetime', endDate);
     formData.append('print-orders', printOrders);
     formData.append('is_flex', isFlex);
+    formData.append('persist_new_orders', persistNewOrders);
     formData.append('mode', opMode);
 
     try {
@@ -146,6 +192,9 @@ function ConsolidarPage() {
       const data = await response.json();
       setResults(data);
       setDemandName(`Demanda ${selectedPlatform} - ${new Date().toLocaleDateString('pt-BR')}`);
+      const firstPlatformKey = Object.keys(data)[0];
+      const resolvedBlingId = data[firstPlatformKey]?.options?.bling_integration_id;
+      if (resolvedBlingId) setSelectedBlingAccountId(String(resolvedBlingId));
       toast.success('Processado com sucesso!');
     } catch (error) {
       toast.error(error.message);
@@ -172,12 +221,15 @@ function ConsolidarPage() {
             pedidos_origem: item.pedidos_origem || []
         }));
 
-        let channelObj = channels.find(c => c.id.toString() === selectedChannel || (c.slug || c.nome) === selectedChannel);
-        if (!channelObj) channelObj = channels[0];
+        const firstResult = results[platformKey] || {};
+        const channelId = firstResult.options?.channel_id || null;
+        let channelObj = channelId ? channels.find((c) => String(c.id) === String(channelId)) : null;
+        if (!channelObj && channels.length === 1) channelObj = channels[0];
 
         const payload = {
             nome: demandName,
-            canal_venda_id: channelObj?.id,
+            canal_venda_id: channelObj?.id || null,
+            marketplace_integration_id: firstResult.options?.marketplace_integration_id || null,
             data_entrega: demandDate,
             horario_coleta_especifico: demandHorarioColeta || null,
             observacoes: demandObservacoes || null,
@@ -208,19 +260,24 @@ function ConsolidarPage() {
   // Async processing functions
   const startAsyncProcessing = async (e) => {
     e.preventDefault();
-    if (!file || !selectedChannel) {
-      toast.error('Selecione o arquivo e o canal.');
+    if (!file || !selectedPlatform) {
+      toast.error('Selecione o arquivo e a plataforma.');
       return;
     }
 
     setLoading(true);
     const formData = new FormData();
+    const platformOption = PLATFORM_OPTIONS.find((item) => item.label === selectedPlatform);
     formData.append('file', file);
-    formData.append('channel', selectedChannel);
+    formData.append('platform', selectedPlatform);
+    formData.append('module_id', platformOption?.moduleId || '');
+    if (selectedMarketplaceIntegrationId) formData.append('marketplace_integration_id', selectedMarketplaceIntegrationId);
+    if (selectedBlingAccountId) formData.append('bling_integration_id', selectedBlingAccountId);
     if (startDate) formData.append('start_date', startDate);
     if (endDate) formData.append('end_datetime', endDate);
     formData.append('print-orders', printOrders);
     formData.append('is_flex', isFlex);
+    formData.append('persist_new_orders', persistNewOrders);
     formData.append('mode', opMode);
 
     try {
@@ -274,6 +331,9 @@ function ConsolidarPage() {
           setResults(processedResult);
           setAsyncProcessing(null);
           setDemandName(`Demanda - ${new Date().toLocaleDateString('pt-BR')}`);
+          const firstPlatformKey = Object.keys(processedResult)[0];
+          const resolvedBlingId = processedResult[firstPlatformKey]?.options?.bling_integration_id;
+          if (resolvedBlingId) setSelectedBlingAccountId(String(resolvedBlingId));
           toast.success('Processamento concluído!');
         } else if (data.status === 'ERRO') {
           if (pollingIntervalRef.current) {
@@ -604,10 +664,25 @@ function ConsolidarPage() {
                           <Input type="file" accept=".xlsx, .csv" onChange={handleFileChange} className="bg-white" />
                         </div>
                         <div className="space-y-2">
-                          <Label>Canal de Venda</Label>
-                          <Select value={selectedChannel} onValueChange={setSelectedChannel}>
-                            <SelectTrigger className="bg-white"><SelectValue placeholder="Selecione o canal" /></SelectTrigger>
-                            <SelectContent>{channels.map(c => <SelectItem key={c.id} value={c.slug || c.nome}>{c.nome}</SelectItem>)}</SelectContent>
+                          <Label>Plataforma</Label>
+                          <Select value={selectedPlatform} onValueChange={setSelectedPlatform}>
+                            <SelectTrigger className="bg-white"><SelectValue placeholder="Selecione a plataforma" /></SelectTrigger>
+                            <SelectContent>{PLATFORM_OPTIONS.map((platform) => <SelectItem key={platform.moduleId} value={platform.label}>{platform.label}</SelectItem>)}</SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Integracao Marketplace</Label>
+                          <Select value={selectedMarketplaceIntegrationId} onValueChange={setSelectedMarketplaceIntegrationId} disabled={!selectedPlatform || marketplaceIntegrations.length === 0}>
+                            <SelectTrigger className="bg-white"><SelectValue placeholder={selectedPlatform ? 'Selecione a integracao' : 'Escolha a plataforma primeiro'} /></SelectTrigger>
+                            <SelectContent>
+                              {marketplaceIntegrations.length === 0 ? (
+                                <SelectItem value="__empty" disabled>Nenhuma integracao ativa</SelectItem>
+                              ) : (
+                                marketplaceIntegrations.map((integration) => (
+                                  <SelectItem key={integration.id} value={String(integration.id)}>{integration.instance_name}</SelectItem>
+                                ))
+                              )}
+                            </SelectContent>
                           </Select>
                         </div>
                         <div className="space-y-2">
@@ -629,6 +704,27 @@ function ConsolidarPage() {
                           <Checkbox id="is_flex" checked={isFlex} onCheckedChange={setIsFlex} />
                           <Label htmlFor="is_flex" className="text-blue-600 font-bold cursor-pointer">Apenas Pedidos FLEX</Label>
                         </div>
+                        <div className="flex items-center space-x-2">
+                          <Checkbox id="persist_new_orders" checked={persistNewOrders} onCheckedChange={setPersistNewOrders} />
+                          <Label htmlFor="persist_new_orders" className="cursor-pointer">Persistir novos pedidos</Label>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-b py-4">
+                        <div className="space-y-2">
+                          <Label>Conta Bling (Opcional)</Label>
+                          <Select value={selectedBlingAccountId || 'auto'} onValueChange={(value) => setSelectedBlingAccountId(value === 'auto' ? '' : value)}>
+                            <SelectTrigger className="bg-white"><SelectValue placeholder="Resolver automaticamente" /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="auto">Resolver automaticamente</SelectItem>
+                              {blingAccounts.map((account) => (
+                                <SelectItem key={account.id} value={String(account.id)}>
+                                  {account.instance_name || `Conta ${account.id}`}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
                     </div>
 
                     <div className="flex gap-3">
@@ -646,7 +742,9 @@ function ConsolidarPage() {
             <div className="flex gap-3">
               <Button variant="outline" onClick={() => setResults(null)}>Voltar / Novo</Button>
               <Button className="bg-green-600 hover:bg-green-700" onClick={() => {
-                const canal = channels.find(c => c.id.toString() === selectedChannel || (c.slug || c.nome) === selectedChannel);
+                const currentResult = results[Object.keys(results)[0]];
+                const resultChannelId = currentResult?.options?.channel_id;
+                const canal = resultChannelId ? channels.find((c) => String(c.id) === String(resultChannelId)) : null;
                 if (canal && canal.horario_coleta) {
                   setDemandHorarioColeta(canal.horario_coleta);
                 }
@@ -665,13 +763,14 @@ function ConsolidarPage() {
                       <Button variant="outline" size="sm" onClick={() => printBlingData(key)} disabled={nfeGenerating}>
                         <Printer className="h-4 w-4 mr-2" /> Imprimir {data.bling_orders_data.length} pedidos
                       </Button>
-                      <Select value={selectedBlingAccountId} onValueChange={setSelectedBlingAccountId}>
+                      <Select value={selectedBlingAccountId || 'auto'} onValueChange={(value) => setSelectedBlingAccountId(value === 'auto' ? '' : value)}>
                         <SelectTrigger className="w-[200px]">
                           <SelectValue placeholder="Conta Bling" />
                         </SelectTrigger>
                         <SelectContent>
+                          <SelectItem value="auto">Automatica</SelectItem>
                           {blingAccounts.length === 0 ? (
-                            <SelectItem value="" disabled>Nenhuma conta</SelectItem>
+                            <SelectItem value="__no-account" disabled>Nenhuma conta</SelectItem>
                           ) : (
                             blingAccounts.map((account) => (
                               <SelectItem key={account.id} value={String(account.id)}>

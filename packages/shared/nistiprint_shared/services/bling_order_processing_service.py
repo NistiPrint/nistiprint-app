@@ -1790,6 +1790,9 @@ def materialize_marketplace_direct_order(
         return {"status": "not_found", "reason": "bling_order_not_found"}
 
     match = matches[0] or {}
+    if not match.get("id") or not match.get("numero"):
+        return {"status": "error", "reason": "bling_order_incomplete"}
+
     original_payload = {
         "id": match.get("id"),
         "numero": match.get("numero"),
@@ -1800,6 +1803,9 @@ def materialize_marketplace_direct_order(
         _fetch_bling_order_detail({"id": bling_integration_id}, match.get("id")),
         original_payload,
     )
+    if not detalhe.get("numero"):
+        return {"status": "error", "reason": "bling_detail_incomplete"}
+
     pedido_bling_id = _upsert_pedido_bling(detalhe, bling_integration_id)
 
     loja_id = str(_extract_bling_loja_id(detalhe) or bling_loja_id or "")
@@ -1845,6 +1851,9 @@ def materialize_marketplace_direct_order(
         meli_data=meli_data,
         ingest_source=source,
     )
+    if not pedido_id:
+        return {"status": "error", "reason": "bling_materialization_failed"}
+
     if pedido_id:
         _detect_and_mark_personalized(detalhe, pedido_id)
 

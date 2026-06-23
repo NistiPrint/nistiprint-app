@@ -49,6 +49,9 @@ def process_consolidacao(self, consolidacao_id: int, correlation_id=None):
         channel_id = consolidacao['channel_id']
         filepath = consolidacao['file_path']
         options = consolidacao.get('options', {})
+        plataforma_normalized = str(options.get('module_id') or plataforma or '').lower().replace(' ', '').replace('_', '').replace('-', '')
+        marketplace_integration_id = options.get('marketplace_integration_id')
+        bling_integration_id = options.get('bling_integration_id')
         
         # Verificar se arquivo existe
         if not os.path.exists(filepath):
@@ -67,50 +70,26 @@ def process_consolidacao(self, consolidacao_id: int, correlation_id=None):
             'end': pd.to_datetime(consolidacao.get('period_filter_end'))
         }
         
-        # Importa processadores
-        from nistiprint_shared.services.file_processors import process_mercadolivre, process_shopee, process_amazon, process_shein
         from nistiprint_shared.utils import prepare_ml_file
-        from nistiprint_shared.services.bling.bling_client import BlingClient
-        from nistiprint_shared.services.canal_venda_service import canal_venda_service
-        from nistiprint_shared.services.integration_routing_service import integration_routing_service
-        
-        # Busca canal
-        all_channels = canal_venda_service.get_all()
-        channel = next((c for c in all_channels if c.get('id') == channel_id), None)
-        
-        if not channel:
-            raise ValueError(f"Canal {channel_id} não encontrado")
-        
-        # Cria BlingClient
-        account_id = integration_routing_service.get_account_id(
-            function_name='ORDER_IMPORT',
-            module='bling',
-            channel_id=channel_id,
-            platform_name=plataforma
-        )
-        
-        bling_client = BlingClient.create_client_for_platform(
-            plataforma,
+        from nistiprint_shared.services.bling_client_resolver_service import bling_client_resolver_service
+        from nistiprint_shared.services.platform_processor_registry import PlatformProcessorRegistry
+
+        bling_client, account_id = bling_client_resolver_service.resolve_client(
+            bling_integration_id=bling_integration_id,
+            marketplace_integration_id=marketplace_integration_id,
+            platform_name=plataforma,
             channel_id=channel_id,
             function_name='ORDER_IMPORT'
         )
-        
-        # Processa arquivo conforme plataforma
-        plataforma_normalized = plataforma.replace(' ', '').lower()
-        
+
+        processor_func = PlatformProcessorRegistry.get_processor(plataforma_normalized)
         if plataforma_normalized == 'mercadolivre':
             new_file_path = prepare_ml_file(filepath)
-            result = process_mercadolivre(new_file_path, period_filter, options, bling_client)
+            result = processor_func(new_file_path, period_filter, options, bling_client)
             os.remove(new_file_path)
-        elif 'shopee' in plataforma_normalized:
-            result = process_shopee(filepath, period_filter, options, bling_client)
-        elif plataforma_normalized == 'amazon':
-            result = process_amazon(filepath, period_filter, options, bling_client)
-        elif plataforma_normalized == 'shein':
-            result = process_shein(filepath, period_filter, options, bling_client)
         else:
-            raise ValueError(f"Plataforma '{plataforma}' não suportada")
-        
+            result = processor_func(filepath, period_filter, options, bling_client)
+
         capas, total_capas, miolos, total_miolos, capas_miolos, ids_pedidos, total_pedidos_plataforma, bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found, raw_data = result
         
         # Verificação de conflitos
@@ -443,85 +422,140 @@ def sync_orders_with_bling(self, order_numbers: list, channel_id: int, platform:
     max_retries=3,
     default_retry_delay=60
 )
-def persist_orders_batch(self, json_file_path: str, platform: str, channel_id: int, account_id: str, correlation_id=None):
+def persist_orders_batch(self, json_file_path: str, platform: str, channel_id: int, account_id: str, marketplace_integration_id: int | None = None, correlation_id=None):
     """
-    Task dedicada para persistir pedidos em lote no banco unificado a partir de um JSON temporário.
-    Isso alivia o endpoint síncrono.
+    Task dedicada para persistir apenas pedidos ainda ausentes no core canonico.
+    Usa a planilha/consolidacao apenas para descobrir numeroLoja faltante; o detalhe
+    final continua vindo da API Bling via pipeline unificado.
     """
     import json
     import os
-    from nistiprint_shared.services.order_service import order_service
     from nistiprint_shared.services.correlation_service import with_correlation
+    from nistiprint_shared.services.bling.bling_client import BlingClient
+    from nistiprint_shared.services.bling_order_processing_service import process_webhook
     import logging
 
     logger = logging.getLogger(__name__)
 
-    # Configurar correlation_id
     correlation_id = with_correlation(correlation_id)
 
-    print(f"[*] Persist Worker: Iniciando persistência assíncrona para {platform}...")
-    
+    print(f"[*] Persist Worker: Iniciando persistencia assincrona para {platform}...")
+
     if not os.path.exists(json_file_path):
         return {'status': 'FAILED', 'error': 'JSON file not found'}
-        
+
     try:
         with open(json_file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
             bling_orders_data = data.get('orders', [])
-            
+
         if not bling_orders_data:
             print("[*] Persist Worker: Lista de pedidos vazia.")
             if os.path.exists(json_file_path):
                 os.remove(json_file_path)
             return {'status': 'SKIPPED', 'count': 0}
 
+        numero_loja_list = []
+        for order in bling_orders_data:
+            numero_loja = str(order.get('numeroLoja') or '').strip()
+            if numero_loja:
+                numero_loja_list.append(numero_loja)
+
+        numero_loja_list = list(dict.fromkeys(numero_loja_list))
+        if not numero_loja_list:
+            if os.path.exists(json_file_path):
+                os.remove(json_file_path)
+            return {'status': 'SKIPPED', 'count': 0, 'reason': 'missing_numero_loja'}
+
+        existing_order_ids = set()
+        chunk_size = 200
+        for i in range(0, len(numero_loja_list), chunk_size):
+            chunk = numero_loja_list[i:i + chunk_size]
+            query = supabase_db.table('pedidos').select('codigo_pedido_externo').in_('codigo_pedido_externo', chunk)
+            if marketplace_integration_id is not None:
+                query = query.eq('marketplace_integration_id', marketplace_integration_id)
+            rows = query.execute().data or []
+            existing_order_ids.update(str(row.get('codigo_pedido_externo')) for row in rows if row.get('codigo_pedido_externo'))
+
+        missing_order_ids = [numero for numero in numero_loja_list if numero not in existing_order_ids]
+
+        if not missing_order_ids:
+            print("[*] Persist Worker: Todos os pedidos da consolidacao ja existem no core.")
+            if os.path.exists(json_file_path):
+                os.remove(json_file_path)
+            return {
+                'status': 'SUCCESS',
+                'processed': 0,
+                'errors': 0,
+                'existing': len(existing_order_ids),
+                'missing': 0,
+            }
+
+        if not account_id:
+            raise ValueError('Conta Bling obrigatoria para buscar detalhes dos pedidos faltantes.')
+
+        bling_client = BlingClient.create_client_for_integration_id(int(account_id))
+        matches = bling_client.get_order_numbers_by_store_numbers(missing_order_ids) or []
+        matches_by_numero_loja = {
+            str(item.get('numeroLoja')): item
+            for item in matches
+            if item.get('numeroLoja') and item.get('id')
+        }
+
         success_count = 0
         error_count = 0
-        
-        for order in bling_orders_data:
+        not_found = []
+
+        for numero_loja in missing_order_ids:
+            match = matches_by_numero_loja.get(str(numero_loja))
+            if not match:
+                not_found.append(numero_loja)
+                logger.warning("Pedido %s nao encontrado na busca em lote do Bling", numero_loja)
+                continue
+
             try:
-                # Bling é fonte principal de dados - apenas enriquecer pedidos existentes
-                codigo_externo = str(order.get('numeroLoja'))
-                existing_order = supabase_db.table('pedidos').select('id').eq('codigo_pedido_externo', codigo_externo).execute()
+                detalhe = bling_client.get_order(match.get('id'))
+                if not isinstance(detalhe, dict):
+                    raise ValueError(f'Detalhe invalido para pedido {numero_loja}')
 
-                if not existing_order.data:
-                    logger.info(f"Pedido {codigo_externo} não existe na base (Bling é fonte principal). Pulando.")
-                    continue
+                detalhe['numeroLoja'] = detalhe.get('numeroLoja') or str(numero_loja)
+                detalhe['numero'] = detalhe.get('numero') or match.get('numero')
 
-                # Pedido existe - enriquecer com dados da planilha
-                order_to_upsert = {
-                    'codigo_pedido_externo': codigo_externo,
-                    'is_flex': order.get('is_flex'),
-                    'is_fulfillment': order.get('is_fulfillment'),
-                    'modalidade_logistica': order.get('modalidade_logistica'),
-                    'servico_logistico': order.get('servico_logistico')
-                }
+                loja = detalhe.get('loja') or {}
+                if not loja and marketplace_integration_id is not None:
+                    detalhe['loja'] = loja
 
-                order_service.upsert_order(
-                    order_data=order_to_upsert,
-                    platform=platform,
-                    platform_order_id=codigo_externo,
-                    raw_payload=order,
-                    items=None,  # Não atualizar itens de pedidos existentes via planilha
-                    channel_id=channel_id,
-                    integration_id=account_id
+                result = process_webhook(
+                    detalhe,
+                    bling_integration_hint=int(account_id),
+                    correlation_id=correlation_id,
                 )
-                success_count += 1
+
+                if result.get('pedido_id'):
+                    success_count += 1
+                else:
+                    error_count += 1
+                    logger.error("Pedido %s retornou sem pedido_id no pipeline: %s", numero_loja, result)
             except Exception as item_err:
                 error_count += 1
-                logger.error(f"Erro ao enriquecer pedido individual no worker: {item_err}")
+                logger.error(f"Erro ao materializar pedido ausente {numero_loja}: {item_err}", exc_info=True)
 
-        print(f"✅ Persist Worker: {success_count} processados, {error_count} falhas. Limpando arquivo.")
-        
-        # Cleanup
+        print(f"[+] Persist Worker: faltantes={len(missing_order_ids)} importados={success_count} erros={error_count} nao_encontrados={len(not_found)}")
+
         if os.path.exists(json_file_path):
             os.remove(json_file_path)
-        
-        return {'status': 'SUCCESS', 'processed': success_count, 'errors': error_count}
-        
+
+        return {
+            'status': 'SUCCESS',
+            'processed': success_count,
+            'errors': error_count,
+            'existing': len(existing_order_ids),
+            'missing': len(missing_order_ids),
+            'not_found': not_found,
+        }
+
     except Exception as e:
-        logger.error(f"Erro fatal no worker de persistência: {e}")
-        # Tenta remover arquivo mesmo em erro
+        logger.error(f"Erro fatal no worker de persistencia: {e}")
         if os.path.exists(json_file_path):
             os.remove(json_file_path)
         self.retry(exc=e)

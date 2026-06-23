@@ -581,6 +581,44 @@ def process_mercadolivre(file, period_filter=None, options=None, bling_client=No
     return capas_data, total_capas, miolos_data, total_miolos, capas_miolos_data, ids_pedidos_chunks, total_pedidos_plataforma, bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found, raw_data
 
 
+def _fetch_detailed_bling_orders(bling_client, order_ids):
+    """Busca pedidos do Bling por numeroLoja em lote e depois carrega o detalhe um a um."""
+    bling_orders_id = []
+    bling_orders_data = []
+    bling_orders_id_numero = []
+    bling_orders_not_found = []
+
+    mappings = bling_client.get_order_numbers_by_store_numbers(order_ids)
+    found_store_numbers = set()
+
+    for mapping in mappings or []:
+        numero_loja = str(mapping.get('numeroLoja') or '')
+        order_id = mapping.get('id')
+        if not numero_loja:
+            continue
+
+        found_store_numbers.add(numero_loja)
+        if order_id:
+            bling_orders_id.append(order_id)
+            bling_orders_id_numero.append({
+                'id': order_id,
+                'numero': mapping.get('numero')
+            })
+            detail = bling_client.get_order(order_id)
+            if isinstance(detail, dict):
+                detail['numeroLoja'] = detail.get('numeroLoja') or numero_loja
+                detail['numero'] = detail.get('numero') or mapping.get('numero')
+                bling_orders_data.append(detail)
+
+    bling_orders_not_found = [
+        str(order_number)
+        for order_number in order_ids
+        if str(order_number) not in found_store_numbers
+    ]
+
+    return bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found
+
+
 def process_shopee(file, period_filter, options=None, bling_client=None):
 
     bling_orders_id = []
@@ -858,7 +896,7 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
     ids_pedidos_chunks = generate_ids_chunks(ids_pedidos)
 
     if options['print_orders']:
-        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found = bling_client.get_orders_by_store_numbers(ids_pedidos)
+        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found = _fetch_detailed_bling_orders(bling_client, ids_pedidos)
 
         # Enriquecer com personalizações do Supabase
         bling_orders_data = enrich_orders_with_personalizations(bling_orders_data, platform_name, mode=options.get('mode'))
@@ -1108,7 +1146,7 @@ def process_amazon(file, period_filter, options=None, bling_client=None):
     ids_pedidos_chunks = generate_ids_chunks(ids_pedidos)
 
     if options['print_orders']:
-        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found = bling_client.get_orders_by_store_numbers(ids_pedidos)
+        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found = _fetch_detailed_bling_orders(bling_client, ids_pedidos)
 
         # Enriquecer com personalizações do Supabase
         bling_orders_data = enrich_orders_with_personalizations(bling_orders_data, platform_name, mode=options.get('mode'))
@@ -1340,7 +1378,7 @@ def process_shein(file, period_filter, options=None, bling_client=None):
     ids_pedidos_chunks = generate_ids_chunks(ids_pedidos)
 
     if options['print_orders']:
-        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found = bling_client.get_orders_by_store_numbers(ids_pedidos)
+        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found = _fetch_detailed_bling_orders(bling_client, ids_pedidos)
 
         # Enriquecer com personalizações do Supabase
         bling_orders_data = enrich_orders_with_personalizations(bling_orders_data, platform_name, mode=options.get('mode'))

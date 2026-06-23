@@ -93,6 +93,46 @@ class BlingClient:
         self._cached_token = None
         self._token_expires_at = None  # datetime quando o token cacheado expira
 
+    def _rehydrate_credentials_from_source(self):
+        account_id = self.account_data.get('id')
+        if not account_id:
+            return
+
+        try:
+            response = supabase_db.table('installed_integrations').select('*').eq('id', account_id).limit(1).execute()
+            if not response.data:
+                return
+
+            from nistiprint_shared.services.credential_resolver_service import credential_resolver_service
+            data = credential_resolver_service.hydrate_integration(response.data[0])
+            credentials = data.get('credentials') or {}
+            config = data.get('config') or {}
+
+            self.access_token = data.get('access_token') or credentials.get('access_token')
+            self.refresh_token = data.get('refresh_token') or credentials.get('refresh_token')
+            self.client_id = credentials.get('client_id') or config.get('client_id') or data.get('client_id')
+            self.client_secret = credentials.get('client_secret') or config.get('client_secret') or data.get('client_secret')
+
+            expires_in = data.get('expires_in') or credentials.get('expires_in')
+            if isinstance(expires_in, str):
+                try:
+                    self.expires_in = int(expires_in)
+                except ValueError:
+                    self.expires_in = 0
+            elif expires_in is not None:
+                self.expires_in = expires_in or 0
+
+            updated_at_raw = data.get('updated_at')
+            if isinstance(updated_at_raw, str):
+                try:
+                    self.updated_at = datetime.datetime.fromisoformat(updated_at_raw.replace('Z', '+00:00'))
+                except ValueError:
+                    pass
+            elif updated_at_raw is not None:
+                self.updated_at = updated_at_raw
+        except Exception as exc:
+            print(f"[BLING CLIENT] Falha ao reidratar credenciais da integracao {account_id}: {exc}")
+
     def _get_api_version_for_platform(self, platform: str):
         """Determines the API version for a given platform."""
         from ...constants import PLATFORM_X_BLING_VERSION
@@ -110,18 +150,27 @@ class BlingClient:
         else:
             data = integration
 
+        from nistiprint_shared.services.credential_resolver_service import credential_resolver_service
+        data = credential_resolver_service.hydrate_integration(data)
+
         # Mapeamento para o construtor do BlingClient respeitando a estrutura do Marketplace
+        credentials = data.get('credentials') or {}
+        config = data.get('config') or {}
+        # Mapeamento para o construtor do BlingClient respeitando a estrutura da integracao instalada
         account_data = {
             'id': data.get('id'),
-            'access_token': data.get('access_token'),
-            'refresh_token': data.get('refresh_token'),
-            'expires_at': data.get('expires_at'),
-            'client_id': data.get('config', {}).get('client_id') or data.get('credentials', {}).get('client_id'),
-            'client_secret': data.get('config', {}).get('client_secret') or data.get('credentials', {}).get('client_secret'),
+            'access_token': data.get('access_token') or credentials.get('access_token'),
+            'refresh_token': data.get('refresh_token') or credentials.get('refresh_token'),
+            'expires_in': data.get('expires_in') or credentials.get('expires_in'),
+            'expires_at': data.get('expires_at') or credentials.get('expires_at'),
+            'client_id': credentials.get('client_id') or config.get('client_id') or data.get('client_id'),
+            'client_secret': credentials.get('client_secret') or config.get('client_secret') or data.get('client_secret'),
             'instance_name': data.get('instance_name'),
-            'cnpj': data.get('config', {}).get('cnpj'),
+            'cnpj': config.get('cnpj'),
             'created_at': data.get('created_at'),
-            'updated_at': data.get('updated_at')
+            'updated_at': data.get('updated_at'),
+            'platform_name': data.get('module_id') or data.get('platform_name'),
+            'versao_api': data.get('versao_api') or config.get('versao_api') or credentials.get('versao_api')
         }
 
         return BlingClient(account_data)
@@ -171,16 +220,21 @@ class BlingClient:
         data = res.data[0]
         
         # Mapeamento para o construtor do BlingClient
+        credentials = data.get('credentials') or {}
+        config = data.get('config') or {}
+        # Mapeamento para o construtor do BlingClient
         account_data = {
             'id': data['id'],
-            'access_token': data.get('access_token'),
-            'refresh_token': data.get('refresh_token'),
-            'expires_at': data.get('expires_at'),
-            # Extração de credenciais do JSONB
-            'client_id': data.get('credentials', {}).get('client_id'),
-            'client_secret': data.get('credentials', {}).get('client_secret'),
+            'access_token': data.get('access_token') or credentials.get('access_token'),
+            'refresh_token': data.get('refresh_token') or credentials.get('refresh_token'),
+            'expires_in': data.get('expires_in') or credentials.get('expires_in'),
+            'expires_at': data.get('expires_at') or credentials.get('expires_at'),
+            'client_id': credentials.get('client_id') or config.get('client_id'),
+            'client_secret': credentials.get('client_secret') or config.get('client_secret'),
             'instance_name': data.get('instance_name'),
-            'cnpj': data.get('config', {}).get('cnpj')
+            'cnpj': config.get('cnpj'),
+            'platform_name': data.get('module_id') or data.get('platform_name'),
+            'versao_api': data.get('versao_api') or config.get('versao_api') or credentials.get('versao_api')
         }
 
         return BlingClient(account_data)
@@ -299,11 +353,9 @@ class BlingClient:
         raise ValueError(f"Nenhuma conta Bling configurada ou encontrada para a plataforma: {platform_name}")
 
     def _get_valid_token(self):
-        """
-        Retorna o token de acesso atual. 
-        O refresh automático está desabilitado nesta aplicação pois o gerenciamento 
-        é feito por uma função externa (Firestore Sync).
-        """
+        """Retorna o token atual; se faltar em memoria, tenta reidratar a integracao."""
+        if not self.access_token:
+            self._rehydrate_credentials_from_source()
         return self.access_token
 
     def _update_token_cache(self, now):
@@ -785,13 +837,9 @@ class BlingClient:
         return results
 
     def get_orders_by_store_numbers(self, order_numbers: list):
-        """Busca pedidos por números da loja.
+        """Busca pedidos por numeros da loja com a mesma semantica do legado.
 
-        Args:
-            order_numbers (list): Lista de números de pedido da loja
-
-        Returns:
-            tuple: (ordens_encontradas, dados_das_ordens, ids_com_numeros, pedidos_nao_encontrados)
+        Retorna os detalhes completos de cada pedido, nao apenas a listagem resumida.
         """
         order_ids_count = 0
         orders_found_in_bling = 0
@@ -801,9 +849,7 @@ class BlingClient:
         bling_orders_data = []
         bling_orders_id_numero = []
 
-        # Dividir os pedidos em chunks de 100
         chunks = [order_numbers[i:i + 100] for i in range(0, len(order_numbers), 100)]
-
         url = "pedidos/vendas"
 
         for chunk in chunks:
@@ -811,26 +857,23 @@ class BlingClient:
 
             payload = '&'.join([f"numerosLojas[]={piece}" for piece in chunk])
             full_params = f"?{payload}"
-
             formatted_url = url + full_params
 
             response = self._request('GET', formatted_url)
 
             if response and response.get('data'):
                 orders_found_in_bling += len(response['data'])
-
-                # Criar lista de quais pieces estão faltando
                 bling_orders_not_found.extend([
                     piece for piece in chunk
                     if piece not in [item['numeroLoja'] for item in response['data']]
                 ])
-
-                # Extrair todos os IDs dos pedidos e adicionar à lista
                 bling_orders_id.extend([item['id'] for item in response['data']])
-                
-                # A resposta já contém os dados completos dos pedidos
-                bling_orders_data.extend(response['data'])
-                bling_orders_obtained_count += len(response['data'])
+
+        for order_id in bling_orders_id:
+            order = self.get_order(order_id)
+            if order is not None:
+                bling_orders_data.append(order)
+                bling_orders_obtained_count += 1
 
         bling_orders_id_numero = [
             {'id': item['id'], 'numero': item['numero']}
