@@ -15,6 +15,9 @@ from nistiprint_shared.services.canonical_order_status_service import (
 from nistiprint_shared.services.canonical_order_snapshot_service import (
     canonical_order_snapshot_service,
 )
+from nistiprint_shared.services.canonical_order_repository import (
+    canonical_order_repository,
+)
 from nistiprint_shared.services.correlation_service import generate_correlation_id, set_correlation_id
 from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
 from nistiprint_shared.services.personalized_classification_service import (
@@ -176,7 +179,9 @@ class MarketplaceWebhookIngestService:
             return resolution_error
 
         link = self._find_direct_ingest_link(marketplace_inst.get("id"))
-        inactive = self._inactive_source_result("shopee", link, str(order_sn), marketplace_inst)
+        inactive = self._inactive_source_result(
+            "shopee", link, str(order_sn), marketplace_inst, payload=payload
+        )
         if inactive:
             return inactive
         nfe_link = self._find_default_nfe_link(marketplace_inst)
@@ -338,7 +343,9 @@ class MarketplaceWebhookIngestService:
             }
 
         link = self._find_direct_ingest_link(marketplace_inst.get("id"))
-        inactive = self._inactive_source_result("mercadolivre", link, str(order_id), marketplace_inst)
+        inactive = self._inactive_source_result(
+            "mercadolivre", link, str(order_id), marketplace_inst, payload=payload
+        )
         if inactive:
             return inactive
         nfe_link = self._find_default_nfe_link(marketplace_inst)
@@ -453,7 +460,10 @@ class MarketplaceWebhookIngestService:
             "status_domain": status.status_domain,
         }
 
-    def _inactive_source_result(self, source: str, link: dict | None, external_order_id: str, marketplace_inst: dict) -> dict | None:
+    def _inactive_source_result(
+        self, source: str, link: dict | None, external_order_id: str,
+        marketplace_inst: dict, *, payload: dict | None = None,
+    ) -> dict | None:
         if not link:
             return {
                 "status": "skipped",
@@ -465,15 +475,33 @@ class MarketplaceWebhookIngestService:
             }
 
         ingest_origin_mode = link.get("ingest_origin_mode") or "erp_bling"
-        if link.get("process_webhooks") is False or ingest_origin_mode != "marketplace_direct":
+        if link.get("process_webhooks") is False:
             return {
                 "status": "skipped",
                 "event_status": "skipped_inactive_source",
-                "skip_reason": "inactive_source",
-                "message": (
-                    f"Webhook {source} ignorado: ingest_origin_mode={ingest_origin_mode} "
-                    f"process_webhooks={link.get('process_webhooks')}"
-                ),
+                "skip_reason": "webhooks_disabled",
+                "message": f"Webhook {source} desabilitado para a integração",
+                "external_order_id": external_order_id,
+                "marketplace_integration_id": marketplace_inst.get("id"),
+            }
+        if ingest_origin_mode != "marketplace_direct":
+            raw_payload = payload or {}
+            source_event_id = _first_present(
+                raw_payload.get("event_id"), raw_payload.get("code"),
+                raw_payload.get("timestamp"), raw_payload.get("update_time"),
+            )
+            canonical_order_repository.queue_marketplace_enrichment(
+                marketplace_integration_id=marketplace_inst.get("id"),
+                marketplace_module_id=source,
+                marketplace_order_id=external_order_id,
+                payload=raw_payload,
+                event_type=_first_present(raw_payload.get("event"), raw_payload.get("topic")),
+                source_event_id=str(source_event_id) if source_event_id is not None else None,
+            )
+            return {
+                "status": "pending",
+                "event_status": "pending_erp_order",
+                "message": f"Webhook {source} aguardando pedido importado pelo ERP",
                 "external_order_id": external_order_id,
                 "marketplace_integration_id": marketplace_inst.get("id"),
             }
@@ -926,7 +954,12 @@ class MarketplaceWebhookIngestService:
             "numero_pedido": str(bling_ref["bling_order_number"]),
             "codigo_pedido_externo": str(external_order_id),
             "origem": source.upper(),
+            "marketplace_module_id": source,
             "marketplace_integration_id": marketplace_integration_id,
+            "erp_integration_id": bling_integration_id,
+            "erp_store_id": str(bling_loja_id) if bling_loja_id not in (None, "") else None,
+            "erp_order_id": bling_ref.get("bling_order_id"),
+            "erp_order_number": bling_ref.get("bling_order_number"),
             "bling_integration_id": bling_integration_id,
             "bling_loja_id": str(bling_loja_id) if bling_loja_id not in (None, "") else None,
             "canal_venda_id": channel_id,
@@ -951,83 +984,76 @@ class MarketplaceWebhookIngestService:
         }
         row = {key: value for key, value in row.items() if value is not None}
 
-        existing = self._find_existing_pedido(
-            external_order_id=external_order_id,
-            marketplace_integration_id=marketplace_integration_id,
-        )
-        if existing:
-            response = supabase_db.table("pedidos").update(row).eq("id", existing["id"]).execute()
-            pedido_id = (response.data or [{}])[0].get("id") or existing["id"]
+        if source == "shopee":
+            snapshot_items = self._normalize_shopee_items(details or {})
+            snapshot_logistics = {
+                "shipping_carrier": (details or {}).get("shipping_carrier"),
+                "service": (details or {}).get("shipping_carrier"),
+                "package_list": (details or {}).get("package_list"),
+                "ship_by_date": (details or {}).get("ship_by_date"),
+                "address": (details or {}).get("recipient_address"),
+            }
         else:
-            response = supabase_db.table("pedidos").insert(row).execute()
-            pedido_id = (response.data or [{}])[0].get("id")
-
-        self._write_snapshot_for_marketplace(
-            source=source,
-            pedido_id=pedido_id,
-            external_order_id=str(external_order_id),
-            marketplace_integration_id=marketplace_integration_id,
-            bling_integration_id=bling_integration_id,
-            bling_order_id=bling_ref.get("bling_order_id"),
-            bling_order_number=bling_ref.get("bling_order_number"),
-            customer=raw_customer or {},
-            total=total,
-            currency=currency,
-            details=details or {},
-            mirror_fields={
-                **mirror_fields,
-                "bling_lookup": bling_ref,
-                "data_compra_marketplace": data_compra_marketplace,
-                "data_pagamento_marketplace": data_pagamento_marketplace,
-                "data_coleta": coleta_contexto.get("data_coleta"),
-                "data_envio_marketplace": data_envio_marketplace,
-                "regra_logistica_integracao_id": (coleta_contexto.get("regra") or {}).get("id"),
-                "horario_corte": coleta_contexto.get("horario_corte"),
-                "horario_coleta": coleta_contexto.get("horario_coleta"),
-                "payment_time_source": payment_time_source,
+            order_detail = (details or {}).get("order") or {}
+            shipment = (details or {}).get("shipment") or {}
+            snapshot_items = self._normalize_meli_items(order_detail)
+            snapshot_logistics = {
+                "shipment_id": (order_detail.get("shipping") or {}).get("id") or shipment.get("id"),
+                "shipping_status": shipment.get("status"),
+                "shipping_carrier": shipment.get("mode"),
+                "address": shipment.get("receiver_address"),
+            }
+        snapshot_logistics.update({
+            "purchase_at": data_compra_marketplace,
+            "payment_at": data_pagamento_marketplace,
+            "collection_at": coleta_contexto.get("data_coleta"),
+            "marketplace_shipped_at": data_envio_marketplace,
+            "cutoff_time": coleta_contexto.get("horario_corte"),
+            "collection_time": coleta_contexto.get("horario_coleta"),
+            "rule_id": (coleta_contexto.get("regra") or {}).get("id"),
+            "payment_time_source": payment_time_source,
+        })
+        snapshot = {
+            "identity": {
+                "ingest_source": source,
+                "marketplace": source,
+                "marketplace_order_id": str(external_order_id),
+                "marketplace_integration_id": marketplace_integration_id,
+                "erp_integration_id": bling_integration_id,
+                "erp_order_id": bling_ref.get("bling_order_id"),
+                "erp_order_number": bling_ref.get("bling_order_number"),
             },
+            "customer": raw_customer or {},
+            "items": snapshot_items,
+            "logistics": snapshot_logistics,
+            "financial": {"total": total, "currency": currency or "BRL"},
+            "platform_fields": {source: details or {}, **mirror_fields},
+            "raw_refs": {source: details or {}, "bling_lookup": bling_ref},
+            "source_history": [{"source": source, "at": get_now_iso()}],
+        }
+        refs = [
+            {
+                "integration_id": marketplace_integration_id,
+                "module_id": source,
+                "role": "sales_origin",
+                "external_order_id": str(external_order_id),
+                "external_status": status_original,
+            },
+            {
+                "integration_id": bling_integration_id,
+                "module_id": "bling",
+                "role": "erp",
+                "external_order_id": str(bling_ref.get("bling_order_id") or bling_ref.get("bling_order_number")),
+                "metadata": {"store_id": bling_loja_id},
+            },
+        ]
+        pedido_id = canonical_order_repository.upsert(row, snapshot=snapshot, refs=refs)
+        persist_classification_from_payload(
+            {"numeroLoja": str(external_order_id), "itens": snapshot_items},
+            pedido_id,
+            log=logger,
         )
         return pedido_id
-
-    def _find_existing_pedido(self, *, external_order_id: str, marketplace_integration_id: int | None) -> dict | None:
-        query = (
-            supabase_db.table("pedidos")
-            .select("id")
-            .eq("marketplace_order_id", str(external_order_id))
-        )
-        if marketplace_integration_id:
-            query = query.eq("marketplace_integration_id", marketplace_integration_id)
-        rows = query.limit(1).execute().data or []
-        if rows:
-            return rows[0]
-
-        if marketplace_integration_id:
-            rows = (
-                supabase_db.table("pedidos")
-                .select("id")
-                .eq("codigo_pedido_externo", str(external_order_id))
-                .eq("marketplace_integration_id", marketplace_integration_id)
-                .limit(1)
-                .execute()
-                .data
-                or []
-            )
-            if rows:
-                return rows[0]
-
-        if marketplace_integration_id:
-            return None
-
-        rows = (
-            supabase_db.table("pedidos")
-            .select("id")
-            .eq("codigo_pedido_externo", str(external_order_id))
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        return rows[0] if rows else None
 
     def _customer_name(self, customer: dict | None) -> str | None:
         if not isinstance(customer, dict):

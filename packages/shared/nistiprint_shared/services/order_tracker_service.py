@@ -1,4 +1,7 @@
 from nistiprint_shared.database.supabase_db_service import supabase_db, get_db_session
+from nistiprint_shared.services.canonical_order_repository import (
+    canonical_order_repository,
+)
 from nistiprint_shared.models.demanda_item_origem import DemandaItemOrigem
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -196,32 +199,42 @@ class OrderTrackerService:
         return self.filter_processed_orders(orders_list, platform)
 
     def _ensure_order_record(self, pedido_externo_id: str, platform: str, session: Any):
-        """
-        Ensures a record exists in the 'public.pedidos' table for this external order.
-        Acts as the centralized order registry.
-        """
-        norm_platform = self.normalize_platform_name(platform)
-
+        """Ensure the canonical marketplace order exists without legacy direct inserts."""
+        module_id = canonical_order_repository.normalize_module_id(
+            self.normalize_platform_name(platform)
+        )
+        if module_id not in ('shopee', 'mercadolivre'):
+            logging.warning(
+                "Skipping unresolved tracker order %s from platform %s",
+                pedido_externo_id, platform,
+            )
+            return
         try:
-            # Check if exists using Supabase
-            response = supabase_db.table('pedidos').select('id').eq('codigo_pedido_externo', pedido_externo_id).eq('origem', norm_platform).execute()
-
-            if response.data:
-                return
-
-            # Insert basic record if missing
-            import uuid
-            new_order = {
-                'uuid_pedido': str(uuid.uuid4()),
-                'codigo_pedido_externo': pedido_externo_id,
-                'origem': norm_platform,
-                'created_at': datetime.utcnow().isoformat(),
-                'updated_at': datetime.utcnow().isoformat()
-            }
-            supabase_db.table('pedidos').insert(new_order).execute()
-
-        except Exception as e:
-            logging.error(f"Error ensuring order record: {e}")
+            canonical_order_repository.upsert(
+                {
+                    'marketplace_module_id': module_id,
+                    'marketplace_order_id': str(pedido_externo_id),
+                    'ingest_source': 'order_tracker',
+                },
+                snapshot={
+                    'identity': {
+                        'marketplace': module_id,
+                        'marketplace_order_id': str(pedido_externo_id),
+                        'ingest_source': 'order_tracker',
+                    },
+                    'source_history': [{
+                        'source': 'order_tracker',
+                        'at': datetime.utcnow().isoformat(),
+                    }],
+                },
+                refs=[{
+                    'module_id': module_id,
+                    'role': 'sales_origin',
+                    'external_order_id': str(pedido_externo_id),
+                }],
+            )
+        except Exception as exc:
+            logging.error("Error ensuring canonical order record: %s", exc)
 
     def register_processed_items(self, demanda_id: int, orders_list: List[Dict[str, Any]], platform: str):
         """

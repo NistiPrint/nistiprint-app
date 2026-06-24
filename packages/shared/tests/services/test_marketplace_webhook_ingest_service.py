@@ -116,5 +116,29 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
                 )
 
 
+    def test_erp_only_webhook_is_queued_for_enrichment(self):
+        service = MarketplaceWebhookIngestService()
+        link = {"process_webhooks": True, "ingest_origin_mode": "erp_bling"}
+
+        with patch(
+            "nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.queue_marketplace_enrichment"
+        ) as queue:
+            result = service._inactive_source_result(
+                "shopee", link, "SN123", {"id": 12},
+                payload={"event_id": "evt-1", "order_sn": "SN123"},
+            )
+
+        self.assertEqual(result["status"], "pending")
+        self.assertEqual(result["event_status"], "pending_erp_order")
+        queue.assert_called_once_with(
+            marketplace_integration_id=12,
+            marketplace_module_id="shopee",
+            marketplace_order_id="SN123",
+            payload={"event_id": "evt-1", "order_sn": "SN123"},
+            event_type=None,
+            source_event_id="evt-1",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

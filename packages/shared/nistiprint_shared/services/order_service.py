@@ -5,6 +5,10 @@ from nistiprint_shared.mappers.order_mappers import BlingMapper, ShopeeMapper
 from nistiprint_shared.services.personalized_classification_service import (
     item_indicates_personalized,
 )
+from nistiprint_shared.services.canonical_order_repository import (
+    CanonicalOrderIdentityError,
+    canonical_order_repository,
+)
 import logging
 
 class OrderService:
@@ -46,103 +50,90 @@ class OrderService:
         canonical_payload = mapper.map(raw_payload, canal_venda_id=channel_id) if mapper else {}
 
         try:
-            # 1. Tentar encontrar o pedido Core existente
-            existing_order = self.pedidos_table.select("id, situacao_pedido_id, is_flex, is_fulfillment, servico_logistico").eq('codigo_pedido_externo', external_id).execute()
-            
-            core_id = None
-            old_status = None
-            if existing_order.data:
-                core_id = existing_order.data[0]['id']
-                old_status = existing_order.data[0]['situacao_pedido_id']
+            module_hint = order_data.get('marketplace_module_id') or order_data.get('origem')
+            if str(module_hint or '').strip().lower() == 'bling':
+                module_hint = None
+            marketplace_module_id = canonical_order_repository.normalize_module_id(
+                module_hint or (platform if platform.upper() != 'BLING' else None)
+            )
+            marketplace_order_id = canonical_order_repository.normalize_order_id(
+                order_data.get('marketplace_order_id') or external_id or platform_order_id
+            )
+            if not marketplace_module_id or not marketplace_order_id:
+                raise CanonicalOrderIdentityError(
+                    'Legacy order upsert requires a resolved marketplace identity'
+                )
 
-                # Atualiza dados operacionais básicos
-                # IMPORTANTE: numero_pedido e codigo_pedido_externo devem ser atualizados se vierem do Bling
-                update_core = {
-                    'situacao_pedido_id': order_data.get('situacao_pedido_id'),
-                    'total_pedido': order_data.get('total_pedido'),
-                    'canal_venda_id': channel_id,
-                    'cliente_nome': order_data.get('cliente_nome'),
-                    'cliente_telefone': order_data.get('cliente_telefone'),
-                    'cliente_email': order_data.get('cliente_email'),
+            existing_order = (
+                self.pedidos_table.select('id,situacao_pedido_id')
+                .eq('marketplace_module_id', marketplace_module_id)
+                .eq('marketplace_order_id', marketplace_order_id)
+                .limit(1).execute()
+            )
+            old_status = (existing_order.data or [{}])[0].get('situacao_pedido_id')
+            canonical_order = {
+                **order_data,
+                'marketplace_module_id': marketplace_module_id,
+                'marketplace_order_id': marketplace_order_id,
+                'marketplace_integration_id': integration_id if platform.upper() != 'BLING' else order_data.get('marketplace_integration_id'),
+                'ingest_source': platform.lower(),
+                'canal_venda_id': channel_id,
+                'customer': order_data.get('informacoes_cliente') or {},
+            }
+            snapshot = {
+                'identity': {
+                    'ingest_source': platform.lower(),
+                    'marketplace': marketplace_module_id,
+                    'marketplace_order_id': marketplace_order_id,
+                    'marketplace_integration_id': canonical_order.get('marketplace_integration_id'),
+                },
+                'customer': order_data.get('informacoes_cliente') or {
+                    'name': order_data.get('cliente_nome'),
+                    'document': order_data.get('cliente_documento'),
+                    'phone': order_data.get('cliente_telefone'),
+                    'email': order_data.get('cliente_email'),
+                },
+                'items': items or [],
+                'logistics': {
                     'is_flex': order_data.get('is_flex'),
                     'is_fulfillment': order_data.get('is_fulfillment'),
-                    'data_limite_envio': order_data.get('data_limite_envio'),
-                    'servico_logistico': order_data.get('servico_logistico'),
-                    'payload_canonico': canonical_payload,
-                    'updated_at': datetime.now(timezone.utc).isoformat(),
-                    # Novas colunas explícitas para dados do marketplace
-                    'buyer_username': order_data.get('buyer_username'),
-                    'marketplace_order_id': order_data.get('marketplace_order_id'),
-                    'shipping_carrier': order_data.get('shipping_carrier'),
-                    'contact_marketplace_id': order_data.get('contact_marketplace_id')
-                }
-
-                # Atualizar numero_pedido e codigo_pedido_externo apenas se vierem do Bling (prioridade)
-                if platform.upper() == 'BLING':
-                    if order_data.get('numero_pedido'):
-                        update_core['numero_pedido'] = order_data.get('numero_pedido')
-                    if order_data.get('codigo_pedido_externo'):
-                        update_core['codigo_pedido_externo'] = order_data.get('codigo_pedido_externo')
-                    # Cliente: se vier do Bling, sempre atualizar (é a fonte mais confiável)
-                    if order_data.get('cliente_nome'):
-                        update_core['cliente_nome'] = order_data.get('cliente_nome')
-                    if order_data.get('cliente_telefone'):
-                        update_core['cliente_telefone'] = order_data.get('cliente_telefone')
-                    if order_data.get('cliente_email'):
-                        update_core['cliente_email'] = order_data.get('cliente_email')
-                # Dados de outras plataformas: atualizar campos enriquecidos
-                # sem proteções - a fonte de verdade agora é o pipeline unificado
-                if platform.upper() != 'BLING':
-                    if order_data.get('is_flex') is not None:
-                        update_core['is_flex'] = order_data.get('is_flex')
-                    if order_data.get('is_fulfillment') is not None:
-                        update_core['is_fulfillment'] = order_data.get('is_fulfillment')
-                    if order_data.get('data_limite_envio'):
-                        update_core['data_limite_envio'] = order_data.get('data_limite_envio')
-                    if order_data.get('servico_logistico'):
-                        update_core['servico_logistico'] = order_data.get('servico_logistico')
-                    if order_data.get('buyer_username'):
-                        update_core['buyer_username'] = order_data.get('buyer_username')
-                    if order_data.get('shipping_carrier'):
-                        update_core['shipping_carrier'] = order_data.get('shipping_carrier')
-                
-                update_core = {k: v for k, v in update_core.items() if v is not None}
-                self.pedidos_table.update(update_core).eq('id', core_id).execute()
-            else:
-                # Criar novo pedido Core
-                new_core = {
-                    'numero_pedido': order_data.get('numero_pedido') or external_id,
-                    'codigo_pedido_externo': external_id,
-                    'origem': order_data.get('origem') or platform,
-                    'cliente_nome': order_data.get('cliente_nome'),
-                    'cliente_documento': order_data.get('cliente_documento'),
-                    'cliente_telefone': order_data.get('cliente_telefone'),
-                    'cliente_email': order_data.get('cliente_email'),
-                    'is_flex': order_data.get('is_flex', False),
-                    'is_fulfillment': order_data.get('is_fulfillment', False),
-                    'data_limite_envio': order_data.get('data_limite_envio'),
-                    'servico_logistico': order_data.get('servico_logistico'),
-                    'data_venda': order_data.get('data_venda') or datetime.now(timezone.utc).isoformat(),
-                    'situacao_pedido_id': order_data.get('situacao_pedido_id'),
-                    'total_pedido': order_data.get('total_pedido', 0),
-                    'informacoes_cliente': order_data.get('informacoes_cliente', {}),
-                    'payload_canonico': canonical_payload,
-                    'canal_venda_id': channel_id,
-                    'created_at': datetime.now(timezone.utc).isoformat(),
-                    'updated_at': datetime.now(timezone.utc).isoformat(),
-                    # Novas colunas explícitas para dados do marketplace
-                    'buyer_username': order_data.get('buyer_username'),
-                    'marketplace_order_id': order_data.get('marketplace_order_id'),
-                    'shipping_carrier': order_data.get('shipping_carrier'),
-                    'contact_marketplace_id': order_data.get('contact_marketplace_id')
-                }
-                res = self.pedidos_table.insert(new_core).execute()
-                if not res.data:
-                    raise Exception(f"Falha ao criar pedido core {external_id}")
-                core_id = res.data[0]['id']
-                
-                # Registrar Evento de Criação
-                self.register_event(core_id, 'ORDER_CREATED', f"Pedido criado via {platform}", raw_payload, correlation_id=correlation_id)
+                    'deadline': order_data.get('data_limite_envio'),
+                    'service': order_data.get('servico_logistico'),
+                },
+                'financial': {
+                    'total': order_data.get('total_pedido'),
+                    'currency': order_data.get('moeda') or 'BRL',
+                },
+                'platform_fields': canonical_payload or {},
+                'raw_refs': {platform.lower(): raw_payload},
+                'source_history': [{
+                    'source': platform.lower(),
+                    'at': datetime.now(timezone.utc).isoformat(),
+                    'correlation_id': correlation_id,
+                }],
+            }
+            refs = [{
+                'integration_id': integration_id,
+                'module_id': marketplace_module_id,
+                'role': 'sales_origin',
+                'external_order_id': marketplace_order_id,
+                'external_status': order_data.get('status_original'),
+            }]
+            if platform.upper() == 'BLING':
+                refs.append({
+                    'integration_id': integration_id,
+                    'module_id': 'bling',
+                    'role': 'erp',
+                    'external_order_id': str(platform_order_id),
+                })
+            core_id = canonical_order_repository.upsert(
+                canonical_order, snapshot=snapshot, refs=refs
+            )
+            if not existing_order.data:
+                self.register_event(
+                    core_id, 'ORDER_CREATED', f"Pedido criado via {platform}",
+                    raw_payload, correlation_id=correlation_id
+                )
 
             # 2. Registrar Mudança de Status na Timeline
             new_status = order_data.get('situacao_pedido_id')

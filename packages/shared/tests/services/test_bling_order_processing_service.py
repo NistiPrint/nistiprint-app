@@ -67,5 +67,48 @@ class TestBlingOrderProcessingService(unittest.TestCase):
         self.assertEqual(result, {"status": "error", "reason": "bling_order_incomplete"})
 
 
+    def test_upsert_master_uses_canonical_marketplace_identity(self):
+        payload = {
+            "id": 987, "numero": "466320", "numeroLoja": "SN123",
+            "loja": {"id": "204047801"}, "situacao": {"id": 2},
+            "contato": {"nome": "Maria"}, "itens": [], "total": 10,
+        }
+        with patch.object(service, "_resolve_situacao_interna", return_value=4), \
+             patch.object(service.logistica_coleta_service, "calcular_data_coleta", return_value={}), \
+             patch.object(service.canonical_order_repository, "resolve_module_id", return_value="shopee"), \
+             patch.object(service.canonical_order_repository, "upsert", return_value=77) as upsert, \
+             patch.object(service, "_upsert_itens_pedido"):
+            pedido_id = service._upsert_pedido_master(
+                payload, pedido_bling_id=10, pedido_shopee_id=20,
+                bling_integration_id=99, marketplace_integration_id=12,
+                canal_venda_id=22, is_flex=False, modalidade="STANDARD",
+                shopee_data={"buyer_username": "maria"},
+            )
+
+        self.assertEqual(pedido_id, 77)
+        canonical_order = upsert.call_args.args[0]
+        self.assertEqual(canonical_order["marketplace_module_id"], "shopee")
+        self.assertEqual(canonical_order["marketplace_order_id"], "SN123")
+        self.assertEqual(canonical_order["erp_order_id"], 987)
+
+    def test_upsert_master_defers_order_without_marketplace_identity(self):
+        payload = {
+            "id": 987, "numero": "466320", "numeroLoja": None,
+            "loja": {"id": "204047801"}, "situacao": {"id": 2},
+            "contato": {}, "itens": [],
+        }
+        with patch.object(service, "_resolve_situacao_interna", return_value=4), \
+             patch.object(service.canonical_order_repository, "resolve_module_id", return_value=None), \
+             patch.object(service.canonical_order_repository, "resolve_erp_marketplace_link", return_value=None), \
+             patch.object(service.canonical_order_repository, "defer_unresolved_erp_order") as defer:
+            with self.assertRaises(service.OrderIdentityUnresolvedError):
+                service._upsert_pedido_master(
+                    payload, pedido_bling_id=10, pedido_shopee_id=None,
+                    bling_integration_id=99, marketplace_integration_id=None,
+                    canal_venda_id=None, is_flex=False, modalidade="STANDARD",
+                )
+        defer.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

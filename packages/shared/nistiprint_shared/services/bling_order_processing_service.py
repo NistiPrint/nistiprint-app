@@ -21,8 +21,9 @@ from nistiprint_shared.services.credential_resolver_service import (
 from nistiprint_shared.services.canonical_order_status_service import (
     canonical_order_status_service,
 )
-from nistiprint_shared.services.canonical_order_snapshot_service import (
-    canonical_order_snapshot_service,
+from nistiprint_shared.services.canonical_order_repository import (
+    OrderIdentityUnresolvedError,
+    canonical_order_repository,
 )
 from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
 from nistiprint_shared.services.personalized_classification_service import (
@@ -1386,7 +1387,7 @@ def _upsert_pedido_master(payload, *,
     bling_numero  = str(payload.get('numero') or '')           # número exibido
     numero_loja   = payload.get('numeroLoja')                  # ID marketplace
     bling_loja_id = _extract_bling_loja_id(payload)
-    codigo_externo = numero_loja if numero_loja else f"BLING-{bling_integration_id}-{bling_id}"
+    codigo_externo = str(numero_loja).strip() if numero_loja not in (None, '') else None
 
     # Cliente (sempre do Bling — fonte canônica)
     contato = payload.get('contato') or {}
@@ -1452,32 +1453,53 @@ def _upsert_pedido_master(payload, *,
     elif meli_data:
         marketplace_slug = 'mercadolivre'
 
+    marketplace_module_id = canonical_order_repository.resolve_module_id(
+        marketplace_integration_id, marketplace_slug
+    )
+    if not marketplace_module_id:
+        link = canonical_order_repository.resolve_erp_marketplace_link(
+            bling_integration_id, bling_loja_id
+        )
+        if link:
+            marketplace_module_id = link.get('marketplace_module_id')
+            marketplace_integration_id = (
+                marketplace_integration_id or link.get('marketplace_integration_id')
+            )
+
+    if not marketplace_module_id or not codigo_externo:
+        canonical_order_repository.defer_unresolved_erp_order(
+            erp_integration_id=bling_integration_id,
+            erp_store_id=bling_loja_id,
+            erp_order_id=bling_id,
+            marketplace_order_id=codigo_externo,
+            payload=payload,
+        )
+        raise OrderIdentityUnresolvedError(
+            f"Pedido Bling {bling_id} aguardando resolução marketplace/numeroLoja"
+        )
+
     data = {
-        'numero_pedido':              bling_numero,        # NÃO é unique
-        'codigo_pedido_externo':      codigo_externo,      # UNIQUE
-        'origem':                     (marketplace_slug or 'bling').upper(),
+        'marketplace_module_id':      marketplace_module_id,
+        'marketplace_order_id':       codigo_externo,
+        'marketplace_integration_id': marketplace_integration_id,
+        'ingest_source':              ingest_source,
+        'erp_integration_id':         bling_integration_id,
+        'erp_store_id':               str(bling_loja_id) if bling_loja_id not in (None, '') else None,
+        'erp_order_id':               bling_id,
+        'erp_order_number':           bling_numero,
         'pedido_bling_id':            pedido_bling_id,
         'pedido_shopee_id':           pedido_shopee_id,
         'pedido_mercadolivre_id':     pedido_mercadolivre_id,
-        'bling_integration_id':       bling_integration_id,
-        'bling_loja_id':              str(bling_loja_id) if bling_loja_id not in (None, '') else None,
-        'marketplace_integration_id': marketplace_integration_id,
         'canal_venda_id':             canal_venda_id,
         'situacao_pedido_id':         situacao_pedido_id,
         'status_original':            str(payload.get('situacao', {}).get('id') or ''),
-
-        # Cliente
         'cliente_nome':               contato.get('nome'),
         'cliente_documento':          contato.get('numeroDocumento'),
         'cliente_telefone':           contato.get('telefone') or contato.get('celular'),
         'cliente_email':              contato.get('email'),
-        'informacoes_cliente':        contato or None,     # JSONB completo
-
-        # Financeiro
+        'customer':                   contato or {},
         'total_pedido':               _safe_float(payload.get('total')),
         'moeda':                      'BRL',
-
-        # Datas
         'data_venda':                 data_venda_iso,
         'data_limite_envio':          data_limite_envio_iso,
         'data_compra_marketplace':    data_compra_marketplace_iso,
@@ -1485,41 +1507,17 @@ def _upsert_pedido_master(payload, *,
         'data_coleta':                data_coleta_iso,
         'data_envio_marketplace':     data_envio_marketplace_iso,
         'regra_logistica_integracao_id': regra_logistica_integracao_id,
-
-        # Logística / Flex
         'servico_logistico':          servico,
         'is_flex':                    is_flex,
         'is_fulfillment':             is_fulfillment,
         'modalidade_logistica':       modalidade,
-
-        # Marketplace (preenchido só se houver enriquecimento)
         'buyer_username':             (shopee_data or {}).get('buyer_username') or (meli_data.get('order', {}) if meli_data else {}).get('buyer', {}).get('nickname'),
         'shipping_carrier':           (shopee_data or {}).get('shipping_carrier') or (meli_data.get('shipment', {}) if meli_data else {}).get('mode'),
         'message_to_seller':          (shopee_data or {}).get('raw', {}).get('message_to_seller') or (meli_data.get('order', {}) if meli_data else {}).get('comment'),
-        'ingest_source':              ingest_source,
-
-        'updated_at':                 get_now_iso(),
     }
-    # filtra None para nao sobrescrever em update
     data = {k: v for k, v in data.items() if v is not None}
 
-    existing_pedido = _find_existing_pedido_master_for_update(
-        pedido_bling_id=pedido_bling_id,
-        bling_integration_id=bling_integration_id,
-        codigo_pedido_externo=codigo_externo,
-    )
-    if existing_pedido:
-        res = supabase_db.table('pedidos').update(data).eq('id', existing_pedido['id']).execute()
-        pedido_id = res.data[0]['id'] if res.data else existing_pedido['id']
-    else:
-        res = supabase_db.table('pedidos').insert(data).execute()
-        pedido_id = res.data[0]['id'] if res.data else None
-    logger.info("[upsert_pedido_master] Pedido upserted: codigo_externo=%s, pedido_id=%s", codigo_externo, pedido_id)
-
-    # Upsert itens do pedido
-    if pedido_id:
-        _upsert_itens_pedido(pedido_id, payload.get('itens', []))
-        snapshot_items = [
+    snapshot_items = [
             {
                 'sku': item.get('codigo'),
                 'name': item.get('descricao'),
@@ -1530,104 +1528,82 @@ def _upsert_pedido_master(payload, *,
             }
             for item in (payload.get('itens') or [])
         ]
-        canonical_order_snapshot_service.upsert_snapshot(
-            pedido_id=pedido_id,
-            ingest_source=ingest_source,
-            marketplace=marketplace_slug,
-            marketplace_order_id=codigo_externo,
-            marketplace_integration_id=marketplace_integration_id,
-            bling_integration_id=bling_integration_id,
-            bling_order_id=bling_id,
-            bling_order_number=bling_numero,
-            customer={
-                'name': contato.get('nome'),
-                'document': contato.get('numeroDocumento'),
-                'phone': contato.get('telefone') or contato.get('celular'),
-                'email': contato.get('email'),
-                'raw': contato,
-            },
-            items=snapshot_items,
-            logistics={
-                'service': servico,
-                'shipping_carrier': data.get('shipping_carrier'),
-                'is_flex': is_flex,
-                'is_fulfillment': is_fulfillment,
-                'modalidade': modalidade,
-                'deadline': data_limite_envio_iso,
-                'purchase_at': data_compra_marketplace_iso,
-                'payment_at': data_pagamento_marketplace_iso,
-                'collection_at': data_coleta_iso,
-                'marketplace_shipped_at': data_envio_marketplace_iso,
-                'cutoff_time': coleta_contexto.get('horario_corte'),
-                'collection_time': coleta_contexto.get('horario_coleta'),
-                'rule_id': regra_logistica_integracao_id,
-                'payment_time_source': marketplace_times.get('payment_time_source'),
-                'transport': transporte,
-            },
-            financial={'total': _safe_float(payload.get('total')), 'currency': 'BRL'},
-            platform_fields={
-                'buyer_username': data.get('buyer_username'),
-                'message_to_seller': data.get('message_to_seller'),
-                'shipping_carrier': data.get('shipping_carrier'),
-                'shopee': shopee_data,
-                'mercadolivre': meli_data,
-            },
-            raw_refs={
-                'bling': payload,
-                'pedido_bling_id': pedido_bling_id,
-                'pedido_shopee_id': pedido_shopee_id,
-                'pedido_mercadolivre_id': pedido_mercadolivre_id,
-            },
-            upsert_items=False,
-        )
+    snapshot = {
+        'identity': {
+            'ingest_source': ingest_source,
+            'marketplace': marketplace_module_id,
+            'marketplace_order_id': codigo_externo,
+            'marketplace_integration_id': marketplace_integration_id,
+            'erp_integration_id': bling_integration_id,
+            'erp_order_id': bling_id,
+            'erp_order_number': bling_numero,
+        },
+        'customer': {
+            'name': contato.get('nome'),
+            'document': contato.get('numeroDocumento'),
+            'phone': contato.get('telefone') or contato.get('celular'),
+            'email': contato.get('email'),
+            'raw': contato,
+        },
+        'items': snapshot_items,
+        'logistics': {
+            'service': servico,
+            'shipping_carrier': data.get('shipping_carrier'),
+            'is_flex': is_flex,
+            'is_fulfillment': is_fulfillment,
+            'modalidade': modalidade,
+            'deadline': data_limite_envio_iso,
+            'purchase_at': data_compra_marketplace_iso,
+            'payment_at': data_pagamento_marketplace_iso,
+            'collection_at': data_coleta_iso,
+            'marketplace_shipped_at': data_envio_marketplace_iso,
+            'cutoff_time': coleta_contexto.get('horario_corte'),
+            'collection_time': coleta_contexto.get('horario_coleta'),
+            'rule_id': regra_logistica_integracao_id,
+            'payment_time_source': marketplace_times.get('payment_time_source'),
+            'transport': transporte,
+        },
+        'financial': {'total': _safe_float(payload.get('total')), 'currency': 'BRL'},
+        'platform_fields': {
+            'buyer_username': data.get('buyer_username'),
+            'message_to_seller': data.get('message_to_seller'),
+            'shipping_carrier': data.get('shipping_carrier'),
+            'shopee': shopee_data,
+            'mercadolivre': meli_data,
+        },
+        'raw_refs': {
+            'bling': payload,
+            'pedido_bling_id': pedido_bling_id,
+            'pedido_shopee_id': pedido_shopee_id,
+            'pedido_mercadolivre_id': pedido_mercadolivre_id,
+        },
+        'source_history': [{'source': ingest_source, 'at': get_now_iso()}],
+    }
+    refs = [
+        {
+            'integration_id': marketplace_integration_id,
+            'module_id': marketplace_module_id,
+            'role': 'sales_origin',
+            'external_order_id': codigo_externo,
+            'external_status': data.get('status_original'),
+        },
+        {
+            'integration_id': bling_integration_id,
+            'module_id': 'bling',
+            'role': 'erp',
+            'external_order_id': str(bling_id or bling_numero),
+            'external_record_id': str(pedido_bling_id) if pedido_bling_id else None,
+            'metadata': {'store_id': data.get('erp_store_id')},
+        },
+    ]
+    pedido_id = canonical_order_repository.upsert(data, snapshot=snapshot, refs=refs)
+    logger.info(
+        "[upsert_pedido_master] Pedido canônico atualizado: module=%s external=%s pedido_id=%s",
+        marketplace_module_id, codigo_externo, pedido_id,
+    )
 
+    _upsert_itens_pedido(pedido_id, payload.get('itens', []))
     return pedido_id
-
-
-def _find_existing_pedido_master_for_update(
-    *,
-    pedido_bling_id,
-    bling_integration_id,
-    codigo_pedido_externo,
-):
-    if pedido_bling_id:
-        rows = (
-            supabase_db.table('pedidos')
-            .select('id')
-            .eq('pedido_bling_id', pedido_bling_id)
-            .limit(1)
-            .execute()
-            .data
-        )
-        if rows:
-            return rows[0]
-
-    if bling_integration_id and codigo_pedido_externo:
-        rows = (
-            supabase_db.table('pedidos')
-            .select('id')
-            .eq('bling_integration_id', bling_integration_id)
-            .eq('codigo_pedido_externo', str(codigo_pedido_externo))
-            .limit(1)
-            .execute()
-            .data
-        )
-        if rows:
-            return rows[0]
-
-    if codigo_pedido_externo:
-        rows = (
-            supabase_db.table('pedidos')
-            .select('id')
-            .eq('codigo_pedido_externo', str(codigo_pedido_externo))
-            .limit(1)
-            .execute()
-            .data
-        )
-        if rows:
-            return rows[0]
-
-    return None
 
 
 def _clean_date(date_str):
