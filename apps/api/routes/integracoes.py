@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request
 from nistiprint_shared.database.supabase_db_service import supabase_db
-from datetime import datetime
+from datetime import datetime, timezone
 import importlib
 import os
 import sys
@@ -42,7 +42,7 @@ def renovar_token(id):
             error_msg = str(e)
             try:
                 supabase_db.client.table('installed_integrations').update({
-                    "last_refresh_attempt": datetime.utcnow().isoformat(),
+                    "last_refresh_attempt": datetime.now(timezone.utc).isoformat(),
                     "refresh_error": error_msg
                 }).eq('id', id).execute()
             except:
@@ -51,7 +51,7 @@ def renovar_token(id):
         
         if update_data:
             # Campos de controle de renovação
-            update_data["last_refresh_attempt"] = datetime.utcnow().isoformat()
+            update_data["last_refresh_attempt"] = datetime.now(timezone.utc).isoformat()
             update_data["refresh_error"] = None
             
             # Executar update

@@ -198,9 +198,9 @@ class InstalledIntegrationService:
                 'config': config or {},
                 'credentials': credentials or {},
             })['credentials'],
-            installation_date=datetime.utcnow(),
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            installation_date=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
             instance_color=instance_color,
             description=description,
             app_profile_id=default_profile['id'] if default_profile else None,
@@ -227,7 +227,7 @@ class InstalledIntegrationService:
             for field in ('config', 'credentials'):
                 if field in update_payload or field in normalized:
                     update_payload[field] = normalized[field]
-        update_payload['updated_at'] = datetime.utcnow().isoformat()
+        update_payload['updated_at'] = datetime.now(timezone.utc).isoformat()
 
         try:
             response = self.table.update(update_payload).eq('id', instance_id).execute()
@@ -251,7 +251,7 @@ class InstalledIntegrationService:
         credential_context = credential_resolver_service.resolve_for_installation(
             normalized_inst
         )
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         tokens = platform_auth_service.refresh_access_token(
             inst.module_id, credential_context
         )
@@ -285,6 +285,13 @@ class InstalledIntegrationService:
             )
 
         try:
+            self.log_table.insert({
+                'integration_id': instance_id,
+                'status': 'success',
+                'message': 'Token refreshed successfully',
+                'execution_mode': execution_mode,
+                'created_at': now.isoformat(),
+            }).execute()
             file_archive_service.append('integration_refresh_logs', {
                 'integration_id': instance_id,
                 'status': 'success',
@@ -307,7 +314,7 @@ class InstalledIntegrationService:
         try:
             response = self.table.update({
                 'is_active': False,
-                'updated_at': datetime.utcnow().isoformat()
+                'updated_at': datetime.now(timezone.utc).isoformat()
             }).eq('id', instance_id).execute()
             if response.data:
                 integration_resolution_service.invalidate()
@@ -374,8 +381,8 @@ class InstalledIntegrationService:
         """Update the sync status of an installed integration"""
         update_data = {
             'sync_status': status,
-            'last_sync': (timestamp or datetime.utcnow()).isoformat(),
-            'updated_at': datetime.utcnow().isoformat()
+            'last_sync': (timestamp or datetime.now(timezone.utc)).isoformat(),
+            'updated_at': datetime.now(timezone.utc).isoformat()
         }
 
         try:

@@ -185,6 +185,39 @@ class TokenRenewalServiceTest(TestCase):
         self.assertEqual(result["skipped"], 1)
         self.assertEqual(result["skip_reasons"]["cooldown_active"], 1)
 
+    def test_respects_retry_cooldown_even_when_token_is_expired(self):
+        now = datetime.now(timezone.utc)
+        integrations = [
+            {
+                "id": 3,
+                "module_id": "bling",
+                "instance_name": "Bling com refresh invalido",
+                "expires_at": (now - timedelta(hours=1)).isoformat(),
+                "refresh_error": "invalid_grant",
+                "last_refresh_attempt": (now - timedelta(hours=2)).isoformat(),
+            }
+        ]
+        token_matrix = {
+            (3, "access_token"): True,
+            (3, "refresh_token"): True,
+        }
+        service = TokenRenewalService()
+
+        with patch(
+            "nistiprint_shared.services.token_renewal_service.supabase_db.client",
+            self._client_with_integrations(integrations),
+        ), patch(
+            "nistiprint_shared.services.token_renewal_service.credential_resolver_service.has_installation_token",
+            side_effect=self._token_side_effect(token_matrix),
+        ), patch(
+            "nistiprint_shared.services.token_renewal_service.installed_integration_service.renew_integration_token"
+        ) as renew_token:
+            result = service.renew_app_managed_credentials()
+
+        renew_token.assert_not_called()
+        self.assertEqual(result["status"], "SUCCESS")
+        self.assertEqual(result["skip_reasons"]["cooldown_active"], 1)
+
     def test_renews_when_refresh_token_exists_but_access_token_is_missing(self):
         integrations = [
             {
@@ -245,6 +278,7 @@ class TokenRenewalServiceTest(TestCase):
             result = service.renew_app_managed_credentials()
 
         record_failure.assert_called_once()
+        self.assertEqual(result["status"], "FAILED")
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["renewed"], 0)
         self.assertEqual(result["by_module"]["shopee"]["failed"], 1)

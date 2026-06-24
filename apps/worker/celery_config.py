@@ -34,10 +34,6 @@ CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://redis:6
 def get_default_schedules():
     """Fallback de agendamentos caso o banco esteja inacessível ou vazio."""
     return {
-        'sync-firestore-tokens': {
-            'task': 'nistiprint_shared.services.redis_queue_tasks.sync_firestore_tokens',
-            'schedule': 1800,
-        },
         'consumir-fila-bling': {
             'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
             'schedule': 30,
@@ -78,6 +74,13 @@ def load_dynamic_schedules():
         schedules = {}
         
         for task_name, task_config in task_schedules_config.items():
+            if task_name == 'sync-firestore-tokens':
+                logger.info(
+                    "Task periodica obsoleta ignorada: %s. "
+                    "As credenciais Bling agora sao gerenciadas pelo app.",
+                    task_name,
+                )
+                continue
             if task_config.get('enabled', True):
                 schedules[task_name] = {
                     'task': task_config.get('task_name', task_name),

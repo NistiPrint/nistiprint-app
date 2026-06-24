@@ -1,6 +1,6 @@
 import requests
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("BlingDriver")
 
@@ -47,7 +47,7 @@ def refresh_token(integration: dict) -> dict:
     return {
         "access_token": data.get("access_token"),
         "refresh_token": data.get("refresh_token"),
-        "expires_at": (datetime.utcnow() + timedelta(seconds=data.get("expires_in", 21600))).isoformat(),
-        "updated_at": datetime.utcnow().isoformat()
+        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 21600))).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat()
     }
 

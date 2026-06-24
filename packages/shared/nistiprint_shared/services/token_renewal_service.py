@@ -53,7 +53,7 @@ class TokenRenewalService:
     def _record_failure(self, integration_id: str, instance_name: str, exc: Exception) -> None:
         logger.error("Erro ao renovar token para %s: %s", instance_name, exc)
         try:
-            now_iso = datetime.utcnow().isoformat()
+            now_iso = _now_utc().isoformat()
             installed_integration_service.update_installed(
                 integration_id,
                 {
@@ -99,19 +99,22 @@ class TokenRenewalService:
         if not has_refresh_token:
             return False, "missing_refresh_token"
 
-        if not has_access_token:
-            return True, "missing_access_token"
-
-        expires_at = _parse_dt(integration.get("expires_at"))
-        if expires_at and expires_at <= now + expiry_threshold:
-            return True, "expiring"
-
+        # Refresh tokens OAuth podem ser rotativos. Depois de uma falha, respeite o
+        # cooldown antes de considerar expiracao/acesso ausente; caso contrario uma
+        # credencial invalid_grant e tentada novamente em toda execucao do Beat.
         refresh_error = integration.get("refresh_error")
         if refresh_error:
             last_refresh_attempt = _parse_dt(integration.get("last_refresh_attempt"))
             if last_refresh_attempt and last_refresh_attempt > now - retry_cooldown:
                 return False, "cooldown_active"
             return True, "refresh_error"
+
+        if not has_access_token:
+            return True, "missing_access_token"
+
+        expires_at = _parse_dt(integration.get("expires_at"))
+        if expires_at and expires_at <= now + expiry_threshold:
+            return True, "expiring"
 
         return False, "not_expiring"
 
@@ -194,8 +197,14 @@ class TokenRenewalService:
                 self._record_failure(integration_id, instance_name, exc)
 
         module_label = normalized_filter or "todos"
+        status = "SUCCESS"
+        if failed and renewed:
+            status = "PARTIAL_SUCCESS"
+        elif failed:
+            status = "FAILED"
+
         result = {
-            "status": "SUCCESS",
+            "status": status,
             "message": (
                 "Renovacao de credenciais app_managed concluida"
                 if not normalized_filter

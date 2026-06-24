@@ -24,3 +24,4 @@ class CeleryConfigTest(TestCase):
             7200,
         )
         self.assertNotIn("renew-shopee-tokens", schedules)
+        self.assertNotIn("sync-firestore-tokens", schedules)

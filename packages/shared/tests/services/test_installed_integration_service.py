@@ -48,6 +48,7 @@ class InstalledIntegrationServiceTest(unittest.TestCase):
     def test_renew_token_uses_resolved_credential_context(self):
         service = InstalledIntegrationService()
         service.table = MagicMock()
+        service.log_table = MagicMock()
 
         current = MagicMock()
         current.id = "9"
@@ -73,7 +74,7 @@ class InstalledIntegrationServiceTest(unittest.TestCase):
              patch("nistiprint_shared.services.installed_integration_service.credential_resolver_service.resolve_for_installation", return_value=context) as resolve_context, \
              patch("nistiprint_shared.services.installed_integration_service.platform_auth_service.refresh_access_token", return_value={"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}) as refresh_access_token, \
              patch("nistiprint_shared.services.installed_integration_service.credential_resolver_service.persist_installation_tokens") as persist_tokens, \
-             patch.object(service, "update_installed", return_value=True), \
+             patch.object(service, "update_installed", return_value=True) as update_installed, \
              patch("nistiprint_shared.services.installed_integration_service.bling_firebase_projection_service.publish_installation_by_id") as publish_firebase, \
              patch("nistiprint_shared.services.installed_integration_service.file_archive_service.append"):
             result = service.renew_integration_token("9")
@@ -81,6 +82,9 @@ class InstalledIntegrationServiceTest(unittest.TestCase):
         resolve_context.assert_called_once()
         refresh_access_token.assert_called_once_with("shopee", context)
         persist_tokens.assert_called_once()
+        update_payload = update_installed.call_args.args[1]
+        self.assertTrue(update_payload["last_refresh_attempt"].endswith("+00:00"))
+        self.assertTrue(update_payload["expires_at"].endswith("+00:00"))
         publish_firebase.assert_not_called()
         self.assertEqual(result["access_token"], "new-access")
         self.assertEqual(result["refresh_token"], "new-refresh")
@@ -88,6 +92,7 @@ class InstalledIntegrationServiceTest(unittest.TestCase):
     def test_renew_bling_token_publishes_to_firebase(self):
         service = InstalledIntegrationService()
         service.table = MagicMock()
+        service.log_table = MagicMock()
 
         current = MagicMock()
         current.id = "11"
