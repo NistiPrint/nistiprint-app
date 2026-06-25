@@ -389,9 +389,6 @@ class PlatformAuthService:
             raw = integration or {}
 
         known_identifiers = extract_account_identifiers(config=config, credentials=credentials)
-        if known_identifiers:
-            return sorted(known_identifiers)[0]
-
         module = normalize_provider_module_id(module_id)
         access_token = (
             installation_secrets.get("access_token")
@@ -400,21 +397,27 @@ class PlatformAuthService:
         )
 
         if module == "mercadolivre":
-            if not access_token:
-                return None
-            try:
-                resp = requests.get(
-                    "https://api.mercadolibre.com/users/me",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    profile = resp.json()
-                    value = profile.get("id")
-                    return str(value).strip() if value not in (None, "") else None
-            except Exception:
-                return None
+            if access_token:
+                try:
+                    resp = requests.get(
+                        "https://api.mercadolibre.com/users/me",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        profile = resp.json()
+                        value = profile.get("id")
+                        normalized = str(value).strip() if value not in (None, "") else None
+                        if normalized:
+                            return normalized
+                except Exception:
+                    pass
+            if known_identifiers:
+                return sorted(known_identifiers)[0]
             return None
+
+        if known_identifiers:
+            return sorted(known_identifiers)[0]
 
         kind = account_identity_kind(module_id)
         fallback_value = normalize_account_identifier(config.get(kind) or credentials.get(kind))

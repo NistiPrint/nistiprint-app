@@ -125,6 +125,18 @@ export const renewToken = async (instanceId) => {
 };
 
 /**
+ * Sync marketplace account identity for an installation
+ */
+export const syncAccountIdentity = async (instanceId, payload = {}) => {
+  try {
+    const response = await api.post(`${BASE_URL}/installed/${instanceId}/sync-account-identity`, payload);
+    return response.data;
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
+/**
  * Test an installation
  */
 export const testIntegration = async (instanceId) => {
@@ -320,6 +332,7 @@ const MarketplaceService = {
   getInstallation,
   getMarketplaceOrderDetail,
   renewToken,
+  syncAccountIdentity,
   testIntegration,
   uninstallModule,
   importTokensFromFirebase,

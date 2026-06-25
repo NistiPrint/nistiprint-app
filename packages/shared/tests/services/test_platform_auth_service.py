@@ -184,6 +184,34 @@ class PlatformAuthServiceTest(unittest.TestCase):
 
         self.assertEqual(identity, "445566")
 
+    @patch("nistiprint_shared.services.platform_auth_service.requests.get")
+    def test_resolve_installation_account_identity_mercadolivre_prefers_live_user_over_stale_saved_id(self, mock_get):
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {"id": 207584268}
+
+        context = CredentialContext(
+            module_id="mercadolivre",
+            installation={"id": "inst-3", "module_id": "mercadolivre"},
+            app_profile={"id": "profile-3"},
+            app_secrets={},
+            installation_secrets={"access_token": "secret-token"},
+            config={
+                "user_id": "203753446",
+                "account_identifiers": {
+                    "kind": "user_id",
+                    "primary": "203753446",
+                },
+            },
+            credentials={"user_id": "203753446"},
+        )
+
+        identity = platform_auth_service.resolve_installation_account_identity(
+            "mercadolivre",
+            context,
+        )
+
+        self.assertEqual(identity, "207584268")
+
 
 if __name__ == "__main__":
     unittest.main()

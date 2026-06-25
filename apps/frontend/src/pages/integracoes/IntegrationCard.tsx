@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import MarketplaceService from '@/services/MarketplaceService';
-import { ChevronDown, Database, MoreHorizontal, Plus, RefreshCw, Trash2, Zap } from 'lucide-react';
+import { ChevronDown, Database, Fingerprint, KeyRound, MoreHorizontal, Plus, Trash2, Zap } from 'lucide-react';
 
 import LinkForm from './LinkForm';
 import LinkTable from './LinkTable';
@@ -21,10 +21,12 @@ export interface IntegrationInstance {
   is_active: boolean;
   app_profile_id?: string | number | null;
   config?: Record<string, any>;
+  credentials?: Record<string, any>;
   credential_status?: {
     token_status?: string;
     connection_status?: string;
     last_sync?: string;
+    account_identifier?: string;
     actions?: { can_refresh?: boolean };
   };
 }
@@ -51,6 +53,8 @@ interface IntegrationCardProps {
   onDelete: (id: number, name: string) => void;
   onRefresh: () => void;
   onRenewToken?: (id: number, name: string) => void;
+  onSyncAccountIdentity?: (id: number, name: string) => void;
+  syncingAccountIdentityId?: number | null;
   onTest?: (id: number) => void;
   testingId?: number | null;
 }
@@ -76,6 +80,26 @@ const TOKEN_LABELS: Record<string, string> = {
 
 const alertTokens = ['expired', 'missing', 'refresh_failed', 'reauth_required'];
 
+function getAccountIdentifier(integration: IntegrationInstance) {
+  const credentialStatus = integration.credential_status || {};
+  const config = integration.config || {};
+  const credentials = integration.credentials || {};
+  return (
+    credentialStatus.account_identifier ||
+    config.account_identifiers?.primary ||
+    config.shop_id ||
+    config.seller_id ||
+    config.user_id ||
+    config.account_id ||
+    credentials.account_identifiers?.primary ||
+    credentials.shop_id ||
+    credentials.seller_id ||
+    credentials.user_id ||
+    credentials.account_id ||
+    ''
+  );
+}
+
 function tokenLabel(status?: IntegrationInstance['credential_status']) {
   const tokenStatus = status?.token_status || 'unknown';
   return TOKEN_LABELS[tokenStatus] || 'Token ?';
@@ -100,6 +124,8 @@ export default function IntegrationCard({
   onDelete,
   onRefresh,
   onRenewToken,
+  onSyncAccountIdentity,
+  syncingAccountIdentityId,
   onTest,
   testingId,
 }: IntegrationCardProps) {
@@ -134,6 +160,7 @@ export default function IntegrationCard({
   const firstLink = links[0];
   const extraLinks = Math.max(links.length - 1, 0);
   const alertToken = isTokenAlert(integration.credential_status);
+  const accountIdentifier = getAccountIdentifier(integration);
 
   const loadLinks = useCallback(async () => {
     try {
@@ -398,7 +425,14 @@ export default function IntegrationCard({
 
           <div className="hidden items-center gap-1 sm:flex">
             {onTest && (
-              <Button variant="ghost" size="sm" onClick={() => onTest(integration.id)} disabled={testingId === integration.id}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onTest(integration.id)}
+                disabled={testingId === integration.id}
+                title="Testar conex?o"
+                aria-label="Testar conex?o"
+              >
                 <Zap className="h-4 w-4" />
               </Button>
             )}
@@ -408,19 +442,45 @@ export default function IntegrationCard({
                 size="sm"
                 onClick={() => onRenewToken(integration.id, integration.instance_name)}
                 disabled={!integration.credential_status?.actions?.can_refresh}
+                title="Renovar token"
+                aria-label="Renovar token"
               >
-                <RefreshCw className="h-4 w-4" />
+                <KeyRound className="h-4 w-4" />
+              </Button>
+            )}
+            {!isErp && onSyncAccountIdentity && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onSyncAccountIdentity(integration.id, integration.instance_name)}
+                disabled={syncingAccountIdentityId === integration.id}
+                title="Sincronizar identificador da conta"
+                aria-label="Sincronizar identificador da conta"
+              >
+                <Fingerprint className={`h-4 w-4 ${syncingAccountIdentityId === integration.id ? 'animate-spin' : ''}`} />
               </Button>
             )}
             {!isErp && (
-              <Button variant="ghost" size="sm" onClick={startNewLink}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={startNewLink}
+                title="Criar v?nculo"
+                aria-label="Criar v?nculo"
+              >
                 <Plus className="h-4 w-4" />
               </Button>
             )}
           </div>
 
           <CollapsibleTrigger asChild>
-            <Button variant="ghost" size="sm" className="h-8 px-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2"
+              title={open ? 'Recolher detalhes' : 'Expandir detalhes'}
+              aria-label={open ? 'Recolher detalhes' : 'Expandir detalhes'}
+            >
               <MoreHorizontal className="h-4 w-4 sm:hidden" />
               <ChevronDown className={`hidden h-4 w-4 transition-transform sm:block ${open ? 'rotate-180' : ''}`} />
             </Button>
@@ -553,6 +613,16 @@ export default function IntegrationCard({
                   disabled={!integration.credential_status?.actions?.can_refresh}
                 >
                   Renovar token
+                </Button>
+              )}
+              {!isErp && onSyncAccountIdentity && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onSyncAccountIdentity(integration.id, integration.instance_name)}
+                  disabled={syncingAccountIdentityId === integration.id}
+                >
+                  {syncingAccountIdentityId === integration.id ? 'Sincronizando conta...' : 'Sync conta'}
                 </Button>
               )}
               <Button variant="ghost" size="sm" className="text-destructive" onClick={() => onDelete(integration.id, integration.instance_name)}>

@@ -12,6 +12,7 @@ export default function IntegrationsStatus({ onAddClick }) {
   const [loading, setLoading] = useState(true);
   const [testingId, setTestingId] = useState(null);
   const [syncingAction, setSyncingAction] = useState(null);
+  const [syncingAccountIdentityId, setSyncingAccountIdentityId] = useState(null);
   const [moduleIcons, setModuleIcons] = useState({});
 
   useEffect(() => {
@@ -82,6 +83,25 @@ export default function IntegrationsStatus({ onAddClick }) {
       await fetchIntegrations();
     } catch (error) {
       toast.error(`Erro ao renovar token: ${error.message || 'Tente novamente'}`);
+    }
+  }
+
+  async function handleSyncAccountIdentity(instanceId, instanceName) {
+    try {
+      setSyncingAccountIdentityId(instanceId);
+      toast.info(`Sincronizando identificador da conta em "${instanceName}"...`);
+      const result = await MarketplaceService.syncAccountIdentity(instanceId);
+      if (!result.success) {
+        throw new Error(result.error || 'Falha ao sincronizar identificador da conta');
+      }
+      toast.success(
+        `Conta sincronizada: ${result.account_identifier_kind}=${result.account_identifier}`
+      );
+      await fetchIntegrations();
+    } catch (error) {
+      toast.error(`Erro ao sincronizar conta: ${error.message || 'Tente novamente'}`);
+    } finally {
+      setSyncingAccountIdentityId(null);
     }
   }
 
@@ -171,6 +191,8 @@ export default function IntegrationsStatus({ onAddClick }) {
                 onDelete={handleDelete}
                 onRefresh={fetchIntegrations}
                 onRenewToken={handleRenewToken}
+                onSyncAccountIdentity={handleSyncAccountIdentity}
+                syncingAccountIdentityId={syncingAccountIdentityId}
                 onTest={handleTest}
                 testingId={testingId}
               />

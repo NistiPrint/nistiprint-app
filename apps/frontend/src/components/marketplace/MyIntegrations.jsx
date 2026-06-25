@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
+import MarketplaceService from '@/services/MarketplaceService'
 import LiveOrderConsultation from './LiveOrderConsultation'
 import './Marketplace.css'
 
@@ -41,10 +42,14 @@ const getTokenStatusLabel = installation => {
   return labels[status] || 'Desconhecida'
 }
 
+const isMarketplaceAccountModule = moduleId =>
+  moduleId && moduleId !== 'bling'
+
 const MyIntegrations = () => {
   const [installations, setInstallations] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [renewingId, setRenewingId] = useState(null)
+  const [syncingAccountIdentityId, setSyncingAccountIdentityId] = useState(null)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -53,11 +58,10 @@ const MyIntegrations = () => {
 
   const fetchInstallations = async () => {
     try {
-      // In a real app, user_id would come from authentication
-      const response = await fetch(
-        '/api/v2/marketplace/installed?user_id=default_user'
-      )
-      const data = await response.json()
+      const data = await MarketplaceService.getInstalledIntegrations()
+      if (!data.success) {
+        throw new Error(data.error || 'Erro ao carregar integra??es')
+      }
       setInstallations(data.installations || [])
     } catch (error) {
       console.error('Error fetching installations:', error)
@@ -195,6 +199,32 @@ const MyIntegrations = () => {
     }
   }
 
+  const syncAccountIdentity = async instanceId => {
+    setSyncingAccountIdentityId(instanceId)
+    try {
+      const data = await MarketplaceService.syncAccountIdentity(instanceId)
+      if (!data.success) {
+        throw new Error(data.error || 'Erro ao sincronizar identificador da conta')
+      }
+
+      setInstallations(prev =>
+        prev.map(installation =>
+          installation.id === instanceId
+            ? data.installation || installation
+            : installation
+        )
+      )
+      alert(
+        `Identificador sincronizado com sucesso: ${data.account_identifier_kind}=${data.account_identifier}`
+      )
+    } catch (error) {
+      console.error('Sync account identity error:', error)
+      alert(`Erro ao sincronizar identificador da conta: ${error.message}`)
+    } finally {
+      setSyncingAccountIdentityId(null)
+    }
+  }
+
   if (isLoading) {
     return <div>Carregando...</div>
   }
@@ -305,6 +335,18 @@ const MyIntegrations = () => {
                   onClick={() => syncIntegration(installation.id)}>
                   Sincronizar
                 </button>
+                {isMarketplaceAccountModule(installation.module_id) && (
+                  <button
+                    className='btn btn-sm btn-info'
+                    onClick={() => syncAccountIdentity(installation.id)}
+                    disabled={syncingAccountIdentityId === installation.id}>
+                    {syncingAccountIdentityId === installation.id ? (
+                      <><RefreshCw className="h-4 w-4 mr-1 animate-spin" /> Conta...</>
+                    ) : (
+                      <>Sync conta</>
+                    )}
+                  </button>
+                )}
                 {/* Botão Renovar Token - Apenas para Shopee */}
                 {installation.credential_status?.actions?.can_refresh && (
                   <button
