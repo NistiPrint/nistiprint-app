@@ -45,6 +45,44 @@ class InstalledIntegrationServiceTest(unittest.TestCase):
         self.assertNotIn("config", update_payload)
         self.assertNotIn("credentials", update_payload)
 
+    def test_sync_account_identity_persists_manual_identifier(self):
+        service = InstalledIntegrationService()
+        current = MagicMock()
+        current.id = "7"
+        current.module_id = "mercadolivre"
+        current.to_dict.return_value = {
+            "module_id": "mercadolivre",
+            "config": {},
+            "credentials": {},
+        }
+        updated = MagicMock()
+
+        context = CredentialContext(
+            module_id="mercadolivre",
+            installation={"id": "7", "module_id": "mercadolivre"},
+            app_profile={"id": "31"},
+            app_secrets={},
+            installation_secrets={},
+            config={},
+            credentials={},
+        )
+
+        with patch.object(service, "get_installed_by_id", side_effect=[current, updated]), \
+             patch("nistiprint_shared.services.installed_integration_service.credential_resolver_service.resolve_for_installation", return_value=context), \
+             patch.object(service, "update_installed", return_value=True) as update_installed:
+            result = service.sync_account_identity(
+                "7",
+                explicit_identifier="207584268",
+                source="manual_sync",
+            )
+
+        update_payload = update_installed.call_args.args[1]
+        self.assertEqual(update_payload["config"]["user_id"], "207584268")
+        self.assertEqual(update_payload["config"]["account_identifiers"]["primary"], "207584268")
+        self.assertEqual(update_payload["credentials"]["user_id"], "207584268")
+        self.assertEqual(result["identifier"], "207584268")
+        self.assertEqual(result["kind"], "user_id")
+
     def test_renew_token_uses_resolved_credential_context(self):
         service = InstalledIntegrationService()
         service.table = MagicMock()
@@ -83,6 +121,9 @@ class InstalledIntegrationServiceTest(unittest.TestCase):
         refresh_access_token.assert_called_once_with("shopee", context)
         persist_tokens.assert_called_once()
         update_payload = update_installed.call_args.args[1]
+        self.assertEqual(update_payload["config"]["shop_id"], "456")
+        self.assertEqual(update_payload["config"]["account_identifiers"]["primary"], "456")
+        self.assertEqual(update_payload["credentials"]["shop_id"], "456")
         self.assertTrue(update_payload["last_refresh_attempt"].endswith("+00:00"))
         self.assertTrue(update_payload["expires_at"].endswith("+00:00"))
         publish_firebase.assert_not_called()

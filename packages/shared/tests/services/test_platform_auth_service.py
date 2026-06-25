@@ -137,6 +137,53 @@ class PlatformAuthServiceTest(unittest.TestCase):
         headers = mock_get.call_args.kwargs["headers"]
         self.assertEqual(headers["Authorization"], "Bearer token")
 
+    @patch("nistiprint_shared.services.platform_auth_service.requests.get")
+    def test_resolve_installation_account_identity_fetches_mercadolivre_user_from_context(self, mock_get):
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {"id": 112233}
+
+        context = CredentialContext(
+            module_id="mercadolivre",
+            installation={"id": "inst-1", "module_id": "mercadolivre"},
+            app_profile={"id": "profile-1"},
+            app_secrets={},
+            installation_secrets={"access_token": "secret-token"},
+            config={},
+            credentials={},
+        )
+
+        identity = platform_auth_service.resolve_installation_account_identity(
+            "mercadolivre",
+            context,
+        )
+
+        self.assertEqual(identity, "112233")
+        headers = mock_get.call_args.kwargs["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer secret-token")
+
+    def test_resolve_installation_account_identity_uses_existing_shop_id(self):
+        context = CredentialContext(
+            module_id="shopee",
+            installation={"id": "inst-2", "module_id": "shopee"},
+            app_profile={"id": "profile-2"},
+            app_secrets={},
+            installation_secrets={},
+            config={
+                "account_identifiers": {
+                    "kind": "shop_id",
+                    "primary": "445566",
+                }
+            },
+            credentials={},
+        )
+
+        identity = platform_auth_service.resolve_installation_account_identity(
+            "shopee",
+            context,
+        )
+
+        self.assertEqual(identity, "445566")
+
 
 if __name__ == "__main__":
     unittest.main()

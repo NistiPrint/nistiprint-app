@@ -18,6 +18,11 @@ from nistiprint_shared.services.credential_resolver_service import CredentialCon
 from nistiprint_shared.services.integration_provider_registry import (
     normalize_provider_module_id,
 )
+from nistiprint_shared.services.marketplace_account_identity import (
+    account_identity_kind,
+    extract_account_identifiers,
+    normalize_account_identifier,
+)
 
 
 class PlatformAuthService:
@@ -363,6 +368,58 @@ class PlatformAuthService:
             value = raw_response.get("company_id") or raw_response.get("user_id")
             return str(value).strip() if value not in (None, "") else None
 
+        return None
+
+    def resolve_installation_account_identity(
+        self, module_id: str, integration: Any, explicit_identifier: str = None
+    ) -> Optional[str]:
+        normalized_explicit = normalize_account_identifier(explicit_identifier)
+        if normalized_explicit:
+            return normalized_explicit
+
+        if isinstance(integration, CredentialContext):
+            config = integration.config or {}
+            credentials = integration.credentials or {}
+            installation_secrets = integration.installation_secrets or {}
+            raw = integration.installation or {}
+        else:
+            config = (integration or {}).get("config") or {}
+            credentials = (integration or {}).get("credentials") or {}
+            installation_secrets = (integration or {}).get("installation_secrets") or {}
+            raw = integration or {}
+
+        known_identifiers = extract_account_identifiers(config=config, credentials=credentials)
+        if known_identifiers:
+            return sorted(known_identifiers)[0]
+
+        module = normalize_provider_module_id(module_id)
+        access_token = (
+            installation_secrets.get("access_token")
+            or raw.get("access_token")
+            or credentials.get("access_token")
+        )
+
+        if module == "mercadolivre":
+            if not access_token:
+                return None
+            try:
+                resp = requests.get(
+                    "https://api.mercadolibre.com/users/me",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    profile = resp.json()
+                    value = profile.get("id")
+                    return str(value).strip() if value not in (None, "") else None
+            except Exception:
+                return None
+            return None
+
+        kind = account_identity_kind(module_id)
+        fallback_value = normalize_account_identifier(config.get(kind) or credentials.get(kind))
+        if fallback_value:
+            return fallback_value
         return None
 
     def refresh_access_token(self, module_id: str, integration: Any) -> Dict:

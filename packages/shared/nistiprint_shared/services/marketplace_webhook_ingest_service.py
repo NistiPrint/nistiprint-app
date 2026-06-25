@@ -26,8 +26,10 @@ from nistiprint_shared.services.personalized_classification_service import (
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 from nistiprint_shared.services.marketplace_account_identity import (
+    account_identity_kind,
     account_identity_matches,
     has_account_identity,
+    integration_account_identifiers,
     normalize_account_identifier,
 )
 from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso
@@ -667,9 +669,15 @@ class MarketplaceWebhookIngestService:
             "error_type": error_type,
             "message": message,
             "module_id": module_id,
+            "expected_account_identifier_kind": account_identity_kind(module_id),
             "account_identifier": normalize_account_identifier(account_identifier),
             "external_order_id": external_order_id,
             "candidate_integration_ids": [row.get("id") for row in candidates or [] if row.get("id") is not None],
+            "candidate_account_identifiers": {
+                str(row.get("id")): sorted(integration_account_identifiers(row))
+                for row in candidates or []
+                if row.get("id") is not None
+            },
         }
 
     def _find_direct_ingest_link(self, marketplace_integration_id: int | None) -> dict | None:

@@ -14,6 +14,11 @@ from nistiprint_shared.services.integration_app_profile_service import (
 from nistiprint_shared.services.integration_credentials_service import integration_credentials_service
 from nistiprint_shared.services.platform_auth_service import platform_auth_service
 from nistiprint_shared.services.integration_resolution_service import integration_resolution_service
+from nistiprint_shared.services.marketplace_account_identity import (
+    account_identity_kind,
+    merge_account_identity_config,
+    normalize_account_identifier,
+)
 from nistiprint_shared.services.token_manager.firebase_projection import (
     bling_firebase_projection_service,
 )
@@ -89,6 +94,7 @@ class InstalledIntegrationService:
             'client_id',
             'client_secret',
             'seller_id',
+            'user_id',
             'account_id',
             'cnpj',
         }
@@ -105,6 +111,81 @@ class InstalledIntegrationService:
         return token_renewal_service.renew_app_managed_credentials(
             module_filter='bling'
         )
+
+    def _apply_account_identity(
+        self,
+        module_id: str,
+        config: Dict | None,
+        credentials: Dict | None,
+        identifier: str | None,
+        *,
+        source: str,
+    ) -> tuple[Dict, Dict]:
+        updated_config = dict(config or {})
+        updated_credentials = dict(credentials or {})
+        normalized_identifier = normalize_account_identifier(identifier)
+        if not normalized_identifier:
+            return updated_config, updated_credentials
+
+        kind = account_identity_kind(module_id)
+        updated_config = merge_account_identity_config(
+            updated_config,
+            module_id,
+            normalized_identifier,
+            source=source,
+            kind=kind,
+        )
+        updated_credentials[kind] = normalized_identifier
+        if kind == 'shop_id':
+            updated_credentials['shop_id'] = normalized_identifier
+        if kind == 'user_id':
+            updated_credentials['user_id'] = normalized_identifier
+        return updated_config, updated_credentials
+
+    def sync_account_identity(
+        self,
+        instance_id: str,
+        *,
+        explicit_identifier: str | None = None,
+        source: str = 'manual',
+    ) -> Dict:
+        inst = self.get_installed_by_id(instance_id)
+        if not inst:
+            raise ValueError('Integracao nao encontrada')
+
+        normalized_inst = self._normalized_payload({**inst.to_dict(), 'id': inst.id})
+        context = credential_resolver_service.resolve_for_installation(normalized_inst)
+        identifier = platform_auth_service.resolve_installation_account_identity(
+            inst.module_id,
+            context,
+            explicit_identifier=explicit_identifier,
+        )
+        normalized_identifier = normalize_account_identifier(identifier)
+        if not normalized_identifier:
+            raise ValueError('Nao foi possivel identificar a conta do marketplace para esta integracao')
+
+        config, credentials = self._apply_account_identity(
+            inst.module_id,
+            context.config or {},
+            context.credentials or {},
+            normalized_identifier,
+            source=source,
+        )
+        updated_ok = self.update_installed(
+            instance_id,
+            {
+                'config': config,
+                'credentials': credentials,
+            },
+        )
+        if not updated_ok:
+            raise RuntimeError('Falha ao persistir identificador da conta do marketplace')
+        updated = self.get_installed_by_id(instance_id)
+        return {
+            'identifier': normalized_identifier,
+            'kind': account_identity_kind(inst.module_id),
+            'installation': updated,
+        }
 
     def get_all_installed(self, user_id: str = None) -> List['InstalledIntegration']:
         """Get all installed integrations, optionally filtered by user"""
@@ -264,8 +345,20 @@ class InstalledIntegrationService:
         if expires_in is not None:
             merged_credentials['expires_in'] = expires_in
 
+        identifier = platform_auth_service.resolve_installation_account_identity(
+            inst.module_id,
+            credential_context,
+        )
+        merged_config, merged_credentials = self._apply_account_identity(
+            inst.module_id,
+            credential_context.config or {},
+            merged_credentials,
+            identifier,
+            source='token_refresh',
+        )
+
         update_data = {
-            'config': credential_context.config or {},
+            'config': merged_config,
             'credentials': merged_credentials,
             'access_token': None,
             'refresh_token': None,

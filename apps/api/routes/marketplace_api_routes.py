@@ -33,6 +33,7 @@ from nistiprint_shared.services.installed_integration_service import (
 from nistiprint_shared.services.marketplace_account_identity import (
     account_identity_kind,
     merge_account_identity_config,
+    normalize_account_identifier,
 )
 from nistiprint_shared.services.oauth_authorization_session_service import (
     OAuthSessionError,
@@ -103,6 +104,54 @@ def _callback_redirect_url(platform):
             f"{url_for('marketplace_api.auth_callback', platform=platform)}"
         )
     return url_for("marketplace_api.auth_callback", platform=platform, _external=True)
+
+
+def _extract_manual_account_identifier(module_id, payload):
+    if not isinstance(payload, dict):
+        return None
+    kind = account_identity_kind(module_id)
+    account_identifiers = payload.get('account_identifiers') or {}
+    return normalize_account_identifier(
+        account_identifiers.get('primary')
+        or payload.get(kind)
+        or payload.get('shop_id')
+        or payload.get('user_id')
+        or payload.get('seller_id')
+        or payload.get('account_id')
+    )
+
+
+def _normalize_marketplace_update_payload(inst, update_data):
+    payload = dict(update_data or {})
+    module_id = str(inst.module_id or '')
+    if not module_id or module_id == 'bling':
+        return payload
+
+    config = dict(payload.get('config') or inst.config or {})
+    credentials = dict(payload.get('credentials') or inst.credentials or {})
+    manual_identifier = (
+        _extract_manual_account_identifier(module_id, payload.get('config') or {})
+        or _extract_manual_account_identifier(module_id, payload.get('credentials') or {})
+        or _extract_manual_account_identifier(module_id, payload)
+    )
+    if not manual_identifier:
+        return payload
+
+    kind = account_identity_kind(module_id)
+    payload['config'] = merge_account_identity_config(
+        config,
+        module_id,
+        manual_identifier,
+        source='manual',
+        kind=kind,
+    )
+    credentials[kind] = manual_identifier
+    if kind == 'shop_id':
+        credentials['shop_id'] = manual_identifier
+    if kind == 'user_id':
+        credentials['user_id'] = manual_identifier
+    payload['credentials'] = credentials
+    return payload
 
 
 def _persist_oauth_tokens(instance_id, tokens):
@@ -444,6 +493,7 @@ def installed_crud(instance_id):
                 update_data[field] = data[field]
 
         if update_data:
+            update_data = _normalize_marketplace_update_payload(inst, update_data)
             installed_integration_service.update_installed(instance_id, update_data)
 
         inst = installed_integration_service.get_installed_by_id(instance_id)
@@ -636,6 +686,34 @@ def renew_token(instance_id):
         return jsonify({"error": str(exc)}), 500
 
 
+@marketplace_api_bp.route("/installed/<instance_id>/sync-account-identity", methods=["POST"])
+@login_required
+def sync_account_identity(instance_id):
+    try:
+        inst = installed_integration_service.get_installed_by_id(instance_id)
+        if not inst:
+            return jsonify({"error": "Not found"}), 404
+        data = request.get_json(silent=True) or {}
+        result = installed_integration_service.sync_account_identity(
+            instance_id,
+            explicit_identifier=data.get('account_identifier'),
+            source=data.get('source') or 'manual_sync',
+        )
+        installation = result.get('installation')
+        return jsonify(
+            {
+                "success": True,
+                "account_identifier": result.get('identifier'),
+                "account_identifier_kind": result.get('kind'),
+                "installation": _public_installation(installation) if installation else None,
+            }
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @marketplace_api_bp.route("/installed/<instance_id>/credential-status", methods=["GET"])
 @login_required
 def get_credential_status(instance_id):
@@ -717,8 +795,13 @@ def update_integration_config(instance_id):
     current_config = inst.config or {}
     updated_config = {**current_config, **config_update}
 
-    installed_integration_service.update_installed(instance_id, {"config": updated_config})
-    return jsonify({"success": True, "config": updated_config})
+    update_payload = _normalize_marketplace_update_payload(
+        inst,
+        {"config": updated_config},
+    )
+    installed_integration_service.update_installed(instance_id, update_payload)
+    refreshed = installed_integration_service.get_installed_by_id(instance_id)
+    return jsonify({"success": True, "config": refreshed.config if refreshed else update_payload.get("config", {})})
 
 
 @marketplace_api_bp.route("/app-profiles", methods=["GET", "POST"])
