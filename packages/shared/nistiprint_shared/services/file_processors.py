@@ -1,3 +1,4 @@
+import copy
 import logging
 import pandas as pd
 import json
@@ -5,7 +6,7 @@ from datetime import datetime
 from nistiprint_shared.utils import apply_date_filter, apply_miolo_fixes, fix_sku_devocional_amazon, generate_ids_chunks, prepare_ml_file, process_string, fix_amazon_25_to_26
 from ..constants import COLUMNS, COLUMN_SHIP_DATE, CAPAS_GROUP
 from nistiprint_shared.database.database import db
-from nistiprint_shared.database.supabase_db_service import get_current_database_mode
+from nistiprint_shared.database.supabase_db_service import get_current_database_mode, supabase_db
 from nistiprint_shared.models.shopee_orders import ShopeeOrders
 from nistiprint_shared.services.product_service import product_service
 from nistiprint_shared.services.bom_service import bom_service
@@ -205,6 +206,252 @@ def enrich_orders_with_personalizations_legacy(bling_orders_data):
         logging.error(f"Erro ao enriquecer pedidos com personalizações (Legacy): {e}")
         return bling_orders_data
 
+
+def _safe_int(value, default=0):
+    try:
+        if value is None or value == '':
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _safe_float(value, default=0.0):
+    try:
+        if value is None or value == '':
+            return default
+        return float(str(value).replace(',', '.'))
+    except Exception:
+        return default
+
+
+def _normalize_order_number(value):
+    normalized = str(value or '').strip()
+    return normalized or None
+
+
+def _extract_snapshot_bling_payload(snapshot):
+    if not isinstance(snapshot, dict):
+        return None
+    raw_refs = snapshot.get('raw_refs') or {}
+    payload = raw_refs.get('bling')
+    return copy.deepcopy(payload) if isinstance(payload, dict) else None
+
+
+def _build_contact_from_sources(pedido_row, snapshot, base_contact=None):
+    base_contact = copy.deepcopy(base_contact or {})
+    snapshot_customer = (snapshot or {}).get('customer') or {}
+    raw_customer = snapshot_customer.get('raw') or {}
+    customer_info = pedido_row.get('informacoes_cliente') or {}
+
+    nome = (
+        base_contact.get('nome')
+        or snapshot_customer.get('name')
+        or raw_customer.get('nome')
+        or customer_info.get('name')
+        or customer_info.get('nome')
+        or pedido_row.get('cliente_nome')
+        or 'N/A'
+    )
+    documento = (
+        base_contact.get('numeroDocumento')
+        or snapshot_customer.get('document')
+        or raw_customer.get('numeroDocumento')
+        or customer_info.get('document')
+        or customer_info.get('documento')
+        or pedido_row.get('cliente_documento')
+        or 'N/A'
+    )
+    telefone = (
+        base_contact.get('telefone')
+        or snapshot_customer.get('phone')
+        or raw_customer.get('telefone')
+        or raw_customer.get('celular')
+        or customer_info.get('phone')
+        or customer_info.get('telefone')
+        or pedido_row.get('cliente_telefone')
+    )
+    email = (
+        base_contact.get('email')
+        or snapshot_customer.get('email')
+        or raw_customer.get('email')
+        or customer_info.get('email')
+        or pedido_row.get('cliente_email')
+    )
+    endereco = (
+        base_contact.get('endereco')
+        or raw_customer.get('endereco')
+        or customer_info.get('endereco')
+        or snapshot_customer.get('address')
+        or 'N/A'
+    )
+
+    contact = {
+        **base_contact,
+        'nome': nome,
+        'numeroDocumento': documento,
+    }
+    if telefone:
+        contact['telefone'] = telefone
+    if email:
+        contact['email'] = email
+    if endereco:
+        contact['endereco'] = endereco
+    return contact
+
+
+def _build_items_from_snapshot(snapshot, item_rows):
+    snapshot_items = (snapshot or {}).get('items') or []
+    if snapshot_items:
+        items = []
+        for snapshot_item in snapshot_items:
+            raw_item = snapshot_item.get('raw') or {}
+            quantity = _safe_int(snapshot_item.get('quantity') or snapshot_item.get('quantidade'), 1)
+            unit_price = _safe_float(
+                snapshot_item.get('unit_price')
+                or snapshot_item.get('preco_unitario')
+                or snapshot_item.get('price')
+                or raw_item.get('valor')
+            )
+            items.append({
+                'codigo': snapshot_item.get('sku') or snapshot_item.get('sku_externo') or raw_item.get('codigo') or 'N/A',
+                'descricao': snapshot_item.get('name') or snapshot_item.get('descricao') or raw_item.get('descricao') or 'N/A',
+                'quantidade': quantity,
+                'valor': unit_price,
+                'variacao': raw_item.get('variacao') or snapshot_item.get('variation') or snapshot_item.get('variacao'),
+                'original_id': raw_item.get('original_id'),
+            })
+        return items
+
+    items = []
+    for item_row in item_rows or []:
+        items.append({
+            'codigo': item_row.get('sku_externo') or 'N/A',
+            'descricao': item_row.get('descricao') or 'N/A',
+            'quantidade': _safe_int(item_row.get('quantidade'), 1),
+            'valor': _safe_float(item_row.get('preco_unitario')),
+        })
+    return items
+
+
+def _build_local_print_order(pedido_row, snapshot, item_rows):
+    order = _extract_snapshot_bling_payload(snapshot) or {}
+    order['numeroLoja'] = (
+        order.get('numeroLoja')
+        or pedido_row.get('marketplace_order_id')
+        or pedido_row.get('codigo_pedido_externo')
+    )
+    order['numero'] = (
+        order.get('numero')
+        or pedido_row.get('bling_order_number')
+        or pedido_row.get('numero_pedido')
+        or order.get('numeroLoja')
+    )
+    order['id'] = order.get('id') or pedido_row.get('bling_order_id')
+    order['contato'] = _build_contact_from_sources(pedido_row, snapshot, order.get('contato'))
+    order['itens'] = order.get('itens') or _build_items_from_snapshot(snapshot, item_rows)
+    order['totalProdutos'] = (
+        order.get('totalProdutos')
+        if order.get('totalProdutos') is not None
+        else _safe_float(
+            ((snapshot or {}).get('financial') or {}).get('total')
+            or pedido_row.get('total_pedido')
+        )
+    )
+    order['formaDeEntrega'] = (
+        order.get('formaDeEntrega')
+        or ((snapshot or {}).get('logistics') or {}).get('service')
+        or pedido_row.get('servico_logistico')
+    )
+    order['transporte'] = order.get('transporte') or {'contato': {'id': None}}
+    return order
+
+
+def _fetch_local_print_orders(order_ids, module_id, marketplace_integration_id=None):
+    normalized_ids = [_normalize_order_number(order_id) for order_id in order_ids]
+    normalized_ids = [order_id for order_id in normalized_ids if order_id]
+    if not normalized_ids:
+        return {}, []
+
+    pedido_rows = []
+    for field_name in ('marketplace_order_id', 'codigo_pedido_externo'):
+        query = (
+            supabase_db.table('pedidos')
+            .select(
+                'id,marketplace_order_id,codigo_pedido_externo,numero_pedido,bling_order_id,bling_order_number,'
+                'cliente_nome,cliente_documento,cliente_telefone,cliente_email,total_pedido,servico_logistico,'
+                'informacoes_cliente,marketplace_integration_id'
+            )
+            .eq('marketplace_module_id', module_id)
+            .in_(field_name, normalized_ids)
+        )
+        if marketplace_integration_id is not None:
+            query = query.eq('marketplace_integration_id', marketplace_integration_id)
+        response = query.execute()
+        pedido_rows.extend(response.data or [])
+
+    pedido_map = {}
+    for row in pedido_rows:
+        external_id = _normalize_order_number(row.get('marketplace_order_id') or row.get('codigo_pedido_externo'))
+        if external_id and external_id not in pedido_map:
+            pedido_map[external_id] = row
+
+    pedido_ids = [row['id'] for row in pedido_map.values() if row.get('id')]
+    snapshot_map = {}
+    items_map = {}
+
+    if pedido_ids:
+        snapshots = (
+            supabase_db.table('pedido_snapshots')
+            .select('pedido_id,customer,items,financial,logistics,raw_refs')
+            .in_('pedido_id', pedido_ids)
+            .execute()
+            .data
+            or []
+        )
+        snapshot_map = {row.get('pedido_id'): row for row in snapshots if row.get('pedido_id')}
+
+        item_rows = (
+            supabase_db.table('itens_pedido')
+            .select('pedido_id,sku_externo,descricao,quantidade,preco_unitario')
+            .in_('pedido_id', pedido_ids)
+            .execute()
+            .data
+            or []
+        )
+        for item_row in item_rows:
+            items_map.setdefault(item_row.get('pedido_id'), []).append(item_row)
+
+    local_orders = {}
+    missing_ids = []
+    for order_id in normalized_ids:
+        pedido_row = pedido_map.get(order_id)
+        if not pedido_row:
+            missing_ids.append(order_id)
+            continue
+
+        snapshot = snapshot_map.get(pedido_row.get('id'))
+        item_rows = items_map.get(pedido_row.get('id'), [])
+        order = _build_local_print_order(pedido_row, snapshot, item_rows)
+        if order.get('numeroLoja') and order.get('itens'):
+            local_orders[order_id] = order
+        else:
+            missing_ids.append(order_id)
+
+    return local_orders, missing_ids
+
+
+def _build_print_order_resolution(order_ids, local_ids, bling_ids, not_found_ids):
+    return {
+        'requested': len(order_ids),
+        'local': len(local_ids),
+        'bling': len(bling_ids),
+        'not_found': len(not_found_ids),
+        'local_ids': local_ids,
+        'bling_ids': bling_ids,
+        'not_found_ids': not_found_ids,
+        'sync_ids': bling_ids,
+    }
 def process_mercadolivre(file, period_filter=None, options=None, bling_client=None):
     bling_orders_id = []
     bling_orders_data = []
@@ -564,6 +811,8 @@ def process_mercadolivre(file, period_filter=None, options=None, bling_client=No
         valid_ids_set = set(ids_pedidos)
         bling_orders_data = [o for o in bling_orders_data if str(o['numeroLoja']) in valid_ids_set]
         
+        options['print_order_resolution'] = _build_print_order_resolution(ids_pedidos, ids_pedidos, [], [])
+
         # Enriquecer com personalizações do Supabase
         bling_orders_data = enrich_orders_with_personalizations(bling_orders_data, platform_name, mode=options.get('mode'))
 
@@ -581,42 +830,61 @@ def process_mercadolivre(file, period_filter=None, options=None, bling_client=No
     return capas_data, total_capas, miolos_data, total_miolos, capas_miolos_data, ids_pedidos_chunks, total_pedidos_plataforma, bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found, raw_data
 
 
-def _fetch_detailed_bling_orders(bling_client, order_ids):
-    """Busca pedidos do Bling por numeroLoja em lote e depois carrega o detalhe um a um."""
-    bling_orders_id = []
+def _fetch_detailed_bling_orders(bling_client, order_ids, module_id=None, marketplace_integration_id=None):
+    """Resolve folhas de impressão priorizando snapshots/pedidos locais e usa Bling apenas como fallback."""
+    normalized_ids = [_normalize_order_number(order_id) for order_id in order_ids]
+    normalized_ids = [order_id for order_id in normalized_ids if order_id]
+
+    local_orders, missing_ids = _fetch_local_print_orders(
+        normalized_ids,
+        module_id,
+        marketplace_integration_id=marketplace_integration_id,
+    )
+
     bling_orders_data = []
-    bling_orders_id_numero = []
-    bling_orders_not_found = []
+    found_store_numbers = []
 
-    mappings = bling_client.get_order_numbers_by_store_numbers(order_ids)
-    found_store_numbers = set()
+    if missing_ids and bling_client:
+        mappings = bling_client.get_order_numbers_by_store_numbers(missing_ids)
+        for mapping in mappings or []:
+            numero_loja = _normalize_order_number(mapping.get('numeroLoja'))
+            order_id = mapping.get('id')
+            if not numero_loja:
+                continue
 
-    for mapping in mappings or []:
-        numero_loja = str(mapping.get('numeroLoja') or '')
-        order_id = mapping.get('id')
-        if not numero_loja:
-            continue
+            found_store_numbers.append(numero_loja)
+            if not order_id:
+                continue
 
-        found_store_numbers.add(numero_loja)
-        if order_id:
-            bling_orders_id.append(order_id)
-            bling_orders_id_numero.append({
-                'id': order_id,
-                'numero': mapping.get('numero')
-            })
             detail = bling_client.get_order(order_id)
             if isinstance(detail, dict):
                 detail['numeroLoja'] = detail.get('numeroLoja') or numero_loja
-                detail['numero'] = detail.get('numero') or mapping.get('numero')
+                detail['numero'] = detail.get('numero') or mapping.get('numero') or numero_loja
+                detail['id'] = detail.get('id') or order_id
                 bling_orders_data.append(detail)
 
-    bling_orders_not_found = [
-        str(order_number)
-        for order_number in order_ids
-        if str(order_number) not in found_store_numbers
-    ]
+    remote_map = {
+        _normalize_order_number(order.get('numeroLoja')): order
+        for order in bling_orders_data
+        if _normalize_order_number(order.get('numeroLoja'))
+    }
+    not_found_ids = [order_id for order_id in missing_ids if order_id not in remote_map]
 
-    return bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found
+    merged_map = {**local_orders, **remote_map}
+    ordered_data = [merged_map[order_id] for order_id in normalized_ids if order_id in merged_map]
+    bling_orders_id = [order.get('id') for order in ordered_data if order.get('id')]
+    bling_orders_id_numero = [
+        {'id': order.get('id'), 'numero': order.get('numero')}
+        for order in ordered_data
+        if order.get('id')
+    ]
+    resolution = _build_print_order_resolution(
+        normalized_ids,
+        [order_id for order_id in normalized_ids if order_id in local_orders],
+        [order_id for order_id in normalized_ids if order_id in remote_map],
+        not_found_ids,
+    )
+    return bling_orders_id, ordered_data, bling_orders_id_numero, not_found_ids, resolution
 
 
 def process_shopee(file, period_filter, options=None, bling_client=None):
@@ -896,7 +1164,13 @@ def process_shopee(file, period_filter, options=None, bling_client=None):
     ids_pedidos_chunks = generate_ids_chunks(ids_pedidos)
 
     if options['print_orders']:
-        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found = _fetch_detailed_bling_orders(bling_client, ids_pedidos)
+        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found, print_order_resolution = _fetch_detailed_bling_orders(
+            bling_client,
+            ids_pedidos,
+            options.get('module_id'),
+            options.get('marketplace_integration_id'),
+        )
+        options['print_order_resolution'] = print_order_resolution
 
         # Enriquecer com personalizações do Supabase
         bling_orders_data = enrich_orders_with_personalizations(bling_orders_data, platform_name, mode=options.get('mode'))
@@ -1146,7 +1420,13 @@ def process_amazon(file, period_filter, options=None, bling_client=None):
     ids_pedidos_chunks = generate_ids_chunks(ids_pedidos)
 
     if options['print_orders']:
-        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found = _fetch_detailed_bling_orders(bling_client, ids_pedidos)
+        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found, print_order_resolution = _fetch_detailed_bling_orders(
+            bling_client,
+            ids_pedidos,
+            options.get('module_id'),
+            options.get('marketplace_integration_id'),
+        )
+        options['print_order_resolution'] = print_order_resolution
 
         # Enriquecer com personalizações do Supabase
         bling_orders_data = enrich_orders_with_personalizations(bling_orders_data, platform_name, mode=options.get('mode'))
@@ -1378,7 +1658,13 @@ def process_shein(file, period_filter, options=None, bling_client=None):
     ids_pedidos_chunks = generate_ids_chunks(ids_pedidos)
 
     if options['print_orders']:
-        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found = _fetch_detailed_bling_orders(bling_client, ids_pedidos)
+        bling_orders_id, bling_orders_data, bling_orders_id_numero, bling_orders_not_found, print_order_resolution = _fetch_detailed_bling_orders(
+            bling_client,
+            ids_pedidos,
+            options.get('module_id'),
+            options.get('marketplace_integration_id'),
+        )
+        options['print_order_resolution'] = print_order_resolution
 
         # Enriquecer com personalizações do Supabase
         bling_orders_data = enrich_orders_with_personalizations(bling_orders_data, platform_name, mode=options.get('mode'))

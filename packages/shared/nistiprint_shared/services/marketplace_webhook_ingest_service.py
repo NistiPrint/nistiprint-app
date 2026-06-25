@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import os
 import traceback
 from datetime import datetime
@@ -480,7 +480,7 @@ class MarketplaceWebhookIngestService:
                 "status": "skipped",
                 "event_status": "skipped_inactive_source",
                 "skip_reason": "webhooks_disabled",
-                "message": f"Webhook {source} desabilitado para a integração",
+                "message": f"Webhook {source} desabilitado para a integraÃ§Ã£o",
                 "external_order_id": external_order_id,
                 "marketplace_integration_id": marketplace_inst.get("id"),
             }
@@ -507,9 +507,9 @@ class MarketplaceWebhookIngestService:
             }
         return None
 
-    def _find_default_nfe_link(self, marketplace_inst: dict | None) -> dict | None:
+    def _find_bling_links(self, marketplace_inst: dict | None) -> list[dict]:
         if not marketplace_inst or not marketplace_inst.get("id"):
-            return None
+            return []
 
         config = marketplace_inst.get("config") or {}
         default_link_id = _first_present(config.get("default_nfe_link_id"), config.get("default_nfe_erp_link_id"))
@@ -532,27 +532,33 @@ class MarketplaceWebhookIngestService:
             for link in links
             if (link.get("nf_emission_mode") or (link.get("config") or {}).get("nf_emission_mode") or "bling") == "bling"
         ]
+        if not links:
+            return []
 
-        if default_link_id:
-            match = next((link for link in links if str(link.get("id")) == str(default_link_id)), None)
-            if match:
-                return match
-
-        if default_erp_id:
-            matches = [
-                link for link in links
-                if str(link.get("erp_integration_id")) == str(default_erp_id)
+        def priority(link: dict) -> tuple[int, int, str]:
+            is_default_link = int(str(link.get("id")) == str(default_link_id)) if default_link_id else 0
+            is_default_erp = int(
+                bool(default_erp_id)
+                and str(link.get("erp_integration_id")) == str(default_erp_id)
                 and (not default_shop_id or str(link.get("erp_store_id")) == str(default_shop_id))
-            ]
-            if len(matches) == 1:
-                return matches[0]
+            )
+            return (-is_default_link, -is_default_erp, str(link.get("id") or ""))
 
+        return sorted(links, key=priority)
+
+    def _find_default_nfe_link(self, marketplace_inst: dict | None) -> dict | None:
+        links = self._find_bling_links(marketplace_inst)
         if len(links) == 1:
             return links[0]
+        if links:
+            first = links[0]
+            config = (marketplace_inst or {}).get("config") or {}
+            if config.get("default_nfe_link_id") or config.get("default_nfe_erp_link_id") or config.get("default_nfe_erp_integration_id") or config.get("default_nfe_bling_integration_id"):
+                return first
 
         logger.warning(
             "[marketplace-webhook] default NF route missing/ambiguous integration_id=%s candidates=%s",
-            marketplace_inst.get("id"),
+            (marketplace_inst or {}).get("id"),
             [link.get("id") for link in links],
         )
         return None
@@ -761,36 +767,66 @@ class MarketplaceWebhookIngestService:
         marketplace_mirror_id: int | None,
         nfe_link: dict | None,
     ) -> dict | None:
-        bling_integration_id = (nfe_link or {}).get("erp_integration_id")
-        if not bling_integration_id:
+        links = self._find_bling_links(marketplace_inst)
+        if not links:
             return {
                 "status": "error",
                 "reason": "missing_bling_reference",
                 "message": "Integracao Bling obrigatoria nao configurada para o marketplace",
             }
 
+        if nfe_link and nfe_link.get("id"):
+            prioritized = [
+                dict(nfe_link),
+                *[link for link in links if str(link.get("id")) != str(nfe_link.get("id"))],
+            ]
+        else:
+            prioritized = links
+
         from nistiprint_shared.services.bling_order_processing_service import (
             materialize_marketplace_direct_order,
         )
 
-        result = materialize_marketplace_direct_order(
-            source=source,
-            external_order_id=str(external_order_id),
-            marketplace_inst=marketplace_inst,
-            marketplace_detail=marketplace_detail,
-            marketplace_mirror_id=marketplace_mirror_id,
-            bling_integration_id=bling_integration_id,
-            bling_loja_id=(nfe_link or {}).get("erp_store_id"),
-        )
-        if result.get("status") != "success":
+        successes = []
+        first_error = None
+        for link in prioritized:
+            result = materialize_marketplace_direct_order(
+                source=source,
+                external_order_id=str(external_order_id),
+                marketplace_inst=marketplace_inst,
+                marketplace_detail=marketplace_detail,
+                marketplace_mirror_id=marketplace_mirror_id,
+                bling_integration_id=link.get("erp_integration_id"),
+                bling_loja_id=link.get("erp_store_id"),
+            )
+            if result.get("status") == "success":
+                enriched = {
+                    **result,
+                    "selected_bling_integration_id": link.get("erp_integration_id"),
+                    "selected_bling_store_id": link.get("erp_store_id"),
+                }
+                successes.append(enriched)
+                continue
+            if first_error is None or result.get("reason") != "bling_order_not_found":
+                first_error = result
+
+        if len(successes) == 1:
+            return successes[0]
+        if len(successes) > 1:
+            return {
+                "status": "error",
+                "reason": "bling_order_ambiguous",
+                "message": "Pedido encontrado em mais de uma conta Bling vinculada ao marketplace",
+            }
+        if first_error:
             logger.info(
                 "[marketplace-webhook] bling materialization unavailable source=%s external_order_id=%s result=%s",
                 source,
                 external_order_id,
-                {k: v for k, v in result.items() if k != "message"},
+                {k: v for k, v in first_error.items() if k != "message"},
             )
-            return result
-        return result
+            return first_error
+        return {"status": "not_found", "reason": "bling_order_not_found"}
 
     def _bling_materialization_error_result(
         self,
@@ -808,6 +844,7 @@ class MarketplaceWebhookIngestService:
             "bling_order_incomplete": "Pedido retornado pelo Bling sem id ou numero",
             "bling_detail_incomplete": "Detalhe do pedido Bling sem numero_pedido",
             "bling_materialization_failed": "Pedido Bling nao foi materializado",
+            "bling_order_ambiguous": "Pedido encontrado em mais de uma conta Bling vinculada ao marketplace",
         }
         return {
             "status": "error",
@@ -891,7 +928,7 @@ class MarketplaceWebhookIngestService:
             raw = (details or {}).get("raw") or {}
             data_envio_marketplace = (details or {}).get("ship_time") or unix_to_app_iso(raw.get("ship_time"))
             carrier = str((details or {}).get("shipping_carrier") or "").lower()
-            if "entrega rápida" in carrier or "entrega rapida" in carrier:
+            if "entrega rÃ¡pida" in carrier or "entrega rapida" in carrier:
                 modalidade = "FLEX"
             logger.info(
                 "[marketplace-webhook] shopee resolve timestamps order_sn=%s status=%s source=%s resolved=%s",
@@ -1337,3 +1374,8 @@ class MarketplaceWebhookIngestService:
 
 
 marketplace_webhook_ingest_service = MarketplaceWebhookIngestService()
+
+
+
+
+

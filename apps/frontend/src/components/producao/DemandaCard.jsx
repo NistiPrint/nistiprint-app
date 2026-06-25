@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { usePermissions } from '@/contexts/PermissionsContext';
 import { calculateTimeRemaining, diasRestantes, isUrgente } from '@/lib/demandaUtils';
+import { deriveDemandFlow, getDemandFlowConfig, getModalidadeLabel } from '@/lib/demandaFlow';
 import { checkActionRequired } from '@/lib/notificationLogic';
 import {
     AlertTriangle,
@@ -73,7 +74,7 @@ const DemandaCard = React.memo(({
 
   const priorityScore = demanda.manual_priority_score || 0;
   const modalidadeLogistica = demanda.modalidade_logistica || 'STANDARD';
-  const classificacaoCliente = demanda.classificacao_cliente || 'B2C';
+  const flowConfig = getDemandFlowConfig(deriveDemandFlow(demanda));
   const hasObservacoes = Boolean(demanda.observacoes && demanda.observacoes.trim());
   const setorNome = (userSetor?.nome || userSetor || '').trim().toLowerCase();
   const isAdministrativo = setorNome === 'administrativo';
@@ -291,17 +292,14 @@ const DemandaCard = React.memo(({
                 {showCriticalBadge && <Badge className="bg-red-600 text-white border-none text-[10px] px-1.5 h-5">PRIORIDADE MAXIMA</Badge>}
                 {isLastChance && urgente && <Badge className="bg-orange-600 text-white border-none text-[10px] px-1.5 h-5">ULTIMA CHANCE</Badge>}
                 {urgente && <Badge variant="destructive" className="text-[10px] px-1.5 h-5">URGENTE</Badge>}
-                {modalidadeLogistica && modalidadeLogistica !== 'STANDARD' && (
-                  <Badge className="bg-blue-100 text-blue-800 border-none text-[10px] px-1.5 h-5">
-                    {modalidadeLogistica === 'EXPRESS' ? 'EXPRESS' :
-                     modalidadeLogistica === 'FULFILLMENT' ? 'FULFILLMENT' :
-                     modalidadeLogistica === 'RETIRADA' ? 'RETIRADA' : modalidadeLogistica}
+                {flowConfig && (
+                  <Badge className="bg-slate-100 text-slate-800 border-none text-[10px] px-1.5 h-5">
+                    {flowConfig.shortLabel}
                   </Badge>
                 )}
-                {classificacaoCliente && classificacaoCliente !== 'B2C' && (
-                  <Badge className="bg-green-100 text-green-800 border-none text-[10px] px-1.5 h-5">
-                    {classificacaoCliente === 'B2B' ? 'B2B' :
-                     classificacaoCliente === 'INTERNO' ? 'INTERNO' : classificacaoCliente}
+                {modalidadeLogistica && modalidadeLogistica !== 'STANDARD' && (
+                  <Badge className="bg-blue-100 text-blue-800 border-none text-[10px] px-1.5 h-5">
+                    {getModalidadeLabel(modalidadeLogistica)}
                   </Badge>
                 )}
                 {hasObservacoes && (
@@ -438,7 +436,7 @@ const DemandaCard = React.memo(({
                     <Badge variant="outline">Trilha lateral</Badge>
                   )}
                   {demanda.empresa_cliente_nome && (
-                    <Badge variant="secondary">Empresa: {demanda.empresa_cliente_nome}</Badge>
+                    <Badge variant="secondary">Cliente: {demanda.empresa_cliente_nome}</Badge>
                   )}
                   {demanda.empresa_responsavel_nome && (
                     <Badge variant="secondary">Contato: {demanda.empresa_responsavel_nome}</Badge>

@@ -313,6 +313,7 @@ def consolidar():
                     'bling_orders_not_found': bling_orders_not_found,
                     'raw_data': raw_data.where(pd.notnull(raw_data), None).to_dict('records') if hasattr(raw_data, 'to_dict') else raw_data,
                     'options': options,
+                    'print_order_resolution': options.get('print_order_resolution'),
                     'conflicts': conflicts # Adicionado como campo extra, geralmente ignorado por renderizadores de tabela estritos
                 }
 
@@ -334,11 +335,12 @@ def consolidar():
                     # Remover duplicatas e filtrar strings vazias
                     flat_ids = list(set([str(fid) for fid in flat_ids if fid]))
                     
-                    if flat_ids:
-                        print(f"[*] Consolidar API: Disparando sync de {len(flat_ids)} pedidos individuais com Bling...")
+                    sync_ids = options.get('print_order_resolution', {}).get('sync_ids') if options.get('print_orders') else flat_ids
+                    if sync_ids:
+                        print(f"[*] Consolidar API: Disparando sync de {len(sync_ids)} pedidos individuais com Bling...")
                         celery_app.send_task(
                             'tasks.consolidation_tasks.sync_orders_with_bling',
-                            args=[flat_ids, channel_id, plataforma],
+                            args=[sync_ids, channel_id, plataforma],
                             kwargs={}
                         )
                 except Exception as sync_trigger_err:

@@ -515,13 +515,10 @@ BEGIN
         COALESCE(NULLIF(v_ref->>'last_synced_at', '')::TIMESTAMPTZ, now()),
         COALESCE(v_ref->'metadata', '{}'::jsonb)
       )
-      ON CONFLICT (
-        module_id, (COALESCE(integration_id, 0)), external_order_id, role
-      )
-        WHERE role <> 'sales_origin'
+      ON CONFLICT (pedido_id, integration_id, role)
       DO UPDATE SET
-        pedido_id = EXCLUDED.pedido_id,
-        integration_id = COALESCE(EXCLUDED.integration_id, public.pedido_integration_refs.integration_id),
+        module_id = EXCLUDED.module_id,
+        external_order_id = EXCLUDED.external_order_id,
         external_record_id = COALESCE(EXCLUDED.external_record_id, public.pedido_integration_refs.external_record_id),
         external_status = COALESCE(EXCLUDED.external_status, public.pedido_integration_refs.external_status),
         last_synced_at = EXCLUDED.last_synced_at,

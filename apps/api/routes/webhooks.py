@@ -1,11 +1,11 @@
-"""
+﻿"""
 Endpoints para webhooks de cancelamento de pedidos.
 
-NOTA: O recebimento de webhooks do Bling É FEITO PELO N8N.
-Este arquivo contém apenas endpoints para cancelamentos manuais/internos.
+NOTA: O recebimento de webhooks do Bling Ã‰ FEITO PELO N8N.
+Este arquivo contÃ©m apenas endpoints para cancelamentos manuais/internos.
 
 Fluxo correto dos webhooks do Bling:
-  Bling → n8n (valida HMAC) → Redis (fila) → Worker → Supabase
+  Bling â†’ n8n (valida HMAC) â†’ Redis (fila) â†’ Worker â†’ Supabase
 
 Ver: docs/02-features/webhooks_fluxo_correto.md
 """
@@ -53,8 +53,14 @@ def _enqueue_marketplace_webhook(source: str, queue_name: str):
         return jsonify({'success': False, 'error': 'webhook token invalido'}), 403
 
     payload = request.get_json(silent=True) or {}
-    get_redis_client().rpush(queue_name, _serialize_queue_item(payload))
-    return jsonify({'success': True, 'source': source, 'queued': True, 'queue': queue_name}), 202
+    queued = enqueue_marketplace_webhook_event(source, payload, queue_name=queue_name)
+    return jsonify({
+        'success': True,
+        'source': source,
+        'queued': True,
+        'queue': queue_name,
+        'webhook_event_id': queued.get('event_id'),
+    }), 202
 
 
 @webhooks_bp.route('/shopee', methods=['POST'])
@@ -199,18 +205,18 @@ def clear_webhook_queue():
 @webhooks_bp.route('/pedido-cancelado', methods=['POST'])
 def handle_pedido_cancelado():
     """
-    Webhook chamado quando um pedido é cancelado (uso interno ou sistemas externos).
+    Webhook chamado quando um pedido Ã© cancelado (uso interno ou sistemas externos).
 
     Payload esperado:
     {
         "pedido_id": 123,  # ID interno do pedido (opcional)
-        "codigo_pedido_externo": "260318ABC123",  # ID externo (obrigatório se não tiver pedido_id)
+        "codigo_pedido_externo": "260318ABC123",  # ID externo (obrigatÃ³rio se nÃ£o tiver pedido_id)
         "status": "CANCELADO",
         "motivo": "Cliente solicitou cancelamento",
         "data_cancelamento": "2026-03-18T10:30:00Z"
     }
 
-    Ações:
+    AÃ§Ãµes:
     1. Atualiza status do pedido para CANCELADO
     2. Busca demandas ativas com este pedido
     3. Cria alerta em cada demanda afetada
@@ -221,17 +227,17 @@ def handle_pedido_cancelado():
 
         pedido_id = data.get('pedido_id')
         codigo_pedido_externo = data.get('codigo_pedido_externo')
-        motivo = data.get('motivo', 'Não informado')
+        motivo = data.get('motivo', 'NÃ£o informado')
         data_cancelamento = data.get('data_cancelamento')
 
-        # Validar dados mínimos
+        # Validar dados mÃ­nimos
         if not pedido_id and not codigo_pedido_externo:
             return ApiResponse.error(
-                message="pedido_id ou codigo_pedido_externo é obrigatório",
+                message="pedido_id ou codigo_pedido_externo Ã© obrigatÃ³rio",
                 status_code=400
             )
 
-        # 1. Buscar pedido interno se não fornecido
+        # 1. Buscar pedido interno se nÃ£o fornecido
         if not pedido_id and codigo_pedido_externo:
             pedido_res = supabase_db.table('pedidos').select('id').eq('codigo_pedido_externo', codigo_pedido_externo).single().execute()
             if pedido_res.data:
@@ -239,7 +245,7 @@ def handle_pedido_cancelado():
 
         if not pedido_id:
             return ApiResponse.error(
-                message=f"Pedido não encontrado (externo: {codigo_pedido_externo})",
+                message=f"Pedido nÃ£o encontrado (externo: {codigo_pedido_externo})",
                 status_code=404
             )
 
@@ -264,7 +270,7 @@ def handle_pedido_cancelado():
         }).execute()
 
         # 3. Buscar demandas ativas com este pedido
-        # Primeiro obter codigo_pedido_externo se não temos
+        # Primeiro obter codigo_pedido_externo se nÃ£o temos
         if not codigo_pedido_externo:
             pedido_res = supabase_db.table('pedidos').select('codigo_pedido_externo').eq('id', pedido_id).single().execute()
             if pedido_res.data:
@@ -425,3 +431,5 @@ def calcular_impacto_cancelamento(demanda_internal_id: int, pedido_id: int) -> d
             'total_qtd_reduzida': 0,
             'error': str(e)
         }
+
+

@@ -1,9 +1,10 @@
-# ===========================================
+﻿# ===========================================
 # CELERY TASKS - REDIS QUEUE CONSUMER
 # ===========================================
-# Task simplificada: apenas lê do Redis e registra log
+# Task simplificada: apenas lÃª do Redis e registra log
 # ===========================================
 
+import hashlib
 import json
 import logging
 from datetime import timedelta
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def log_shared_task_execution(task_type: str = None):
     """
-    Decorator para registrar execução de tarefas do shared package em task_execution_logs.
+    Decorator para registrar execuÃ§Ã£o de tarefas do shared package em task_execution_logs.
     Similar ao task_logger.py mas adaptado para shared_task.
     """
     def decorator(func):
@@ -38,7 +39,7 @@ def log_shared_task_execution(task_type: str = None):
             # Configurar no contexto
             set_correlation_id(correlation_id)
             
-            # Registrar início
+            # Registrar inÃ­cio
             task_log_id = None
             try:
                 log_res = supabase_db.table('task_execution_logs').insert({
@@ -55,7 +56,7 @@ def log_shared_task_execution(task_type: str = None):
                 
                 task_log_id = log_res.data[0]['id'] if log_res.data else None
             except Exception as e:
-                logger.error(f"Erro ao registrar início da tarefa {func.__name__}: {e}")
+                logger.error(f"Erro ao registrar inÃ­cio da tarefa {func.__name__}: {e}")
             
             try:
                 # Executar tarefa
@@ -76,7 +77,7 @@ def log_shared_task_execution(task_type: str = None):
                 
             except Exception as e:
                 # Registrar falha
-                logger.error(f"Erro na execução da tarefa {func.__name__}: {e}")
+                logger.error(f"Erro na execuÃ§Ã£o da tarefa {func.__name__}: {e}")
                 if task_log_id:
                     try:
                         supabase_db.table('task_execution_logs').update({
@@ -92,7 +93,7 @@ def log_shared_task_execution(task_type: str = None):
     return decorator
 
 
-# Configuração do Redis
+# ConfiguraÃ§Ã£o do Redis
 import os
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
@@ -102,11 +103,12 @@ REDIS_DB = int(os.environ.get('REDIS_DB', 0))
 BLING_WEBHOOK_QUEUE = 'bling:webhooks:pendentes'
 BLING_WEBHOOK_DEAD_LETTER = 'bling:webhooks:dead-letter'
 BLING_WEBHOOK_FALHAS = 'bling:webhooks:falhas'
-BLING_WEBHOOK_PROCESSADOS = 'bling:webhooks:processados' # Fila para log/histórico
+BLING_WEBHOOK_PROCESSADOS = 'bling:webhooks:processados' # Fila para log/histÃ³rico
 BLING_WEBHOOK_MAX_RETRIES = int(os.environ.get('BLING_WEBHOOK_MAX_RETRIES', '5'))
 MARKETPLACE_WEBHOOK_RETRY_BASE_SECONDS = int(os.environ.get('MARKETPLACE_WEBHOOK_RETRY_BASE_SECONDS', '60'))
 MARKETPLACE_WEBHOOK_RETRY_MAX_SECONDS = int(os.environ.get('MARKETPLACE_WEBHOOK_RETRY_MAX_SECONDS', '900'))
 MARKETPLACE_WEBHOOK_QUEUE_LOCK_SECONDS = int(os.environ.get('MARKETPLACE_WEBHOOK_QUEUE_LOCK_SECONDS', '300'))
+MARKETPLACE_WEBHOOK_RETRY_TTL_DAYS = int(os.environ.get('MARKETPLACE_WEBHOOK_RETRY_TTL_DAYS', '7'))
 SHOPEE_WEBHOOK_QUEUE = 'shopee:webhooks:pendentes'
 SHOPEE_WEBHOOK_DEAD_LETTER = 'shopee:webhooks:dead-letter'
 SHOPEE_WEBHOOK_FALHAS = 'shopee:webhooks:falhas'
@@ -133,6 +135,21 @@ LIVE_QUEUE_ALIASES = {
 }
 
 _redis_client = None
+MARKETPLACE_PENDING_STATUSES = {
+    'pending',
+    'processing',
+    'pending_retry',
+    'retry_scheduled',
+    'pending_erp_order',
+    'failed',
+}
+MARKETPLACE_FINAL_STATUSES = {
+    'success',
+    'skipped',
+    'skipped_inactive_source',
+    'skipped_stale',
+    'manual_intervention',
+}
 
 def get_redis_client():
     global _redis_client
@@ -164,7 +181,7 @@ def get_queue_stats():
     }
 
 def get_queue_items(queue_name: str, limit: int = 50):
-    """Retorna os itens de uma fila específica (sem remover)"""
+    """Retorna os itens de uma fila especÃ­fica (sem remover)"""
     r = get_redis_client()
     actual_queue = LIVE_QUEUE_ALIASES.get(queue_name)
     
@@ -175,7 +192,7 @@ def get_queue_items(queue_name: str, limit: int = 50):
     return [json.loads(i) if isinstance(i, str) and (i.startswith('{') or i.startswith('[')) else i for i in items]
 
 def clear_queue(queue_name: str):
-    """Limpa uma fila específica"""
+    """Limpa uma fila especÃ­fica"""
     r = get_redis_client()
     actual_queue = LIVE_QUEUE_ALIASES.get(queue_name)
     
@@ -222,6 +239,11 @@ def _serialize_queue_item(data: dict) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
+def _stable_payload_hash(payload: dict) -> str:
+    serialized = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+
+
 def _extract_order_context(data: dict):
     order_data = data.get('data') if data.get('data') and isinstance(data.get('data'), dict) else data
     company_id = data.get('companyId') if data.get('companyId') else None
@@ -264,6 +286,74 @@ def _insert_webhook_event(
         return None
 
 
+def _extract_marketplace_context(source: str, data: dict):
+    body = data.get('data') if isinstance(data.get('data'), dict) else data
+    if source == 'shopee':
+        orders = body.get('orders') if isinstance(body.get('orders'), list) else []
+        order_id = (
+            body.get('order_sn')
+            or body.get('ordersn')
+            or body.get('order_id')
+            or ((orders[0] or {}).get('order_sn') if orders else None)
+        )
+        shop_id = body.get('shop_id') or body.get('shopid') or data.get('shop_id')
+        provider_event_id = (
+            body.get('event_id')
+            or body.get('code')
+            or body.get('update_time')
+            or body.get('timestamp')
+        )
+        return body, shop_id, order_id, provider_event_id
+
+    resource = str(body.get('resource') or body.get('topic') or '')
+    order_id = body.get('order_id') or body.get('id')
+    if not order_id and '/orders/' in resource:
+        order_id = resource.rstrip('/').split('/orders/')[-1]
+    shop_id = body.get('user_id') or body.get('seller_id') or data.get('user_id')
+    provider_event_id = (
+        body.get('id')
+        if str(body.get('topic') or '').endswith('orders')
+        else body.get('resource') or body.get('id')
+    )
+    return body, shop_id, order_id, provider_event_id
+
+
+def enqueue_marketplace_webhook_event(source: str, payload: dict, *, queue_name: str | None = None) -> dict:
+    correlation_id = generate_correlation_id()
+    _body, company_id, numero_loja, provider_event_id = _extract_marketplace_context(source, payload)
+    event_id = _insert_webhook_event(
+        payload,
+        source=source,
+        company_id=str(company_id) if company_id not in (None, '') else None,
+        bling_id=None,
+        numero_loja=str(numero_loja) if numero_loja not in (None, '') else None,
+        correlation_id=correlation_id,
+    )
+    if event_id:
+        _update_webhook_event(
+            event_id,
+            provider_event_id=str(provider_event_id) if provider_event_id not in (None, '') else None,
+            payload_hash=_stable_payload_hash(payload),
+            retry_expires_at=(get_now() + timedelta(days=MARKETPLACE_WEBHOOK_RETRY_TTL_DAYS)).isoformat(),
+            next_attempt_after=None,
+            processing_started_at=None,
+            processing_correlation_id=None,
+            last_error_type=None,
+            last_error_message=None,
+        )
+        get_redis_client().rpush(
+            queue_name or WEBHOOK_QUEUE_BY_SOURCE[source],
+            _serialize_queue_item({'webhook_event_id': event_id}),
+        )
+    return {
+        'event_id': event_id,
+        'correlation_id': correlation_id,
+        'company_id': str(company_id) if company_id not in (None, '') else None,
+        'numero_loja': str(numero_loja) if numero_loja not in (None, '') else None,
+        'provider_event_id': str(provider_event_id) if provider_event_id not in (None, '') else None,
+    }
+
+
 def _update_webhook_event(webhook_event_id: int | None, **fields):
     if not webhook_event_id or not fields:
         return
@@ -288,7 +378,6 @@ def _increment_webhook_event_attempt(webhook_event_id: int | None):
         _update_webhook_event(
             webhook_event_id,
             attempt_count=next_attempt_count,
-            last_status='pending',
             last_attempt_at=get_now_iso(),
         )
         return next_attempt_count
@@ -324,11 +413,6 @@ def _create_webhook_attempt(
         logger.error("Erro ao inserir webhook_event_attempts event_id=%s: %s", webhook_event_id, e)
         attempt_id = None
 
-    _update_webhook_event(
-        webhook_event_id,
-        last_status='processing',
-        last_attempt_at=get_now_iso(),
-    )
     return attempt_id, attempt_number
 
 
@@ -373,29 +457,6 @@ def _retry_delay_seconds(retry_count: int) -> int:
     retry_count = max(1, int(retry_count or 1))
     delay = MARKETPLACE_WEBHOOK_RETRY_BASE_SECONDS * (2 ** (retry_count - 1))
     return min(delay, MARKETPLACE_WEBHOOK_RETRY_MAX_SECONDS)
-
-
-def _mark_retry_in_place_payload(data: dict, *, error_type: str, message: str) -> dict:
-    failed = _mark_failure_payload(data, error_type=error_type, message=message)
-    retry_count = int(failed.get('retry_count') or 0)
-    failed['next_attempt_after'] = (get_now() + timedelta(seconds=_retry_delay_seconds(retry_count))).isoformat()
-    failed['last_queue'] = 'pendentes'
-    return failed
-
-
-def _next_attempt_pending(data: dict) -> bool:
-    next_attempt = parse_datetime(data.get('next_attempt_after'))
-    if not next_attempt:
-        return False
-    return next_attempt > get_now()
-
-
-def _replace_queue_head(r, queue_name: str, payload: dict) -> None:
-    r.lset(queue_name, 0, _serialize_queue_item(payload))
-
-
-def _ack_queue_head(r, queue_name: str) -> str | None:
-    return r.lpop(queue_name)
 
 
 def _acquire_queue_lock(r, queue_name: str) -> tuple[str, str] | tuple[None, None]:
@@ -510,17 +571,15 @@ def consumir_fila_bling(correlation_id=None):
     """
     Consome a fila de webhooks do Bling no Redis e processa cada um.
     """
-    # Configurar correlation_id
     correlation_id = correlation_id or get_correlation_id()
     if not correlation_id:
         correlation_id = str(uuid.uuid4())
     set_correlation_id(correlation_id)
-    
+
     try:
         r = get_redis_client()
         processados = 0
 
-        # Consumir fila (máx 50 por ciclo)
         for _ in range(50):
             mensagem_str = r.lpop(BLING_WEBHOOK_QUEUE)
             if not mensagem_str:
@@ -530,19 +589,14 @@ def consumir_fila_bling(correlation_id=None):
             attempt_id = None
             webhook_event_id = None
             try:
-                # O payload pode vir direto ou dentro de uma chave 'body' (depende de como o n8n salva)
                 data = _parse_queue_item(mensagem_str)
-                
-                # Log raw payload for debugging
                 logger.info(f"Raw payload recebido do Redis: {mensagem_str[:500]}")
-                
-                # Validate payload has required fields
+
                 invalid_queue_item = not data or not isinstance(data, dict)
                 if invalid_queue_item:
                     logger.error(f"Payload inválido: não é um dicionário ou está vazio. Payload: {mensagem_str[:200]}")
                     data = {'raw_message': mensagem_str}
-                
-                # Extract order data - Bling webhooks nest the actual order in a 'data' field
+
                 order_data, company_id, bling_integration_hint, webhook_event_id, bling_id, numero, numero_loja = _extract_order_context(data)
                 webhook_correlation_id = generate_correlation_id()
 
@@ -562,6 +616,11 @@ def consumir_fila_bling(correlation_id=None):
                     correlation_id=webhook_correlation_id,
                     queue_name=BLING_WEBHOOK_QUEUE,
                 )
+                _update_webhook_event(
+                    webhook_event_id,
+                    last_status='processing',
+                    last_attempt_at=get_now_iso(),
+                )
 
                 if invalid_queue_item:
                     failed_payload = _mark_failure_payload(data, error_type='invalid_payload', message='payload vazio ou nao-dict')
@@ -575,7 +634,6 @@ def consumir_fila_bling(correlation_id=None):
                     )
                     continue
 
-                # Check for minimum required fields to avoid CNPJ errors
                 if not bling_id and not numero and not numero_loja:
                     logger.error(f"Payload sem campos obrigatórios (id, numero, numeroLoja). Payload: {mensagem_str[:200]}")
                     _move_failure_to_dead_letter(
@@ -625,7 +683,6 @@ def consumir_fila_bling(correlation_id=None):
                     )
                     processados += 1
                 else:
-                    # Falha real no processamento (ex: erro de API ou Banco)
                     logger.error(f"Falha ao processar webhook: {msg_result}")
                     failed_payload = _mark_failure_payload(data, error_type=error_type, message=msg_result or 'processing_error')
                     failed_payload['correlation_id'] = result.get('correlation_id') or webhook_correlation_id
@@ -677,25 +734,135 @@ def consumir_fila_bling(correlation_id=None):
         return {'status': 'error', 'message': str(e)}
 
 
-def _extract_marketplace_context(source: str, data: dict):
-    body = data.get('data') if isinstance(data.get('data'), dict) else data
-    if source == 'shopee':
-        orders = body.get('orders') if isinstance(body.get('orders'), list) else []
-        order_id = (
-            body.get('order_sn')
-            or body.get('ordersn')
-            or body.get('order_id')
-            or ((orders[0] or {}).get('order_sn') if orders else None)
-        )
-        shop_id = body.get('shop_id') or body.get('shopid') or data.get('shop_id')
-        return body, shop_id, order_id
+def _drain_marketplace_wake_queue(r, queue_name: str, limit: int = 200) -> int:
+    drained = 0
+    while drained < limit:
+        item = r.lpop(queue_name)
+        if not item:
+            break
+        drained += 1
+    return drained
 
-    resource = str(body.get('resource') or body.get('topic') or '')
-    order_id = body.get('order_id') or body.get('id')
-    if not order_id and '/orders/' in resource:
-        order_id = resource.rstrip('/').split('/orders/')[-1]
-    shop_id = body.get('user_id') or body.get('seller_id') or data.get('user_id')
-    return body, shop_id, order_id
+
+def _marketplace_order_key(event: dict) -> str:
+    company_id = str(event.get('company_id') or '').strip()
+    numero_loja = str(event.get('numero_loja') or '').strip()
+    if not numero_loja:
+        return f"event:{event.get('id')}"
+    return f"{company_id}:{numero_loja}" if company_id else numero_loja
+
+
+def _processing_lock_expired(event: dict) -> bool:
+    started_at = parse_datetime(event.get('processing_started_at'))
+    if not started_at:
+        return True
+    return started_at <= (get_now() - timedelta(seconds=MARKETPLACE_WEBHOOK_QUEUE_LOCK_SECONDS))
+
+
+def _event_retry_ready(event: dict) -> bool:
+    next_attempt = parse_datetime(event.get('next_attempt_after'))
+    return not next_attempt or next_attempt <= get_now()
+
+
+def _load_next_marketplace_event(source: str, *, limit: int = 500) -> dict | None:
+    try:
+        rows = (
+            supabase_db.table('webhook_events')
+            .select('*')
+            .eq('source', source)
+            .in_('last_status', list(MARKETPLACE_PENDING_STATUSES))
+            .order('received_at', desc=False)
+            .limit(limit)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        logger.error("Erro ao consultar webhook_events pendentes source=%s: %s", source, exc)
+        return None
+
+    first_unresolved_by_order = {}
+    for row in rows:
+        key = _marketplace_order_key(row)
+        first_unresolved_by_order.setdefault(key, row)
+
+    for row in rows:
+        key = _marketplace_order_key(row)
+        if (first_unresolved_by_order.get(key) or {}).get('id') != row.get('id'):
+            continue
+        if row.get('last_status') == 'processing' and not _processing_lock_expired(row):
+            continue
+        if not _event_retry_ready(row):
+            continue
+        return row
+    return None
+
+
+def _has_pending_marketplace_events(source: str) -> bool:
+    try:
+        rows = (
+            supabase_db.table('webhook_events')
+            .select('id')
+            .eq('source', source)
+            .in_('last_status', list(MARKETPLACE_PENDING_STATUSES))
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        return bool(rows)
+    except Exception:
+        return False
+
+
+def _mark_marketplace_processing(webhook_event_id: int, correlation_id: str) -> None:
+    _update_webhook_event(
+        webhook_event_id,
+        last_status='processing',
+        processing_started_at=get_now_iso(),
+        processing_correlation_id=correlation_id,
+        last_attempt_at=get_now_iso(),
+    )
+
+
+def _finalize_marketplace_success(webhook_event_id: int, result: dict, *, order_id: str | None = None) -> None:
+    _update_webhook_event(
+        webhook_event_id,
+        pedido_id=result.get('pedido_id'),
+        numero_loja=result.get('external_order_id') or order_id,
+        last_status=result.get('event_status') or result.get('status') or 'success',
+        next_attempt_after=None,
+        processing_started_at=None,
+        processing_correlation_id=None,
+        last_error_type=None,
+        last_error_message=None,
+        last_attempt_at=get_now_iso(),
+    )
+
+
+def _schedule_marketplace_retry(webhook_event_id: int, event: dict, *, error_type: str, message: str, pedido_id=None, numero_loja=None) -> str:
+    now = get_now()
+    retry_expires_at = parse_datetime(event.get('retry_expires_at'))
+    if retry_expires_at and retry_expires_at <= now:
+        final_status = 'manual_intervention'
+        next_attempt_after = None
+    else:
+        final_status = 'pending_retry'
+        next_attempt_after = (now + timedelta(seconds=_retry_delay_seconds(event.get('attempt_count') or 1))).isoformat()
+
+    _update_webhook_event(
+        webhook_event_id,
+        pedido_id=pedido_id,
+        numero_loja=numero_loja or event.get('numero_loja'),
+        last_status=final_status,
+        next_attempt_after=next_attempt_after,
+        processing_started_at=None,
+        processing_correlation_id=None,
+        last_error_type=error_type,
+        last_error_message=str(message or error_type)[:4000],
+        last_attempt_at=get_now_iso(),
+    )
+    return final_status
 
 
 def _consume_marketplace_queue(source: str, queue_name: str, failure_queue: str, dead_letter_queue: str, correlation_id=None):
@@ -714,78 +881,53 @@ def _consume_marketplace_queue(source: str, queue_name: str, failure_queue: str,
     blocked = False
 
     try:
+        _drain_marketplace_wake_queue(r, queue_name)
+
         for _ in range(50):
-            mensagem_str = r.lindex(queue_name, 0)
-            if not mensagem_str:
+            event = _load_next_marketplace_event(source)
+            if not event:
+                blocked = _has_pending_marketplace_events(source)
                 break
 
-            data = None
-            attempt_id = None
-            webhook_event_id = None
+            webhook_event_id = event.get('id')
             webhook_correlation_id = generate_correlation_id()
+            attempt_id = None
+            data = event.get('raw_payload') if isinstance(event.get('raw_payload'), dict) else None
+
             try:
-                data = _parse_queue_item(mensagem_str)
-                invalid_queue_item = not data or not isinstance(data, dict)
-                if invalid_queue_item:
-                    data = {'raw_message': mensagem_str}
-
-                if _next_attempt_pending(data):
-                    blocked = True
-                    logger.info(
-                        "[webhook-queue] source=%s queue=%s aguardando retry webhook_event_id=%s next_attempt_after=%s",
-                        source,
-                        queue_name,
-                        data.get('webhook_event_id'),
-                        data.get('next_attempt_after'),
-                    )
-                    break
-
-                body, shop_id, order_id = _extract_marketplace_context(source, data)
-                webhook_event_id = data.get('webhook_event_id')
-                logger.info(
-                    "[webhook-queue] consuming source=%s queue=%s webhook_event_id=%s shop_id=%s order_id=%s keys=%s",
-                    source,
-                    queue_name,
-                    webhook_event_id,
-                    shop_id,
-                    order_id,
-                    sorted(body.keys()) if isinstance(body, dict) else [],
-                )
-                if not webhook_event_id:
-                    webhook_event_id = _insert_webhook_event(
-                        data,
-                        source=source,
-                        company_id=str(shop_id) if shop_id else None,
-                        bling_id=None,
-                        numero_loja=order_id,
-                        correlation_id=webhook_correlation_id,
-                    )
-                    if webhook_event_id:
-                        data['webhook_event_id'] = webhook_event_id
-
+                _mark_marketplace_processing(webhook_event_id, webhook_correlation_id)
                 attempt_id, _attempt_number = _create_webhook_attempt(
                     webhook_event_id,
                     correlation_id=webhook_correlation_id,
                     queue_name=queue_name,
                 )
 
+                invalid_queue_item = not data or not isinstance(data, dict)
                 if invalid_queue_item:
-                    failed_payload = _mark_retry_in_place_payload(
-                        data,
+                    final_status = _schedule_marketplace_retry(
+                        webhook_event_id,
+                        event,
                         error_type='invalid_payload',
                         message='payload vazio ou nao-dict',
                     )
                     _finish_webhook_attempt(
                         attempt_id,
-                        status='failed',
+                        status='failed' if final_status != 'manual_intervention' else 'manual_intervention',
                         error_type='invalid_payload',
                         error_message='payload vazio ou nao-dict',
-                        result_summary={'retry_mode': 'in_place'},
+                        result_summary={'retry_mode': 'same_event', 'final_status': final_status},
                     )
-                    _update_webhook_event(webhook_event_id, last_status='retry_scheduled', last_attempt_at=get_now_iso())
-                    _replace_queue_head(r, queue_name, failed_payload)
-                    blocked = True
-                    break
+                    continue
+
+                body, shop_id, order_id, _provider_event_id = _extract_marketplace_context(source, data)
+                logger.info(
+                    "[webhook-queue] consuming source=%s webhook_event_id=%s shop_id=%s order_id=%s keys=%s",
+                    source,
+                    webhook_event_id,
+                    shop_id,
+                    order_id,
+                    sorted(body.keys()) if isinstance(body, dict) else [],
+                )
 
                 result = marketplace_webhook_ingest_service.process(
                     source,
@@ -797,68 +939,57 @@ def _consume_marketplace_queue(source: str, queue_name: str, failure_queue: str,
                     "[webhook-queue] processed source=%s webhook_event_id=%s status=%s pedido_id=%s external_order_id=%s event_status=%s",
                     source,
                     webhook_event_id,
-                    result.get("status"),
-                    result.get("pedido_id"),
-                    result.get("external_order_id"),
-                    result.get("event_status"),
+                    result.get('status'),
+                    result.get('pedido_id'),
+                    result.get('external_order_id'),
+                    result.get('event_status'),
                 )
                 status_result = result.get('status', 'unknown')
-                event_status = result.get('event_status') or status_result
 
-                if status_result == 'success' or status_result == 'skipped':
+                if status_result in ('success', 'skipped'):
                     _finish_webhook_attempt(attempt_id, status=status_result, result_summary=result)
-                    _update_webhook_event(
+                    _finalize_marketplace_success(
                         webhook_event_id,
-                        pedido_id=result.get('pedido_id'),
-                        numero_loja=result.get('external_order_id') or order_id,
-                        last_status=event_status,
-                        last_attempt_at=get_now_iso(),
+                        result,
+                        order_id=str(order_id) if order_id not in (None, '') else None,
                     )
-                    _ack_queue_head(r, queue_name)
                     processados += 1
                     continue
 
-                failed_payload = _mark_retry_in_place_payload(
-                    data,
-                    error_type=result.get('error_type') or 'processing_error',
+                final_status = _schedule_marketplace_retry(
+                    webhook_event_id,
+                    event,
+                    error_type=result.get('error_type') or result.get('event_status') or 'processing_error',
                     message=result.get('message') or 'processing_error',
+                    pedido_id=result.get('pedido_id'),
+                    numero_loja=result.get('external_order_id') or (str(order_id) if order_id not in (None, '') else None),
                 )
                 _finish_webhook_attempt(
                     attempt_id,
-                    status='failed',
+                    status='failed' if final_status != 'manual_intervention' else 'manual_intervention',
                     error_type=result.get('error_type') or 'processing_error',
                     error_message=result.get('message') or 'processing_error',
-                    result_summary={**result, 'retry_mode': 'in_place'},
+                    result_summary={**result, 'retry_mode': 'same_event', 'final_status': final_status},
                 )
-                _update_webhook_event(webhook_event_id, last_status='retry_scheduled', last_attempt_at=get_now_iso())
-                _replace_queue_head(r, queue_name, failed_payload)
-                blocked = True
-                break
             except Exception as e:
                 logger.error("Erro critico ao processar webhook %s: %s", source, e, exc_info=True)
-                failed_payload = _mark_retry_in_place_payload(
-                    data if isinstance(data, dict) else {'raw_message': mensagem_str},
+                final_status = _schedule_marketplace_retry(
+                    webhook_event_id,
+                    event,
                     error_type='consumer_exception',
                     message=str(e),
                 )
-                if webhook_event_id and 'webhook_event_id' not in failed_payload:
-                    failed_payload['webhook_event_id'] = webhook_event_id
                 _finish_webhook_attempt(
                     attempt_id,
-                    status='failed',
+                    status='failed' if final_status != 'manual_intervention' else 'manual_intervention',
                     error_type='consumer_exception',
                     error_message=str(e),
-                    result_summary={'retry_mode': 'in_place'},
+                    result_summary={'retry_mode': 'same_event', 'final_status': final_status},
                 )
-                _update_webhook_event(webhook_event_id, last_status='retry_scheduled', last_attempt_at=get_now_iso())
-                _replace_queue_head(r, queue_name, failed_payload)
-                blocked = True
-                break
     finally:
         _release_queue_lock(r, lock_key, lock_value)
 
     return {'status': 'success', 'sent': processados, 'source': source, 'blocked': blocked}
-
 
 @shared_task(name='nistiprint_shared.services.redis_queue_tasks.consumir_fila_shopee')
 @log_shared_task_execution(task_type='INTEGRACAO')
@@ -903,3 +1034,13 @@ def sync_firestore_tokens(correlation_id=None):
         'status': 'skipped',
         'message': 'Sincronizacao automatica com Firebase desativada; use o sync manual para importar tokens validos.',
     }
+
+
+
+
+
+
+
+
+
+

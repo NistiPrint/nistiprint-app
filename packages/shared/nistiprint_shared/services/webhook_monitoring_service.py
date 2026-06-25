@@ -1,4 +1,4 @@
-import copy
+﻿import copy
 import logging
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -247,10 +247,10 @@ class WebhookMonitoringService:
             return {'success': False, 'error': 'Evento de webhook nao encontrado', 'status_code': 404}
 
         event = rows[0]
-        if event.get('last_status') not in ('failed', 'dead_letter'):
+        if event.get('last_status') not in ('failed', 'dead_letter', 'manual_intervention', 'pending_retry'):
             return {
                 'success': False,
-                'error': 'Apenas eventos com status failed ou dead_letter podem ser reprocessados',
+                'error': 'Apenas eventos com status failed, dead_letter, pending_retry ou manual_intervention podem ser reprocessados',
                 'status_code': 400,
             }
 
@@ -258,19 +258,30 @@ class WebhookMonitoringService:
         if not isinstance(raw_payload, dict) or not raw_payload:
             return {'success': False, 'error': 'Evento sem raw_payload reutilizavel', 'status_code': 400}
 
-        queued_payload = dict(raw_payload)
-        queued_payload['webhook_event_id'] = event['id']
-        queued_payload['reprocess_requested_at'] = get_now_iso()
-        for key in ('last_error', 'last_error_type', 'last_failed_at', 'dead_letter_reason', 'dead_lettered_at'):
-            queued_payload.pop(key, None)
-
         source = event.get('source') or 'bling'
         target_queue = WEBHOOK_QUEUE_BY_SOURCE.get(source, BLING_WEBHOOK_QUEUE)
+        if source == 'bling':
+            queued_payload = dict(raw_payload)
+            queued_payload['webhook_event_id'] = event['id']
+            queued_payload['reprocess_requested_at'] = get_now_iso()
+            for key in ('last_error', 'last_error_type', 'last_failed_at', 'dead_letter_reason', 'dead_lettered_at'):
+                queued_payload.pop(key, None)
+        else:
+            queued_payload = {
+                'webhook_event_id': event['id'],
+                'reprocess_requested_at': get_now_iso(),
+            }
+
         get_redis_client().rpush(target_queue, _serialize_queue_item(queued_payload))
 
         supabase_db.table('webhook_events').update({
             'last_status': 'pending',
             'last_attempt_at': get_now_iso(),
+            'next_attempt_after': None,
+            'processing_started_at': None,
+            'processing_correlation_id': None,
+            'last_error_type': None,
+            'last_error_message': None,
         }).eq('id', event_id).execute()
 
         return {
@@ -280,5 +291,7 @@ class WebhookMonitoringService:
             'queue': target_queue,
         }
 
-
 webhook_monitoring_service = WebhookMonitoringService()
+
+
+

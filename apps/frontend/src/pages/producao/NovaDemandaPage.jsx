@@ -1,3 +1,5 @@
+﻿import ProductSearchInput from '@/components/produtos/ProductSearchInput';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -20,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from '@/components/ui/textarea';
+import { DEMANDA_FLOW_OPTIONS, deriveDemandFlow, getDemandFlowConfig, getModalidadeLabel } from '@/lib/demandaFlow';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Briefcase, ClipboardPaste, Edit, Loader2, PlusCircle, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -27,7 +30,6 @@ import { useFieldArray, useForm } from 'react-hook-form';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { z } from 'zod';
-import ProductSearchInput from '@/components/produtos/ProductSearchInput';
 
 const INTERACAO_STATUS_OPTIONS = [
     'Aguardando arte',
@@ -51,15 +53,16 @@ const itemSchema = z.object({
 });
 
 const formSchema = z.object({
-  nome: z.string().min(1, { message: "Nome da Demanda é obrigatório." }),
-  canal_venda_id: z.string().min(1, { message: "Canal de Venda é obrigatório." }),
-  data_entrega: z.string().min(1, { message: "Data de Entrega é obrigatória." }),
+  fluxo_demanda: z.enum(['venda_diaria', 'fulfillment', 'venda_corporativa', 'producao_interna']).default('venda_diaria'),
+  nome: z.string().min(1, { message: "Nome da demanda é obrigatório." }),
+  canal_venda_id: z.string().min(1, { message: "Canal / origem é obrigatório." }),
+  data_entrega: z.string().min(1, { message: "Data de entrega é obrigatória." }),
   horario_coleta_especifico: z.string().optional(),
   data_finalizacao_prevista: z.string().optional(),
   observacoes: z.string().optional(),
 
   // Novos campos de refatoração
-  modalidade_logistica: z.enum(['STANDARD', 'EXPRESS', 'FULFILLMENT', 'RETIRADA'], { message: "Modalidade logística é obrigatória." }).default('STANDARD'),
+  modalidade_logistica: z.enum(['STANDARD', 'EXPRESS', 'FULFILLMENT', 'RETIRADA'], { message: "Modalidade logí­stica é obrigatória." }).default('STANDARD'),
   classificacao_cliente: z.enum(['B2C', 'B2B', 'INTERNO'], { message: "Classificação do cliente é obrigatória." }).default('B2C'),
 
   // B2B specific fields, conditional
@@ -71,13 +74,13 @@ const formSchema = z.object({
   empresa_responsavel_id: z.string().optional(),
   empresa_responsavel_nome: z.string().optional(),
 
-  itens: z.array(itemSchema).min(1, { message: "É necessário pelo menos um item." })
+  itens: z.array(itemSchema).min(1, { message: "í‰ necessário pelo menos um item." })
 }).superRefine((data, ctx) => {
-  if (data.classificacao_cliente === 'B2B') {
+  if (data.fluxo_demanda === 'venda_corporativa') {
     if (!data.empresa_cliente_nome) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Nome da Empresa/Cliente é obrigatório para demandas B2B.",
+        message: "Empresa / cliente é obrigatório para demandas B2B.",
         path: ['empresa_cliente_nome'],
       });
     }
@@ -122,6 +125,7 @@ function NovaDemandaPage() {
   const form = useForm({
     resolver: zodResolver(formSchema),
     defaultValues: {
+      fluxo_demanda: 'venda_diaria',
       nome: '',
       canal_venda_id: '',
       data_entrega: '',
@@ -149,7 +153,8 @@ function NovaDemandaPage() {
   const [userEditedHorario, setUserEditedHorario] = useState(false);
   const [userEditedFinalizacao, setUserEditedFinalizacao] = useState(false);
 
-  const watchClassificacao = form.watch("classificacao_cliente");
+  const watchFlow = form.watch('fluxo_demanda');
+  const flowConfig = getDemandFlowConfig(watchFlow);
   const watchCanalVenda = form.watch("canal_venda_id");
   const watchDataEntrega = form.watch("data_entrega");
   const watchHorarioColeta = form.watch("horario_coleta_especifico");
@@ -195,6 +200,7 @@ function NovaDemandaPage() {
                 }
 
                 form.reset({
+                    fluxo_demanda: deriveDemandFlow(d),
                     nome: d.nome || '',
                     canal_venda_id: d.canal_venda_id ? String(d.canal_venda_id) : '',
                     data_entrega: formattedDateEntrega,
@@ -239,7 +245,14 @@ function NovaDemandaPage() {
     fetchInitialData();
   }, [isEditing, id, form, navigate]);
 
-  // Preencher automaticamente o horário de coleta quando o canal de venda é selecionado
+  useEffect(() => {
+    const currentFlow = getDemandFlowConfig(watchFlow);
+    if (!currentFlow) return;
+    form.setValue('classificacao_cliente', currentFlow.classificacao_cliente);
+    form.setValue('modalidade_logistica', currentFlow.modalidade_logistica);
+  }, [watchFlow, form]);
+
+  // Preencher automaticamente o horario de coleta quando o canal de venda e selecionado
   useEffect(() => {
     if (watchCanalVenda && !userEditedHorario) {
       const canal = channels.find(c => String(c.id) === watchCanalVenda);
@@ -297,7 +310,7 @@ function NovaDemandaPage() {
 
   const handlePasteItems = async () => {
     if (!navigator.clipboard || !navigator.clipboard.readText) {
-      toast.error("Seu navegador não suporta leitura de clipboard ou permissão negada. Tente usar HTTPS.");
+      toast.error("Seu navegador nío suporta leitura de clipboard ou permissío negada. Tente usar HTTPS.");
       return;
     }
 
@@ -366,7 +379,7 @@ function NovaDemandaPage() {
 
         toast.success(`${newItems.length} itens adicionados do clipboard!`);
       } else {
-        toast.warning("Nenhum item válido encontrado no clipboard. Certifique-se de que os dados estão separados por TAB.");
+        toast.warning("Nenhum item válido encontrado no clipboard. Certifique-se de que os dados estío separados por TAB.");
       }
     } catch (err) {
       console.error("Failed to read clipboard contents: ", err);
@@ -408,16 +421,16 @@ function NovaDemandaPage() {
 
       // Corrige o fuso horário da data de entrega para evitar deslocamento de um dia
       if (data.data_entrega) {
-        // Converte a data para o início do dia no fuso horário local
+        // Converte a data para o iní­cio do dia no fuso horário local
         const dataEntrega = new Date(data.data_entrega);
-        // Garante que a data seja tratada como início do dia (00:00:00) no fuso horário local
+        // Garante que a data seja tratada como iní­cio do dia (00:00:00) no fuso horário local
         data.data_entrega = dataEntrega.toISOString().split('T')[0];
       }
 
-      // Legado: mapeia classificacao para tipo_demanda
-      const tipo_demanda = data.classificacao_cliente === 'B2B' ? 'B2B' : (data.classificacao_cliente === 'INTERNO' ? 'ESTOQUE_INTERNO' : 'PLATAFORMA');
+      const selectedFlow = getDemandFlowConfig(data.fluxo_demanda);
+      const tipo_demanda = selectedFlow.tipo_demanda;
 
-      let url = data.classificacao_cliente === 'B2B'
+      let url = selectedFlow.tipo_demanda === 'B2B'
         ? '/api/v2/demanda_producao/empresas'
         : '/api/v2/demanda_producao/';
 
@@ -432,6 +445,8 @@ function NovaDemandaPage() {
         ...data,
         is_draft: isDraft,
         tipo_demanda: tipo_demanda,
+        classificacao_cliente: selectedFlow.classificacao_cliente,
+        modalidade_logistica: selectedFlow.modalidade_logistica,
         // Mapeamento para manter compatibilidade com campos antigos
         is_flex: data.modalidade_logistica === 'EXPRESS',
         fulfillment: data.modalidade_logistica === 'FULFILLMENT',
@@ -442,7 +457,7 @@ function NovaDemandaPage() {
         }))
       };
 
-      if (processedPayload.classificacao_cliente !== 'B2B') {
+      if (selectedFlow.tipo_demanda !== 'B2B') {
         delete processedPayload.empresa_cliente_nome;
         delete processedPayload.empresa_wire_o_cor;
         delete processedPayload.empresa_elastico_cor;
@@ -479,7 +494,7 @@ function NovaDemandaPage() {
     <Card className="max-w-[95%] mx-auto">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          {isEditing ? <Edit className="h-5 w-5" /> : (watchClassificacao === 'B2B' ? <Briefcase className="h-5 w-5" /> : <PlusCircle className="h-5 w-5" />)}
+          {isEditing ? <Edit className="h-5 w-5" /> : (watchFlow === 'venda_corporativa' ? <Briefcase className="h-5 w-5" /> : <PlusCircle className="h-5 w-5" />)}
           {isEditing ? 'Editar Demanda' : 'Nova Demanda'}
         </CardTitle>
       </CardHeader>
@@ -487,66 +502,52 @@ function NovaDemandaPage() {
         <Form {...form}>
           <form onSubmit={(e) => { e.preventDefault(); form.handleSubmit((data) => onSubmit(data, false))(e); }} className="space-y-6">
             
-            {/* Classificação e Modalidade */}
+            {/* Fluxo da demanda */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <FormField
+              <FormField
                 control={form.control}
-                name="classificacao_cliente"
-                render={({ field }) => (
-                    <FormItem>
-                    <FormLabel>Classificação do Cliente</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                        <SelectTrigger>
-                            <SelectValue placeholder="Selecione a classificação" />
-                        </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                            <SelectItem value="B2C">B2C (Consumidor Final)</SelectItem>
-                            <SelectItem value="B2B">B2B (Venda Corporativa)</SelectItem>
-                            <SelectItem value="INTERNO">Interno (Estoque/Amostra)</SelectItem>
-                        </SelectContent>
-                    </Select>
-                    <FormMessage />
-                    </FormItem>
-                )}
-                />
-                <FormField
-                control={form.control}
-                name="modalidade_logistica"
+                name="fluxo_demanda"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Modalidade Logística</FormLabel>
+                    <FormLabel>Fluxo da demanda</FormLabel>
                     <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
                         <SelectTrigger>
-                          <SelectValue placeholder="Selecione a modalidade" />
+                          <SelectValue placeholder="Selecione o fluxo" />
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="STANDARD">Padrão</SelectItem>
-                        <SelectItem value="EXPRESS">Expressa (Flex)</SelectItem>
-                        <SelectItem value="FULFILLMENT">Fulfillment</SelectItem>
-                        <SelectItem value="RETIRADA">Retirada</SelectItem>
+                        {DEMANDA_FLOW_OPTIONS.map((option) => (
+                          <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                     <FormMessage />
                   </FormItem>
                 )}
               />
+
+              <div className="rounded-xl border bg-muted/40 p-4 text-sm">
+                <div className="font-semibold">{flowConfig.label}</div>
+                <p className="mt-1 text-muted-foreground">{flowConfig.description}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">Tipo: {flowConfig.tipo_demanda}</Badge>
+                  <Badge variant="outline">Modalidade: {getModalidadeLabel(flowConfig.modalidade_logistica)}</Badge>
+                </div>
+              </div>
             </div>
-            
+
             <Separator className="my-2" />
 
             {/* General Demand Fields */}
-            <h3 className="text-lg font-semibold border-b pb-2 mb-4">Dados Gerais</h3>
+            <h3 className="text-lg font-semibold border-b pb-2 mb-4">Dados essenciais</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <FormField
                 control={form.control}
                 name="nome"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Nome da Demanda</FormLabel>
+                    <FormLabel>Nome da demanda</FormLabel>
                     <FormControl>
                       <Input placeholder="Ex: Pedido Bling 12345" {...field} />
                     </FormControl>
@@ -559,7 +560,7 @@ function NovaDemandaPage() {
                 name="canal_venda_id"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Canal de Venda</FormLabel>
+                    <FormLabel>Canal / origem</FormLabel>
                     <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
                         <SelectTrigger>
@@ -583,7 +584,7 @@ function NovaDemandaPage() {
                 name="data_entrega"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Data de Entrega</FormLabel>
+                    <FormLabel>Data de entrega</FormLabel>
                     <FormControl>
                       <Input type="date" {...field} />
                     </FormControl>
@@ -648,16 +649,16 @@ function NovaDemandaPage() {
             </div>
 
             {/* B2B Specific Fields */}
-            {watchClassificacao === 'B2B' && (
+            {watchFlow === 'venda_corporativa' && (
               <>
-                <h3 className="text-lg font-semibold border-b pb-2 mb-4 mt-6">Detalhes B2B</h3>
+                <h3 className="text-lg font-semibold border-b pb-2 mb-4 mt-6">Detalhes da venda corporativa</h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <FormField
                     control={form.control}
                     name="empresa_cliente_nome"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Nome da Empresa/Cliente</FormLabel>
+                        <FormLabel>Empresa / cliente</FormLabel>
                         <FormControl>
                           <Input placeholder="Nome da empresa" {...field} />
                         </FormControl>
@@ -670,9 +671,9 @@ function NovaDemandaPage() {
                     name="empresa_pedido_plataforma_numero"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Nº Pedido Plataforma</FormLabel>
+                        <FormLabel>NÂº Pedido Plataforma</FormLabel>
                         <FormControl>
-                          <Input placeholder="Nº pedido externo" {...field} />
+                          <Input placeholder="NÂº pedido externo" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -696,7 +697,7 @@ function NovaDemandaPage() {
                     name="empresa_wire_o_cor"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Cor Wire-o</FormLabel>
+                        <FormLabel>Cor do wire-o</FormLabel>
                         <FormControl>
                           <Input type="color" {...field} className="h-10 w-full" />
                         </FormControl>
@@ -745,13 +746,13 @@ function NovaDemandaPage() {
 
             {/* Demand Items */}
             <div className="flex items-center justify-between border-b pb-2 mb-4 mt-8">
-                <h3 className="text-lg font-semibold">Itens da Demanda</h3>
+                <h3 className="text-lg font-semibold">Itens da demanda</h3>
                 <div className="flex gap-2">
                      <Button type="button" variant="outline" onClick={handlePasteItems}>
-                        <ClipboardPaste className="mr-2 h-4 w-4" /> Colar Itens (Tabular)
+                        <ClipboardPaste className="mr-2 h-4 w-4" /> Colar itens da planilha
                     </Button>
                     <Button type="button" variant="outline" onClick={() => appendItem({ product_id: null, quantidade: 1, descricao: '', sku: '', variacao: '', miolo_nome: '', id_produto_miolo: null, observacoes: '' })}>
-                        <PlusCircle className="mr-2 h-4 w-4" /> Adicionar Manual
+                        <PlusCircle className="mr-2 h-4 w-4" /> Adicionar item
                     </Button>
                 </div>
             </div>

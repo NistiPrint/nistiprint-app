@@ -696,9 +696,12 @@ function ConsolidarPage() {
                     </div>
 
                     <div className="flex flex-wrap gap-6 items-center border-t border-b py-4">
-                        <div className="flex items-center space-x-2">
-                          <Checkbox id="print_orders" checked={printOrders} onCheckedChange={setPrintOrders} />
-                          <Label htmlFor="print_orders" className="cursor-pointer">Imprimir pedidos e gerar notas</Label>
+                        <div className="space-y-1">
+                          <div className="flex items-center space-x-2">
+                            <Checkbox id="print_orders" checked={printOrders} onCheckedChange={setPrintOrders} />
+                            <Label htmlFor="print_orders" className="cursor-pointer">Preparar folhas de impressao</Label>
+                          </div>
+                          <p className="text-xs text-muted-foreground">A montagem usa primeiro os pedidos locais e so consulta o Bling para o que faltar.</p>
                         </div>
                         <div className="flex items-center space-x-2">
                           <Checkbox id="is_flex" checked={isFlex} onCheckedChange={setIsFlex} />
@@ -758,6 +761,13 @@ function ConsolidarPage() {
               <CardHeader className="flex flex-row items-center justify-between border-b bg-muted/20 py-3">
                 <CardTitle className="text-lg">{key} ({data.total_pedidos_plataforma} pedidos)</CardTitle>
                 <div className="flex gap-2">
+                  {data.print_order_resolution && (
+                    <div className="flex items-center gap-2 rounded-md border bg-white px-3 py-1 text-xs text-muted-foreground">
+                      <span>Local: {data.print_order_resolution.local}</span>
+                      <span>Bling: {data.print_order_resolution.bling}</span>
+                      {data.print_order_resolution.not_found > 0 && <span>Faltando: {data.print_order_resolution.not_found}</span>}
+                    </div>
+                  )}
                   {data.options?.print_orders && data.bling_orders_data && data.bling_orders_data.length > 0 && (
                     <>
                       <Button variant="outline" size="sm" onClick={() => printBlingData(key)} disabled={nfeGenerating}>

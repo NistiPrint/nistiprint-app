@@ -1,9 +1,17 @@
+import { DEMANDA_FLOW_OPTIONS } from '@/lib/demandaFlow'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ChevronDown, ChevronUp, Filter, Search, X } from 'lucide-react'
 import { useState } from 'react'
+
+const STATUS_OPTIONS = [
+  { value: 'all', label: 'Ativas' },
+  { value: 'draft', label: 'Rascunhos' },
+  { value: 'completed', label: 'Finalizadas' },
+  { value: 'pending', label: 'Pendentes' },
+]
 
 function FiltersSection({
   searchTerm,
@@ -21,94 +29,92 @@ function FiltersSection({
   uniqueChannels,
   clearFilters,
   hasActiveFilters,
-  onApplyFilters
+  onApplyFilters,
 }) {
   const [isExpanded, setIsExpanded] = useState(false)
 
   return (
-    <div className='bg-white rounded-lg border shadow-sm mb-6'>
-      {/* Barra Superior - Sempre Visível */}
-      <div className='p-4 border-b'>
-        <div className='flex items-center justify-between'>
-          <div className='flex items-center gap-4'>
-            {/* Toggle de Visualização */}
-            <div className='flex items-center gap-2'>
-              <span className='text-sm font-medium text-gray-700'>Visualização:</span>
-              <div className='flex gap-1'>
+    <div className='mb-6 rounded-2xl border bg-white shadow-sm'>
+      <div className='border-b p-4'>
+        <div className='flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between'>
+          <div className='flex flex-col gap-4 lg:flex-row lg:items-center'>
+            <div className='flex flex-wrap gap-2'>
+              {STATUS_OPTIONS.map((option) => (
                 <Button
-                  size="sm"
-                  variant={viewMode === 'done' ? 'default' : 'outline'}
-                  onClick={() => setViewMode('done')}
+                  key={option.value}
+                  size='sm'
+                  variant={statusFilter === option.value ? 'default' : 'outline'}
+                  onClick={() => setStatusFilter(option.value)}
                 >
-                  Produção
+                  {option.label}
                 </Button>
-                <Button
-                  size="sm"
-                  variant={viewMode === 'todo' ? 'default' : 'outline'}
-                  onClick={() => setViewMode('todo')}
-                >
-                  Falta Produzir
-                </Button>
-              </div>
+              ))}
             </div>
 
-            {/* Busca Rápida */}
-            <div className='relative w-80'>
-              <Search className='absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground' />
-              <Input
-                placeholder='Buscar demanda por nome...'
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                className='pl-9'
-              />
+            <div className='flex items-center gap-2 rounded-xl bg-slate-50 p-1'>
+              <Button size='sm' variant={viewMode === 'done' ? 'default' : 'ghost'} onClick={() => setViewMode('done')}>
+                Producao
+              </Button>
+              <Button size='sm' variant={viewMode === 'todo' ? 'default' : 'ghost'} onClick={() => setViewMode('todo')}>
+                Falta produzir
+              </Button>
             </div>
           </div>
 
-          {/* Botão de Expandir/Recolher */}
-          <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-            <CollapsibleTrigger asChild>
-              <Button variant="outline" size="sm">
-                <Filter className="h-4 w-4 mr-2" />
-                Filtros Avançados
-                {isExpanded ? <ChevronUp className="h-4 w-4 ml-2" /> : <ChevronDown className="h-4 w-4 ml-2" />}
-              </Button>
-            </CollapsibleTrigger>
-          </Collapsible>
+          <div className='flex flex-col gap-3 sm:flex-row sm:items-center'>
+            <div className='relative w-full sm:w-80'>
+              <Search className='absolute left-3 top-3 h-4 w-4 text-muted-foreground' />
+              <Input
+                placeholder='Buscar por nome, numero ou contexto...'
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className='pl-9'
+              />
+            </div>
+
+            <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
+              <CollapsibleTrigger asChild>
+                <Button variant='outline'>
+                  <Filter className='mr-2 h-4 w-4' />
+                  Filtros avancados
+                  {isExpanded ? <ChevronUp className='ml-2 h-4 w-4' /> : <ChevronDown className='ml-2 h-4 w-4' />}
+                </Button>
+              </CollapsibleTrigger>
+            </Collapsible>
+          </div>
         </div>
       </div>
 
-      {/* Filtros Expandidos */}
       <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
         <CollapsibleContent>
-          <div className='p-4 space-y-4'>
-            <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4'>
-              {/* Status */}
+          <div className='space-y-4 p-4'>
+            <div className='grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4'>
               <div>
-                <label className='block text-sm font-medium text-gray-700 mb-1'>Status da Demanda</label>
-                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <label className='mb-1 block text-sm font-medium text-gray-700'>Fluxo</label>
+                <Select value={classificacaoFilter} onValueChange={setClassificacaoFilter}>
                   <SelectTrigger>
-                    <SelectValue placeholder='Todos os Status' />
+                    <SelectValue placeholder='Todos os fluxos' />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value='all'>Todos os Status</SelectItem>
-                    <SelectItem value='draft'>Rascunho</SelectItem>
-                    <SelectItem value='pending'>Pendente</SelectItem>
-                    <SelectItem value='production'>Em Produção</SelectItem>
-                    <SelectItem value='completed'>Finalizado</SelectItem>
+                    <SelectItem value='all'>Todos os fluxos</SelectItem>
+                    {DEMANDA_FLOW_OPTIONS.map((option) => (
+                      <SelectItem key={option.id} value={option.id}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
 
-              {/* Canal de Venda */}
               <div>
-                <label className='block text-sm font-medium text-gray-700 mb-1'>Canal de Venda</label>
+                <label className='mb-1 block text-sm font-medium text-gray-700'>Canal</label>
                 <Select value={channelFilter} onValueChange={setChannelFilter}>
                   <SelectTrigger>
-                    <SelectValue placeholder='Todos os Canais' />
+                    <SelectValue placeholder='Todos os canais' />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value='all'>Todos os Canais</SelectItem>
-                    {uniqueChannels.map(channel => (
+                    <SelectItem value='all'>Todos os canais</SelectItem>
+                    {uniqueChannels.map((channel) => (
                       <SelectItem key={channel} value={channel}>
                         {channel}
                       </SelectItem>
@@ -117,57 +123,54 @@ function FiltersSection({
                 </Select>
               </div>
 
-              {/* Modalidade Logística */}
               <div>
-                <label className='block text-sm font-medium text-gray-700 mb-1'>Modalidade Logística</label>
+                <label className='mb-1 block text-sm font-medium text-gray-700'>Modalidade</label>
                 <Select value={modalidadeFilter} onValueChange={setModalidadeFilter}>
                   <SelectTrigger>
-                    <SelectValue placeholder='Todos os Tipos' />
+                    <SelectValue placeholder='Todas as modalidades' />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value='all'>Todos os Tipos</SelectItem>
-                    <SelectItem value='standard'>Padrão</SelectItem>
-                    <SelectItem value='express'>Expressa (Flex)</SelectItem>
+                    <SelectItem value='all'>Todas as modalidades</SelectItem>
+                    <SelectItem value='standard'>Padrao</SelectItem>
+                    <SelectItem value='express'>Expressa</SelectItem>
                     <SelectItem value='fulfillment'>Fulfillment</SelectItem>
                     <SelectItem value='retirada'>Retirada</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              {/* Classificação do Cliente */}
               <div>
-                <label className='block text-sm font-medium text-gray-700 mb-1'>Classificação do Cliente</label>
-                <Select value={classificacaoFilter} onValueChange={setClassificacaoFilter}>
+                <label className='mb-1 block text-sm font-medium text-gray-700'>Situacao detalhada</label>
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
                   <SelectTrigger>
-                    <SelectValue placeholder='Todos os Tipos' />
+                    <SelectValue placeholder='Escolha a situacao' />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value='all'>Todos os Tipos</SelectItem>
-                    <SelectItem value='b2c'>B2C (Consumidor Final)</SelectItem>
-                    <SelectItem value='b2b'>B2B (Venda Corporativa)</SelectItem>
-                    <SelectItem value='interno'>Interno (Estoque/Amostra)</SelectItem>
+                    <SelectItem value='all'>Ativas</SelectItem>
+                    <SelectItem value='draft'>Rascunhos</SelectItem>
+                    <SelectItem value='pending'>Pendentes</SelectItem>
+                    <SelectItem value='production'>Em producao</SelectItem>
+                    <SelectItem value='completed'>Finalizadas</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
             </div>
 
-            {/* Botões de Ação */}
-            <div className='flex items-center justify-between pt-4 border-t'>
-              <div className='flex gap-2'>
+            <div className='flex items-center justify-between border-t pt-4'>
+              <div>
                 {hasActiveFilters && (
-                  <Button variant='ghost' onClick={clearFilters} className='px-3'>
-                    <X className='h-4 w-4 mr-2' />
-                    Limpar Filtros
+                  <Button variant='ghost' onClick={clearFilters}>
+                    <X className='mr-2 h-4 w-4' />
+                    Limpar filtros
                   </Button>
                 )}
               </div>
+
               <div className='flex gap-2'>
                 <Button variant='outline' onClick={() => setIsExpanded(false)}>
-                  Cancelar
+                  Fechar
                 </Button>
-                <Button onClick={onApplyFilters}>
-                  Aplicar Filtros
-                </Button>
+                <Button onClick={onApplyFilters}>Aplicar filtros</Button>
               </div>
             </div>
           </div>

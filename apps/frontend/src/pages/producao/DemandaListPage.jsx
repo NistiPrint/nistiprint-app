@@ -11,6 +11,7 @@ import { useLayout } from '@/contexts/LayoutContext'
 import useDebounce from '@/lib/hooks/useDebounce'
 import { useRealtimeDemandas } from '@/lib/hooks/useRealtimeDemandas'
 import { CheckSquare, Factory, RefreshCw, Truck, X } from 'lucide-react'
+import { deriveDemandFlow } from '@/lib/demandaFlow'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
@@ -173,9 +174,7 @@ function DemandaListPage() {
       }
 
       if (classificacaoFilter !== 'all') {
-        if (classificacaoFilter === 'b2c' && demanda.classificacao_cliente !== 'B2C') return false
-        if (classificacaoFilter === 'b2b' && demanda.classificacao_cliente !== 'B2B') return false
-        if (classificacaoFilter === 'interno' && demanda.classificacao_cliente !== 'INTERNO') return false
+        if (deriveDemandFlow(demanda) !== classificacaoFilter) return false
       }
 
       return true
@@ -239,7 +238,6 @@ function DemandaListPage() {
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
 
       // Regras para Lateral (Normalizadas para evitar erros de case):
-      const tipo = (demanda.tipo_demanda || '').toUpperCase();
       const modalidade = (demanda.modalidade_logistica || '').toUpperCase();
       const isOperationalNow = diffDays <= 3 || modalidade === 'EXPRESS' || (demanda.manual_priority_score || 0) >= 50;
 
@@ -247,12 +245,8 @@ function DemandaListPage() {
       // 2. Fulfillment
       // 3. Estoque Interno / Interno
       // 4. Data entrega > 3 dias
-      const isLateralByNature = 
-        tipo === 'B2B' || 
-        tipo === 'EMPRESAS' ||
-        modalidade === 'FULFILLMENT' || 
-        tipo === 'ESTOQUE_INTERNO' || 
-        tipo === 'INTERNO';
+      const flow = deriveDemandFlow(demanda)
+      const isLateralByNature = flow === 'venda_corporativa' || flow === 'fulfillment' || flow === 'producao_interna'
 
       if (!isOperationalNow && (isLateralByNature || diffDays > 3)) {
         lateral.push(demanda)
@@ -537,7 +531,7 @@ function DemandaListPage() {
             <div className="flex items-center gap-3 mb-6 border-b pb-2">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">🔄 PRÓXIMOS</h2>
-                <p className="text-xs text-gray-500">Oportunidades de adiantamento</p>
+                <p className="text-xs text-gray-500">Venda corporativa, fulfillment e internas que podem ser puxadas na frente.</p>
               </div>
             </div>
 
