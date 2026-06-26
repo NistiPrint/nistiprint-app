@@ -39,7 +39,13 @@ logger = logging.getLogger("bling_order_processing")
 
 
 class BlingDetailUnavailableError(RuntimeError):
-    """Erro tipado para quando o detalhe do pedido no Bling não pode ser obtido."""
+    """Erro tipado para quando o detalhe do pedido no Bling nao pode ser obtido."""
+
+    def __init__(self, message: str, *, error_type: str = 'bling_detail_unavailable', retry_after: float | None = None):
+        super().__init__(message)
+        self.error_type = error_type
+        self.retry_after = retry_after
+
 
 
 @dataclass
@@ -934,11 +940,39 @@ def _fetch_bling_order_detail(bling_inst: dict, bling_order_id) -> dict:
             f"sem id para fetch detalhe Bling (inst={bling_inst.get('id')})"
         )
 
-    from nistiprint_shared.services.bling.bling_client import BlingClient
+    from nistiprint_shared.services.bling.bling_client import (
+        BlingClient,
+        BlingRateLimitedError,
+        BlingTransientHTTPError,
+    )
 
     try:
         client = BlingClient.create_client_for_integration_id(int(bling_inst['id']))
         detalhe = client.get_order(bling_order_id)
+    except BlingRateLimitedError as e:
+        logger.warning(
+            "[ingest] rate limit ao buscar detalhe Bling id=%s inst=%s retry_after=%s",
+            bling_order_id,
+            bling_inst.get('id'),
+            e.retry_after,
+        )
+        raise BlingDetailUnavailableError(
+            f"rate limit ao buscar detalhe Bling id={bling_order_id} inst={bling_inst.get('id')}",
+            error_type='rate_limited',
+            retry_after=e.retry_after,
+        ) from e
+    except BlingTransientHTTPError as e:
+        logger.warning(
+            "[ingest] Bling temporariamente indisponivel id=%s inst=%s retry_after=%s",
+            bling_order_id,
+            bling_inst.get('id'),
+            e.retry_after,
+        )
+        raise BlingDetailUnavailableError(
+            f"falha temporaria ao buscar detalhe Bling id={bling_order_id} inst={bling_inst.get('id')}",
+            error_type='transient_http_error',
+            retry_after=e.retry_after,
+        ) from e
     except Exception as e:
         logger.error(
             "[ingest] falha fetch detalhe Bling id=%s inst=%s: %s",
@@ -1747,11 +1781,41 @@ def materialize_marketplace_direct_order(
     if not bling_integration_id or not external_order_id:
         return {"status": "not_available", "reason": "missing_bling_reference"}
 
-    from nistiprint_shared.services.bling.bling_client import BlingClient
+    from nistiprint_shared.services.bling.bling_client import (
+        BlingClient,
+        BlingRateLimitedError,
+        BlingTransientHTTPError,
+    )
 
     try:
         client = BlingClient.create_client_for_integration_id(int(bling_integration_id))
         matches = client.get_order_numbers_by_store_numbers([str(external_order_id)]) or []
+    except BlingRateLimitedError as exc:
+        logger.warning(
+            "[marketplace-direct] rate limit ao localizar pedido Bling numeroLoja=%s inst=%s retry_after=%s",
+            external_order_id,
+            bling_integration_id,
+            exc.retry_after,
+        )
+        return {
+            "status": "error",
+            "reason": "bling_rate_limited",
+            "message": str(exc),
+            "retry_after": exc.retry_after,
+        }
+    except BlingTransientHTTPError as exc:
+        logger.warning(
+            "[marketplace-direct] Bling temporariamente indisponivel numeroLoja=%s inst=%s retry_after=%s",
+            external_order_id,
+            bling_integration_id,
+            exc.retry_after,
+        )
+        return {
+            "status": "error",
+            "reason": "bling_lookup_transient_error",
+            "message": str(exc),
+            "retry_after": exc.retry_after,
+        }
     except Exception as exc:
         logger.warning(
             "[marketplace-direct] falha ao localizar pedido Bling numeroLoja=%s inst=%s: %s",

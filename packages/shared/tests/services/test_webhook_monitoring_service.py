@@ -225,6 +225,36 @@ class TestRedisQueueWebhookAttempts(unittest.TestCase):
         redis_client.rpush.assert_not_called()
 
 
+    def test_marketplace_consumer_passes_retry_after_from_rate_limit_result(self):
+        redis_client = MagicMock()
+        redis_client.set.return_value = True
+        redis_client.lpop.side_effect = [json.dumps({'webhook_event_id': 10}), None]
+        pending_event = {
+            'id': 10,
+            'raw_payload': {'resource': '/orders/26174897235', 'user_id': 'SHOP1'},
+            'numero_loja': '26174897235',
+            'company_id': 'SHOP1',
+            'last_status': 'pending',
+            'attempt_count': 1,
+            'retry_expires_at': '2026-07-02T12:00:00+00:00',
+        }
+
+        with patch.object(rqt, 'get_redis_client', return_value=redis_client),              patch.object(rqt, '_load_next_marketplace_event', side_effect=[pending_event, None]),              patch.object(rqt, '_has_pending_marketplace_events', return_value=True),              patch.object(rqt, '_create_webhook_attempt', return_value=(77, 2)),              patch.object(rqt, '_mark_marketplace_processing'),              patch.object(rqt, '_finish_webhook_attempt'),              patch.object(rqt, '_schedule_marketplace_retry', return_value='pending_retry') as schedule_retry,              patch.object(rqt.marketplace_webhook_ingest_service, 'process', return_value={
+                 'status': 'error',
+                 'error_type': 'bling_rate_limited',
+                 'message': 'Limite de requisicoes do Bling atingido',
+                 'retry_after': 3,
+             }):
+            rqt._consume_marketplace_queue(
+                'mercadolivre',
+                rqt.MERCADOLIVRE_WEBHOOK_QUEUE,
+                rqt.MERCADOLIVRE_WEBHOOK_FALHAS,
+                rqt.MERCADOLIVRE_WEBHOOK_DEAD_LETTER,
+            )
+
+        self.assertEqual(schedule_retry.call_args.kwargs['retry_after'], 3)
+
+
 if __name__ == '__main__':
     unittest.main()
 

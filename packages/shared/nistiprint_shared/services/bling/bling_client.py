@@ -5,15 +5,63 @@ This module has been updated to use Supabase instead of Firestore for storing ac
 """
 import datetime
 import base64
+import logging
+import random
 import requests
 import time
 from typing import List, Dict
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.bling.rate_limit import (
+    BLING_RATE_LIMIT_ACQUIRE_TIMEOUT_MS,
+    bling_rate_limit_coordinator,
+)
 from nistiprint_shared.services.personalized_classification_service import (
     normalize_personalization_text,
 )
 from ...constants import PLATFORM_X_CNPJ
+
+
+logger = logging.getLogger(__name__)
+
+
+class BlingAPIError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_type: str,
+        status_code: int | None = None,
+        retry_after: float | None = None,
+        endpoint: str | None = None,
+        response_body: str | None = None,
+    ):
+        super().__init__(message)
+        self.error_type = error_type
+        self.status_code = status_code
+        self.retry_after = retry_after
+        self.endpoint = endpoint
+        self.response_body = response_body
+
+
+class BlingRateLimitedError(BlingAPIError):
+    def __init__(self, message: str, **kwargs):
+        super().__init__(message, error_type='rate_limited', **kwargs)
+
+
+class BlingTransientHTTPError(BlingAPIError):
+    def __init__(self, message: str, **kwargs):
+        super().__init__(message, error_type='transient_http_error', **kwargs)
+
+
+class BlingAuthError(BlingAPIError):
+    def __init__(self, message: str, **kwargs):
+        super().__init__(message, error_type='auth_error', **kwargs)
+
+
+class BlingPermanentHTTPError(BlingAPIError):
+    def __init__(self, message: str, **kwargs):
+        super().__init__(message, error_type='permanent_http_error', **kwargs)
 
 
 class BlingClient:
@@ -470,62 +518,153 @@ class BlingClient:
             print(f"❌ Erro de rede no refresh token: {e}")
             raise Exception(f"Erro de rede ao renovar token: {str(e)}")
 
-    def _request(self, method, endpoint, **kwargs):
-        """Faz uma requisição HTTP para a API do Bling.
+    def _integration_id(self):
+        return self.account_data.get('id')
 
-        Args:
-            method (str): Método HTTP (GET, POST, PATCH, etc.)
-            endpoint (str): Endpoint da API (ex: 'produtos', 'pedidos/vendas/123')
-            **kwargs: Parâmetros adicionais para requests (params, data, json, etc.)
+    @staticmethod
+    def _parse_retry_after(response) -> float | None:
+        header = response.headers.get('Retry-After') if response is not None else None
+        if not header:
+            return None
+        try:
+            return max(0.1, float(header))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _compute_backoff_seconds(attempt: int, *, base: float = 0.35, max_wait: float = 2.0) -> float:
+        jitter = random.uniform(0.0, 0.15)
+        return min(max_wait, (base * (2 ** max(0, attempt - 1))) + jitter)
+
+    def _acquire_rate_limit_slot(self, endpoint: str) -> None:
+        integration_id = self._integration_id()
+        decision = bling_rate_limit_coordinator.acquire(
+            integration_id=integration_id,
+            endpoint=endpoint,
+            max_wait_ms=BLING_RATE_LIMIT_ACQUIRE_TIMEOUT_MS,
+        )
+        if decision.get('granted'):
+            return
+        wait_ms = max(1, int(decision.get('wait_ms') or 1))
+        logger.warning(
+            '[BLING API] rate-limited preemptively integration_id=%s endpoint=%s wait_ms=%s cause=preemptive_limit',
+            integration_id,
+            endpoint,
+            wait_ms,
+        )
+        raise BlingRateLimitedError(
+            f'Limite de requisicoes do Bling atingido para integration_id={integration_id}',
+            status_code=429,
+            retry_after=wait_ms / 1000.0,
+            endpoint=endpoint,
+        )
+
+    def _request(self, method, endpoint, **kwargs):
+        """Faz uma requisicao HTTP para a API do Bling.
 
         Returns:
-            dict: Resposta JSON da API ou False em caso de erro
+            dict: Resposta JSON da API ou False em caso de erro terminal.
+
+        Raises:
+            BlingRateLimitedError: quando o limite for atingido e o caller deve reprocessar.
+            BlingTransientHTTPError: quando a API estiver temporariamente indisponivel.
+            BlingAuthError: quando a credencial estiver invalida.
         """
         access_token = self._get_valid_token()
-        url = f"https://api.bling.com.br/Api/v3/{endpoint}"
+        url = f'https://api.bling.com.br/Api/v3/{endpoint}'
         headers = {
             'Accept': 'application/json',
             'Authorization': f'Bearer {access_token}'
         }
         headers.update(kwargs.pop('headers', {}))
 
-        # Log de depuração do token (apenas últimos 6 caracteres por segurança)
-        token_preview = f"...{access_token[-6:]}" if access_token and len(access_token) > 6 else "INVALID"
-        
+        token_preview = f'...{access_token[-6:]}' if access_token and len(access_token) > 6 else 'INVALID'
         max_retries = 3
+        integration_id = self._integration_id()
+
         for attempt in range(max_retries):
-            # Throttle requests to respect Bling limits
-            time.sleep(0.3)
-            
             if attempt > 0:
-                print(f"🔄 [BLING API] Retentando {method.upper()} {endpoint} (Tentativa {attempt + 1}/{max_retries})...")
+                print(f'[BLING API] Retentando {method.upper()} {endpoint} (Tentativa {attempt + 1}/{max_retries})...')
+
+            self._acquire_rate_limit_slot(endpoint)
 
             try:
-                print(f"📡 [BLING API] {method.upper()} {endpoint} | Auth: Bearer {token_preview}")
+                print(f'[BLING API] {method.upper()} {endpoint} | Auth: Bearer {token_preview}')
                 response = requests.request(method.upper(), url, headers=headers, **kwargs)
 
                 if response.status_code in [200, 201]:
                     return response.json()
-                
-                # Retry on 5xx errors (server side errors)
-                if response.status_code in [500, 502, 503, 504]:
+
+                if response.status_code == 429:
+                    retry_after = self._parse_retry_after(response) or self._compute_backoff_seconds(attempt + 1)
+                    logger.warning(
+                        '[BLING API] rate-limited integration_id=%s endpoint=%s wait_ms=%s retry_count=%s cause=http_429',
+                        integration_id,
+                        endpoint,
+                        int(retry_after * 1000),
+                        attempt + 1,
+                    )
                     if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 2
-                        print(f"⚠️ [BLING API] Erro {response.status_code}. Retentando em {wait_time}s...")
+                        time.sleep(retry_after)
+                        continue
+                    raise BlingRateLimitedError(
+                        'Limite de requisicoes atingido pelo Bling',
+                        status_code=429,
+                        retry_after=retry_after,
+                        endpoint=endpoint,
+                        response_body=response.text,
+                    )
+
+                if response.status_code in [500, 502, 503, 504]:
+                    wait_time = self._compute_backoff_seconds(attempt + 1, base=0.5, max_wait=3.0)
+                    logger.warning(
+                        '[BLING API] transient error integration_id=%s endpoint=%s status=%s wait_ms=%s retry_count=%s',
+                        integration_id,
+                        endpoint,
+                        response.status_code,
+                        int(wait_time * 1000),
+                        attempt + 1,
+                    )
+                    if attempt < max_retries - 1:
                         time.sleep(wait_time)
                         continue
-                
-                print(f"❌ [BLING API] Erro - Status: {response.status_code}, Response: {response.text}")
+                    raise BlingTransientHTTPError(
+                        f'Erro temporario do Bling status={response.status_code}',
+                        status_code=response.status_code,
+                        retry_after=wait_time,
+                        endpoint=endpoint,
+                        response_body=response.text,
+                    )
+
+                if response.status_code in [401, 403]:
+                    raise BlingAuthError(
+                        f'Falha de autenticacao Bling status={response.status_code}',
+                        status_code=response.status_code,
+                        endpoint=endpoint,
+                        response_body=response.text,
+                    )
+
+                print(f'[BLING API] Erro - Status: {response.status_code}, Response: {response.text}')
                 return False
 
             except requests.exceptions.RequestException as e:
+                wait_time = self._compute_backoff_seconds(attempt + 1, base=0.5, max_wait=3.0)
+                logger.warning(
+                    '[BLING API] request exception integration_id=%s endpoint=%s wait_ms=%s retry_count=%s error=%s',
+                    integration_id,
+                    endpoint,
+                    int(wait_time * 1000),
+                    attempt + 1,
+                    e,
+                )
                 if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 2
-                    print(f"⚠️ [BLING API] Erro de conexão: {e}. Retentando em {wait_time}s...")
                     time.sleep(wait_time)
                     continue
-                print(f"❌ [BLING API] Erro de conexão crítico: {str(e)}")
-                return False
+                raise BlingTransientHTTPError(
+                    f'Erro de conexao com a API Bling: {str(e)}',
+                    retry_after=wait_time,
+                    endpoint=endpoint,
+                ) from e
 
         return False
 
@@ -746,8 +885,40 @@ class BlingClient:
         Returns:
             dict: Dados do pedido ou None em caso de erro
         """
-        response = self._request('GET', f'pedidos/vendas/{str(order_id)}')
-        return response.get('data') if response else None
+        integration_id = self._integration_id()
+        cached = bling_rate_limit_coordinator.get_cached_order_detail(
+            integration_id=integration_id,
+            order_id=order_id,
+        )
+        if cached:
+            return cached
+
+        lock_key, lock_value = bling_rate_limit_coordinator.acquire_order_lock(
+            integration_id=integration_id,
+            order_id=order_id,
+        )
+        if not lock_key:
+            for _ in range(5):
+                time.sleep(0.1)
+                cached = bling_rate_limit_coordinator.get_cached_order_detail(
+                    integration_id=integration_id,
+                    order_id=order_id,
+                )
+                if cached:
+                    return cached
+
+        try:
+            response = self._request('GET', f'pedidos/vendas/{str(order_id)}')
+            payload = response.get('data') if response else None
+            if payload:
+                bling_rate_limit_coordinator.cache_order_detail(
+                    integration_id=integration_id,
+                    order_id=order_id,
+                    payload=payload,
+                )
+            return payload
+        finally:
+            bling_rate_limit_coordinator.release_order_lock(lock_key, lock_value)
 
     def update_order_status(self, order_id, status_id):
         """Atualiza o status de um pedido.

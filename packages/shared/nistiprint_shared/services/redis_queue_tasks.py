@@ -659,7 +659,8 @@ def consumir_fila_bling(correlation_id=None):
                     result = {
                         'status': 'error',
                         'message': str(e),
-                        'error_type': 'bling_detail_unavailable',
+                        'error_type': getattr(e, 'error_type', 'bling_detail_unavailable'),
+                        'retry_after': getattr(e, 'retry_after', None),
                         'correlation_id': webhook_correlation_id,
                     }
 
@@ -840,7 +841,16 @@ def _finalize_marketplace_success(webhook_event_id: int, result: dict, *, order_
     )
 
 
-def _schedule_marketplace_retry(webhook_event_id: int, event: dict, *, error_type: str, message: str, pedido_id=None, numero_loja=None) -> str:
+def _schedule_marketplace_retry(
+    webhook_event_id: int,
+    event: dict,
+    *,
+    error_type: str,
+    message: str,
+    pedido_id=None,
+    numero_loja=None,
+    retry_after: float | None = None,
+) -> str:
     now = get_now()
     retry_expires_at = parse_datetime(event.get('retry_expires_at'))
     if retry_expires_at and retry_expires_at <= now:
@@ -848,7 +858,8 @@ def _schedule_marketplace_retry(webhook_event_id: int, event: dict, *, error_typ
         next_attempt_after = None
     else:
         final_status = 'pending_retry'
-        next_attempt_after = (now + timedelta(seconds=_retry_delay_seconds(event.get('attempt_count') or 1))).isoformat()
+        delay_seconds = retry_after if retry_after is not None else _retry_delay_seconds(event.get('attempt_count') or 1)
+        next_attempt_after = (now + timedelta(seconds=max(1, int(delay_seconds)))).isoformat()
 
     _update_webhook_event(
         webhook_event_id,
@@ -963,6 +974,7 @@ def _consume_marketplace_queue(source: str, queue_name: str, failure_queue: str,
                     message=result.get('message') or 'processing_error',
                     pedido_id=result.get('pedido_id'),
                     numero_loja=result.get('external_order_id') or (str(order_id) if order_id not in (None, '') else None),
+                    retry_after=result.get('retry_after'),
                 )
                 _finish_webhook_attempt(
                     attempt_id,

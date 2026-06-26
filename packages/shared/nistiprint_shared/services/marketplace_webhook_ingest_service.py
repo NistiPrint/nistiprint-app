@@ -849,6 +849,8 @@ class MarketplaceWebhookIngestService:
             "missing_bling_reference": "Integracao Bling obrigatoria nao configurada para o marketplace",
             "bling_order_not_found": "Pedido ainda nao encontrado no Bling",
             "bling_lookup_failed": "Falha ao consultar o pedido no Bling",
+            "bling_rate_limited": "Limite de requisicoes do Bling atingido",
+            "bling_lookup_transient_error": "Bling temporariamente indisponivel",
             "bling_order_incomplete": "Pedido retornado pelo Bling sem id ou numero",
             "bling_detail_incomplete": "Detalhe do pedido Bling sem numero_pedido",
             "bling_materialization_failed": "Pedido Bling nao foi materializado",
@@ -861,6 +863,7 @@ class MarketplaceWebhookIngestService:
             "message": result.get("message") or messages.get(reason) or "Pedido Bling indisponivel para materializacao",
             "external_order_id": external_order_id,
             "marketplace_integration_id": marketplace_integration_id,
+            "retry_after": result.get("retry_after"),
         }
 
     def _update_materialized_pedido_status(
@@ -1268,6 +1271,8 @@ class MarketplaceWebhookIngestService:
             external_order_id=external_order_id,
         )
         if remote:
+            if remote.get('status') == 'error':
+                return {**result, **remote}
             return {**result, **remote}
 
         if local_error:
@@ -1277,10 +1282,40 @@ class MarketplaceWebhookIngestService:
 
     def _lookup_bling_order_remote(self, *, bling_integration_id: int, external_order_id: str) -> dict | None:
         try:
-            from nistiprint_shared.services.bling.bling_client import BlingClient
+            from nistiprint_shared.services.bling.bling_client import (
+                BlingClient,
+                BlingRateLimitedError,
+                BlingTransientHTTPError,
+            )
 
             client = BlingClient.create_client_for_integration_id(int(bling_integration_id))
             matches = client.get_order_numbers_by_store_numbers([str(external_order_id)]) or []
+        except BlingRateLimitedError as exc:
+            logger.warning(
+                "[marketplace-ingest] rate limit ao consultar Bling API por numeroLoja=%s integration_id=%s retry_after=%s",
+                external_order_id,
+                bling_integration_id,
+                exc.retry_after,
+            )
+            return {
+                "status": "error",
+                "reason": "bling_rate_limited",
+                "error": str(exc),
+                "retry_after": exc.retry_after,
+            }
+        except BlingTransientHTTPError as exc:
+            logger.warning(
+                "[marketplace-ingest] Bling temporariamente indisponivel numeroLoja=%s integration_id=%s retry_after=%s",
+                external_order_id,
+                bling_integration_id,
+                exc.retry_after,
+            )
+            return {
+                "status": "error",
+                "reason": "bling_lookup_transient_error",
+                "error": str(exc),
+                "retry_after": exc.retry_after,
+            }
         except Exception as exc:
             logger.warning(
                 "[marketplace-ingest] erro ao consultar Bling API por numeroLoja=%s integration_id=%s: %s",

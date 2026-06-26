@@ -116,6 +116,25 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
                 )
 
 
+    def test_materialization_error_preserves_retry_after_for_rate_limit(self):
+        service = MarketplaceWebhookIngestService()
+
+        result = service._bling_materialization_error_result(
+            source='mercadolivre',
+            external_order_id='26174897235',
+            marketplace_integration_id=12,
+            result={
+                'reason': 'bling_rate_limited',
+                'message': 'Limite de requisicoes do Bling atingido',
+                'retry_after': 2.5,
+            },
+        )
+
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['error_type'], 'bling_rate_limited')
+        self.assertEqual(result['retry_after'], 2.5)
+
+
     def test_erp_only_webhook_is_queued_for_enrichment(self):
         service = MarketplaceWebhookIngestService()
         link = {"process_webhooks": True, "ingest_origin_mode": "erp_bling"}
