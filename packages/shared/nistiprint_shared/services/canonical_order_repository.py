@@ -10,6 +10,8 @@ from decimal import Decimal
 from typing import Any, Dict, Iterable, Optional
 from uuid import UUID
 
+from postgrest.exceptions import APIError
+
 from nistiprint_shared.database.supabase_db_service import supabase_db
 
 
@@ -108,14 +110,16 @@ class CanonicalOrderRepository:
                 "marketplace_module_id and marketplace_order_id are required"
             )
 
-        response = supabase_db.rpc(
-            "upsert_canonical_order",
-            {
-                "p_order": self._json_safe(payload),
-                "p_snapshot": self._json_safe(snapshot) if snapshot is not None else None,
-                "p_refs": self._json_safe(list(refs or [])),
-            },
-        ).execute()
+        snapshot_payload = self._json_safe(snapshot) if snapshot is not None else None
+        refs_payload = self._json_safe(list(refs or []))
+
+        try:
+            response = self._execute_upsert_rpc(payload, snapshot_payload, refs_payload)
+        except APIError as exc:
+            if not self._is_duplicate_bling_link_error(exc, payload):
+                raise
+            self._reconcile_duplicate_bling_identity(payload)
+            response = self._execute_upsert_rpc(payload, snapshot_payload, refs_payload)
         value = response.data
         if isinstance(value, list):
             value = value[0] if value else None
@@ -126,6 +130,87 @@ class CanonicalOrderRepository:
         if value is None:
             raise RuntimeError("upsert_canonical_order returned no pedido id")
         return int(value)
+
+    def _execute_upsert_rpc(
+        self,
+        payload: Dict[str, Any],
+        snapshot: Optional[Dict[str, Any]],
+        refs: Any,
+    ):
+        return supabase_db.rpc(
+            "upsert_canonical_order",
+            {
+                "p_order": self._json_safe(payload),
+                "p_snapshot": snapshot,
+                "p_refs": refs,
+            },
+        ).execute()
+
+    def _is_duplicate_bling_link_error(self, exc: APIError, payload: Dict[str, Any]) -> bool:
+        if str(getattr(exc, "code", "")) != "23505":
+            return False
+        if payload.get("pedido_bling_id") in (None, ""):
+            return False
+        details = str(getattr(exc, "details", "") or "")
+        message = str(getattr(exc, "message", "") or "")
+        return "ux_pedidos_pedido_bling_id" in details or "ux_pedidos_pedido_bling_id" in message
+
+    def _find_existing_order_by_bling_link(self, pedido_bling_id: Any) -> Optional[Dict[str, Any]]:
+        response = (
+            supabase_db.table("pedidos")
+            .select("id,marketplace_module_id,marketplace_order_id")
+            .eq("pedido_bling_id", pedido_bling_id)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        return dict(rows[0]) if rows else None
+
+    def _reconcile_duplicate_bling_identity(self, payload: Dict[str, Any]) -> None:
+        existing = self._find_existing_order_by_bling_link(payload.get("pedido_bling_id"))
+        if not existing:
+            return
+
+        existing_id = existing.get("id")
+        if not existing_id:
+            return
+
+        incoming_module = self.normalize_module_id(payload.get("marketplace_module_id"))
+        incoming_order = self.normalize_order_id(payload.get("marketplace_order_id"))
+        existing_module = self.normalize_module_id(existing.get("marketplace_module_id"))
+        existing_order = self.normalize_order_id(existing.get("marketplace_order_id"))
+
+        if not incoming_module or not incoming_order:
+            return
+        if incoming_module == existing_module and incoming_order == existing_order:
+            return
+
+        if existing_module and existing_order:
+            supabase_db.rpc(
+                "correct_canonical_order_identity",
+                {
+                    "p_pedido_id": existing_id,
+                    "p_marketplace_module_id": incoming_module,
+                    "p_marketplace_order_id": incoming_order,
+                    "p_reason": "auto_reconcile_duplicate_pedido_bling_id",
+                    "p_actor_id": "canonical_order_repository",
+                },
+            ).execute()
+            return
+
+        (
+            supabase_db.table("pedidos")
+            .update(
+                {
+                    "marketplace_module_id": incoming_module,
+                    "marketplace_order_id": incoming_order,
+                    "codigo_pedido_externo": incoming_order,
+                    "origem": incoming_module.upper(),
+                }
+            )
+            .eq("id", existing_id)
+            .execute()
+        )
 
     def defer_unresolved_erp_order(
         self,
