@@ -482,32 +482,79 @@ class MarketplaceWebhookIngestService:
                 "status": "skipped",
                 "event_status": "skipped_inactive_source",
                 "skip_reason": "webhooks_disabled",
-                "message": f"Webhook {source} desabilitado para a integraÃ§Ã£o",
+                "message": f"Webhook {source} desabilitado para a integracao",
                 "external_order_id": external_order_id,
                 "marketplace_integration_id": marketplace_inst.get("id"),
             }
         if ingest_origin_mode != "marketplace_direct":
-            raw_payload = payload or {}
-            source_event_id = _first_present(
-                raw_payload.get("event_id"), raw_payload.get("code"),
-                raw_payload.get("timestamp"), raw_payload.get("update_time"),
+            return self._erp_only_order_readiness(
+                source=source,
+                external_order_id=external_order_id,
+                marketplace_inst=marketplace_inst,
+                payload=payload,
             )
-            canonical_order_repository.queue_marketplace_enrichment(
-                marketplace_integration_id=marketplace_inst.get("id"),
-                marketplace_module_id=source,
-                marketplace_order_id=external_order_id,
-                payload=raw_payload,
-                event_type=_first_present(raw_payload.get("event"), raw_payload.get("topic")),
-                source_event_id=str(source_event_id) if source_event_id is not None else None,
-            )
-            return {
-                "status": "pending",
-                "event_status": "pending_erp_order",
-                "message": f"Webhook {source} aguardando pedido importado pelo ERP",
-                "external_order_id": external_order_id,
-                "marketplace_integration_id": marketplace_inst.get("id"),
-            }
         return None
+
+    def _erp_only_order_readiness(
+        self,
+        *,
+        source: str,
+        external_order_id: str,
+        marketplace_inst: dict,
+        payload: dict | None = None,
+    ) -> dict | None:
+        raw_payload = payload or {}
+        links = self._find_bling_links(marketplace_inst)
+
+        if links:
+            lookup_error = None
+            for link in links:
+                bling_ref = self._lookup_bling_order(
+                    bling_integration_id=link.get("erp_integration_id"),
+                    external_order_id=str(external_order_id),
+                )
+                if bling_ref.get("status") == "found" and bling_ref.get("bling_order_number"):
+                    logger.info(
+                        "[marketplace-webhook] erp-only webhook liberado source=%s external_order_id=%s bling_integration_id=%s bling_order_number=%s",
+                        source,
+                        external_order_id,
+                        link.get("erp_integration_id"),
+                        bling_ref.get("bling_order_number"),
+                    )
+                    return None
+                if bling_ref.get("status") == "error":
+                    lookup_error = bling_ref
+
+            if lookup_error and lookup_error.get("reason") in ("bling_rate_limited", "bling_lookup_transient_error"):
+                return {
+                    "status": "error",
+                    "event_status": lookup_error.get("reason"),
+                    "error_type": lookup_error.get("reason"),
+                    "message": lookup_error.get("error") or "Falha temporaria ao consultar pedido no Bling",
+                    "retry_after": lookup_error.get("retry_after"),
+                    "external_order_id": external_order_id,
+                    "marketplace_integration_id": marketplace_inst.get("id"),
+                }
+
+        source_event_id = _first_present(
+            raw_payload.get("event_id"), raw_payload.get("code"),
+            raw_payload.get("timestamp"), raw_payload.get("update_time"),
+        )
+        canonical_order_repository.queue_marketplace_enrichment(
+            marketplace_integration_id=marketplace_inst.get("id"),
+            marketplace_module_id=source,
+            marketplace_order_id=external_order_id,
+            payload=raw_payload,
+            event_type=_first_present(raw_payload.get("event"), raw_payload.get("topic")),
+            source_event_id=str(source_event_id) if source_event_id is not None else None,
+        )
+        return {
+            "status": "pending",
+            "event_status": "pending_erp_order",
+            "message": f"Webhook {source} aguardando pedido importado pelo ERP",
+            "external_order_id": external_order_id,
+            "marketplace_integration_id": marketplace_inst.get("id"),
+        }
 
     def _find_bling_links(self, marketplace_inst: dict | None) -> list[dict]:
         if not marketplace_inst or not marketplace_inst.get("id"):

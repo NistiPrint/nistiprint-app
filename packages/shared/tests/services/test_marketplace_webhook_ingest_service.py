@@ -139,9 +139,9 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
         service = MarketplaceWebhookIngestService()
         link = {"process_webhooks": True, "ingest_origin_mode": "erp_bling"}
 
-        with patch(
-            "nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.queue_marketplace_enrichment"
-        ) as queue:
+        with patch.object(service, '_find_bling_links', return_value=[]),              patch(
+                 "nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.queue_marketplace_enrichment"
+             ) as queue:
             result = service._inactive_source_result(
                 "shopee", link, "SN123", {"id": 12},
                 payload={"event_id": "evt-1", "order_sn": "SN123"},
@@ -157,6 +157,26 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
             event_type=None,
             source_event_id="evt-1",
         )
+
+    def test_erp_only_webhook_proceeds_when_order_already_exists_in_bling(self):
+        service = MarketplaceWebhookIngestService()
+        link = {"process_webhooks": True, "ingest_origin_mode": "erp_bling"}
+
+        with patch.object(service, '_find_bling_links', return_value=[{'erp_integration_id': 99}]),              patch.object(service, '_lookup_bling_order', return_value={
+                 'status': 'found',
+                 'bling_order_id': 987,
+                 'bling_order_number': '466320',
+             }),              patch(
+                 "nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.queue_marketplace_enrichment"
+             ) as queue:
+            result = service._inactive_source_result(
+                "shopee", link, "SN123", {"id": 12},
+                payload={"event_id": "evt-1", "order_sn": "SN123"},
+            )
+
+        self.assertIsNone(result)
+        queue.assert_not_called()
+
 
 
 if __name__ == "__main__":
