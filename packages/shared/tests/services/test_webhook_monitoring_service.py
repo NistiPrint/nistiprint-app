@@ -98,6 +98,36 @@ class TestWebhookMonitoringService(unittest.TestCase):
         self.assertNotIn('order_sn', queued_payload)
 
 
+class TestRedisQueueWebhookIdentity(unittest.TestCase):
+    def test_extract_webhook_identity_uses_source_specific_event_ids(self):
+        bling_identity = rqt._extract_webhook_identity('bling', {
+            'eventId': 'evt-bling-1',
+            'companyId': 'company-1',
+            'data': {'id': 123, 'numeroLoja': 'ABC'},
+        })
+        shopee_identity = rqt._extract_webhook_identity('shopee', {
+            'event_id': 'evt-shopee-1',
+            'order_sn': 'SN123',
+            'shop_id': 'SHOP1',
+        })
+        meli_identity = rqt._extract_webhook_identity('mercadolivre', {
+            'id': 987654,
+            'resource': '/orders/26174897235',
+            'user_id': 'SELLER1',
+        })
+        meli_fallback_identity = rqt._extract_webhook_identity('mercadolivre', {
+            '_id': 'evt-meli-2',
+            'resource': '/orders/26174897235',
+            'user_id': 'SELLER1',
+        })
+
+        self.assertEqual(bling_identity['provider_event_id'], 'evt-bling-1')
+        self.assertEqual(shopee_identity['provider_event_id'], 'evt-shopee-1')
+        self.assertEqual(meli_identity['provider_event_id'], 987654)
+        self.assertEqual(meli_fallback_identity['provider_event_id'], 'evt-meli-2')
+        self.assertEqual(meli_identity['order_id'], '26174897235')
+
+
 class TestRedisQueueWebhookAttempts(unittest.TestCase):
     def test_create_webhook_attempt_increments_event_and_inserts_attempt(self):
         event_table = MagicMock()
@@ -132,21 +162,74 @@ class TestRedisQueueWebhookAttempts(unittest.TestCase):
         self.assertEqual(inserted['status'], 'processing')
 
     def test_enqueue_marketplace_webhook_persists_event_and_pushes_wakeup(self):
+        select_table = MagicMock()
+        select_table.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
         insert_table = MagicMock()
         insert_table.insert.return_value.execute.return_value.data = [{'id': 55}]
-        update_table = MagicMock()
-        update_table.update.return_value.eq.return_value.execute.return_value.data = [{'id': 55}]
         redis_client = MagicMock()
 
-        with patch.object(rqt.supabase_db, 'table', side_effect=[insert_table, update_table]), \
+        def table_side_effect(name):
+            if name == 'webhook_events':
+                if not hasattr(table_side_effect, 'called'):
+                    table_side_effect.called = 0
+                table_side_effect.called += 1
+                return select_table if table_side_effect.called == 1 else insert_table
+            raise AssertionError(name)
+
+        with patch.object(rqt.supabase_db, 'table', side_effect=table_side_effect), \
              patch.object(rqt, 'get_redis_client', return_value=redis_client), \
              patch.object(rqt, 'generate_correlation_id', return_value='cid-1'), \
              patch.object(rqt, 'get_now', return_value=rqt.parse_datetime('2026-06-25T12:00:00+00:00')):
-            result = rqt.enqueue_marketplace_webhook_event('shopee', {'order_sn': 'SN123', 'shop_id': 'SHOP1'})
+            result = rqt.enqueue_marketplace_webhook_event(
+                'shopee',
+                {'event_id': 'evt-1', 'order_sn': 'SN123', 'shop_id': 'SHOP1'},
+            )
 
         self.assertEqual(result['event_id'], 55)
+        self.assertTrue(result['queued'])
         queued = json.loads(redis_client.rpush.call_args.args[1])
         self.assertEqual(queued, {'webhook_event_id': 55})
+
+    def test_enqueue_marketplace_webhook_deduplicates_by_provider_event_id(self):
+        select_table = MagicMock()
+        select_table.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {'id': 55, 'last_status': 'success', 'correlation_id': 'cid-existing'}
+        ]
+        redis_client = MagicMock()
+
+        with patch.object(rqt.supabase_db, 'table', return_value=select_table), \
+             patch.object(rqt, 'get_redis_client', return_value=redis_client), \
+             patch.object(rqt, 'generate_correlation_id', return_value='cid-1'), \
+             patch.object(rqt, 'get_now', return_value=rqt.parse_datetime('2026-06-25T12:00:00+00:00')):
+            result = rqt.enqueue_marketplace_webhook_event(
+                'shopee',
+                {'event_id': 'evt-1', 'order_sn': 'SN123', 'shop_id': 'SHOP1'},
+            )
+
+        self.assertEqual(result['event_id'], 55)
+        self.assertFalse(result['queued'])
+        redis_client.rpush.assert_not_called()
+
+    def test_get_or_create_webhook_event_reuses_existing_bling_event_id(self):
+        select_table = MagicMock()
+        select_table.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {'id': 77, 'last_status': 'success', 'correlation_id': 'cid-existing'}
+        ]
+
+        with patch.object(rqt.supabase_db, 'table', return_value=select_table):
+            event_id, created, existing = rqt._get_or_create_webhook_event(
+                {'eventId': 'evt-bling-1', 'data': {'id': 123, 'numeroLoja': 'ABC'}},
+                source='bling',
+                company_id='company-1',
+                bling_id=123,
+                numero_loja='ABC',
+                correlation_id='cid-1',
+                provider_event_id='evt-bling-1',
+            )
+
+        self.assertEqual(event_id, 77)
+        self.assertFalse(created)
+        self.assertEqual(existing['last_status'], 'success')
 
     def test_marketplace_consumer_processes_oldest_eligible_event_from_db(self):
         redis_client = MagicMock()

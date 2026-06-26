@@ -244,19 +244,118 @@ def _stable_payload_hash(payload: dict) -> str:
     return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
 
 
+def _first_present(*values):
+    for value in values:
+        if value not in (None, ''):
+            return value
+    return None
+
+
+def _extract_bling_webhook_identity(data: dict) -> dict:
+    body = data.get('data') if isinstance(data.get('data'), dict) else data
+    return {
+        'body': body,
+        'company_id': data.get('companyId') if data.get('companyId') else None,
+        'provider_event_id': _first_present(data.get('eventId'), data.get('event_id')),
+        'order_id': _first_present(body.get('numeroLoja'), body.get('id')),
+        'bling_id': body.get('id'),
+        'numero': body.get('numero'),
+        'numero_loja': body.get('numeroLoja'),
+        'bling_integration_hint': (
+            data.get('bling_integration_id')
+            or data.get('blingIntegrationId')
+            or body.get('bling_integration_id')
+        ),
+    }
+
+
+def _extract_shopee_webhook_identity(data: dict) -> dict:
+    body = data.get('data') if isinstance(data.get('data'), dict) else data
+    orders = body.get('orders') if isinstance(body.get('orders'), list) else []
+    return {
+        'body': body,
+        'company_id': body.get('shop_id') or body.get('shopid') or data.get('shop_id'),
+        'provider_event_id': body.get('event_id'),
+        'order_id': (
+            body.get('order_sn')
+            or body.get('ordersn')
+            or body.get('order_id')
+            or ((orders[0] or {}).get('order_sn') if orders else None)
+        ),
+    }
+
+
+def _extract_mercadolivre_webhook_identity(data: dict) -> dict:
+    body = data.get('data') if isinstance(data.get('data'), dict) else data
+    resource = str(body.get('resource') or body.get('topic') or '')
+    order_id = body.get('order_id')
+    if not order_id and '/orders/' in resource:
+        order_id = resource.rstrip('/').split('/orders/')[-1]
+    return {
+        'body': body,
+        'company_id': body.get('user_id') or body.get('seller_id') or data.get('user_id'),
+        'provider_event_id': _first_present(body.get('id'), body.get('_id')),
+        'order_id': order_id,
+    }
+
+
+WEBHOOK_IDENTITY_EXTRACTORS = {
+    'bling': _extract_bling_webhook_identity,
+    'shopee': _extract_shopee_webhook_identity,
+    'mercadolivre': _extract_mercadolivre_webhook_identity,
+}
+
+
+def _extract_webhook_identity(source: str, data: dict) -> dict:
+    normalized_source = str(source or '').strip().lower()
+    extractor = WEBHOOK_IDENTITY_EXTRACTORS.get(normalized_source)
+    if not extractor:
+        body = data.get('data') if isinstance(data.get('data'), dict) else data
+        return {
+            'body': body,
+            'company_id': None,
+            'provider_event_id': None,
+            'order_id': None,
+        }
+    return extractor(data or {})
+
+
 def _extract_order_context(data: dict):
-    order_data = data.get('data') if data.get('data') and isinstance(data.get('data'), dict) else data
-    company_id = data.get('companyId') if data.get('companyId') else None
-    bling_integration_hint = (
-        data.get('bling_integration_id')
-        or data.get('blingIntegrationId')
-        or order_data.get('bling_integration_id')
-    )
+    identity = _extract_webhook_identity('bling', data)
+    order_data = identity.get('body') or {}
+    company_id = identity.get('company_id')
+    bling_integration_hint = identity.get('bling_integration_hint')
     webhook_event_id = data.get('webhook_event_id')
-    bling_id = order_data.get('id')
-    numero = order_data.get('numero')
-    numero_loja = order_data.get('numeroLoja')
-    return order_data, company_id, bling_integration_hint, webhook_event_id, bling_id, numero, numero_loja
+    bling_id = identity.get('bling_id')
+    numero = identity.get('numero')
+    numero_loja = identity.get('numero_loja')
+    provider_event_id = identity.get('provider_event_id')
+    return order_data, company_id, bling_integration_hint, webhook_event_id, bling_id, numero, numero_loja, provider_event_id
+
+
+def _find_webhook_event_by_provider_event_id(source: str, provider_event_id: str | None) -> dict | None:
+    if provider_event_id in (None, ''):
+        return None
+    try:
+        rows = (
+            supabase_db.table('webhook_events')
+            .select('id,last_status,correlation_id')
+            .eq('source', source)
+            .eq('provider_event_id', str(provider_event_id))
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.error(
+            "Erro ao consultar webhook_events por source=%s provider_event_id=%s: %s",
+            source,
+            provider_event_id,
+            e,
+        )
+        return None
 
 
 def _insert_webhook_event(
@@ -267,9 +366,12 @@ def _insert_webhook_event(
     bling_id,
     numero_loja,
     correlation_id: str,
+    provider_event_id: str | None = None,
+    payload_hash: str | None = None,
+    retry_expires_at: str | None = None,
 ) -> int | None:
     try:
-        response = supabase_db.table('webhook_events').insert({
+        insert_payload = {
             'source': source,
             'company_id': company_id,
             'bling_id': bling_id,
@@ -279,71 +381,88 @@ def _insert_webhook_event(
             'last_status': 'pending',
             'last_attempt_at': get_now_iso(),
             'attempt_count': 0,
-        }).execute()
+        }
+        if provider_event_id not in (None, ''):
+            insert_payload['provider_event_id'] = str(provider_event_id)
+        if payload_hash:
+            insert_payload['payload_hash'] = payload_hash
+        if retry_expires_at:
+            insert_payload['retry_expires_at'] = retry_expires_at
+        response = supabase_db.table('webhook_events').insert(insert_payload).execute()
         return response.data[0]['id'] if response.data else None
     except Exception as e:
         logger.error("Erro ao inserir webhook_events: %s", e)
         return None
 
 
-def _extract_marketplace_context(source: str, data: dict):
-    body = data.get('data') if isinstance(data.get('data'), dict) else data
-    if source == 'shopee':
-        orders = body.get('orders') if isinstance(body.get('orders'), list) else []
-        order_id = (
-            body.get('order_sn')
-            or body.get('ordersn')
-            or body.get('order_id')
-            or ((orders[0] or {}).get('order_sn') if orders else None)
-        )
-        shop_id = body.get('shop_id') or body.get('shopid') or data.get('shop_id')
-        provider_event_id = (
-            body.get('event_id')
-            or body.get('code')
-            or body.get('update_time')
-            or body.get('timestamp')
-        )
-        return body, shop_id, order_id, provider_event_id
+def _get_or_create_webhook_event(
+    raw_payload: dict,
+    *,
+    source: str,
+    company_id: str | None,
+    bling_id,
+    numero_loja,
+    correlation_id: str,
+    provider_event_id: str | None = None,
+    payload_hash: str | None = None,
+    retry_expires_at: str | None = None,
+) -> tuple[int | None, bool, dict | None]:
+    existing = _find_webhook_event_by_provider_event_id(source, provider_event_id)
+    if existing:
+        return existing.get('id'), False, existing
 
-    resource = str(body.get('resource') or body.get('topic') or '')
-    order_id = body.get('order_id') or body.get('id')
-    if not order_id and '/orders/' in resource:
-        order_id = resource.rstrip('/').split('/orders/')[-1]
-    shop_id = body.get('user_id') or body.get('seller_id') or data.get('user_id')
-    provider_event_id = (
-        body.get('id')
-        if str(body.get('topic') or '').endswith('orders')
-        else body.get('resource') or body.get('id')
+    event_id = _insert_webhook_event(
+        raw_payload,
+        source=source,
+        company_id=company_id,
+        bling_id=bling_id,
+        numero_loja=numero_loja,
+        correlation_id=correlation_id,
+        provider_event_id=provider_event_id,
+        payload_hash=payload_hash,
+        retry_expires_at=retry_expires_at,
     )
-    return body, shop_id, order_id, provider_event_id
+    return event_id, True, None
+
+
+def _extract_marketplace_context(source: str, data: dict):
+    identity = _extract_webhook_identity(source, data)
+    return (
+        identity.get('body') or {},
+        identity.get('company_id'),
+        identity.get('order_id'),
+        identity.get('provider_event_id'),
+    )
 
 
 def enqueue_marketplace_webhook_event(source: str, payload: dict, *, queue_name: str | None = None) -> dict:
     correlation_id = generate_correlation_id()
     _body, company_id, numero_loja, provider_event_id = _extract_marketplace_context(source, payload)
-    event_id = _insert_webhook_event(
+    payload_hash = _stable_payload_hash(payload)
+    retry_expires_at = (get_now() + timedelta(days=MARKETPLACE_WEBHOOK_RETRY_TTL_DAYS)).isoformat()
+    event_id, created, existing = _get_or_create_webhook_event(
         payload,
         source=source,
         company_id=str(company_id) if company_id not in (None, '') else None,
         bling_id=None,
         numero_loja=str(numero_loja) if numero_loja not in (None, '') else None,
         correlation_id=correlation_id,
+        provider_event_id=str(provider_event_id) if provider_event_id not in (None, '') else None,
+        payload_hash=payload_hash,
+        retry_expires_at=retry_expires_at,
     )
-    if event_id:
-        _update_webhook_event(
-            event_id,
-            provider_event_id=str(provider_event_id) if provider_event_id not in (None, '') else None,
-            payload_hash=_stable_payload_hash(payload),
-            retry_expires_at=(get_now() + timedelta(days=MARKETPLACE_WEBHOOK_RETRY_TTL_DAYS)).isoformat(),
-            next_attempt_after=None,
-            processing_started_at=None,
-            processing_correlation_id=None,
-            last_error_type=None,
-            last_error_message=None,
-        )
+    if event_id and created:
         get_redis_client().rpush(
             queue_name or WEBHOOK_QUEUE_BY_SOURCE[source],
             _serialize_queue_item({'webhook_event_id': event_id}),
+        )
+    elif event_id and existing:
+        logger.info(
+            "[webhook-queue] duplicate webhook ignored source=%s provider_event_id=%s existing_event_id=%s status=%s",
+            source,
+            provider_event_id,
+            event_id,
+            existing.get('last_status'),
         )
     return {
         'event_id': event_id,
@@ -351,6 +470,7 @@ def enqueue_marketplace_webhook_event(source: str, payload: dict, *, queue_name:
         'company_id': str(company_id) if company_id not in (None, '') else None,
         'numero_loja': str(numero_loja) if numero_loja not in (None, '') else None,
         'provider_event_id': str(provider_event_id) if provider_event_id not in (None, '') else None,
+        'queued': bool(event_id and created),
     }
 
 
@@ -597,19 +717,29 @@ def consumir_fila_bling(correlation_id=None):
                     logger.error(f"Payload inválido: não é um dicionário ou está vazio. Payload: {mensagem_str[:200]}")
                     data = {'raw_message': mensagem_str}
 
-                order_data, company_id, bling_integration_hint, webhook_event_id, bling_id, numero, numero_loja = _extract_order_context(data)
+                order_data, company_id, bling_integration_hint, webhook_event_id, bling_id, numero, numero_loja, provider_event_id = _extract_order_context(data)
                 webhook_correlation_id = generate_correlation_id()
 
                 if not webhook_event_id:
-                    webhook_event_id = _insert_webhook_event(
+                    webhook_event_id, created_event, existing_event = _get_or_create_webhook_event(
                         data,
+                        source='bling',
                         company_id=company_id,
                         bling_id=bling_id,
                         numero_loja=numero_loja,
                         correlation_id=webhook_correlation_id,
+                        provider_event_id=str(provider_event_id) if provider_event_id not in (None, '') else None,
                     )
-                    if webhook_event_id:
+                    if webhook_event_id and created_event:
                         data['webhook_event_id'] = webhook_event_id
+                    elif webhook_event_id and existing_event:
+                        logger.info(
+                            "[webhook-queue] duplicate webhook ignored source=bling provider_event_id=%s existing_event_id=%s status=%s",
+                            provider_event_id,
+                            webhook_event_id,
+                            existing_event.get('last_status'),
+                        )
+                        continue
 
                 attempt_id, _attempt_number = _create_webhook_attempt(
                     webhook_event_id,
@@ -1046,13 +1176,4 @@ def sync_firestore_tokens(correlation_id=None):
         'status': 'skipped',
         'message': 'Sincronizacao automatica com Firebase desativada; use o sync manual para importar tokens validos.',
     }
-
-
-
-
-
-
-
-
-
 
