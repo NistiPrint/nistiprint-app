@@ -51,7 +51,10 @@ def _response_data(response, default=None):
 def _extract_resource_id(resource: str | None, marker: str) -> str | None:
     if not resource or marker not in resource:
         return None
-    return resource.rstrip("/").split(marker)[-1].strip("/") or None
+    tail = resource.rstrip("/").split(marker, 1)[-1].strip("/")
+    if not tail:
+        return None
+    return tail.split("/", 1)[0].strip() or None
 
 
 def _as_int(value):

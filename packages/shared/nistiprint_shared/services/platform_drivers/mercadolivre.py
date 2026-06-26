@@ -5,6 +5,24 @@ from typing import List, Dict, Optional
 logger = logging.getLogger("MercadoLivreDriver")
 
 
+ML_API_HOST = "https://api.mercadolibre.com"
+
+
+def _sanitize_resource_id(value: str | int | None, *, resource_name: str) -> str:
+    raw = str(value or "").strip().strip("/")
+    if not raw:
+        raise ValueError(f"{resource_name} id ausente")
+    sanitized = raw.split("/", 1)[0].strip()
+    if not sanitized or sanitized.lower() in {"orders", "shipments", "payments"}:
+        raise ValueError(f"{resource_name} id invalido: {value!r}")
+    return sanitized
+
+
+def _ml_url(path: str) -> str:
+    normalized = "/" + str(path or "").lstrip("/")
+    return f"{ML_API_HOST}{normalized}"
+
+
 def _resolve_access_token(integration: Dict) -> Optional[str]:
     credentials = integration.get("credentials", {}) or {}
     legacy_credentials = integration.get("_legacy_credentials", {}) or {}
@@ -30,8 +48,7 @@ def test_connection(integration: Dict, path: Optional[str] = None) -> Dict:
     """
     Tests Mercado Livre connectivity using the same token source as the driver.
     """
-    host = "https://api.mercadolibre.com"
-    response = requests.get(f"{host}{path or '/users/me'}", headers=_auth_headers(integration))
+    response = requests.get(_ml_url(path or '/users/me'), headers=_auth_headers(integration))
     if response.status_code != 200:
         return {
             "success": False,
@@ -49,9 +66,6 @@ def get_order_detail(integration: Dict, order_ids: List[str]) -> Dict:
     """
     Fetches order details from Mercado Livre API for a given integration instance.
     """
-    # Base URL for Mercado Livre API
-    host = "https://api.mercadolibre.com"
-
     headers = _auth_headers(integration)
 
     # Since Mercado Livre API typically accepts one order ID at a time,
@@ -60,7 +74,8 @@ def get_order_detail(integration: Dict, order_ids: List[str]) -> Dict:
         return {"error": "Nenhum ID de pedido fornecido."}
     
     order_id = order_ids[0]  # Using first order ID as Mercado Livre typically uses single order queries
-    url = f"{host}/orders/{order_id}"
+    order_id = _sanitize_resource_id(order_id, resource_name="order")
+    url = _ml_url(f"/orders/{order_id}")
 
     print(f"DEBUG: Mercado Livre API URL: {url}")
 
@@ -81,10 +96,10 @@ def get_payment(integration: Dict, payment_id: str) -> Dict:
     """
     Fetches payment details from Mercado Livre/Mercado Pago API.
     """
-    host = "https://api.mercadolibre.com"
     headers = _auth_headers(integration)
+    payment_id = _sanitize_resource_id(payment_id, resource_name="payment")
 
-    url = f"{host}/payments/{payment_id}"
+    url = _ml_url(f"/payments/{payment_id}")
     logger.info("[ML Driver] Fetching payment: %s", url)
 
     response = requests.get(url, headers=headers)
@@ -99,10 +114,10 @@ def get_shipment(integration: Dict, shipment_id: str) -> Dict:
     """
     Fetches shipment details from Mercado Livre API.
     """
-    host = "https://api.mercadolibre.com"
     headers = _auth_headers(integration)
+    shipment_id = _sanitize_resource_id(shipment_id, resource_name="shipment")
 
-    url = f"{host}/shipments/{shipment_id}"
+    url = _ml_url(f"/shipments/{shipment_id}")
     logger.info(f"[ML Driver] Fetching shipment: {url}")
     
     response = requests.get(url, headers=headers)
@@ -123,10 +138,10 @@ def get_shipment_sla(integration: Dict, shipment_id: str) -> Dict:
     Fetches shipment SLA (Service Level Agreement) details from Mercado Livre API.
     Used to get the expected_date (shipping limit).
     """
-    host = "https://api.mercadolibre.com"
     headers = _auth_headers(integration)
+    shipment_id = _sanitize_resource_id(shipment_id, resource_name="shipment")
 
-    url = f"{host}/shipments/{shipment_id}/sla"
+    url = _ml_url(f"/shipments/{shipment_id}/sla")
     logger.info(f"[ML Driver] Fetching shipment SLA: {url}")
     
     response = requests.get(url, headers=headers)
@@ -146,13 +161,10 @@ def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[D
     """
     Fetches list of orders from Mercado Livre API for a given integration instance.
     """
-    # Base URL for Mercado Livre API
-    host = "https://api.mercadolibre.com"
-
     headers = _auth_headers(integration)
 
     # Prepare URL and parameters
-    url = f"{host}/orders/search"
+    url = _ml_url("/orders/search")
 
     params = {
         "sort": "date_desc",  # Sort by date descending by default

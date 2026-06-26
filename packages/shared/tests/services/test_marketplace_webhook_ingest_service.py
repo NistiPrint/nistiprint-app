@@ -1,12 +1,42 @@
-﻿import unittest
+﻿
+import unittest
 from unittest.mock import patch
 
 from nistiprint_shared.services.marketplace_webhook_ingest_service import (
     MarketplaceWebhookIngestService,
+    _extract_resource_id,
 )
+from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 
 
 class TestMarketplaceWebhookIngestService(unittest.TestCase):
+    def test_extract_resource_id_ignores_endpoint_suffix(self):
+        self.assertEqual(
+            _extract_resource_id('/shipments/47344057080/assignment/v1', '/shipments/'),
+            '47344057080',
+        )
+        self.assertEqual(
+            _extract_resource_id('/payments/998877/details', '/payments/'),
+            '998877',
+        )
+
+    @patch('nistiprint_shared.services.platform_drivers.mercadolivre.requests.get')
+    def test_ml_driver_sanitizes_shipment_id_before_building_url(self, mock_get):
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.text = '{}'
+        mock_get.return_value.json.return_value = {'id': 47344057080}
+
+        result = meli_driver.get_shipment(
+            {'access_token': 'token'},
+            '47344057080/assignment/v1',
+        )
+
+        self.assertEqual(result['id'], 47344057080)
+        self.assertEqual(
+            mock_get.call_args.args[0],
+            'https://api.mercadolibre.com/shipments/47344057080',
+        )
+
     def test_shopee_materialized_order_syncs_marketplace_status(self):
         service = MarketplaceWebhookIngestService()
         resolved_status = unittest.mock.MagicMock(
