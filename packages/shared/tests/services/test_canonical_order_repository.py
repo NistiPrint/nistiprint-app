@@ -29,6 +29,35 @@ class TestCanonicalOrderRepository(unittest.TestCase):
         self.assertEqual(params["p_order"]["marketplace_order_id"], "200001")
         self.assertEqual(params["p_snapshot"]["customer"]["name"], "Maria")
 
+    def test_apply_marketplace_event_calls_atomic_lifecycle_rpc(self):
+        rpc_query = MagicMock()
+        rpc_query.execute.return_value.data = {
+            "pedido_id": 42,
+            "decision": "applied",
+            "situacao_pedido_id": 5,
+        }
+        service = repository_module.CanonicalOrderRepository()
+
+        with patch.object(repository_module.supabase_db, "rpc", return_value=rpc_query) as rpc:
+            result = service.apply_marketplace_event(
+                {
+                    "marketplace_module_id": "Shopee",
+                    "marketplace_order_id": " SN123 ",
+                },
+                lifecycle_event={
+                    "lifecycle_stage": "shipped",
+                    "target_situacao_pedido_id": 5,
+                },
+                projection_enabled=True,
+            )
+
+        self.assertEqual(result["pedido_id"], 42)
+        self.assertEqual(rpc.call_args.args[0], "apply_marketplace_order_event")
+        params = rpc.call_args.args[1]
+        self.assertEqual(params["p_order"]["marketplace_module_id"], "shopee")
+        self.assertEqual(params["p_order"]["marketplace_order_id"], "SN123")
+        self.assertTrue(params["p_projection_enabled"])
+
     def test_upsert_rejects_incomplete_identity(self):
         service = repository_module.CanonicalOrderRepository()
         with self.assertRaises(repository_module.CanonicalOrderIdentityError):

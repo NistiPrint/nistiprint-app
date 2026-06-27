@@ -1,6 +1,6 @@
 import { useLayout } from '@/contexts/LayoutContext';
 import { cn } from '@/lib/utils';
-import { ClipboardList, FileText, Layers, Users } from 'lucide-react';
+import { ClipboardList, Layers, Users } from 'lucide-react';
 import { useEffect } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
@@ -23,12 +23,6 @@ const vendasMenu = [
     icon: Users,
     description: 'Vendas de produtos personalizados'
   },
-  {
-    name: 'Consolidar',
-    href: '/consolidar',
-    icon: FileText,
-    description: 'Consolidação de pedidos para produção'
-  }
 ];
 
 function VendasPage() {
@@ -79,7 +73,7 @@ function VendasPage() {
     setLeftSidebarMenuItems(vendasMenu);
 
     return () => {
-      if (!location.pathname.startsWith('/vendas') && !location.pathname.startsWith('/consolidar')) {
+      if (!location.pathname.startsWith('/vendas')) {
         setLeftSidebarContent(null);
         setLeftSidebarMenuItems([]);
       }

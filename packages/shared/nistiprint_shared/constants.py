@@ -54,6 +54,7 @@ STATUS_PEDIDO_PRONTO_ENVIO = 4       # "Pronto para Envio" - Pedido liberado par
 STATUS_PEDIDO_ENVIADO = 5            # "Enviado"
 STATUS_PEDIDO_ENTREGUE = 6           # "Entregue"
 STATUS_PEDIDO_CANCELADO = 7          # "Cancelado"
+STATUS_PEDIDO_DEVOLVIDO = 8          # "Devolvido"
 
 # Mapeamento de nomes para IDs
 STATUS_PEDIDO_MAP = {
@@ -66,6 +67,7 @@ STATUS_PEDIDO_MAP = {
     'ENVIADO': STATUS_PEDIDO_ENVIADO,
     'ENTREGUE': STATUS_PEDIDO_ENTREGUE,
     'CANCELADO': STATUS_PEDIDO_CANCELADO,
+    'DEVOLVIDO': STATUS_PEDIDO_DEVOLVIDO,
 }
 
 # Status usados na sincronização automática

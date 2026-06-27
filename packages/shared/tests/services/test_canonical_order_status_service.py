@@ -29,6 +29,18 @@ class TestCanonicalOrderStatusService(unittest.TestCase):
         self.assertEqual(resolved.status_domain, 'shipping')
         self.assertEqual(resolved.external_status_id, 'delivered')
 
+    def test_mercadolivre_ready_to_ship_mapping(self):
+        service = status_service.CanonicalOrderStatusService()
+
+        with patch.object(service, '_resolve_from_db', return_value=None):
+            resolved = service.resolve_mercadolivre(
+                payment_status='approved',
+                shipping_status='ready_to_ship',
+            )
+
+        self.assertEqual(resolved.internal_situacao_pedido_id, 4)
+        self.assertEqual(resolved.status_domain, 'shipping')
+
     def test_mercadolivre_cancel_precedence(self):
         service = status_service.CanonicalOrderStatusService()
 

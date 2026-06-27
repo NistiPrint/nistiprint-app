@@ -67,12 +67,6 @@ const navigation = [
         type: 'link',
         permission: { a: 'vendas', I: 'ler' }
       },
-      {
-        name: 'Consolidar',
-        href: '/consolidar',
-        type: 'link',
-        permission: { a: 'vendas', I: 'ler' }
-      },
     ]
   },
   {

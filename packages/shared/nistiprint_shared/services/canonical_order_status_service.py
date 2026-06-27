@@ -13,6 +13,7 @@ STATUS_PRONTO_ENVIO = 4
 STATUS_ENVIADO = 5
 STATUS_ENTREGUE = 6
 STATUS_CANCELADO = 7
+STATUS_DEVOLVIDO = 8
 
 
 DEFAULT_STATUS_MAPPINGS: dict[tuple[str, str, str], int] = {
@@ -38,6 +39,7 @@ DEFAULT_STATUS_MAPPINGS: dict[tuple[str, str, str], int] = {
     ("mercadolivre", "payment", "refunded"): STATUS_CANCELADO,
     ("mercadolivre", "shipping", "to_be_shipped"): STATUS_PRONTO_ENVIO,
     ("mercadolivre", "shipping", "handling"): STATUS_PRONTO_ENVIO,
+    ("mercadolivre", "shipping", "ready_to_ship"): STATUS_PRONTO_ENVIO,
     ("mercadolivre", "shipping", "shipped"): STATUS_ENVIADO,
     ("mercadolivre", "shipping", "not_delivered"): STATUS_ENVIADO,
     ("mercadolivre", "shipping", "delivered"): STATUS_ENTREGUE,
@@ -53,6 +55,7 @@ MELI_STATUS_PRECEDENCE = (
     ("shipping", "not_delivered"),
     ("shipping", "to_be_shipped"),
     ("shipping", "handling"),
+    ("shipping", "ready_to_ship"),
     ("payment", "approved"),
     ("payment", "authorized"),
     ("payment", "in_process"),

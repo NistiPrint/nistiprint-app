@@ -60,11 +60,18 @@ class LogisticaColetaService:
         return out or [1, 2, 3, 4, 5, 6, 7]
 
     def _load_rules(self, marketplace_integration_id: int, modalidade: str) -> List[JanelaColeta]:
+        modalidade_key = (modalidade or "STANDARD").upper()
+        modalidade_aliases = [modalidade_key]
+        if modalidade_key == "EXPRESS":
+            modalidade_aliases.append("FLEX")
+        elif modalidade_key == "FLEX":
+            modalidade_aliases.append("EXPRESS")
+
         response = (
             self._table
             .select("id,horario_corte,horario_coleta,horario_limite,tipo_envio,ponto_coleta_id,prioridade_uso,dias_semana,pontos_coleta(nome)")
             .eq("marketplace_integration_id", marketplace_integration_id)
-            .eq("modalidade", modalidade)
+            .in_("modalidade", modalidade_aliases)
             .eq("ativo", True)
             .order("horario_coleta", desc=False)
             .order("prioridade_uso", desc=True)

@@ -54,6 +54,10 @@ def get_default_schedules():
             'task': 'nistiprint_shared.services.order_erp_reference_service.reconcile_pending',
             'schedule': 60,
         },
+        'process-marketplace-lifecycle-effects': {
+            'task': 'nistiprint_shared.services.marketplace_lifecycle_tasks.process_pending_effects',
+            'schedule': 30,
+        },
         'processar-eventos-producao-periodic': {
             'task': 'tasks.eventos_tasks.process_eventos_producao',
             'schedule': 10,
@@ -114,6 +118,7 @@ celery_app = Celery(
         'nistiprint_shared.services.bling_status_sync_service',
         'nistiprint_shared.services.ai_personalization_service',
         'nistiprint_shared.services.order_erp_reference_service',
+        'nistiprint_shared.services.marketplace_lifecycle_tasks',
     ]
 )
 

@@ -110,6 +110,26 @@ def get_payment(integration: Dict, payment_id: str) -> Dict:
     return response.json()
 
 
+def get_collection(integration: Dict, collection_id: str) -> Dict:
+    """Fetches a payment notification using the resource sent by Mercado Livre."""
+    headers = _auth_headers(integration)
+    collection_id = _sanitize_resource_id(collection_id, resource_name="collection")
+    url = _ml_url(f"/collections/{collection_id}")
+    logger.info("[ML Driver] Fetching collection: %s", url)
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        logger.error(
+            "[ML Driver] Error fetching collection %s: %s - %s",
+            collection_id, response.status_code, response.text,
+        )
+        return {
+            "error": f"Erro na API do Mercado Livre (collections): {response.status_code}",
+            "details": response.text,
+            "status_code": response.status_code,
+        }
+    return response.json()
+
+
 def get_shipment(integration: Dict, shipment_id: str) -> Dict:
     """
     Fetches shipment details from Mercado Livre API.

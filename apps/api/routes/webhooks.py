@@ -1,4 +1,4 @@
-﻿"""
+"""
 Endpoints para webhooks de cancelamento de pedidos.
 
 NOTA: O recebimento de webhooks do Bling Ã‰ FEITO PELO N8N.
@@ -25,6 +25,9 @@ from nistiprint_shared.services.redis_queue_tasks import (
     move_items,
 )
 from nistiprint_shared.services.webhook_monitoring_service import webhook_monitoring_service
+from nistiprint_shared.services.marketplace_lifecycle_tasks import (
+    reconcile_marketplace_lifecycle_task,
+)
 from nistiprint_shared.constants import (
     STATUS_PEDIDO_CANCELADO,
     ALERTA_PEDIDO_CANCELADO,
@@ -71,6 +74,34 @@ def receive_shopee_webhook():
 @webhooks_bp.route('/mercadolivre', methods=['POST'])
 def receive_mercadolivre_webhook():
     return _enqueue_marketplace_webhook('mercadolivre', MERCADOLIVRE_WEBHOOK_QUEUE)
+
+
+@webhooks_bp.route('/marketplace/reconcile', methods=['POST'])
+@admin_required
+def reconcile_marketplace_orders():
+    """Queue a bounded marketplace reconciliation run."""
+    data = request.get_json(silent=True) or {}
+    apply_changes = bool(data.get('apply', False))
+    days = min(max(int(data.get('days', 60)), 1), 90)
+    limit = min(max(int(data.get('limit', 100)), 1), 100)
+    offset = max(int(data.get('offset', 0)), 0)
+    task = reconcile_marketplace_lifecycle_task.delay(
+        dry_run=not apply_changes,
+        days=days,
+        limit=limit,
+        offset=offset,
+        projection_enabled=apply_changes,
+        continue_batches=True,
+    )
+    return jsonify({
+        'success': True,
+        'queued': True,
+        'task_id': task.id,
+        'dry_run': not apply_changes,
+        'days': days,
+        'limit': limit,
+        'offset': offset,
+    }), 202
 
 
 @webhooks_bp.route('/events', methods=['GET'])
@@ -431,5 +462,3 @@ def calcular_impacto_cancelamento(demanda_internal_id: int, pedido_id: int) -> d
             'total_qtd_reduzida': 0,
             'error': str(e)
         }
-
-

@@ -371,6 +371,12 @@ def _insert_webhook_event(
     retry_expires_at: str | None = None,
 ) -> int | None:
     try:
+        body = raw_payload.get('data') if isinstance(raw_payload.get('data'), dict) else raw_payload
+        provider_timestamp = (
+            body.get('sent') or body.get('received') or body.get('timestamp')
+            or body.get('update_time')
+        )
+        parsed_provider_timestamp = parse_datetime(provider_timestamp)
         insert_payload = {
             'source': source,
             'company_id': company_id,
@@ -381,6 +387,15 @@ def _insert_webhook_event(
             'last_status': 'pending',
             'last_attempt_at': get_now_iso(),
             'attempt_count': 0,
+            'provider_topic': (
+                body.get('topic') or body.get('event') or body.get('event_type')
+                or body.get('code') or body.get('type')
+            ),
+            'provider_resource': body.get('resource'),
+            'provider_updated_at': (
+                parsed_provider_timestamp.isoformat()
+                if parsed_provider_timestamp else None
+            ),
         }
         if provider_event_id not in (None, ''):
             insert_payload['provider_event_id'] = str(provider_event_id)
@@ -877,7 +892,7 @@ def _drain_marketplace_wake_queue(r, queue_name: str, limit: int = 200) -> int:
 
 def _marketplace_order_key(event: dict) -> str:
     company_id = str(event.get('company_id') or '').strip()
-    numero_loja = str(event.get('numero_loja') or '').strip()
+    numero_loja = str(event.get('resolved_order_id') or event.get('numero_loja') or '').strip()
     if not numero_loja:
         return f"event:{event.get('id')}"
     return f"{company_id}:{numero_loja}" if company_id else numero_loja

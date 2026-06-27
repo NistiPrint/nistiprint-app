@@ -189,6 +189,34 @@ class TestRedisQueueWebhookAttempts(unittest.TestCase):
         self.assertTrue(result['queued'])
         queued = json.loads(redis_client.rpush.call_args.args[1])
         self.assertEqual(queued, {'webhook_event_id': 55})
+        inserted_event = insert_table.insert.call_args.args[0]
+        self.assertEqual(inserted_event['provider_topic'], None)
+        self.assertEqual(inserted_event['numero_loja'], 'SN123')
+
+    def test_enqueue_meli_webhook_persists_provider_metadata(self):
+        insert_table = MagicMock()
+        insert_table.insert.return_value.execute.return_value.data = [{'id': 56}]
+
+        with patch.object(rqt, '_find_webhook_event_by_provider_event_id', return_value=None), \
+             patch.object(rqt.supabase_db, 'table', return_value=insert_table), \
+             patch.object(rqt, 'get_redis_client'), \
+             patch.object(rqt, 'generate_correlation_id', return_value='cid-2'), \
+             patch.object(rqt, 'get_now', return_value=rqt.parse_datetime('2026-06-25T12:00:00+00:00')):
+            rqt.enqueue_marketplace_webhook_event(
+                'mercadolivre',
+                {
+                    '_id': 'evt-2',
+                    'topic': 'shipments',
+                    'resource': '/shipments/123',
+                    'sent': '2026-06-25T12:00:00Z',
+                    'user_id': 9,
+                },
+            )
+
+        inserted = insert_table.insert.call_args.args[0]
+        self.assertEqual(inserted['provider_topic'], 'shipments')
+        self.assertEqual(inserted['provider_resource'], '/shipments/123')
+        self.assertIsNotNone(inserted['provider_updated_at'])
 
     def test_enqueue_marketplace_webhook_deduplicates_by_provider_event_id(self):
         select_table = MagicMock()

@@ -59,6 +59,7 @@ from routes.relatorios import relatorios_api_bp
 from routes.uom_conversions import uom_conversions_bp, uom_conversions_api_bp
 from routes.demanda_producao_web import demanda_producao_bp
 from routes.demanda_producao_api import demanda_producao_api_bp
+from routes.production_lot_suggestions_api import demanda_producao_api_bp as production_lot_suggestions_api_bp
 from routes.tasks_api import tasks_api_bp, admin_worker_logs_bp
 from routes.task_schedules_api import task_schedules_api_bp
 from routes.usuarios_setores import usuarios_setores_bp, usuarios_setores_api_bp

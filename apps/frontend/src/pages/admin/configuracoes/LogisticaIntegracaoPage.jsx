@@ -166,7 +166,7 @@ export default function LogisticaIntegracaoPage() {
               <Select value={form.modalidade} onValueChange={(v) => setForm((p) => ({ ...p, modalidade: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="FLEX">FLEX</SelectItem>
+                  <SelectItem value="EXPRESS">Flex</SelectItem>
                   <SelectItem value="STANDARD">Normal</SelectItem>
                   <SelectItem value="FULFILLMENT">FULFILLMENT</SelectItem>
                   <SelectItem value="RETIRADA">RETIRADA</SelectItem>
@@ -244,7 +244,7 @@ export default function LogisticaIntegracaoPage() {
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Regras Cadastradas</CardTitle>
+          <CardTitle>Janelas cadastradas</CardTitle>
           <Select value={selectedIntegration} onValueChange={setSelectedIntegration}>
             <SelectTrigger className="w-72"><SelectValue placeholder="Filtrar integração" /></SelectTrigger>
             <SelectContent>
@@ -271,7 +271,7 @@ export default function LogisticaIntegracaoPage() {
               {regras.map((r) => (
                 <TableRow key={r.id}>
                   <TableCell>{r.installed_integrations?.instance_name || `#${r.marketplace_integration_id}`}</TableCell>
-                  <TableCell>{r.modalidade}</TableCell>
+                  <TableCell>{r.modalidade === 'STANDARD' ? 'Normal' : ['FLEX', 'EXPRESS'].includes(r.modalidade) ? 'Flex' : r.modalidade}</TableCell>
                   <TableCell>Corte {r.horario_corte?.slice(0, 5) || '--:--'} · Coleta {r.horario_coleta?.slice(0, 5) || r.horario_limite?.slice(0, 5)} {r.pontos_coleta?.nome ? `(${r.pontos_coleta.nome})` : ''}</TableCell>
                   <TableCell>{(r.dias_semana || []).map((d) => diasLabel[d]).filter(Boolean).join(', ')}</TableCell>
                   <TableCell>{r.ativo ? <Badge className="bg-green-600 text-white">Ativa</Badge> : <Badge variant="secondary">Inativa</Badge>}</TableCell>

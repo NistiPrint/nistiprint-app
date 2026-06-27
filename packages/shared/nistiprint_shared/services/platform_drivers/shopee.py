@@ -155,7 +155,7 @@ def get_order_detail(integration: Dict, order_sn_list: List[str]) -> Dict:
     }
     
     # Optional fields to get more info (like buyer details, items, etc)
-    optional_fields = "buyer_user_id,buyer_username,recipient_address,item_list,create_time,pay_time,total_amount,order_status,fulfillment_flag,package_list,shipping_carrier,message_to_seller,ship_by_date"
+    optional_fields = "buyer_user_id,buyer_username,recipient_address,item_list,create_time,update_time,pay_time,ship_time,total_amount,order_status,fulfillment_flag,package_list,shipping_carrier,message_to_seller,ship_by_date"
     params["response_optional_fields"] = optional_fields
 
     logger.debug("Shopee API URL: %s", url)
@@ -198,7 +198,11 @@ def get_order_detail(integration: Dict, order_sn_list: List[str]) -> Dict:
         "recipient_address":  order.get("recipient_address"),
         "pay_time":           _ts_to_iso(order.get("pay_time")),
         "create_time":        _ts_to_iso(order.get("create_time")),
+        "update_time":        _ts_to_iso(order.get("update_time")),
+        "ship_time":          _ts_to_iso(order.get("ship_time")),
         "ship_by_date":       _ts_to_iso(order.get("ship_by_date")),
+        "return_status":      order.get("return_status"),
+        "refund_status":      order.get("refund_status"),
         "total":              float(order.get("total_amount", 0)),
         "currency":           order.get("currency", "BRL"),
         "raw":                order,
@@ -209,6 +213,48 @@ def get_order_detail(integration: Dict, order_sn_list: List[str]) -> Dict:
                 normalized_order.get("shipping_carrier"), order.get("fulfillment_flag"))
 
     return normalized_order
+
+def get_return_detail(integration: Dict, return_sn: str) -> Dict:
+    """Fetch a Shopee return/refund resource and expose its order identity."""
+    host = "https://partner.shopeemobile.com"
+    path = "/api/v2/returns/get_return_detail"
+    resolved = _resolve_credentials(integration)
+    if not all(resolved.values()):
+        return {"error": "Configuracao da Shopee incompleta para consultar devolucao."}
+    partner_id = int(resolved["partner_id"])
+    shop_id = int(resolved["shop_id"])
+    timestamp = int(time.time())
+    sign = _generate_sign(
+        partner_id, resolved["partner_key"], path, timestamp,
+        resolved["access_token"], shop_id,
+    )
+    response = requests.get(
+        f"{host}{path}",
+        params={
+            "partner_id": partner_id,
+            "timestamp": timestamp,
+            "sign": sign,
+            "access_token": resolved["access_token"],
+            "shop_id": shop_id,
+            "return_sn": str(return_sn),
+        },
+    )
+    if response.status_code != 200:
+        return {
+            "error": f"Erro na API de devolucoes da Shopee: {response.status_code}",
+            "details": response.text,
+        }
+    data = response.json()
+    if data.get("error"):
+        return {
+            "error": f"Erro reportado pela Shopee: {data.get('message')}",
+            "code": data.get("error"),
+        }
+    payload = data.get("response") or {}
+    if isinstance(payload.get("return"), dict):
+        payload = payload["return"]
+    return payload if isinstance(payload, dict) else {"error": "Devolucao Shopee invalida"}
+
 
 def get_product_detail(integration: Dict, item_id_list: List[str]) -> Dict:
     """

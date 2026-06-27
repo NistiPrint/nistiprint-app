@@ -45,7 +45,7 @@ export default function PedidoDemandaCard({ pedidoId, demandas = [], onRefresh }
   };
 
   const handleCriarDemanda = () => {
-    navigate(`/consolidar?pedidos=${pedidoId}`);
+    navigate(`/producao/demanda?tab=planning`);
   };
 
   if (!demandas || demandas.length === 0) {

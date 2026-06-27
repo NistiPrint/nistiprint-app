@@ -64,13 +64,12 @@ import EstoqueReservasPage from './pages/estoque/EstoqueReservasPage'
 import MovimentacaoLotePage from './pages/estoque/MovimentacaoLotePage'
 import FilaImpressao from './pages/impressao/FilaImpressao'
 import PedidoDetalhePage from './pages/pedidos/PedidoDetalhePage'
-import PedidosListPage from './pages/pedidos/PedidosListPage'
+import PedidosListPage from './pages/pedidos/PedidosListPageLotAware'
 import ControleProducaoPage from './pages/producao/ControleProducaoPage'
 import DemandaCalendarPage from './pages/producao/DemandaCalendarPage'
 import DemandaDashboardPage from './pages/producao/DemandaDashboardPage'
-import DemandaListPage from './pages/producao/DemandaListPage'
+import DemandaListPage from './pages/producao/DemandasPlanejamentoPage'
 import DemandaPrioridadePage from './pages/producao/DemandaPrioridadePage'
-import DemandaRascunhosPage from './pages/producao/DemandaRascunhosPage'
 import ExpedicaoDashboardPage from './pages/producao/ExpedicaoDashboardPage'
 import FocoProducaoPage from './pages/producao/FocoProducaoPage'
 import NovaDemandaPage from './pages/producao/NovaDemandaPage'
@@ -129,7 +128,7 @@ function App() {
             <Route path='foco' element={<FocoProducaoPage />} />
             <Route path='resumo' element={<ResumoProducaoPage />} />
             <Route path='demanda' element={<DemandaListPage />} />
-            <Route path='demanda/rascunhos' element={<DemandaRascunhosPage />} />
+            <Route path='demanda/rascunhos' element={<Navigate to='/producao/demanda?tab=planning' replace />} />
             <Route path='demanda/nova' element={<NovaDemandaPage />} />
             <Route path='demanda/:id/editar' element={<NovaDemandaPage />} />
             <Route

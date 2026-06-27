@@ -131,6 +131,45 @@ class CanonicalOrderRepository:
             raise RuntimeError("upsert_canonical_order returned no pedido id")
         return int(value)
 
+    def apply_marketplace_event(
+        self,
+        order: Dict[str, Any],
+        *,
+        lifecycle_event: Dict[str, Any],
+        snapshot: Optional[Dict[str, Any]] = None,
+        refs: Optional[Iterable[Dict[str, Any]]] = None,
+        projection_enabled: bool = False,
+    ) -> Dict[str, Any]:
+        payload = dict(order or {})
+        payload["marketplace_module_id"] = self.resolve_module_id(
+            payload.get("marketplace_integration_id"),
+            payload.get("marketplace_module_id"),
+        )
+        payload["marketplace_order_id"] = self.normalize_order_id(
+            payload.get("marketplace_order_id")
+            or payload.get("codigo_pedido_externo")
+        )
+        if not payload["marketplace_module_id"] or not payload["marketplace_order_id"]:
+            raise CanonicalOrderIdentityError(
+                "marketplace_module_id and marketplace_order_id are required"
+            )
+        response = supabase_db.rpc(
+            "apply_marketplace_order_event",
+            {
+                "p_order": self._json_safe(payload),
+                "p_snapshot": self._json_safe(snapshot) if snapshot is not None else None,
+                "p_refs": self._json_safe(list(refs or [])),
+                "p_event": self._json_safe(lifecycle_event or {}),
+                "p_projection_enabled": bool(projection_enabled),
+            },
+        ).execute()
+        value = response.data
+        if isinstance(value, list):
+            value = value[0] if value else None
+        if not isinstance(value, dict) or value.get("pedido_id") is None:
+            raise RuntimeError("apply_marketplace_order_event returned no pedido id")
+        return value
+
     def _execute_upsert_rpc(
         self,
         payload: Dict[str, Any],
