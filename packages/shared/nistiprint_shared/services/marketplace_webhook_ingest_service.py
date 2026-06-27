@@ -189,8 +189,6 @@ class MarketplaceWebhookIngestService:
         )
         if inactive:
             return inactive
-        nfe_link = self._find_default_nfe_link(marketplace_inst)
-
         detail = self._fetch_shopee_detail(marketplace_inst, str(order_sn))
         if detail.get("error"):
             logger.warning(
@@ -220,74 +218,21 @@ class MarketplaceWebhookIngestService:
             status_original,
             integration_id=marketplace_inst.get("id"),
         )
-        materialized = self._try_materialize_from_bling(
-            source="shopee",
-            external_order_id=str(order_sn),
-            marketplace_inst=marketplace_inst,
-            marketplace_detail=detail,
-            marketplace_mirror_id=pedido_shopee_id,
-            nfe_link=nfe_link,
-        )
-        if materialized.get("status") != "success":
-            return self._bling_materialization_error_result(
-                source="shopee",
-                external_order_id=str(order_sn),
-                marketplace_integration_id=marketplace_inst.get("id"),
-                result=materialized,
-            )
-
-        if materialized:
-            self._update_materialized_pedido_status(
-                pedido_id=materialized.get("pedido_id"),
-                situacao_pedido_id=status.internal_situacao_pedido_id,
-                status_original=status_original,
-                source="shopee",
-            )
-            return {
-                "status": "success",
-                "message": f"Pedido Shopee {order_sn} atualizado via materializacao Bling",
-                "pedido_id": materialized.get("pedido_id"),
-                "external_order_id": str(order_sn),
-                "marketplace_integration_id": marketplace_inst.get("id"),
-                "internal_situacao_pedido_id": status.internal_situacao_pedido_id,
-                "external_status_id": status.external_status_id,
-                "pedido_bling_id": materialized.get("pedido_bling_id"),
-                "bling_order_id": materialized.get("bling_order_id"),
-                "bling_order_number": materialized.get("bling_order_number"),
-                "materialized_via": "bling_lookup",
-            }
         pedido_id = self._upsert_pedido_status(
-            source="shopee",
-            external_order_id=str(order_sn),
+            source="shopee", external_order_id=str(order_sn),
             marketplace_integration_id=marketplace_inst.get("id"),
-            bling_integration_id=(nfe_link or {}).get("erp_integration_id"),
-            bling_loja_id=(nfe_link or {}).get("erp_store_id"),
+            bling_integration_id=None, bling_loja_id=None,
             channel_id=(link or {}).get("channel_id"),
             situacao_pedido_id=status.internal_situacao_pedido_id,
             status_original=status_original,
             mirror_fields={"pedido_shopee_id": pedido_shopee_id},
-            raw_customer=self._shopee_customer(detail),
-            total=detail.get("total"),
-            currency=detail.get("currency") or "BRL",
-            data_venda=detail.get("create_time"),
+            raw_customer=self._shopee_customer(detail), total=detail.get("total"),
+            currency=detail.get("currency") or "BRL", data_venda=detail.get("create_time"),
             details=detail,
         )
-        logger.info(
-            "[marketplace-webhook] shopee timestamps order_sn=%s %s",
-            order_sn,
-            _summarize_timestamps(
-                data_compra=detail.get("create_time"),
-                data_pagamento=detail.get("pay_time"),
-                data_envio=detail.get("ship_time"),
-                status=detail.get("order_status"),
-            ),
-        )
-
         return {
-            "status": "success",
-            "message": f"Pedido Shopee {order_sn} atualizado",
-            "pedido_id": pedido_id,
-            "external_order_id": str(order_sn),
+            "status": "success", "message": f"Pedido Shopee {order_sn} atualizado pelo marketplace",
+            "pedido_id": pedido_id, "external_order_id": str(order_sn),
             "marketplace_integration_id": marketplace_inst.get("id"),
             "internal_situacao_pedido_id": status.internal_situacao_pedido_id,
             "external_status_id": status.external_status_id,
@@ -353,8 +298,6 @@ class MarketplaceWebhookIngestService:
         )
         if inactive:
             return inactive
-        nfe_link = self._find_default_nfe_link(marketplace_inst)
-
         detail = self._fetch_meli_detail(marketplace_inst, str(order_id))
         if detail.get("error"):
             logger.warning(
@@ -390,79 +333,24 @@ class MarketplaceWebhookIngestService:
             shipping_status=shipping_status,
             integration_id=marketplace_inst.get("id"),
         )
-        materialized = self._try_materialize_from_bling(
-            source="mercadolivre",
-            external_order_id=str(order_id),
-            marketplace_inst=marketplace_inst,
-            marketplace_detail=detail,
-            marketplace_mirror_id=pedido_meli_id,
-            nfe_link=nfe_link,
-        )
-        if materialized.get("status") != "success":
-            return self._bling_materialization_error_result(
-                source="mercadolivre",
-                external_order_id=str(order_id),
-                marketplace_integration_id=marketplace_inst.get("id"),
-                result=materialized,
-            )
-
-        if materialized:
-            self._update_materialized_pedido_status(
-                pedido_id=materialized.get("pedido_id"),
-                situacao_pedido_id=status.internal_situacao_pedido_id,
-                status_original=status_original,
-                source="mercadolivre",
-            )
-            return {
-                "status": "success",
-                "message": f"Pedido Mercado Livre {order_id} atualizado via materializacao Bling",
-                "pedido_id": materialized.get("pedido_id"),
-                "external_order_id": str(order_id),
-                "marketplace_integration_id": marketplace_inst.get("id"),
-                "internal_situacao_pedido_id": status.internal_situacao_pedido_id,
-                "external_status_id": status.external_status_id,
-                "status_domain": status.status_domain,
-                "pedido_bling_id": materialized.get("pedido_bling_id"),
-                "bling_order_id": materialized.get("bling_order_id"),
-                "bling_order_number": materialized.get("bling_order_number"),
-                "materialized_via": "bling_lookup",
-            }
         pedido_id = self._upsert_pedido_status(
-            source="mercadolivre",
-            external_order_id=str(order_id),
+            source="mercadolivre", external_order_id=str(order_id),
             marketplace_integration_id=marketplace_inst.get("id"),
-            bling_integration_id=(nfe_link or {}).get("erp_integration_id"),
-            bling_loja_id=(nfe_link or {}).get("erp_store_id"),
+            bling_integration_id=None, bling_loja_id=None,
             channel_id=(link or {}).get("channel_id"),
             situacao_pedido_id=status.internal_situacao_pedido_id,
             status_original=status_original,
             mirror_fields={"pedido_mercadolivre_id": pedido_meli_id},
-            raw_customer=self._meli_customer(order),
-            total=order.get("total_amount"),
-            currency=order.get("currency_id") or "BRL",
-            data_venda=order.get("date_created"),
+            raw_customer=self._meli_customer(order), total=order.get("total_amount"),
+            currency=order.get("currency_id") or "BRL", data_venda=order.get("date_created"),
             details=detail,
         )
-        logger.info(
-            "[marketplace-webhook] meli timestamps order_id=%s %s",
-            order_id,
-            _summarize_timestamps(
-                data_compra=order.get("date_created"),
-                data_pagamento=_meli_date_approved(order),
-                data_envio=order.get("date_closed"),
-                status=order.get("status"),
-            ),
-        )
-
         return {
-            "status": "success",
-            "message": f"Pedido Mercado Livre {order_id} atualizado",
-            "pedido_id": pedido_id,
-            "external_order_id": str(order_id),
+            "status": "success", "message": f"Pedido Mercado Livre {order_id} atualizado pelo marketplace",
+            "pedido_id": pedido_id, "external_order_id": str(order_id),
             "marketplace_integration_id": marketplace_inst.get("id"),
             "internal_situacao_pedido_id": status.internal_situacao_pedido_id,
-            "external_status_id": status.external_status_id,
-            "status_domain": status.status_domain,
+            "external_status_id": status.external_status_id, "status_domain": status.status_domain,
         }
 
     def _inactive_source_result(
@@ -968,14 +856,8 @@ class MarketplaceWebhookIngestService:
         if not external_order_id:
             return None
 
-        bling_ref = self._lookup_bling_order(
-            bling_integration_id=bling_integration_id,
-            external_order_id=str(external_order_id),
-        )
-        if bling_ref.get("status") != "found" or not bling_ref.get("bling_order_number"):
-            raise RuntimeError(
-                f"Pedido {external_order_id} sem numero_pedido resolvido no Bling: {bling_ref.get('status')}"
-            )
+        # ERP is optional until printing or invoicing actually needs it.
+        bling_ref = {}
         data_compra_marketplace = data_venda
         data_pagamento_marketplace = None
         data_envio_marketplace = None
@@ -1049,7 +931,7 @@ class MarketplaceWebhookIngestService:
             },
         )
         row = {
-            "numero_pedido": str(bling_ref["bling_order_number"]),
+            "numero_pedido": str(external_order_id),
             "codigo_pedido_externo": str(external_order_id),
             "origem": source.upper(),
             "marketplace_module_id": source,
@@ -1137,15 +1019,17 @@ class MarketplaceWebhookIngestService:
                 "external_order_id": str(external_order_id),
                 "external_status": status_original,
             },
-            {
-                "integration_id": bling_integration_id,
-                "module_id": "bling",
-                "role": "erp",
-                "external_order_id": str(bling_ref.get("bling_order_id") or bling_ref.get("bling_order_number")),
-                "metadata": {"store_id": bling_loja_id},
-            },
         ]
         pedido_id = canonical_order_repository.upsert(row, snapshot=snapshot, refs=refs)
+        canonical_order_repository.defer_unresolved_erp_order(
+            pedido_id=pedido_id,
+            erp_integration_id=None,
+            erp_store_id=None,
+            erp_order_id=None,
+            marketplace_order_id=external_order_id,
+            payload={"marketplace_module_id": source, "marketplace_integration_id": marketplace_integration_id},
+            reason="erp_reference_pending",
+        )
         persist_classification_from_payload(
             {"numeroLoja": str(external_order_id), "itens": snapshot_items},
             pedido_id,

@@ -215,6 +215,7 @@ class CanonicalOrderRepository:
     def defer_unresolved_erp_order(
         self,
         *,
+        pedido_id: Optional[int] = None,
         erp_integration_id: Optional[int],
         erp_store_id: Any,
         erp_order_id: Any,
@@ -223,6 +224,7 @@ class CanonicalOrderRepository:
         reason: str = "marketplace_module_unresolved",
     ) -> None:
         record = {
+            "pedido_id": pedido_id,
             "erp_integration_id": erp_integration_id,
             "erp_store_id": self.normalize_order_id(erp_store_id),
             "erp_order_id": erp_order_id,
@@ -233,6 +235,26 @@ class CanonicalOrderRepository:
             "updated_at": datetime.utcnow().isoformat(),
         }
         query = supabase_db.table("pending_order_reconciliations")
+        if pedido_id:
+            existing = (
+                query.select("id")
+                .eq("pedido_id", pedido_id)
+                .eq("status", "pending")
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            if existing:
+                query.update(record).eq("id", existing[0]["id"]).execute()
+            else:
+                try:
+                    query.insert(record).execute()
+                except APIError as exc:
+                    if str(getattr(exc, "code", "")) != "23505":
+                        raise
+                    query.update(record).eq("pedido_id", pedido_id).eq("status", "pending").execute()
+            return
         if erp_integration_id and erp_order_id not in (None, ""):
             query.upsert(
                 record,

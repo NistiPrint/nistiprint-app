@@ -1709,6 +1709,24 @@ def _upsert_itens_pedido(pedido_id, itens_bling):
     if not pedido_id or not itens_bling:
         return
 
+    pedido_rows = (
+        supabase_db.table('pedidos')
+        .select('ingest_source')
+        .eq('id', pedido_id)
+        .limit(1)
+        .execute().data or []
+    )
+    if pedido_rows and str(pedido_rows[0].get('ingest_source') or '').lower() in ('shopee', 'mercadolivre'):
+        # Marketplace owns commercial item data. Bling may only enrich the
+        # internal product mapping for an existing SKU.
+        for item in itens_bling:
+            codigo = item.get('codigo')
+            produto_id = _resolve_produto_interno(codigo, (item.get('produto') or {}).get('id'))
+            if codigo and produto_id:
+                (supabase_db.table('itens_pedido').update({'produto_id': produto_id, 'updated_at': get_now_iso()})
+                 .eq('pedido_id', pedido_id).eq('sku_externo', codigo).execute())
+        return
+
     # Deletar itens existentes deste pedido para evitar duplicatas
     supabase_db.table('itens_pedido').delete().eq('pedido_id', pedido_id).execute()
 

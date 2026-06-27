@@ -50,6 +50,10 @@ def get_default_schedules():
             'task': 'nistiprint_shared.services.redis_queue_tasks.drain_bling_webhook_failures',
             'schedule': 300,
         },
+        'reconcile-pending-erp-references': {
+            'task': 'nistiprint_shared.services.order_erp_reference_service.reconcile_pending',
+            'schedule': 60,
+        },
         'processar-eventos-producao-periodic': {
             'task': 'tasks.eventos_tasks.process_eventos_producao',
             'schedule': 10,
@@ -109,6 +113,7 @@ celery_app = Celery(
         'tasks.token_renewal_tasks',
         'nistiprint_shared.services.bling_status_sync_service',
         'nistiprint_shared.services.ai_personalization_service',
+        'nistiprint_shared.services.order_erp_reference_service',
     ]
 )
 

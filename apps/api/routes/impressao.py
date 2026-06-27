@@ -10,6 +10,7 @@ Fluxo:
 from flask import Blueprint, request
 from routes.auth import login_required
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.order_erp_reference_service import order_erp_reference_service
 from nistiprint_shared.utils import process_string
 from utils.api_response import ApiResponse
 import logging
@@ -42,11 +43,23 @@ def get_impressao_data():
         order_ids = [int(id.strip()) for id in order_ids_param.split(',') if id.strip()]
 
         orders_data = []
+        blocked_orders = []
 
+        resolution = order_erp_reference_service.resolve_many(order_ids, allow_remote=True)
+        ready_ids = {item['pedido_id'] for item in resolution['ready']}
+        blocked_orders.extend(resolution['blocked'])
         for order_id in order_ids:
+            if order_id not in ready_ids:
+                continue
             order = _build_order_print_data(order_id, plataforma)
             if order:
                 orders_data.append(order)
+            else:
+                blocked_orders.append({
+                    'pedido_id': order_id,
+                    'status': 'invalid_print_data',
+                    'message': 'Pedido sem número Bling ou dados para impressão',
+                })
 
         orders_data.sort(
             key=lambda order: (
@@ -57,7 +70,9 @@ def get_impressao_data():
 
         return ApiResponse.success({
             'orders': orders_data,
-            'total': len(orders_data)
+            'total': len(orders_data),
+            'blocked_orders': blocked_orders,
+            'blocked_total': len(blocked_orders)
         })
 
     except Exception as e:
@@ -77,6 +92,9 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             return None
 
         pedido = pedido_result.data
+        erp_number = pedido.get('erp_order_number') or pedido.get('bling_order_number')
+        if not erp_number:
+            return None
 
         # 2. Buscar vínculos de integração
         vinculos_result = supabase_db.table('vinculos_integracao_pedido').select('*').eq('pedido_id', pedido_id).execute()
@@ -176,7 +194,7 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
 
         return {
             'id': pedido.get('id'),
-            'numero': pedido.get('numero_pedido', ''),
+            'numero': str(erp_number),
             'numeroLoja': numero_loja,
             'contato': {
                 'nome': pedido.get('cliente_nome', contato.get('nome', '')),

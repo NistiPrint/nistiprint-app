@@ -86,17 +86,13 @@ export default function TabelaPedidos({
                     onCheckedChange={onSelecionarTodos}
                   />
                 </TableHead>
-                <TableHead className="w-[80px]">
-                  <span className="text-xs">Flags</span>
-                </TableHead>
-                <TableHead>Pedido</TableHead>
-                <TableHead>Enviar Até</TableHead>
-                <TableHead>Pagamento</TableHead>
-                <TableHead>Cliente</TableHead>
-                <TableHead>Origem</TableHead>
+                <TableHead>Plataforma</TableHead>
+                <TableHead className="w-[80px]"><span className="text-xs">Flags</span></TableHead>
+                <TableHead>Data pagamento</TableHead>
+                <TableHead>Data limite envio</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-center">Demanda</TableHead>
-                <TableHead className="text-right">Ações</TableHead>
+                <TableHead className="text-right">Ação</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -127,84 +123,7 @@ export default function TabelaPedidos({
                     />
                   </TableCell>
                   <TableCell>
-                    <div className="flex items-center gap-1">
-                      {/* Fulfillment indicator - subtle dot */}
-                      {pedido.is_fulfillment && (
-                        <Tooltip>
-                          <TooltipTrigger>
-                            <div className="h-2 w-2 rounded-full bg-green-500" />
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <span>Fulfillment</span>
-                          </TooltipContent>
-                        </Tooltip>
-                      )}
-                      {/* Flex indicator - subtle dot */}
-                      {pedido.is_flex && (
-                        <Tooltip>
-                          <TooltipTrigger>
-                            <div className="h-2 w-2 rounded-full bg-orange-400" />
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <span>Entrega Rápida (Flex)</span>
-                          </TooltipContent>
-                        </Tooltip>
-                      )}
-                      {/* Personalizado indicator - subtle dot */}
-                      {pedido.is_personalizado && (
-                        <Tooltip>
-                          <TooltipTrigger>
-                            <div className="h-2 w-2 rounded-full bg-purple-400" />
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <span>Pedido personalizado</span>
-                          </TooltipContent>
-                        </Tooltip>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-col gap-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-semibold">#{pedido.numero_pedido}</span>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        {pedido.codigo_pedido_externo && <span className="font-mono">{pedido.codigo_pedido_externo}</span>}
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className={pedido.is_flex ? 'font-semibold text-orange-700' : 'font-medium'}>
-                      {formatarDataHora(timestamps.limite)}
-                    </div>
-                    {timestamps.coleta && (
-                      <div className="text-xs text-muted-foreground">
-                        Coleta {formatarDataHora(timestamps.coleta)}
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-col">
-                      <span className="font-medium">
-                        {timestamps.pagamento ? formatarDataHora(timestamps.pagamento) : 'Pagamento não informado'}
-                      </span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="font-medium truncate max-w-[220px]">{pedido.cliente_nome || 'N/A'}</span>
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        {pedido.cliente_documento && <span className="font-mono">{pedido.cliente_documento}</span>}
-                        {pedido.total_pedido !== undefined && pedido.total_pedido !== null && (
-                          <span>
-                            {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(pedido.total_pedido) || 0)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <CanalIcon 
+                    <CanalIcon
                       canalNome={pedido.canal_venda_nome}
                       marketplaceSlug={pedido.marketplace_slug}
                       marketplaceColor={pedido.marketplace_color}
@@ -212,82 +131,42 @@ export default function TabelaPedidos({
                     />
                   </TableCell>
                   <TableCell>
-                    <StatusBadge
-                      statusId={pedido.situacao_pedido_id}
-                      statusNome={pedido.status?.nome}
-                      statusCor={pedido.status?.cor}
-                    />
+                    <div className="flex items-center gap-1">
+                      {pedido.is_fulfillment && <Tooltip><TooltipTrigger><div className="h-2 w-2 rounded-full bg-green-500" /></TooltipTrigger><TooltipContent>Fulfillment</TooltipContent></Tooltip>}
+                      {pedido.is_flex && <Tooltip><TooltipTrigger><div className="h-2 w-2 rounded-full bg-orange-400" /></TooltipTrigger><TooltipContent>Entrega rápida (Flex)</TooltipContent></Tooltip>}
+                      {pedido.is_personalizado && <Tooltip><TooltipTrigger><div className="h-2 w-2 rounded-full bg-purple-400" /></TooltipTrigger><TooltipContent>Pedido personalizado</TooltipContent></Tooltip>}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <span className="font-medium">
+                      {timestamps.pagamento ? formatarDataHora(timestamps.pagamento) : 'Pagamento não informado'}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    <div className={pedido.is_flex ? 'font-semibold text-orange-700' : 'font-medium'}>
+                      {formatarDataHora(timestamps.limite)}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge statusId={pedido.situacao_pedido_id} statusNome={pedido.status?.nome} statusCor={pedido.status?.cor} />
                   </TableCell>
                   <TableCell className="text-center">
                     {pedido.demanda_id ? (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs text-green-700 hover:text-green-800 hover:bg-green-50 gap-1"
-                            asChild
-                          >
-                            <Link to={`/producao/demanda/${pedido.demanda_id}/dashboard`}>
-                              <ArrowUpRight className="h-3 w-3" />
-                              {pedido.demanda_status && (
-                                <Badge variant="outline" className={`text-xs px-1.5 py-0.5 ${getDemandaStatusColor(pedido.demanda_status)}`}>
-                                  {pedido.demanda_status}
-                                </Badge>
-                              )}
-                              {pedido.total_demandas > 1 && (
-                                <span className="ml-1 text-xs text-muted-foreground">+{pedido.total_demandas - 1}</span>
-                              )}
-                            </Link>
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <span>
-                            Ir para demanda {pedido.demanda_numero ? `#${pedido.demanda_numero}` : ''}
-                            {pedido.total_demandas > 1 && ` (+${pedido.total_demandas - 1} outras)`}
-                          </span>
-                        </TooltipContent>
-                      </Tooltip>
+                      <Button variant="ghost" size="sm" asChild>
+                        <Link to={`/producao/demanda/${pedido.demanda_id}/dashboard`}>
+                          <ArrowUpRight className="h-3 w-3" />
+                          <Badge variant="outline" className={`text-xs ${getDemandaStatusColor(pedido.demanda_status)}`}>
+                            {pedido.demanda_status || 'Demanda'}
+                          </Badge>
+                        </Link>
+                      </Button>
                     ) : pedido.tem_demanda ? (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs text-amber-600 hover:text-amber-700 hover:bg-amber-50 gap-1"
-                            asChild
-                          >
-                            <Link to={`/producao/demanda/rascunhos?pedido=${pedido.numero_pedido}`}>
-                              <ArrowUpRight className="h-3 w-3" />
-                              <Badge variant="outline" className={`text-xs px-1.5 py-0.5 ${getDemandaStatusColor(pedido.demanda_status || 'Rascunho')}`}>
-                                {pedido.demanda_status || 'Rascunho'}
-                              </Badge>
-                              {pedido.total_demandas > 1 && (
-                                <span className="ml-1 text-xs text-muted-foreground">+{pedido.total_demandas - 1}</span>
-                              )}
-                            </Link>
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <span>
-                            Ver rascunhos vinculados
-                            {pedido.total_demandas > 1 && ` (${pedido.total_demandas} demandas)`}
-                          </span>
-                        </TooltipContent>
-                      </Tooltip>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    )}
+                      <Badge variant="outline">Rascunho</Badge>
+                    ) : <span className="text-xs text-muted-foreground">&mdash;</span>}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      asChild
-                    >
-                      <Link to={`/vendas/pedidos/${pedido.id}`}>
-                        Ver
-                      </Link>
+                    <Button variant="ghost" size="sm" asChild>
+                      <Link to={`/vendas/pedidos/${pedido.id}`}>Ver</Link>
                     </Button>
                   </TableCell>
                 </TableRow>

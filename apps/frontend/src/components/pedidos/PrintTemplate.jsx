@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Printer, Loader2, AlertTriangle } from 'lucide-react'
 import { api } from '@/services/api'
@@ -17,7 +17,7 @@ export function PrintTemplate({ orderIds, onBack }) {
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const iframeRef = useRef(null)
+  const [blockedOrders, setBlockedOrders] = useState([])
 
   useEffect(() => {
     if (!orderIds || orderIds.length === 0) return
@@ -32,6 +32,10 @@ export function PrintTemplate({ orderIds, onBack }) {
         `/pedidos/impressao?order_ids=${orderIds.join(',')}`
       )
       setOrders(data.orders || [])
+      setBlockedOrders(data.blocked_orders || [])
+      if (data.blocked_orders?.length) {
+        toast.warning(`${data.blocked_orders.length} pedido(s) aguardando referência Bling`)
+      }
       if (data.orders?.length === 0) {
         toast.warning('Nenhum pedido encontrado para impressão')
       }
@@ -248,6 +252,12 @@ export function PrintTemplate({ orderIds, onBack }) {
       </div>
 
       {/* Container dos Stamp Cards (visível na tela, usado para print) */}
+      {blockedOrders.length > 0 && (
+        <div className="no-print rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          {blockedOrders.length} pedido(s) não foram incluídos porque ainda não possuem referência Bling válida.
+        </div>
+      )}
+
       <div id="print-cards-container" className="space-y-8">
         {orders.map((order) => (
           <StampCard key={order.id} order={order} />

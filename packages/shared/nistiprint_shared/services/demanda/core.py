@@ -611,6 +611,10 @@ class DemandaCoreService:
                 data_venda,
                 total_pedido,
                 is_flex,
+                erp_integration_id,
+                erp_store_id,
+                erp_order_id,
+                erp_order_number,
                 bling_integration_id,
                 marketplace_integration_id,
                 pedido_bling_id
@@ -660,9 +664,9 @@ class DemandaCoreService:
 
                 bling_data = bling_by_id.get(pedido.get('pedido_bling_id')) or {}
                 raw_payload = bling_data.get('raw_payload') or {}
-                bling_order_id = bling_data.get('bling_id') or raw_payload.get('id')
-                bling_numero = bling_data.get('numero_pedido') or raw_payload.get('numero') or pedido.get('numero_pedido')
-                bling_integration_id = pedido.get('bling_integration_id') or bling_data.get('bling_integration_id')
+                bling_order_id = pedido.get('erp_order_id') or bling_data.get('bling_id') or raw_payload.get('id')
+                bling_numero = pedido.get('erp_order_number') or bling_data.get('numero_pedido') or raw_payload.get('numero')
+                bling_integration_id = pedido.get('erp_integration_id') or pedido.get('bling_integration_id') or bling_data.get('bling_integration_id')
                 try:
                     bling_integration_key = int(bling_integration_id) if bling_integration_id is not None else None
                 except (TypeError, ValueError):

@@ -12,6 +12,7 @@ from nistiprint_shared.services.estoque_service import estoque_service
 from nistiprint_shared.services.app_config_service import app_config_service
 from nistiprint_shared.services.unit_of_work import UnitOfWork
 from nistiprint_shared.services.daily_production_log_service import daily_production_log_service
+from nistiprint_shared.services.order_erp_reference_service import order_erp_reference_service
 from .demanda_producao_base import demanda_producao_api_bp
 
 from nistiprint_shared.services.previsao_consumo_service import previsao_consumo_service
@@ -150,16 +151,32 @@ def api_generate_nfe_demanda(demanda_id):
             requested_instance_id = request.args.get('bling_integration_id')
 
         grupos = {}
+        blocked_orders = []
         for pedido in pedidos_origem:
+            resolution = order_erp_reference_service.resolve_order(
+                pedido.get('pedido_id'), allow_remote=True
+            )
+            if resolution.get('status') != 'ready':
+                blocked_orders.append({
+                    'pedido_id': pedido.get('pedido_id'),
+                    'numeroLoja': pedido.get('codigo_pedido_externo'),
+                    'error': resolution.get('message') or resolution.get('status'),
+                })
+                continue
+            pedido['bling_integration_id'] = resolution.get('erp_integration_id')
+            pedido['bling_order_id'] = resolution.get('erp_order_id')
+            pedido['bling_numero'] = resolution.get('erp_order_number')
             integration_id = pedido.get('bling_integration_id')
             if requested_instance_id and str(integration_id) != str(requested_instance_id):
                 continue
             grupos.setdefault(integration_id, []).append(pedido)
 
-        if not grupos:
-            return jsonify({'success': False, 'message': 'Nenhum pedido da demanda corresponde Ã  conta Bling selecionada.'}), 400
+        if not grupos and not blocked_orders:
+            return jsonify({'success': False, 'message': 'Nenhum pedido da demanda corresponde à conta Bling selecionada.'}), 400
 
         def generate():
+            for blocked in blocked_orders:
+                yield f"data: {json.dumps({'status': 'error', 'success': False, 'order': blocked, 'error': blocked['error']})}\n\n"
             from nistiprint_shared.services.installed_integration_service import installed_integration_service
             from nistiprint_shared.services.bling.bling_client_updated import BlingClient
 

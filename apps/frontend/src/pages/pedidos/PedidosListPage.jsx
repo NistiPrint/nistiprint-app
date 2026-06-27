@@ -130,7 +130,7 @@ function PedidosListPage() {
       const params = new URLSearchParams({
         page: page.toString(),
         limit: limit.toString(),
-        sort: 'numero_pedido',
+        sort: 'data_compra_marketplace',
         order: 'desc',
       });
 

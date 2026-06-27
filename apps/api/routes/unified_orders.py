@@ -61,7 +61,7 @@ def get_unified_orders_advanced():
             'p_pedido_date_start': request.args.get('pedido_date_start') or None,
             'p_pedido_date_end': request.args.get('pedido_date_end') or None,
             'p_search_term': sanitize_search_term(request.args.get('search')),
-            'p_sort': request.args.get('sort', 'numero_pedido'),
+            'p_sort': request.args.get('sort', 'data_compra_marketplace'),
             'p_order': request.args.get('order', 'desc'),
             'p_limit': parse_int_safe(request.args.get('limit')) or 50,
             'p_offset': ((parse_int_safe(request.args.get('page')) or 1) - 1) * (parse_int_safe(request.args.get('limit')) or 50)
@@ -72,10 +72,17 @@ def get_unified_orders_advanced():
         if params['p_limit'] > 200: params['p_limit'] = 200
         if params['p_offset'] < 0: params['p_offset'] = 0
 
-        # 2. Chamada à RPC
-        rpc_result = supabase_db.rpc('list_pedidos_filtrados', params).execute()
-        
-        pedidos = rpc_result.data or []
+        # 2. Compra ? a ordena??o can?nica; id ? o desempate est?vel.
+        if params['p_sort'] == 'data_compra_marketplace':
+            purchase_params = {
+                key: value for key, value in params.items()
+                if key not in ('p_sort', 'p_order')
+            }
+            rpc_result = supabase_db.rpc('list_pedidos_por_compra', purchase_params).execute()
+            pedidos = [row.get('order_data') or {} for row in (rpc_result.data or [])]
+        else:
+            rpc_result = supabase_db.rpc('list_pedidos_filtrados', params).execute()
+            pedidos = rpc_result.data or []
         total_count = pedidos[0].get('total_count', 0) if pedidos else 0
 
         # 3. Formatação da resposta para compatibilidade com o frontend
