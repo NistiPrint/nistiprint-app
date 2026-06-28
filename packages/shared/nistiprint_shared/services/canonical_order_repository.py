@@ -116,9 +116,9 @@ class CanonicalOrderRepository:
         try:
             response = self._execute_upsert_rpc(payload, snapshot_payload, refs_payload)
         except APIError as exc:
-            if not self._is_duplicate_bling_link_error(exc, payload):
+            if not self._is_duplicate_mirror_link_error(exc, payload):
                 raise
-            self._reconcile_duplicate_bling_identity(payload)
+            self._reconcile_duplicate_mirror_identity(exc, payload)
             response = self._execute_upsert_rpc(payload, snapshot_payload, refs_payload)
         value = response.data
         if isinstance(value, list):
@@ -153,16 +153,25 @@ class CanonicalOrderRepository:
             raise CanonicalOrderIdentityError(
                 "marketplace_module_id and marketplace_order_id are required"
             )
-        response = supabase_db.rpc(
-            "apply_marketplace_order_event",
-            {
-                "p_order": self._json_safe(payload),
-                "p_snapshot": self._json_safe(snapshot) if snapshot is not None else None,
-                "p_refs": self._json_safe(list(refs or [])),
-                "p_event": self._json_safe(lifecycle_event or {}),
-                "p_projection_enabled": bool(projection_enabled),
-            },
-        ).execute()
+        try:
+            response = self._execute_apply_event_rpc(
+                payload,
+                self._json_safe(snapshot) if snapshot is not None else None,
+                self._json_safe(list(refs or [])),
+                self._json_safe(lifecycle_event or {}),
+                bool(projection_enabled),
+            )
+        except APIError as exc:
+            if not self._is_duplicate_mirror_link_error(exc, payload):
+                raise
+            self._reconcile_duplicate_mirror_identity(exc, payload)
+            response = self._execute_apply_event_rpc(
+                payload,
+                self._json_safe(snapshot) if snapshot is not None else None,
+                self._json_safe(list(refs or [])),
+                self._json_safe(lifecycle_event or {}),
+                bool(projection_enabled),
+            )
         value = response.data
         if isinstance(value, list):
             value = value[0] if value else None
@@ -185,28 +194,63 @@ class CanonicalOrderRepository:
             },
         ).execute()
 
-    def _is_duplicate_bling_link_error(self, exc: APIError, payload: Dict[str, Any]) -> bool:
+    def _execute_apply_event_rpc(
+        self,
+        payload: Dict[str, Any],
+        snapshot: Optional[Dict[str, Any]],
+        refs: Any,
+        lifecycle_event: Dict[str, Any],
+        projection_enabled: bool,
+    ):
+        return supabase_db.rpc(
+            "apply_marketplace_order_event",
+            {
+                "p_order": self._json_safe(payload),
+                "p_snapshot": snapshot,
+                "p_refs": refs,
+                "p_event": lifecycle_event,
+                "p_projection_enabled": projection_enabled,
+            },
+        ).execute()
+
+    DUPLICATE_MIRROR_LINKS = {
+        "ux_pedidos_pedido_bling_id": "pedido_bling_id",
+        "ux_pedidos_pedido_meli_id": "pedido_mercadolivre_id",
+        "ux_pedidos_pedido_shopee_id": "pedido_shopee_id",
+    }
+
+    def _detect_duplicate_mirror_field(self, exc: APIError, payload: Dict[str, Any]) -> Optional[str]:
         if str(getattr(exc, "code", "")) != "23505":
-            return False
-        if payload.get("pedido_bling_id") in (None, ""):
-            return False
+            return None
         details = str(getattr(exc, "details", "") or "")
         message = str(getattr(exc, "message", "") or "")
-        return "ux_pedidos_pedido_bling_id" in details or "ux_pedidos_pedido_bling_id" in message
+        for constraint_name, field_name in self.DUPLICATE_MIRROR_LINKS.items():
+            if payload.get(field_name) in (None, ""):
+                continue
+            if constraint_name in details or constraint_name in message:
+                return field_name
+        return None
 
-    def _find_existing_order_by_bling_link(self, pedido_bling_id: Any) -> Optional[Dict[str, Any]]:
+    def _is_duplicate_mirror_link_error(self, exc: APIError, payload: Dict[str, Any]) -> bool:
+        return self._detect_duplicate_mirror_field(exc, payload) is not None
+
+    def _find_existing_order_by_mirror_link(self, field_name: str, field_value: Any) -> Optional[Dict[str, Any]]:
         response = (
             supabase_db.table("pedidos")
             .select("id,marketplace_module_id,marketplace_order_id")
-            .eq("pedido_bling_id", pedido_bling_id)
+            .eq(field_name, field_value)
             .limit(1)
             .execute()
         )
         rows = response.data or []
         return dict(rows[0]) if rows else None
 
-    def _reconcile_duplicate_bling_identity(self, payload: Dict[str, Any]) -> None:
-        existing = self._find_existing_order_by_bling_link(payload.get("pedido_bling_id"))
+    def _reconcile_duplicate_mirror_identity(self, exc: APIError, payload: Dict[str, Any]) -> None:
+        field_name = self._detect_duplicate_mirror_field(exc, payload)
+        if not field_name:
+            return
+
+        existing = self._find_existing_order_by_mirror_link(field_name, payload.get(field_name))
         if not existing:
             return
 
@@ -231,7 +275,7 @@ class CanonicalOrderRepository:
                     "p_pedido_id": existing_id,
                     "p_marketplace_module_id": incoming_module,
                     "p_marketplace_order_id": incoming_order,
-                    "p_reason": "auto_reconcile_duplicate_pedido_bling_id",
+                    "p_reason": f"auto_reconcile_duplicate_{field_name}",
                     "p_actor_id": "canonical_order_repository",
                 },
             ).execute()

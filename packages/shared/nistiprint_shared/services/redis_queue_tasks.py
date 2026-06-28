@@ -358,6 +358,32 @@ def _find_webhook_event_by_provider_event_id(source: str, provider_event_id: str
         return None
 
 
+def _find_webhook_event_by_payload_hash(source: str, payload_hash: str | None) -> dict | None:
+    if payload_hash in (None, ''):
+        return None
+    try:
+        rows = (
+            supabase_db.table('webhook_events')
+            .select('id,last_status,correlation_id')
+            .eq('source', source)
+            .eq('payload_hash', str(payload_hash))
+            .order('received_at', desc=True)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.error(
+            "Erro ao consultar webhook_events por source=%s payload_hash=%s: %s",
+            source,
+            payload_hash,
+            e,
+        )
+        return None
+
+
 def _insert_webhook_event(
     raw_payload: dict,
     *,
@@ -425,6 +451,11 @@ def _get_or_create_webhook_event(
     existing = _find_webhook_event_by_provider_event_id(source, provider_event_id)
     if existing:
         return existing.get('id'), False, existing
+
+    if provider_event_id in (None, ''):
+        existing = _find_webhook_event_by_payload_hash(source, payload_hash)
+        if existing:
+            return existing.get('id'), False, existing
 
     event_id = _insert_webhook_event(
         raw_payload,
