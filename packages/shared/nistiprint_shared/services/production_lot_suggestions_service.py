@@ -93,6 +93,26 @@ class ProductionLotSuggestionsService:
             return "Coleta indefinida"
         return parsed.strftime("%d/%m %H:%M")
 
+    def _build_order_suggestion_key(self, order: Dict[str, Any]) -> Optional[str]:
+        marketplace_integration_id = order.get("marketplace_integration_id")
+        rule_id = order.get("regra_logistica_integracao_id")
+        data_coleta = self._serialize_dt(order.get("data_coleta"))
+        if marketplace_integration_id is None or rule_id is None or not data_coleta:
+            return None
+        try:
+            return self.build_suggestion_key(
+                marketplace_integration_id=int(marketplace_integration_id),
+                modalidade=self.normalize_modalidade(
+                    order.get("modalidade_logistica"),
+                    is_flex=bool(order.get("is_flex")),
+                    is_fulfillment=bool(order.get("is_fulfillment")),
+                ),
+                regra_logistica_integracao_id=int(rule_id),
+                data_coleta=data_coleta,
+            )
+        except (TypeError, ValueError):
+            return None
+
     def _fetch_order_rows(self, order_ids: Optional[Sequence[int]] = None) -> List[Dict[str, Any]]:
         query = (
             supabase_db.table("pedidos")
@@ -515,16 +535,7 @@ class ProductionLotSuggestionsService:
         grouped_orders = [
             order
             for order in context["orders"]
-            if self.build_suggestion_key(
-                marketplace_integration_id=int(order["marketplace_integration_id"]),
-                modalidade=self.normalize_modalidade(
-                    order.get("modalidade_logistica"),
-                    is_flex=bool(order.get("is_flex")),
-                    is_fulfillment=bool(order.get("is_fulfillment")),
-                ),
-                regra_logistica_integracao_id=int(order["regra_logistica_integracao_id"]),
-                data_coleta=self._serialize_dt(order.get("data_coleta")),
-            ) == suggestion_key
+            if self._build_order_suggestion_key(order) == suggestion_key
         ]
         consolidated_items = self._consolidate_items(grouped_orders, context["items_by_order"])
 
@@ -594,16 +605,7 @@ class ProductionLotSuggestionsService:
 
         selected_orders = []
         for order in current_orders:
-            rebuilt_key = self.build_suggestion_key(
-                marketplace_integration_id=int(order["marketplace_integration_id"]),
-                modalidade=self.normalize_modalidade(
-                    order.get("modalidade_logistica"),
-                    is_flex=bool(order.get("is_flex")),
-                    is_fulfillment=bool(order.get("is_fulfillment")),
-                ),
-                regra_logistica_integracao_id=int(order["regra_logistica_integracao_id"]),
-                data_coleta=self._serialize_dt(order.get("data_coleta")),
-            )
+            rebuilt_key = self._build_order_suggestion_key(order)
             if rebuilt_key != suggestion_key:
                 raise RuntimeError("Sugestao desatualizada. Os pedidos mudaram de janela logistica.")
             selected_orders.append(order)

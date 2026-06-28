@@ -940,6 +940,13 @@ class MarketplaceWebhookIngestService:
             "retry_after": result.get("retry_after"),
         }
 
+    @staticmethod
+    def _sanitize_status_original(status_original: str | None) -> str | None:
+        if status_original in (None, ""):
+            return None
+        value = str(status_original).strip()
+        return value or None
+
     def _update_materialized_pedido_status(
         self,
         *,
@@ -950,6 +957,8 @@ class MarketplaceWebhookIngestService:
     ) -> None:
         if not pedido_id:
             return
+
+        status_original = self._sanitize_status_original(status_original)
 
         fields = {
             "status_original": status_original,
@@ -1067,6 +1076,8 @@ class MarketplaceWebhookIngestService:
                 "regra_modalidade": (coleta_contexto.get("regra") or {}).get("modalidade"),
             },
         )
+        status_original = self._sanitize_status_original(status_original)
+
         row = {
             "numero_pedido": str(external_order_id),
             "codigo_pedido_externo": str(external_order_id),
