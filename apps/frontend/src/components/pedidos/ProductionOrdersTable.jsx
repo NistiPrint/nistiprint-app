@@ -175,12 +175,13 @@ export default function ProductionOrdersTable({
                   <Checkbox checked={todosSelecionados} onCheckedChange={onSelecionarTodos} />
                 </TableHead>
                 <TableHead>Origem</TableHead>
-                <TableHead>Pagamento</TableHead>
-                <TableHead>Enviar ate</TableHead>
-                <TableHead>Lote previsto</TableHead>
+                <TableHead>Pedido (Bling | Loja)</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Data</TableHead>
+                <TableHead>Enviar até</TableHead>
+                <TableHead>Lote previsto</TableHead>
                 <TableHead>Demanda</TableHead>
-                <TableHead className='text-right'>Acao</TableHead>
+                <TableHead className='text-right'>Ação</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -208,6 +209,17 @@ export default function ProductionOrdersTable({
                       />
                     </TableCell>
                     <TableCell>
+                      {pedido.numero_pedido}
+                      <p>{pedido.codigo_pedido_externo}</p>
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge
+                        statusId={pedido.situacao_pedido_id}
+                        statusNome={pedido.status?.nome}
+                        statusCor={pedido.status?.cor}
+                      />
+                    </TableCell>
+                    <TableCell>
                       {timestamps.pagamento ? formatarDataHora(timestamps.pagamento) : 'Pagamento nao informado'}
                     </TableCell>
                     <TableCell>{formatarDataHora(timestamps.limite)}</TableCell>
@@ -224,13 +236,6 @@ export default function ProductionOrdersTable({
                           Sem janela
                         </Badge>
                       )}
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge
-                        statusId={pedido.situacao_pedido_id}
-                        statusNome={pedido.status?.nome}
-                        statusCor={pedido.status?.cor}
-                      />
                     </TableCell>
                     <TableCell>
                       {pedido.demanda_id ? (

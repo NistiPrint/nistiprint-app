@@ -1,9 +1,9 @@
-﻿"""Lifecycle effect delivery and historical reconciliation tasks."""
+"""Lifecycle effect delivery and historical reconciliation tasks."""
 from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from celery import shared_task
 
@@ -15,6 +15,13 @@ from nistiprint_shared.services.marketplace_lifecycle_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+STATUS_EM_ABERTO = 1
+STATUS_EM_ANDAMENTO = 2
+BACKFILL_ACTIVE_STATUS_IDS = (
+    STATUS_EM_ABERTO,
+    STATUS_EM_ANDAMENTO,
+)
 
 
 def process_pending_effects(limit: int = 100) -> dict:
@@ -60,12 +67,11 @@ def reconcile_marketplace_lifecycle(
     offset: int = 0,
     projection_enabled: bool | None = None,
 ) -> dict:
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     rows = (
         supabase_db.table("pedidos")
         .select("id,numero_pedido,marketplace_module_id,marketplace_order_id,marketplace_integration_id,situacao_pedido_id,erp_order_number,bling_order_number,updated_at")
         .in_("marketplace_module_id", ["shopee", "mercadolivre"])
-        .or_(f"situacao_pedido_id.not.in.(6,7,8),updated_at.gte.{cutoff}")
+        .in_("situacao_pedido_id", list(BACKFILL_ACTIVE_STATUS_IDS))
         .order("id")
         .range(offset, offset + limit - 1)
         .execute()
@@ -194,3 +200,4 @@ def reconcile_marketplace_lifecycle_task(
         )
         result["next_task_id"] = next_task.id
     return result
+
