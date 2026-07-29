@@ -199,13 +199,14 @@ class ShopeeChatApiTest(unittest.TestCase):
 
     @patch("nistiprint_shared.services.shopee_chat_api.requests.get")
     def test_classifies_rate_limit_and_auth_errors(self, request_get):
-        rate_limited = MagicMock(status_code=429, text="rate limited")
+        rate_limited = MagicMock(status_code=429, text="rate limited", headers={"Retry-After": "17"})
         unauthorized = MagicMock(status_code=401, text="unauthorized")
         request_get.side_effect = [rate_limited, unauthorized]
         rate_result = get_chat_messages(self.integration, "conversation-1")
         auth_result = get_chat_messages(self.integration, "conversation-1")
         self.assertEqual(rate_result["error_type"], "rate_limit")
         self.assertTrue(rate_result["retryable"])
+        self.assertEqual(rate_result["retry_after"], 17)
         self.assertEqual(auth_result["error_type"], "authentication_error")
         self.assertFalse(auth_result["retryable"])
 
@@ -216,6 +217,15 @@ class ShopeeChatApiTest(unittest.TestCase):
     def test_classifies_timeout_as_retryable(self, _request_get):
         result = get_chat_messages(self.integration, "conversation-1")
         self.assertEqual(result["error_type"], "timeout")
+        self.assertTrue(result["retryable"])
+
+    @patch("nistiprint_shared.services.shopee_chat_api.requests.get")
+    def test_invalid_json_is_retryable(self, request_get):
+        response = MagicMock(status_code=200, text="gateway garbage")
+        response.json.side_effect = ValueError("invalid json")
+        request_get.return_value = response
+        result = get_chat_messages(self.integration, "conversation-1")
+        self.assertEqual(result["error_type"], "invalid_response")
         self.assertTrue(result["retryable"])
 
 

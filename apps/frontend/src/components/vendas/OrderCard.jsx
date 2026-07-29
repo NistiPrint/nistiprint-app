@@ -100,6 +100,11 @@ function OrderCard({
                 <Badge variant='outline' className={statusBadge.className}>
                   {statusBadge.label}
                 </Badge>
+                {order.chat_context_ambiguous && (
+                  <Badge variant='outline' className='border-amber-300 text-amber-700'>
+                    Contexto requer revisao
+                  </Badge>
+                )}
                 {order.ai_status && (
                   <Badge variant='outline' className='border-slate-300 text-slate-700'>
                     {String(order.ai_status).replaceAll('_', ' ')}

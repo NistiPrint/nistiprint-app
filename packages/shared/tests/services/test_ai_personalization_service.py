@@ -14,6 +14,16 @@ class TestAiPersonalizationService(unittest.TestCase):
             })
         )
 
+    def test_should_process_order_on_first_run_with_chat_only(self):
+        self.assertTrue(
+            service.should_process_order({
+                "message_to_seller": "",
+                "has_chat_messages": True,
+                "last_buyer_message_at": None,
+                "last_ai_executed_at": None,
+            })
+        )
+
     def test_should_process_order_on_first_run_with_message_to_seller(self):
         self.assertTrue(
             service.should_process_order({

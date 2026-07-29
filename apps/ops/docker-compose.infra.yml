@@ -20,17 +20,49 @@ services:
   # ===========================================
   redis:
     image: redis:7-alpine
-    container_name: nistiprint-redis
+    container_name: nistiprint-redis-ingest
     restart: always
     command: >
       redis-server
       --appendonly yes
+      --appendfsync always
       --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy noeviction
     networks:
       - nistiprint-shared
+    ports:
+      - 127.0.0.1:6379:6379
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-celery:
+    image: redis:7-alpine
+    container_name: nistiprint-redis-celery
+    restart: always
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
+    networks: [nistiprint-shared]
+    ports:
+      - 127.0.0.1:6380:6379
+    volumes: [redis_celery_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-cache:
+    image: redis:7-alpine
+    container_name: nistiprint-redis-cache
+    restart: always
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks: [nistiprint-shared]
+    ports:
+      - 127.0.0.1:6381:6379
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -67,13 +99,18 @@ services:
       - GENERIC_TIMEZONE=America/Sao_Paulo
       - NODE_FUNCTION_ALLOW_BUILTIN=crypto
       - BLING_CLENT_SECRET=${BLING_CLENT_SECRET}
+      - SHOPEE_PARTNER_KEY=${SHOPEE_PARTNER_KEY}
+      - SHOPEE_CALLBACK_URL=${SHOPEE_CALLBACK_URL}
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       # Persistência e execução
       - EXECUTIONS_DATA_PRUNE=true
       - EXECUTIONS_DATA_MAX_AGE=168
       - EXECUTIONS_DATA_PRUNE_TIMEOUT=60
+      - WEBHOOK_SPOOL_DIR=/data/webhook-spool
+      - INGEST_REDIS_URL=redis://redis:6379/0
     volumes:
       - n8n_data:/home/node/.n8n
+      - /var/lib/nistiprint/webhook-spool:/data/webhook-spool
     depends_on:
       redis:
         condition: service_healthy
@@ -95,3 +132,5 @@ volumes:
     name: nistiprint-redis-data
   n8n_data:
     name: nistiprint-n8n-data
+  redis_celery_data:
+    name: nistiprint-redis-celery-data

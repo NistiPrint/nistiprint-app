@@ -73,6 +73,7 @@ class OrdersQueryService:
                     "last_chat_message_at": row.get("last_chat_message_at"),
                     "needs_ai_processing": row.get("needs_ai_processing", False),
                     "ai_status": row.get("ai_status"),
+                    "chat_context_ambiguous": row.get("chat_context_ambiguous", False),
                 })
 
             return processed_orders

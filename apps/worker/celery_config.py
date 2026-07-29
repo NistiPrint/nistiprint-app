@@ -28,28 +28,12 @@ except ImportError:
     load_dotenv()
 
 # Configuração do broker Redis
-CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0')
-CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis-celery:6379/0')
+CELERY_RESULT_BACKEND = None
 
 def get_default_schedules():
     """Fallback de agendamentos caso o banco esteja inacessível ou vazio."""
     return {
-        'consumir-fila-bling': {
-            'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_bling',
-            'schedule': 30,
-        },
-        'consumir-fila-shopee': {
-            'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_shopee',
-            'schedule': 30,
-        },
-        'consumir-fila-mercadolivre': {
-            'task': 'nistiprint_shared.services.redis_queue_tasks.consumir_fila_mercadolivre',
-            'schedule': 30,
-        },
-        'drain-bling-webhook-failures': {
-            'task': 'nistiprint_shared.services.redis_queue_tasks.drain_bling_webhook_failures',
-            'schedule': 300,
-        },
         'reconcile-pending-erp-references': {
             'task': 'nistiprint_shared.services.order_erp_reference_service.reconcile_pending',
             'schedule': 60,
@@ -81,12 +65,25 @@ def load_dynamic_schedules():
         task_schedules_config = config.get('task_schedules', {})
         schedules = {}
         
+        obsolete_webhook_tasks = {
+            'sync-firestore-tokens', 'process-pending-webhooks',
+            'drain-bling-webhook-failures', 'consumir-fila-bling', 'consumir_fila_bling',
+            'consumir-fila-shopee', 'consumir_fila_shopee',
+            'consumir-fila-mercadolivre', 'consumir_fila_mercadolivre',
+        }
         for task_name, task_config in task_schedules_config.items():
-            if task_name == 'sync-firestore-tokens':
+            configured_task = task_config.get('task_name', task_name)
+            if task_name in obsolete_webhook_tasks or any(
+                marker in configured_task for marker in (
+                    'consumir_fila_bling', 'consumir_fila_shopee',
+                    'consumir_fila_mercadolivre', 'process_pending_webhooks',
+                    'drain_bling_webhook_failures'
+                )
+            ):
                 logger.info(
                     "Task periodica obsoleta ignorada: %s. "
                     "As credenciais Bling agora sao gerenciadas pelo app.",
-                    task_name,
+                    configured_task,
                 )
                 continue
             if task_config.get('enabled', True):
@@ -108,7 +105,6 @@ def load_dynamic_schedules():
 celery_app = Celery(
     'nistiprint',
     broker=CELERY_BROKER_URL,
-    backend=CELERY_RESULT_BACKEND,
     include=[
         'nistiprint_shared.services.redis_queue_tasks',
         'tasks.eventos_tasks',
@@ -123,8 +119,7 @@ celery_app = Celery(
 )
 celery_app.conf.update(
     task_ignore_result=True,
-    task_store_errors_even_if_ignored=True,
-    result_expires=int(os.environ.get('CELERY_RESULT_EXPIRES', '300')),
+    task_store_errors_even_if_ignored=False,
 )
 
 # Roteamento e Filas
@@ -144,7 +139,6 @@ celery_app.conf.task_routes = {
 celery_app.conf.update(
     task_serializer='json',
     accept_content=['json'],
-    result_serializer='json',
     timezone='America/Sao_Paulo',
     enable_utc=True,
     task_acks_late=True,

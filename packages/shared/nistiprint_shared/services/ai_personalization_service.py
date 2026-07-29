@@ -24,7 +24,7 @@ ALLOWED_MODELS = (
 DEFAULT_MODEL = "gemini-2.0-flash"
 DEFAULT_MAX_PROCESSING = 50
 CHAT_CONTEXT_LIMIT = 60
-LISTING_WINDOW_DAYS = 5
+CHAT_LOOKBACK_DAYS = 7
 STATUS_EM_ANDAMENTO = 2
 PROMPT_FALLBACK_PATH = Path(get_prompt_template_path())
 
@@ -202,6 +202,9 @@ def _normalize_order_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "items": items,
         "buyer_info": buyer_info,
         "buyer_username": row.get("buyer_username") or buyer_info.get("username") or "",
+        "buyer_id": row.get("buyer_user_id") or row.get("contact_marketplace_id") or buyer_info.get("buyer_user_id"),
+        "marketplace_integration_id": row.get("marketplace_integration_id"),
+        "chat_context_ambiguous": row.get("chat_context_ambiguous", False),
         "contato": contato,
         "nome_cliente": row.get("nome_cliente") or contato.get("nome") or "",
         "has_chat_messages": row.get("has_chat_messages", False),
@@ -226,14 +229,8 @@ def should_process_order(order: Dict[str, Any], force: bool = False) -> bool:
     last_ai_executed_at = _parse_datetime(order.get("last_ai_executed_at"))
     last_buyer_message_at = _parse_datetime(order.get("last_buyer_message_at"))
     has_message_to_seller = bool((order.get("message_to_seller") or "").strip())
-    ai_status = (order.get("ai_status") or "").lower()
-
-    if not has_message_to_seller and last_buyer_message_at is None:
-        return False
     if last_ai_executed_at is None:
-        return True
-    if ai_status in {"error", "db_error", "no_response"}:
-        return True
+        return has_message_to_seller or bool(order.get("has_chat_messages")) or last_buyer_message_at is not None
     return bool(last_buyer_message_at and last_buyer_message_at > last_ai_executed_at)
 
 
@@ -281,7 +278,7 @@ def _fetch_recent_personalized_orders(
             "id,numero_pedido,codigo_pedido_externo,data_venda,informacoes_cliente,"
             "cliente_nome,cliente_documento,cliente_telefone,cliente_email,canal_venda_id,"
             "situacao_pedido_id,buyer_username,marketplace_order_id,message_to_seller,"
-            "shipping_carrier,contact_marketplace_id"
+            "shipping_carrier,contact_marketplace_id,buyer_user_id,marketplace_integration_id"
         )
         .in_("canal_venda_id", _get_shopee_channel_ids())
         .eq("situacao_pedido_id", STATUS_EM_ANDAMENTO)
@@ -292,9 +289,6 @@ def _fetch_recent_personalized_orders(
         query = query.eq("codigo_pedido_externo", str(order_sn))
     elif pedido_ids:
         query = query.in_("id", pedido_ids)
-    elif recent_days:
-        cutoff = datetime.now() - timedelta(days=recent_days)
-        query = query.gte("data_venda", cutoff.isoformat())
 
     if limit and not pedido_ids and not order_sn:
         query = query.limit(max(limit * 4, limit, 150))
@@ -302,17 +296,12 @@ def _fetch_recent_personalized_orders(
     return query.execute().data or []
 
 
-def _fetch_chat_stats_by_username(usernames: List[str], order_dates: List[Any]) -> Dict[str, Dict[str, Any]]:
+def _fetch_chat_stats_by_username(usernames: List[str], order_dates: List[Any], buyer_ids: Optional[List[Any]] = None) -> Dict[str, Dict[str, Any]]:
     usernames = [username for username in usernames if username]
     if not usernames:
         return {}
 
-    parsed_dates = [_parse_datetime(value) for value in order_dates]
-    parsed_dates = [value for value in parsed_dates if value]
-    if parsed_dates:
-        cutoff = min(parsed_dates) - timedelta(days=7)
-    else:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=CHAT_LOOKBACK_DAYS)
 
     stats = {}
     seen_ids = set()
@@ -352,7 +341,7 @@ def _fetch_chat_stats_by_username(usernames: List[str], order_dates: List[Any]) 
 
     from_rows = (
         supabase_db.table("mensagem_chat_shopee")
-        .select("id,from_user_name,to_user_name,created_at")
+        .select("id,from_id,from_user_name,to_user_name,created_at")
         .in_("from_user_name", usernames)
         .gte("created_at", cutoff.isoformat())
         .execute()
@@ -360,10 +349,17 @@ def _fetch_chat_stats_by_username(usernames: List[str], order_dates: List[Any]) 
         or []
     )
     consume(from_rows)
+    if buyer_ids:
+        id_rows = (supabase_db.table("mensagem_chat_shopee").select("id,from_id,from_user_name,to_user_name,created_at").in_("from_id", [str(value) for value in buyer_ids if value not in (None, "")]).gte("created_at", cutoff.isoformat()).execute().data or [])
+        id_to_username = {str(value): usernames[index] for index, value in enumerate(buyer_ids) if index < len(usernames) and value not in (None, "")}
+        for row in id_rows:
+            if not row.get("from_user_name"):
+                row["from_user_name"] = id_to_username.get(str(row.get("from_id")))
+        consume(id_rows)
 
     to_rows = (
         supabase_db.table("mensagem_chat_shopee")
-        .select("id,from_user_name,to_user_name,created_at")
+        .select("id,from_id,from_user_name,to_user_name,created_at")
         .in_("to_user_name", usernames)
         .gte("created_at", cutoff.isoformat())
         .execute()
@@ -375,11 +371,51 @@ def _fetch_chat_stats_by_username(usernames: List[str], order_dates: List[Any]) 
     return stats
 
 
+def _fetch_chat_stats_for_orders(orders: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    if not orders:
+        return {}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=CHAT_LOOKBACK_DAYS)
+    buyer_ids = [str(order.get("buyer_user_id") or order.get("contact_marketplace_id")) for order in orders if order.get("buyer_user_id") or order.get("contact_marketplace_id")]
+    usernames = [str(order.get("buyer_username")).strip() for order in orders if order.get("buyer_username")]
+    columns = "id,installed_integration_id,from_id,from_user_name,to_user_name,created_at"
+    rows = []
+    if buyer_ids:
+        rows += (supabase_db.table("mensagem_chat_shopee").select(columns)
+                 .in_("from_id", buyer_ids).gte("created_at", cutoff.isoformat()).execute().data or [])
+    if usernames:
+        rows += (supabase_db.table("mensagem_chat_shopee").select(columns)
+                 .in_("from_user_name", usernames).gte("created_at", cutoff.isoformat()).execute().data or [])
+        rows += (supabase_db.table("mensagem_chat_shopee").select(columns)
+                 .in_("to_user_name", usernames).gte("created_at", cutoff.isoformat()).execute().data or [])
+    rows = list({str(row.get("id")): row for row in rows}.values())
+    stats = {order.get("id"): {"last_chat_message_at": None, "last_buyer_message_at": None, "has_chat_messages": False} for order in orders}
+    for row in rows:
+        created_at = _parse_datetime(row.get("created_at"))
+        if not created_at:
+            continue
+        for order in orders:
+            integration = str(order.get("marketplace_integration_id") or "")
+            row_integration = str(row.get("installed_integration_id") or "")
+            if integration and row_integration and integration != row_integration:
+                continue
+            buyer_id = str(order.get("buyer_user_id") or order.get("contact_marketplace_id") or "")
+            username = str(order.get("buyer_username") or "").strip()
+            buyer_match = bool((buyer_id and str(row.get("from_id") or "") == buyer_id) or (username and row.get("from_user_name") == username))
+            if not (buyer_match or (username and row.get("to_user_name") == username)):
+                continue
+            current = stats[order.get("id")]
+            current["has_chat_messages"] = True
+            if not current["last_chat_message_at"] or created_at > current["last_chat_message_at"]:
+                current["last_chat_message_at"] = created_at
+            if buyer_match and (not current["last_buyer_message_at"] or created_at > current["last_buyer_message_at"]):
+                current["last_buyer_message_at"] = created_at
+    return stats
+
 def _assemble_orders(
     order_sn=None,
     pedido_ids=None,
     limit=None,
-    recent_days: Optional[int] = LISTING_WINDOW_DAYS,
+    recent_days: Optional[int] = None,
 ):
     base_orders = _fetch_recent_personalized_orders(
         order_sn=order_sn,
@@ -475,7 +511,13 @@ def _assemble_orders(
         usernames.append(_extract_buyer_username(buyer_info, fallback=order.get("cliente_nome") or contato.get("nome") or ""))
         order_dates.append(order.get("data_venda"))
 
-    chat_stats_by_username = _fetch_chat_stats_by_username(usernames, order_dates)
+    chat_stats_by_order = _fetch_chat_stats_for_orders(filtered_orders)
+
+    buyer_order_counts = {}
+    for candidate in filtered_orders:
+        key = (candidate.get("marketplace_integration_id"), candidate.get("buyer_user_id") or candidate.get("contact_marketplace_id") or candidate.get("buyer_username"))
+        if key[1]:
+            buyer_order_counts[key] = buyer_order_counts.get(key, 0) + 1
 
     assembled = []
     for order in filtered_orders:
@@ -490,7 +532,7 @@ def _assemble_orders(
             buyer_info,
             fallback=order.get("cliente_nome") or contato.get("nome") or "",
         )
-        chat_stats = chat_stats_by_username.get(buyer_username, {})
+        chat_stats = chat_stats_by_order.get(order["id"], {})
         latest_log = latest_logs.get(order_sn_value, {})
         order_items = []
 
@@ -533,6 +575,9 @@ def _assemble_orders(
             "informacoes_comprador": buyer_info,
             "shopee_message": message_to_seller,
             "buyer_username": buyer_username,
+            "buyer_id": order.get("buyer_user_id") or order.get("contact_marketplace_id"),
+            "marketplace_integration_id": order.get("marketplace_integration_id"),
+            "chat_context_ambiguous": buyer_order_counts.get((order.get("marketplace_integration_id"), order.get("buyer_user_id") or order.get("contact_marketplace_id") or order.get("buyer_username")), 0) > 1,
             "has_chat_messages": bool(chat_stats.get("has_chat_messages")),
             "last_chat_message_at": chat_stats.get("last_chat_message_at").isoformat() if chat_stats.get("last_chat_message_at") else None,
             "last_buyer_message_at": last_buyer_message_at.isoformat() if last_buyer_message_at else None,
@@ -540,6 +585,7 @@ def _assemble_orders(
             "ai_status": ai_status,
             "has_buyer_message": has_buyer_signal,
             "needs_ai_processing": should_process_order({
+                "has_chat_messages": bool(chat_stats.get("has_chat_messages")),
                 "last_ai_executed_at": last_ai_executed_at,
                 "last_buyer_message_at": last_buyer_message_at.isoformat() if last_buyer_message_at else None,
                 "ai_status": ai_status,
@@ -586,30 +632,31 @@ def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, for
     return to_process, skipped
 
 
-def _fetch_chat_messages(buyer_username: str, order_date=None, last_ai_executed_at=None) -> List[Dict[str, Any]]:
-    if not buyer_username:
+def _fetch_chat_messages(buyer_username: str, buyer_id=None, integration_id=None, order_date=None, last_ai_executed_at=None) -> List[Dict[str, Any]]:
+    if not buyer_username and not buyer_id:
         return []
 
-    cutoff = _parse_datetime(last_ai_executed_at)
-    if cutoff:
-        cutoff = cutoff - timedelta(days=1)
-    else:
-        order_dt = _parse_datetime(order_date)
-        if order_dt:
-            cutoff = order_dt - timedelta(days=1)
-        else:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=CHAT_LOOKBACK_DAYS)
 
-    query = (
-        supabase_db.table("view_mensagens_chat_ai")
-        .select("*")
-        .or_(f"from_user_name.eq.{buyer_username},to_user_name.eq.{buyer_username}")
-        .gte("created_at", cutoff.isoformat())
-        .order("created_at", desc=False)
-        .limit(CHAT_CONTEXT_LIMIT)
-    )
-    rows = query.execute().data or []
-    return compact_chat_messages(rows, buyer_username)
+    def query(field, value):
+        request = (supabase_db.table("view_mensagens_chat_ai_v2").select("*")
+                   .eq(field, value).gte("created_at", cutoff.isoformat())
+                   .order("created_at", desc=True).limit(CHAT_CONTEXT_LIMIT))
+        return request.execute().data or []
+
+    rows = []
+    if buyer_id not in (None, ""):
+        rows += query("from_id", buyer_id)
+    if buyer_username:
+        # Keeps legacy rows without numeric identity and preserves the proven
+        # seven-day username fallback instead of globally truncating at 5,000.
+        rows += query("from_user_name", buyer_username)
+        rows += query("to_user_name", buyer_username)
+    rows = list({str(row.get("id")): row for row in rows}.values())
+    rows = [row for row in rows if (not integration_id or not row.get("installed_integration_id")
+            or str(row.get("installed_integration_id")) == str(integration_id))]
+    rows.sort(key=lambda row: _parse_datetime(row.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
+    return compact_chat_messages(rows[-CHAT_CONTEXT_LIMIT:], buyer_username, buyer_id=buyer_id)
 
 
 def _sanitize_chat_message_for_llm(content: str, sender_role: str) -> str:
@@ -643,13 +690,18 @@ def _sanitize_chat_message_for_llm(content: str, sender_role: str) -> str:
     return normalized[:500]
 
 
-def compact_chat_messages(messages: List[Dict[str, Any]], buyer_username: str) -> List[Dict[str, Any]]:
+def compact_chat_messages(messages: List[Dict[str, Any]], buyer_username: str, buyer_id=None) -> List[Dict[str, Any]]:
     compacted = []
     for row in messages:
         display_content = (row.get("display_content") or "").strip()
         if not display_content:
             continue
-        sender_role = "Comprador" if row.get("from_user_name") == buyer_username else "Vendedor"
+        row_from_id = row.get("from_id")
+        if buyer_id not in (None, "") and row_from_id not in (None, ""):
+            is_buyer = str(row_from_id) == str(buyer_id)
+        else:
+            is_buyer = bool(buyer_username and row.get("from_user_name") == buyer_username)
+        sender_role = "Comprador" if is_buyer else "Vendedor"
         sanitized_content = _sanitize_chat_message_for_llm(display_content, sender_role)
         if not sanitized_content:
             continue
@@ -675,6 +727,8 @@ def _load_order_for_ai(pedido_id: int) -> Dict[str, Any]:
     normalized = _normalize_order_row(rows[0])
     normalized["chat_messages"] = _fetch_chat_messages(
         buyer_username=normalized.get("buyer_username", ""),
+        buyer_id=normalized.get("buyer_id"),
+        integration_id=normalized.get("marketplace_integration_id"),
         order_date=normalized.get("order_date"),
         last_ai_executed_at=normalized.get("last_ai_executed_at"),
     )
@@ -789,6 +843,12 @@ def _process_single_order_sync(pedido_id: int, force: bool = False):
 
     try:
         result = run_model(prompt_payload)
+        if order.get("chat_context_ambiguous"):
+            result["status"] = "NEEDS_REVIEW"
+            result["reasoning"] = (
+                "Mais de um pedido em andamento compartilha a identidade do comprador; "
+                "o contexto de sete dias requer revisao. " + str(result.get("reasoning") or "")
+            ).strip()
         _persistir_personalizacao(order, result)
         log_ai_execution(order_sn, prompt_payload, chat_context, "success", result=result)
         return {
@@ -963,9 +1023,10 @@ def get_chat_messages(username, limit=None):
     if not username:
         return []
     query = (
-        supabase_db.table("view_mensagens_chat_ai")
+        supabase_db.table("view_mensagens_chat_ai_v2")
         .select("*")
         .or_(f"from_user_name.eq.{username},to_user_name.eq.{username}")
+        .gte("created_at", (datetime.now(timezone.utc) - timedelta(days=CHAT_LOOKBACK_DAYS)).isoformat())
         .order("created_at", desc=False)
     )
     if limit:

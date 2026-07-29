@@ -15,15 +15,17 @@ logger = logging.getLogger("PersonalizadosTasks")
 
 # Celery app para envio de tasks (API) e execução (Worker)
 # Ambos usam o mesmo broker/backend via env vars
-CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0')
-CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis-celery:6379/0')
 
 from celery import Celery
 
 celery_app = Celery(
     'personalizados',
     broker=CELERY_BROKER_URL,
-    backend=CELERY_RESULT_BACKEND,
+)
+celery_app.conf.update(
+    task_ignore_result=True,
+    task_store_errors_even_if_ignored=False,
 )
 
 
@@ -49,13 +51,6 @@ def processar_personalizacoes_task(self, order_sn=None, limit=None):
         # Contar pedidos antes de processar
         orders = get_orders_with_chats(order_sn=order_sn, limit=limit)
         total = len(orders)
-
-        # Atualizar meta da task para tracking de progresso
-        self.update_state(state='PROCESSING', meta={
-            'total': total,
-            'current': 0,
-            'message': f'Encontrados {total} pedidos para processar'
-        })
 
         if total == 0:
             return {

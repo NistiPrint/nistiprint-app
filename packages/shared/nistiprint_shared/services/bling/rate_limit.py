@@ -30,9 +30,9 @@ def get_redis_client():
     global _redis_client
     if _redis_client is None:
         _redis_client = redis.Redis(
-            host=os.environ.get("REDIS_HOST", "redis"),
-            port=int(os.environ.get("REDIS_PORT", 6379)),
-            db=int(os.environ.get("REDIS_DB", 0)),
+            host=os.environ.get("CACHE_REDIS_HOST", os.environ.get("REDIS_HOST", "redis-cache")),
+            port=int(os.environ.get("CACHE_REDIS_PORT", os.environ.get("REDIS_PORT", 6379))),
+            db=int(os.environ.get("CACHE_REDIS_DB", os.environ.get("REDIS_DB", 0))),
             decode_responses=True,
             socket_connect_timeout=2,
             socket_timeout=2,

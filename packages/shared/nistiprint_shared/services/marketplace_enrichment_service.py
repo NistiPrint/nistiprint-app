@@ -223,7 +223,7 @@ class MarketplaceEnrichmentService:
                 'marketplace_order_id': codigo_pedido_externo,
                 'shipping_carrier': shipping_carrier,
                 'message_to_seller': message_to_seller,
-                'contact_marketplace_id': None,
+                'contact_marketplace_id': shopee_data.get('buyer_user_id'),
                 'data_compra_marketplace': data_compra,
                 'data_pagamento_marketplace': data_pagamento or data_compra,
                 'data_coleta': coleta_contexto.get('data_coleta'),

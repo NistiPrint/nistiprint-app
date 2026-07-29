@@ -13,18 +13,8 @@ Ver: docs/02-features/webhooks_fluxo_correto.md
 import os
 from flask import Blueprint, request, jsonify
 from nistiprint_shared.database.supabase_db_service import supabase_db
-from nistiprint_shared.services.redis_queue_tasks import (
-    LIVE_QUEUE_ALIASES,
-    MERCADOLIVRE_WEBHOOK_QUEUE,
-    SHOPEE_WEBHOOK_QUEUE,
-    _serialize_queue_item,
-    clear_queue,
-    get_queue_items,
-    get_queue_stats,
-    get_redis_client,
-    move_items,
-    enqueue_marketplace_webhook_event,
-)
+from nistiprint_shared.services.redis_queue_tasks import (LIVE_QUEUE_ALIASES, _serialize_queue_item, clear_queue, get_queue_items, get_queue_stats, get_redis_client, move_items)
+from nistiprint_shared.services.reliable_ingest_queue import (build_envelope, publish_envelope, spool_envelope, INBOX_READY)
 from nistiprint_shared.services.webhook_monitoring_service import webhook_monitoring_service
 from nistiprint_shared.services.marketplace_lifecycle_tasks import (
     reconcile_marketplace_lifecycle_task,
@@ -52,36 +42,38 @@ def _marketplace_webhook_authorized():
     return provided == expected
 
 
-def _enqueue_marketplace_webhook(source: str, queue_name: str):
+def _enqueue_marketplace_webhook(source: str):
     if not _marketplace_webhook_authorized():
         return jsonify({'success': False, 'error': 'webhook token invalido'}), 403
-
-    payload = request.get_json(silent=True) or {}
-    queued = enqueue_marketplace_webhook_event(source, payload, queue_name=queue_name)
-    if not queued.get('event_id'):
-        return jsonify({
-            'success': False,
-            'source': source,
-            'queued': False,
-            'error': 'falha ao persistir webhook',
-        }), 503
-    return jsonify({
-        'success': True,
-        'source': source,
-        'queued': bool(queued.get('event_id')),
-        'queue': queue_name,
-        'webhook_event_id': queued.get('event_id'),
-    }), 202
+    max_bytes = int(os.getenv('WEBHOOK_MAX_BYTES', str(1024 * 1024)))
+    if request.content_length and request.content_length > max_bytes:
+        return jsonify({'success': False, 'error': 'payload excede o limite'}), 413
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({'success': False, 'error': 'payload JSON invalido'}), 400
+    envelope = build_envelope(source, payload, dict(request.headers))
+    try:
+        publish_envelope(envelope)
+        delivery = 'redis'
+    except Exception as redis_error:
+        logger.warning('Redis indisponivel no webhook %s; tentando spool: %s', source, redis_error)
+        try:
+            spool_envelope(envelope)
+            delivery = 'spool'
+        except Exception as spool_error:
+            logger.error('Redis e spool indisponiveis para %s: %s', source, spool_error, exc_info=True)
+            return jsonify({'success': False, 'source': source, 'queued': False, 'error': 'transporte temporariamente indisponivel'}), 503
+    return jsonify({'success': True, 'source': source, 'queued': True, 'queue': INBOX_READY, 'delivery': delivery, 'event_id': envelope['event_id']}), 200
 
 
 @webhooks_bp.route('/shopee', methods=['POST'])
 def receive_shopee_webhook():
-    return _enqueue_marketplace_webhook('shopee', SHOPEE_WEBHOOK_QUEUE)
+    return _enqueue_marketplace_webhook('shopee')
 
 
 @webhooks_bp.route('/mercadolivre', methods=['POST'])
 def receive_mercadolivre_webhook():
-    return _enqueue_marketplace_webhook('mercadolivre', MERCADOLIVRE_WEBHOOK_QUEUE)
+    return _enqueue_marketplace_webhook('mercadolivre')
 
 
 @webhooks_bp.route('/marketplace/reconcile', methods=['POST'])

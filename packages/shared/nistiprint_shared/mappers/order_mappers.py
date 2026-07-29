@@ -206,7 +206,7 @@ class ShopeeMapper(BaseOrderMapper):
             "buyer_username": raw.get('buyer_username'),
             "marketplace_order_id": raw.get('order_sn'),
             "shipping_carrier": shipping_carrier,
-            "contact_marketplace_id": None,  # Shopee não fornece ID de contato explícito
+            "contact_marketplace_id": raw.get("buyer_user_id"),
             "items": [
                 {
                     "sku": item.get('item_sku') or item.get('model_sku'),

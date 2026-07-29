@@ -1,0 +1,1570 @@
+[
+  {
+    "updatedAt": "2026-07-29T22:33:11.823Z",
+    "createdAt": "2026-03-08T22:52:56.848Z",
+    "id": "kv1UX41hXqZjqlDz",
+    "name": "Bling Webhook Handler",
+    "description": "Webhook bling com ACK somente após Redis ou spool; assinatura validada no worker pós-fila.",
+    "active": true,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "bling",
+          "authentication": "none",
+          "responseMode": "responseNode",
+          "options": {
+            "rawBody": true
+          }
+        },
+        "id": "0d7b802a-d539-49b9-96bb-70556e9c4ecd",
+        "name": "Bling Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 1,
+        "position": [
+          -720,
+          64
+        ],
+        "webhookId": "bling-webhook-gateway"
+      },
+      {
+        "parameters": {
+          "operation": "push",
+          "list": "np:ingest:inbox:ready:v1",
+          "messageData": "={{ JSON.stringify($json) }}",
+          "tail": true
+        },
+        "id": "38a6831c-7462-42bb-a188-544b2c613396",
+        "name": "Enqueue Inbox",
+        "type": "n8n-nodes-base.redis",
+        "typeVersion": 1,
+        "position": [
+          800,
+          180
+        ],
+        "credentials": {
+          "redis": {
+            "id": "V5s5SjGhVMAVYB8E",
+            "name": "Redis account"
+          }
+        },
+        "onError": "continueErrorOutput"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={\"accepted\":true}",
+          "options": {
+            "responseCode": 200
+          }
+        },
+        "id": "7a14a8e1-eccc-4636-9be2-1eea3acdff49",
+        "name": "ACK 200",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1,
+        "position": [
+          1080,
+          180
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "language": "javaScript",
+          "jsCode": "const crypto = require('crypto');\nconst item = $input.first();\nlet raw;\nif (item.binary?.data) raw = await this.helpers.getBinaryDataBuffer(0, 'data');\nelse if (typeof item.json.rawBody === 'string') raw = Buffer.from(item.json.rawBody, 'utf8');\nelse if (typeof item.json.body === 'string') raw = Buffer.from(item.json.body, 'utf8');\nelse raw = Buffer.from(JSON.stringify(item.json.body ?? {}), 'utf8');\nconst rawBody = raw.toString('utf8');\nlet parsedPayload = null;\ntry { parsedPayload = JSON.parse(rawBody); } catch {}\nconst headers = item.json.headers ?? {};\nconst allow = ['content-type','user-agent','x-bling-signature-256','x-signature','x-shopee-signature','x-request-id','x-signature-version','x-signature-ts'];\nconst safeHeaders = {};\nfor (const key of allow) if (headers[key] !== undefined) safeHeaders[key] = String(headers[key]).slice(0, 2048);\nconst payload = parsedPayload ?? (typeof item.json.body === 'object' ? item.json.body : null);\nreturn [{ json: { schema_version: 1, event_id: crypto.randomUUID(), source: 'bling', received_at: new Date().toISOString(), headers: safeHeaders, raw_body: rawBody, parsed_payload: payload, body_sha256: crypto.createHash('sha256').update(raw).digest('hex'), provider_delivery_id: payload?.eventId ?? payload?.id ?? headers['x-request-id'] ?? null, payload_size: raw.length, oversized: raw.length > 1048576 } }];"
+        },
+        "id": "80813a8a-ae53-4684-87fc-52ad7fa388ba",
+        "name": "Build Durable Envelope",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          260,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "combinator": "and",
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 2
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.oversized }}",
+                "rightValue": false,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                }
+              }
+            ]
+          },
+          "looseTypeValidation": false
+        },
+        "id": "1cdb5604-10f5-40ef-8bd0-8a18b7ebd6e4",
+        "name": "Payload within 1 MB?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.3,
+        "position": [
+          520,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "language": "javaScript",
+          "jsCode": "const envelope = $('Build Durable Envelope').first().json;\nconst data = Buffer.from(JSON.stringify(envelope), 'utf8');\nreturn [{ json: envelope, binary: { data: { data: data.toString('base64'), mimeType: 'application/json', fileName: envelope.event_id + '.json' } } }];"
+        },
+        "id": "fa6c6550-c366-4ba3-a112-ab004cb6fe59",
+        "name": "Prepare Spool File",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          800,
+          360
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "write",
+          "fileName": "=/data/webhook-spool/ready/{{$json.event_id}}.json",
+          "dataPropertyName": "data"
+        },
+        "id": "bf176843-c7da-48f9-8dea-d21a5d16d180",
+        "name": "Write Durable Spool",
+        "type": "n8n-nodes-base.readWriteFile",
+        "typeVersion": 1.1,
+        "position": [
+          1080,
+          360
+        ],
+        "onError": "continueErrorOutput"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={\"accepted\":false,\"error\":\"payload_too_large\"}",
+          "options": {
+            "responseCode": 413
+          }
+        },
+        "id": "8866a277-c47c-4c90-aa87-1b8bc7e71f8e",
+        "name": "Payload Too Large",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          800,
+          500
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={\"accepted\":false,\"error\":\"durability_unavailable\"}",
+          "options": {
+            "responseCode": 503
+          }
+        },
+        "id": "e5d3fcc5-a13e-46a7-90c4-d0ff820a4c0b",
+        "name": "Durability Unavailable",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          1340,
+          500
+        ]
+      },
+      {
+        "id": "9e9a3b5b-f611-4057-8f75-57bc13d7c8eb",
+        "name": "Legacy Queue Shadow",
+        "type": "n8n-nodes-base.redis",
+        "typeVersion": 1,
+        "position": [
+          940,
+          180
+        ],
+        "parameters": {
+          "operation": "push",
+          "list": "bling:webhooks:pendentes",
+          "messageData": "={{ JSON.stringify($('Bling Webhook').item.json.body) }}",
+          "tail": true
+        },
+        "credentials": {
+          "redis": {
+            "id": "V5s5SjGhVMAVYB8E",
+            "name": "Redis account"
+          }
+        },
+        "onError": "continueRegularOutput"
+      }
+    ],
+    "connections": {
+      "Bling Webhook": {
+        "main": [
+          [
+            {
+              "node": "Build Durable Envelope",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Durable Envelope": {
+        "main": [
+          [
+            {
+              "node": "Payload within 1 MB?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Payload within 1 MB?": {
+        "main": [
+          [
+            {
+              "node": "Enqueue Inbox",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Payload Too Large",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Enqueue Inbox": {
+        "main": [
+          [
+            {
+              "node": "Legacy Queue Shadow",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Prepare Spool File",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare Spool File": {
+        "main": [
+          [
+            {
+              "node": "Write Durable Spool",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Write Durable Spool": {
+        "main": [
+          [
+            {
+              "node": "ACK 200",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Durability Unavailable",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Legacy Queue Shadow": {
+        "main": [
+          [
+            {
+              "node": "ACK 200",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": true,
+      "timeSavedMode": "fixed",
+      "callerPolicy": "workflowsFromSameOwner",
+      "redactionPolicy": "non-manual",
+      "errorWorkflow": "dOaSTrntml0p2aUa",
+      "saveExecutionProgress": false,
+      "saveDataErrorExecution": "all",
+      "saveDataSuccessExecution": "none"
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "fd0684c5-3181-47e4-bc22-46c86c28bdb1",
+    "activeVersionId": "fd0684c5-3181-47e4-bc22-46c86c28bdb1",
+    "versionCounter": 204,
+    "triggerCount": 1,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-03-08T22:52:56.852Z",
+        "createdAt": "2026-03-08T22:52:56.852Z",
+        "role": "workflow:owner",
+        "workflowId": "kv1UX41hXqZjqlDz",
+        "projectId": "YJSVdlJqLsfE5ouG",
+        "project": {
+          "updatedAt": "2026-03-08T22:51:24.903Z",
+          "createdAt": "2026-03-08T22:45:19.682Z",
+          "id": "YJSVdlJqLsfE5ouG",
+          "name": "Leandro Breve <leandrogbreve@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "32f90149-08e6-482d-840b-83ccfaeb943a"
+        }
+      }
+    ],
+    "versionMetadata": {
+      "name": "Version 8a0bcff7",
+      "description": ""
+    }
+  },
+  {
+    "updatedAt": "2026-03-17T15:28:01.076Z",
+    "createdAt": "2026-03-17T15:15:13.582Z",
+    "id": "dOaSTrntml0p2aUa",
+    "name": "Error Handler",
+    "description": null,
+    "active": true,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {},
+        "type": "n8n-nodes-base.errorTrigger",
+        "typeVersion": 1,
+        "position": [
+          -80,
+          0
+        ],
+        "id": "2213f762-f0e6-4b5f-a6b4-116a9dca5034",
+        "name": "Error Trigger"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Nó Code: \"Log Portainer - Erro Fatal\"\nconst error = $json.execution.error;\nconst workflow = $json.workflow.name;\n\nconsole.error(`!!! ERRO NO WORKFLOW: ${workflow} !!!`);\nconsole.error(`Mensagem: ${error.message}`);\nconsole.error(`Stack: ${error.stack}`);\n\nreturn $input.all();"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          128,
+          0
+        ],
+        "id": "85034978-48c7-49ef-b12d-ddfccbea65a0",
+        "name": "Code in JavaScript",
+        "onError": "continueRegularOutput"
+      }
+    ],
+    "connections": {
+      "Error Trigger": {
+        "main": [
+          [
+            {
+              "node": "Code in JavaScript",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": false
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "e5c96e45-f3cf-4b94-ad74-82c0077e1d29",
+    "activeVersionId": "e5c96e45-f3cf-4b94-ad74-82c0077e1d29",
+    "versionCounter": 27,
+    "triggerCount": 0,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-03-17T15:15:13.593Z",
+        "createdAt": "2026-03-17T15:15:13.593Z",
+        "role": "workflow:owner",
+        "workflowId": "dOaSTrntml0p2aUa",
+        "projectId": "YJSVdlJqLsfE5ouG",
+        "project": {
+          "updatedAt": "2026-03-08T22:51:24.903Z",
+          "createdAt": "2026-03-08T22:45:19.682Z",
+          "id": "YJSVdlJqLsfE5ouG",
+          "name": "Leandro Breve <leandrogbreve@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "32f90149-08e6-482d-840b-83ccfaeb943a"
+        }
+      }
+    ],
+    "versionMetadata": {
+      "name": "Version e5c96e45",
+      "description": ""
+    }
+  },
+  {
+    "updatedAt": "2026-07-29T22:33:28.725Z",
+    "createdAt": "2026-03-18T17:54:16.236Z",
+    "id": "ZZMMRtxAXM339y6m",
+    "name": "Shopee Webhook Handler",
+    "description": "Webhook Shopee com ACK após Redis/spool. A assinatura é validada pós-ACK e somente o veredito, nunca Authorization, é persistido.",
+    "active": true,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "shopee",
+          "authentication": "none",
+          "responseMode": "responseNode",
+          "options": {
+            "rawBody": true
+          }
+        },
+        "id": "f43c3529-5945-4c08-bbf8-b3d660c530e4",
+        "name": "Shopee Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 1,
+        "position": [
+          -720,
+          64
+        ],
+        "webhookId": "50dfa1cf-94f0-47df-8201-1e0845c4d4f4"
+      },
+      {
+        "parameters": {
+          "operation": "push",
+          "list": "np:ingest:inbox:ready:v1",
+          "messageData": "={{ JSON.stringify($json) }}",
+          "tail": true
+        },
+        "id": "3556c4f4-40e8-444c-ba4f-9eb1d5cde7d4",
+        "name": "Enqueue Inbox",
+        "type": "n8n-nodes-base.redis",
+        "typeVersion": 1,
+        "position": [
+          800,
+          180
+        ],
+        "credentials": {
+          "redis": {
+            "id": "V5s5SjGhVMAVYB8E",
+            "name": "Redis account"
+          }
+        },
+        "onError": "continueErrorOutput"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={\"accepted\":true}",
+          "options": {
+            "responseCode": 200
+          }
+        },
+        "id": "83a59db7-f86f-4564-91ea-d5d85cafd7d4",
+        "name": "ACK 200",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1,
+        "position": [
+          1080,
+          180
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "language": "javaScript",
+          "jsCode": "const crypto = require('crypto');\nconst item = $input.first();\nlet raw;\nif (item.binary?.data) raw = await this.helpers.getBinaryDataBuffer(0, 'data');\nelse if (typeof item.json.rawBody === 'string') raw = Buffer.from(item.json.rawBody, 'utf8');\nelse if (typeof item.json.body === 'string') raw = Buffer.from(item.json.body, 'utf8');\nelse raw = Buffer.from(JSON.stringify(item.json.body ?? {}), 'utf8');\nconst rawBody = raw.toString('utf8');\nlet parsedPayload = null;\ntry { parsedPayload = JSON.parse(rawBody); } catch {}\nconst headers = item.json.headers ?? {};\nconst allow = ['content-type','user-agent','x-bling-signature-256','x-signature','x-shopee-signature','x-request-id','x-signature-version','x-signature-ts'];\nconst safeHeaders = {};\nfor (const key of allow) if (headers[key] !== undefined) safeHeaders[key] = String(headers[key]).slice(0, 2048);\nconst payload = parsedPayload ?? (typeof item.json.body === 'object' ? item.json.body : null);\nreturn [{ json: { schema_version: 1, event_id: crypto.randomUUID(), source: 'shopee', received_at: new Date().toISOString(), headers: safeHeaders, raw_body: rawBody, parsed_payload: payload, body_sha256: crypto.createHash('sha256').update(raw).digest('hex'), provider_delivery_id: payload?.msg_id ?? payload?.data?.content?.message_id ?? headers['x-request-id'] ?? null, payload_size: raw.length, oversized: raw.length > 1048576 } }];"
+        },
+        "id": "fdc71f6a-082b-44af-af5a-d5431e97166d",
+        "name": "Build Durable Envelope",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          260,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "combinator": "and",
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 2
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.oversized }}",
+                "rightValue": false,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                }
+              }
+            ]
+          },
+          "looseTypeValidation": false
+        },
+        "id": "d4410ecf-2294-419c-8d4b-5cf0d8338eca",
+        "name": "Payload within 1 MB?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.3,
+        "position": [
+          520,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "language": "javaScript",
+          "jsCode": "const envelope = $('Build Durable Envelope').first().json;\nconst data = Buffer.from(JSON.stringify(envelope), 'utf8');\nreturn [{ json: envelope, binary: { data: { data: data.toString('base64'), mimeType: 'application/json', fileName: envelope.event_id + '.json' } } }];"
+        },
+        "id": "04b65592-c927-440c-813d-001d0d807cfa",
+        "name": "Prepare Spool File",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          800,
+          360
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "write",
+          "fileName": "=/data/webhook-spool/ready/{{$json.event_id}}.json",
+          "dataPropertyName": "data"
+        },
+        "id": "81428d7f-4c9a-4c11-a64e-08ab1219b1e4",
+        "name": "Write Durable Spool",
+        "type": "n8n-nodes-base.readWriteFile",
+        "typeVersion": 1.1,
+        "position": [
+          1080,
+          360
+        ],
+        "onError": "continueErrorOutput"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={\"accepted\":false,\"error\":\"payload_too_large\"}",
+          "options": {
+            "responseCode": 413
+          }
+        },
+        "id": "f90b1c3f-adc0-41ad-986b-68b84d212371",
+        "name": "Payload Too Large",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          800,
+          500
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={\"accepted\":false,\"error\":\"durability_unavailable\"}",
+          "options": {
+            "responseCode": 503
+          }
+        },
+        "id": "ad32709a-af05-4349-92e6-f7af672d7da1",
+        "name": "Durability Unavailable",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          1340,
+          500
+        ]
+      },
+      {
+        "id": "9d5824a3-583d-4f28-818d-79d7c6936142",
+        "name": "Validate Shopee Signature Post-ACK",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1320,
+          180
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "language": "javaScript",
+          "jsCode": "const crypto = require('crypto');\nconst webhook = $('Shopee Webhook').first().json;\nconst envelope = $('Build Durable Envelope').first().json;\nconst provided = String(webhook.headers?.authorization ?? '').trim();\nconst partnerKey = String($env.SHOPEE_PARTNER_KEY ?? '').trim();\nconst callbackUrl = String(webhook.webhookUrl ?? $env.SHOPEE_CALLBACK_URL ?? '').trim();\nlet status = 'discarded_signature_unverifiable';\nif (provided && partnerKey && callbackUrl && envelope.raw_body) {\n  const calculated = crypto.createHmac('sha256', partnerKey).update(callbackUrl + '|' + envelope.raw_body, 'utf8').digest('hex');\n  const validShape = /^[a-f0-9]{64}$/i.test(provided);\n  const valid = validShape && crypto.timingSafeEqual(Buffer.from(calculated, 'hex'), Buffer.from(provided, 'hex'));\n  status = valid ? 'signature_valid' : 'discarded_invalid_signature';\n}\nreturn [{ json: { event_id: envelope.event_id, signature_status: status, checked_at: new Date().toISOString() } }];"
+        }
+      },
+      {
+        "id": "8436d186-a91d-4e80-83e8-d8b18e7e4e51",
+        "name": "Store Signature Verdict",
+        "type": "n8n-nodes-base.redis",
+        "typeVersion": 1,
+        "position": [
+          1580,
+          180
+        ],
+        "parameters": {
+          "operation": "set",
+          "key": "=np:ingest:signature:{{$json.event_id}}",
+          "value": "={{ JSON.stringify($json) }}",
+          "keyType": "string"
+        },
+        "credentials": {
+          "redis": {
+            "id": "V5s5SjGhVMAVYB8E",
+            "name": "Redis account"
+          }
+        },
+        "onError": "continueRegularOutput"
+      },
+      {
+        "id": "0bc8c545-e940-4120-827f-5c5546446c8a",
+        "name": "Legacy Queue Shadow",
+        "type": "n8n-nodes-base.redis",
+        "typeVersion": 1,
+        "position": [
+          940,
+          180
+        ],
+        "parameters": {
+          "operation": "push",
+          "list": "shopee:webhooks:pendentes",
+          "messageData": "={{ JSON.stringify($('Shopee Webhook').item.json.body) }}",
+          "tail": true
+        },
+        "credentials": {
+          "redis": {
+            "id": "V5s5SjGhVMAVYB8E",
+            "name": "Redis account"
+          }
+        },
+        "onError": "continueRegularOutput"
+      }
+    ],
+    "connections": {
+      "Shopee Webhook": {
+        "main": [
+          [
+            {
+              "node": "Build Durable Envelope",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Durable Envelope": {
+        "main": [
+          [
+            {
+              "node": "Payload within 1 MB?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Payload within 1 MB?": {
+        "main": [
+          [
+            {
+              "node": "Enqueue Inbox",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Payload Too Large",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Enqueue Inbox": {
+        "main": [
+          [
+            {
+              "node": "Legacy Queue Shadow",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Prepare Spool File",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare Spool File": {
+        "main": [
+          [
+            {
+              "node": "Write Durable Spool",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Write Durable Spool": {
+        "main": [
+          [
+            {
+              "node": "ACK 200",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Durability Unavailable",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "ACK 200": {
+        "main": [
+          [
+            {
+              "node": "Validate Shopee Signature Post-ACK",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Validate Shopee Signature Post-ACK": {
+        "main": [
+          [
+            {
+              "node": "Store Signature Verdict",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Legacy Queue Shadow": {
+        "main": [
+          [
+            {
+              "node": "ACK 200",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": true,
+      "timeSavedMode": "fixed",
+      "callerPolicy": "workflowsFromSameOwner",
+      "redactionPolicy": "non-manual",
+      "errorWorkflow": "dOaSTrntml0p2aUa",
+      "saveExecutionProgress": false,
+      "saveDataErrorExecution": "all",
+      "saveDataSuccessExecution": "none"
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "92f9dd99-96d2-4617-8f61-86dce639c2af",
+    "activeVersionId": "92f9dd99-96d2-4617-8f61-86dce639c2af",
+    "versionCounter": 201,
+    "triggerCount": 1,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-03-18T17:54:16.241Z",
+        "createdAt": "2026-03-18T17:54:16.241Z",
+        "role": "workflow:owner",
+        "workflowId": "ZZMMRtxAXM339y6m",
+        "projectId": "YJSVdlJqLsfE5ouG",
+        "project": {
+          "updatedAt": "2026-03-08T22:51:24.903Z",
+          "createdAt": "2026-03-08T22:45:19.682Z",
+          "id": "YJSVdlJqLsfE5ouG",
+          "name": "Leandro Breve <leandrogbreve@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "32f90149-08e6-482d-840b-83ccfaeb943a"
+        }
+      }
+    ],
+    "versionMetadata": {
+      "name": "Version 7fb5470f",
+      "description": ""
+    }
+  },
+  {
+    "updatedAt": "2026-03-21T15:01:59.000Z",
+    "createdAt": "2026-03-20T02:41:37.644Z",
+    "id": "Qukl6wm4vJmKh9Yh",
+    "name": "My workflow",
+    "description": null,
+    "active": false,
+    "isArchived": true,
+    "nodes": [],
+    "connections": {},
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": false
+    },
+    "staticData": null,
+    "meta": null,
+    "pinData": {},
+    "versionId": "165a1f71-2554-4a70-8bdf-e9409b9f4708",
+    "activeVersionId": null,
+    "versionCounter": 5,
+    "triggerCount": 0,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-03-20T02:41:37.650Z",
+        "createdAt": "2026-03-20T02:41:37.650Z",
+        "role": "workflow:owner",
+        "workflowId": "Qukl6wm4vJmKh9Yh",
+        "projectId": "YJSVdlJqLsfE5ouG",
+        "project": {
+          "updatedAt": "2026-03-08T22:51:24.903Z",
+          "createdAt": "2026-03-08T22:45:19.682Z",
+          "id": "YJSVdlJqLsfE5ouG",
+          "name": "Leandro Breve <leandrogbreve@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "32f90149-08e6-482d-840b-83ccfaeb943a"
+        }
+      }
+    ],
+    "versionMetadata": {
+      "name": null,
+      "description": null
+    }
+  },
+  {
+    "updatedAt": "2026-04-29T21:09:49.000Z",
+    "createdAt": "2026-04-27T12:08:51.793Z",
+    "id": "Bxp3Y2qOB8PQ2gID",
+    "name": "My workflow 2",
+    "description": null,
+    "active": false,
+    "isArchived": true,
+    "nodes": [
+      {
+        "parameters": {
+          "channels": "*",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.redisTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          0
+        ],
+        "id": "42149219-ea52-4d78-b81c-7efdaa5fc519",
+        "name": "Redis Trigger",
+        "alwaysOutputData": true,
+        "credentials": {
+          "redis": {
+            "id": "V5s5SjGhVMAVYB8E",
+            "name": "Redis account"
+          }
+        }
+      }
+    ],
+    "connections": {},
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": false,
+      "timeSavedMode": "fixed",
+      "callerPolicy": "workflowsFromSameOwner"
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "a1932d3f-ce01-4e1d-b3c5-925a04d874cf",
+    "activeVersionId": null,
+    "versionCounter": 13,
+    "triggerCount": 1,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-04-27T12:08:51.800Z",
+        "createdAt": "2026-04-27T12:08:51.800Z",
+        "role": "workflow:owner",
+        "workflowId": "Bxp3Y2qOB8PQ2gID",
+        "projectId": "YJSVdlJqLsfE5ouG",
+        "project": {
+          "updatedAt": "2026-03-08T22:51:24.903Z",
+          "createdAt": "2026-03-08T22:45:19.682Z",
+          "id": "YJSVdlJqLsfE5ouG",
+          "name": "Leandro Breve <leandrogbreve@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "32f90149-08e6-482d-840b-83ccfaeb943a"
+        }
+      }
+    ],
+    "versionMetadata": {
+      "name": null,
+      "description": null
+    }
+  },
+  {
+    "updatedAt": "2026-07-16T14:02:13.573Z",
+    "createdAt": "2026-04-27T12:16:43.266Z",
+    "id": "SGRW9JleEyszCXUK",
+    "name": "Ler Redis",
+    "description": null,
+    "active": false,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {},
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          0
+        ],
+        "id": "fe5333f2-af97-4c8c-921a-90c3040e9aaa",
+        "name": "When clicking ‘Execute workflow’"
+      },
+      {
+        "parameters": {
+          "operation": "keys",
+          "keyPattern": "*"
+        },
+        "type": "n8n-nodes-base.redis",
+        "typeVersion": 1,
+        "position": [
+          208,
+          0
+        ],
+        "id": "2a11b7af-be59-470c-98b6-1048e4cd17d7",
+        "name": "Redis",
+        "credentials": {
+          "redis": {
+            "id": "V5s5SjGhVMAVYB8E",
+            "name": "Redis account"
+          }
+        }
+      }
+    ],
+    "connections": {
+      "When clicking ‘Execute workflow’": {
+        "main": [
+          [
+            {
+              "node": "Redis",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": false
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "0592de45-b4ee-46ba-8e8d-58274c63ed69",
+    "activeVersionId": null,
+    "versionCounter": 92,
+    "triggerCount": 0,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-04-27T12:16:43.271Z",
+        "createdAt": "2026-04-27T12:16:43.271Z",
+        "role": "workflow:owner",
+        "workflowId": "SGRW9JleEyszCXUK",
+        "projectId": "YJSVdlJqLsfE5ouG",
+        "project": {
+          "updatedAt": "2026-03-08T22:51:24.903Z",
+          "createdAt": "2026-03-08T22:45:19.682Z",
+          "id": "YJSVdlJqLsfE5ouG",
+          "name": "Leandro Breve <leandrogbreve@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "32f90149-08e6-482d-840b-83ccfaeb943a"
+        }
+      }
+    ],
+    "versionMetadata": {
+      "name": null,
+      "description": null
+    }
+  },
+  {
+    "updatedAt": "2026-05-17T22:51:55.000Z",
+    "createdAt": "2026-05-17T15:24:34.812Z",
+    "id": "aptZpzh6XnBXhHj7",
+    "name": "auth",
+    "description": null,
+    "active": false,
+    "isArchived": true,
+    "nodes": [
+      {
+        "parameters": {
+          "path": "ml-auth-callback",
+          "responseMode": "responseNode",
+          "options": {
+            "rawBody": false
+          }
+        },
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2.1,
+        "position": [
+          0,
+          0
+        ],
+        "id": "5414d4d5-2ec3-497f-acac-4c0610fed8bc",
+        "name": "Webhook",
+        "webhookId": "3004b702-68e2-4231-a4b6-7a80eb9e8204",
+        "alwaysOutputData": true
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ $('Webhook').item.body }}",
+          "options": {
+            "responseCode": 200
+          }
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          464,
+          0
+        ],
+        "id": "748151a8-3102-4405-82a9-caf84ff78380",
+        "name": "Respond to Webhook",
+        "retryOnFail": true,
+        "alwaysOutputData": true,
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.mercadolibre.com/oauth/token",
+          "sendBody": true,
+          "contentType": "form-urlencoded",
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "grant_type",
+                "value": "authorization_code"
+              },
+              {
+                "name": "client_id",
+                "value": "6588305322636751"
+              },
+              {
+                "name": "client_secret"
+              },
+              {
+                "name": "code",
+                "value": "={{ $('Webhook').item.json}}"
+              },
+              {
+                "name": "redirect_uri",
+                "value": "https://automacao.nistiprint.neolabs.com.br/webhook/ml-auth-callback"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          256,
+          0
+        ],
+        "id": "abd54b36-5309-44a5-8505-05ee6d05fdb0",
+        "name": "HTTP Request"
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "HTTP Request",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Respond to Webhook": {
+        "main": [
+          []
+        ]
+      },
+      "HTTP Request": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": false
+    },
+    "staticData": null,
+    "meta": null,
+    "pinData": {},
+    "versionId": "63b60142-8d56-4d12-b799-c080582b2f28",
+    "activeVersionId": null,
+    "versionCounter": 71,
+    "triggerCount": 0,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-05-17T15:24:34.819Z",
+        "createdAt": "2026-05-17T15:24:34.819Z",
+        "role": "workflow:owner",
+        "workflowId": "aptZpzh6XnBXhHj7",
+        "projectId": "YJSVdlJqLsfE5ouG",
+        "project": {
+          "updatedAt": "2026-03-08T22:51:24.903Z",
+          "createdAt": "2026-03-08T22:45:19.682Z",
+          "id": "YJSVdlJqLsfE5ouG",
+          "name": "Leandro Breve <leandrogbreve@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "32f90149-08e6-482d-840b-83ccfaeb943a"
+        }
+      }
+    ],
+    "versionMetadata": {
+      "name": null,
+      "description": null
+    }
+  },
+  {
+    "updatedAt": "2026-07-29T22:33:42.832Z",
+    "createdAt": "2026-05-17T22:52:11.959Z",
+    "id": "59304gjx9U4d1bIo",
+    "name": "MercadoLivre Webhook Handler",
+    "description": "Webhook mercadolivre com ACK somente após Redis ou spool; assinatura validada no worker pós-fila.",
+    "active": true,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "mercadolivre",
+          "authentication": "none",
+          "responseMode": "responseNode",
+          "options": {
+            "rawBody": true
+          }
+        },
+        "id": "b5a7916c-f3a4-417e-a8d3-e13a2aa4aa89",
+        "name": "MercadoLivre Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 1,
+        "position": [
+          -720,
+          64
+        ],
+        "webhookId": "86e4d86f-d5c7-4b7a-8d3b-001f02f8172c"
+      },
+      {
+        "parameters": {
+          "operation": "push",
+          "list": "np:ingest:inbox:ready:v1",
+          "messageData": "={{ JSON.stringify($json) }}",
+          "tail": true
+        },
+        "id": "0022703e-0797-437e-aee5-75835d3e0062",
+        "name": "Enqueue Inbox",
+        "type": "n8n-nodes-base.redis",
+        "typeVersion": 1,
+        "position": [
+          800,
+          180
+        ],
+        "credentials": {
+          "redis": {
+            "id": "V5s5SjGhVMAVYB8E",
+            "name": "Redis account"
+          }
+        },
+        "onError": "continueErrorOutput"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={\"accepted\":true}",
+          "options": {
+            "responseCode": 200
+          }
+        },
+        "id": "a36cf311-f929-48b3-b66c-28b47c580a04",
+        "name": "ACK 200",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1,
+        "position": [
+          1080,
+          180
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "language": "javaScript",
+          "jsCode": "const crypto = require('crypto');\nconst item = $input.first();\nlet raw;\nif (item.binary?.data) raw = await this.helpers.getBinaryDataBuffer(0, 'data');\nelse if (typeof item.json.rawBody === 'string') raw = Buffer.from(item.json.rawBody, 'utf8');\nelse if (typeof item.json.body === 'string') raw = Buffer.from(item.json.body, 'utf8');\nelse raw = Buffer.from(JSON.stringify(item.json.body ?? {}), 'utf8');\nconst rawBody = raw.toString('utf8');\nlet parsedPayload = null;\ntry { parsedPayload = JSON.parse(rawBody); } catch {}\nconst headers = item.json.headers ?? {};\nconst allow = ['content-type','user-agent','x-bling-signature-256','x-signature','x-shopee-signature','x-request-id','x-signature-version','x-signature-ts'];\nconst safeHeaders = {};\nfor (const key of allow) if (headers[key] !== undefined) safeHeaders[key] = String(headers[key]).slice(0, 2048);\nconst payload = parsedPayload ?? (typeof item.json.body === 'object' ? item.json.body : null);\nreturn [{ json: { schema_version: 1, event_id: crypto.randomUUID(), source: 'mercadolivre', received_at: new Date().toISOString(), headers: safeHeaders, raw_body: rawBody, parsed_payload: payload, body_sha256: crypto.createHash('sha256').update(raw).digest('hex'), provider_delivery_id: headers['x-request-id'] ?? payload?.id ?? payload?.resource ?? null, payload_size: raw.length, oversized: raw.length > 1048576 } }];"
+        },
+        "id": "3f4e584f-b54b-4e15-a2a5-2de7918f73a0",
+        "name": "Build Durable Envelope",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          260,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "combinator": "and",
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 2
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.oversized }}",
+                "rightValue": false,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                }
+              }
+            ]
+          },
+          "looseTypeValidation": false
+        },
+        "id": "21093c91-5d29-45a3-a1fc-7715ada020a9",
+        "name": "Payload within 1 MB?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.3,
+        "position": [
+          520,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "language": "javaScript",
+          "jsCode": "const envelope = $('Build Durable Envelope').first().json;\nconst data = Buffer.from(JSON.stringify(envelope), 'utf8');\nreturn [{ json: envelope, binary: { data: { data: data.toString('base64'), mimeType: 'application/json', fileName: envelope.event_id + '.json' } } }];"
+        },
+        "id": "1e723963-68cc-46d0-b46a-f7064925b5d6",
+        "name": "Prepare Spool File",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          800,
+          360
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "write",
+          "fileName": "=/data/webhook-spool/ready/{{$json.event_id}}.json",
+          "dataPropertyName": "data"
+        },
+        "id": "e7273c0c-b4b8-4a96-b589-462cf18360fd",
+        "name": "Write Durable Spool",
+        "type": "n8n-nodes-base.readWriteFile",
+        "typeVersion": 1.1,
+        "position": [
+          1080,
+          360
+        ],
+        "onError": "continueErrorOutput"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={\"accepted\":false,\"error\":\"payload_too_large\"}",
+          "options": {
+            "responseCode": 413
+          }
+        },
+        "id": "3c67db61-1a95-4ef2-b929-f9389fc24d23",
+        "name": "Payload Too Large",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          800,
+          500
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={\"accepted\":false,\"error\":\"durability_unavailable\"}",
+          "options": {
+            "responseCode": 503
+          }
+        },
+        "id": "734b0cd3-5132-47df-bbbf-b7a868894cac",
+        "name": "Durability Unavailable",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          1340,
+          500
+        ]
+      },
+      {
+        "id": "6c65c349-f5df-478d-ba75-f70dc563b66f",
+        "name": "Legacy Queue Shadow",
+        "type": "n8n-nodes-base.redis",
+        "typeVersion": 1,
+        "position": [
+          940,
+          180
+        ],
+        "parameters": {
+          "operation": "push",
+          "list": "mercadolivre:webhooks:pendentes",
+          "messageData": "={{ JSON.stringify($('MercadoLivre Webhook').item.json.body) }}",
+          "tail": true
+        },
+        "credentials": {
+          "redis": {
+            "id": "V5s5SjGhVMAVYB8E",
+            "name": "Redis account"
+          }
+        },
+        "onError": "continueRegularOutput"
+      }
+    ],
+    "connections": {
+      "MercadoLivre Webhook": {
+        "main": [
+          [
+            {
+              "node": "Build Durable Envelope",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Durable Envelope": {
+        "main": [
+          [
+            {
+              "node": "Payload within 1 MB?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Payload within 1 MB?": {
+        "main": [
+          [
+            {
+              "node": "Enqueue Inbox",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Payload Too Large",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Enqueue Inbox": {
+        "main": [
+          [
+            {
+              "node": "Legacy Queue Shadow",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Prepare Spool File",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare Spool File": {
+        "main": [
+          [
+            {
+              "node": "Write Durable Spool",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Write Durable Spool": {
+        "main": [
+          [
+            {
+              "node": "ACK 200",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Durability Unavailable",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Legacy Queue Shadow": {
+        "main": [
+          [
+            {
+              "node": "ACK 200",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": true,
+      "timeSavedMode": "fixed",
+      "callerPolicy": "workflowsFromSameOwner",
+      "redactionPolicy": "non-manual",
+      "errorWorkflow": "dOaSTrntml0p2aUa",
+      "saveExecutionProgress": false,
+      "saveDataErrorExecution": "all",
+      "saveDataSuccessExecution": "none"
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "7beef96d-a504-4808-9d45-72419cc441de",
+    "activeVersionId": "7beef96d-a504-4808-9d45-72419cc441de",
+    "versionCounter": 89,
+    "triggerCount": 1,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-05-17T22:52:11.966Z",
+        "createdAt": "2026-05-17T22:52:11.966Z",
+        "role": "workflow:owner",
+        "workflowId": "59304gjx9U4d1bIo",
+        "projectId": "YJSVdlJqLsfE5ouG",
+        "project": {
+          "updatedAt": "2026-03-08T22:51:24.903Z",
+          "createdAt": "2026-03-08T22:45:19.682Z",
+          "id": "YJSVdlJqLsfE5ouG",
+          "name": "Leandro Breve <leandrogbreve@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "32f90149-08e6-482d-840b-83ccfaeb943a"
+        }
+      }
+    ],
+    "versionMetadata": {
+      "name": "Version 2339718f",
+      "description": ""
+    }
+  }
+]

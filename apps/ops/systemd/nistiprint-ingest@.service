@@ -1,0 +1,20 @@
+[Unit]
+Description=Nistiprint reliable ingest (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=nistiprint
+Group=nistiprint
+WorkingDirectory=/opt/nistiprint/apps/worker
+EnvironmentFile=/opt/nistiprint/.env
+Environment=PYTHONPATH=/opt/nistiprint/packages/shared:/opt/nistiprint/apps/worker
+ExecStart=/opt/nistiprint/.venv/bin/python /opt/nistiprint/apps/worker/reliable_ingest_worker.py %i
+Restart=always
+RestartSec=2
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

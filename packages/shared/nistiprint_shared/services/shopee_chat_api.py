@@ -33,6 +33,13 @@ def get_chat_messages(integration: Dict, conversation_id: str, *, page_size: int
         return {"error": str(exc), "error_type": "network_error", "retryable": True}
     if response.status_code != 200:
         status = response.status_code
+        retry_after = None
+        headers = getattr(response, "headers", {})
+        if isinstance(headers, dict) and headers.get("Retry-After"):
+            try:
+                retry_after = max(1, int(headers["Retry-After"]))
+            except (TypeError, ValueError):
+                retry_after = None
         if status == 429:
             error_type, retryable = "rate_limit", True
         elif status in (401, 403):
@@ -42,12 +49,18 @@ def get_chat_messages(integration: Dict, conversation_id: str, *, page_size: int
         else:
             error_type, retryable = "server_error", status >= 500
         return {"error": f"Erro na API SellerChat: {status}", "error_type": error_type,
-                "retryable": retryable, "details": response.text}
-    data = response.json()
+                "retryable": retryable, "retry_after": retry_after, "details": response.text}
+    try:
+        data = response.json()
+    except (ValueError, requests.JSONDecodeError) as exc:
+        return {"error": str(exc) or "Resposta JSON invalida da API SellerChat",
+                "error_type": "invalid_response", "retryable": True,
+                "details": response.text[:2000]}
     if data.get("error"):
         code = str(data.get("error") or "")
         retryable_codes = {"error_network", "internal_server_error", "error_server", "system_busy", "error_rate_limit"}
-        auth_codes = {"error_auth", "error_sign", "invalid_acceess_token", "error_api_permission"}
+        auth_codes = {"error_auth", "error_sign", "invalid_access_token",
+                      "invalid_acceess_token", "error_api_permission", "user_is_unauthorized"}
         error_type = "authentication_error" if code in auth_codes else ("transient_api_error" if code in retryable_codes else "parameter_error")
         return {"error": data.get("message") or "Erro reportado pela Shopee", "code": code,
                 "error_type": error_type, "retryable": code in retryable_codes, "details": data}
