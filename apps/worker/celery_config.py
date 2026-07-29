@@ -121,6 +121,11 @@ celery_app = Celery(
         'nistiprint_shared.services.marketplace_lifecycle_tasks',
     ]
 )
+celery_app.conf.update(
+    task_ignore_result=True,
+    task_store_errors_even_if_ignored=True,
+    result_expires=int(os.environ.get('CELERY_RESULT_EXPIRES', '300')),
+)
 
 # Roteamento e Filas
 celery_app.conf.task_queues = {

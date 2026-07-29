@@ -56,6 +56,12 @@ const navigation = [
     type: 'collapsible',
     children: [
       {
+        name: 'Consolidar Arquivos',
+        href: '/consolidar',
+        type: 'link',
+        permission: { a: 'vendas', I: 'ler' }
+      },
+      {
         name: 'Pedidos',
         href: '/vendas/pedidos',
         type: 'link',
@@ -453,3 +459,4 @@ function Header() {
 }
 
 export default Header;
+

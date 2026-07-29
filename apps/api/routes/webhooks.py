@@ -23,6 +23,7 @@ from nistiprint_shared.services.redis_queue_tasks import (
     get_queue_stats,
     get_redis_client,
     move_items,
+    enqueue_marketplace_webhook_event,
 )
 from nistiprint_shared.services.webhook_monitoring_service import webhook_monitoring_service
 from nistiprint_shared.services.marketplace_lifecycle_tasks import (
@@ -57,10 +58,17 @@ def _enqueue_marketplace_webhook(source: str, queue_name: str):
 
     payload = request.get_json(silent=True) or {}
     queued = enqueue_marketplace_webhook_event(source, payload, queue_name=queue_name)
+    if not queued.get('event_id'):
+        return jsonify({
+            'success': False,
+            'source': source,
+            'queued': False,
+            'error': 'falha ao persistir webhook',
+        }), 503
     return jsonify({
         'success': True,
         'source': source,
-        'queued': True,
+        'queued': bool(queued.get('event_id')),
         'queue': queue_name,
         'webhook_event_id': queued.get('event_id'),
     }), 202

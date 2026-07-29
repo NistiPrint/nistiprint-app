@@ -24,3 +24,6 @@ env/
 .qwen/
 .roo/
 .cline/
+.claude/
+.agents/
+.codex/

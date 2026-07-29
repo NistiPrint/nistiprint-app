@@ -82,6 +82,11 @@ celery_app.conf.update(
         },
     },
 )
+celery_app.conf.update(
+    task_ignore_result=True,
+    task_store_errors_even_if_ignored=True,
+    result_expires=int(os.environ.get('CELERY_RESULT_EXPIRES', '300')),
+)
 
 # Auto-discovery de tasks em módulos de serviço
 # Nota: tasks reais são registradas no worker_entrypoint.py

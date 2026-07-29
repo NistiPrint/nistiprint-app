@@ -25,6 +25,16 @@ class MensagemChatShopee(mock_db.Model):
     faq_info = mock_db.Column(mock_db.Text) 
     source_content = mock_db.Column(mock_db.Text)
     raw_json = mock_db.Column(mock_db.Text)
+    installed_integration_id = mock_db.Column(mock_db.Integer)
+    provider_message_id = mock_db.Column(mock_db.String(64))
+    webhook_event_id = mock_db.Column(mock_db.Integer)
+    business_type = mock_db.Column(mock_db.Integer)
+    region = mock_db.Column(mock_db.String(16))
+    is_in_chatbot_session = mock_db.Column(mock_db.Boolean)
+    quoted_msg = mock_db.Column(mock_db.Text)
+    sub_account_id = mock_db.Column(mock_db.Integer)
+    sub_account_name = mock_db.Column(mock_db.String(128))
+    shopee_chatbot_replied = mock_db.Column(mock_db.Boolean)
 
     def to_dict(self):
         return {

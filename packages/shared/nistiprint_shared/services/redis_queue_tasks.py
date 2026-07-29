@@ -17,6 +17,12 @@ from nistiprint_shared.services.bling_order_processing_service import (
 from nistiprint_shared.services.marketplace_webhook_ingest_service import (
     marketplace_webhook_ingest_service,
 )
+from nistiprint_shared.services.shopee_chat_service import (
+    classify_shopee_webhook,
+    extract_chat_provider_event_id,
+    extract_chat_push,
+    shopee_chat_ingest_service,
+)
 from nistiprint_shared.services.correlation_service import get_correlation_id, set_correlation_id, generate_correlation_id
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.utils.date_utils import get_now, get_now_iso, parse_datetime
@@ -148,6 +154,8 @@ MARKETPLACE_FINAL_STATUSES = {
     'skipped',
     'skipped_inactive_source',
     'skipped_stale',
+    'skipped_chat_notification',
+    'skipped_affiliate_chat',
     'manual_intervention',
 }
 
@@ -271,11 +279,14 @@ def _extract_bling_webhook_identity(data: dict) -> dict:
 
 def _extract_shopee_webhook_identity(data: dict) -> dict:
     body = data.get('data') if isinstance(data.get('data'), dict) else data
+    content = body.get('content') if isinstance(body.get('content'), dict) else {}
     orders = body.get('orders') if isinstance(body.get('orders'), list) else []
     return {
         'body': body,
-        'company_id': body.get('shop_id') or body.get('shopid') or data.get('shop_id'),
-        'provider_event_id': body.get('event_id'),
+        'company_id': content.get('shop_id') or body.get('shop_id') or body.get('shopid') or data.get('shop_id'),
+        'provider_event_id': _first_present(
+            extract_chat_provider_event_id(data), body.get('event_id')
+        ),
         'order_id': (
             body.get('order_sn')
             or body.get('ordersn')
@@ -398,6 +409,8 @@ def _insert_webhook_event(
 ) -> int | None:
     try:
         body = raw_payload.get('data') if isinstance(raw_payload.get('data'), dict) else raw_payload
+        shopee_push_type, shopee_content = extract_chat_push(raw_payload) if source == 'shopee' else ('', {})
+        is_shopee_chat = source == 'shopee' and classify_shopee_webhook(raw_payload) == 'chat'
         provider_timestamp = (
             body.get('sent') or body.get('received') or body.get('timestamp')
             or body.get('update_time')
@@ -414,10 +427,14 @@ def _insert_webhook_event(
             'last_attempt_at': get_now_iso(),
             'attempt_count': 0,
             'provider_topic': (
-                body.get('topic') or body.get('event') or body.get('event_type')
+                (shopee_content.get('message_type') or shopee_content.get('type') or shopee_push_type)
+                if is_shopee_chat else body.get('topic') or body.get('event') or body.get('event_type')
                 or body.get('code') or body.get('type')
             ),
-            'provider_resource': body.get('resource'),
+            'provider_resource': (
+                'chat_message' if is_shopee_chat and shopee_push_type == 'message'
+                else 'chat_notification' if is_shopee_chat else body.get('resource')
+            ),
             'provider_updated_at': (
                 parsed_provider_timestamp.isoformat()
                 if parsed_provider_timestamp else None
@@ -468,6 +485,10 @@ def _get_or_create_webhook_event(
         payload_hash=payload_hash,
         retry_expires_at=retry_expires_at,
     )
+    if not event_id and provider_event_id not in (None, ''):
+        existing = _find_webhook_event_by_provider_event_id(source, provider_event_id)
+        if existing:
+            return existing.get('id'), False, existing
     return event_id, True, None
 
 
@@ -1007,6 +1028,8 @@ def _finalize_marketplace_success(webhook_event_id: int, result: dict, *, order_
         webhook_event_id,
         pedido_id=result.get('pedido_id'),
         numero_loja=result.get('external_order_id') or order_id,
+        provider_topic=result.get('provider_topic'),
+        provider_resource=result.get('provider_resource'),
         last_status=result.get('event_status') or result.get('status') or 'success',
         next_attempt_after=None,
         processing_started_at=None,
@@ -1116,12 +1139,17 @@ def _consume_marketplace_queue(source: str, queue_name: str, failure_queue: str,
                     sorted(body.keys()) if isinstance(body, dict) else [],
                 )
 
-                result = marketplace_webhook_ingest_service.process(
-                    source,
-                    body,
-                    correlation_id=webhook_correlation_id,
-                    webhook_event_id=webhook_event_id,
-                )
+                if source == 'shopee' and classify_shopee_webhook(data) == 'chat':
+                    result = shopee_chat_ingest_service.process(
+                        data, webhook_event_id=webhook_event_id
+                    )
+                else:
+                    result = marketplace_webhook_ingest_service.process(
+                        source,
+                        body,
+                        correlation_id=webhook_correlation_id,
+                        webhook_event_id=webhook_event_id,
+                    )
                 logger.info(
                     "[webhook-queue] processed source=%s webhook_event_id=%s status=%s pedido_id=%s external_order_id=%s event_status=%s",
                     source,
@@ -1191,6 +1219,31 @@ def consumir_fila_shopee(correlation_id=None):
     )
 
 
+@shared_task(name='nistiprint_shared.services.redis_queue_tasks.reconciliar_chat_shopee')
+@log_shared_task_execution(task_type='INTEGRACAO')
+def reconciliar_chat_shopee(integration_id: int, conversation_id: str, max_pages: int = 100,
+                            correlation_id=None):
+    from nistiprint_shared.services.credential_resolver_service import credential_resolver_service
+
+    rows = (
+        supabase_db.table('installed_integrations')
+        .select('id,module_id,config,credentials,is_active,access_token,refresh_token')
+        .eq('id', int(integration_id))
+        .eq('is_active', True)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        return {'status': 'error', 'error_type': 'integration_not_found',
+                'message': 'Integracao Shopee ativa nao encontrada'}
+    integration = credential_resolver_service.hydrate_integration(rows[0])
+    return shopee_chat_ingest_service.reconcile_conversation(
+        integration, str(conversation_id), max_pages=max_pages
+    )
+
+
 @shared_task(name='nistiprint_shared.services.redis_queue_tasks.consumir_fila_mercadolivre')
 @log_shared_task_execution(task_type='INTEGRACAO')
 def consumir_fila_mercadolivre(correlation_id=None):
@@ -1222,4 +1275,3 @@ def sync_firestore_tokens(correlation_id=None):
         'status': 'skipped',
         'message': 'Sincronizacao automatica com Firebase desativada; use o sync manual para importar tokens validos.',
     }
-
