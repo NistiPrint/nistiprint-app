@@ -26,7 +26,16 @@ from nistiprint_shared.services.reliable_ingest_service import (
 logger = logging.getLogger(__name__)
 WORKER = f"{socket.gethostname()}:{os.getpid()}"
 MAX_ATTEMPTS = int(os.getenv("INGEST_MAX_ATTEMPTS", "7"))
+SIGNATURE_VERDICT_GRACE_SECONDS = max(
+    1.0, float(os.getenv("INGEST_SIGNATURE_VERDICT_GRACE_SECONDS", "30"))
+)
 TERMINAL_ERRORS = {"unsupported_source", "unsupported_business_type", "not_chat"}
+
+
+class SignatureVerdictPending(RuntimeError):
+    error_type = "signature_verdict_pending"
+    retry_after = 1
+    retryable = True
 
 
 def _payload(item):
@@ -44,6 +53,19 @@ def _heartbeat(role, client):
     client.set(f"np:ingest:heartbeat:{role}", datetime.now(timezone.utc).isoformat(), ex=120)
 
 
+def _is_within_signature_grace(item):
+    try:
+        received_at = datetime.fromisoformat(
+            str(item["received_at"]).replace("Z", "+00:00")
+        )
+        if received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - received_at.astimezone(timezone.utc)).total_seconds()
+        return age <= SIGNATURE_VERDICT_GRACE_SECONDS
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
 def _signature_result(item, client):
     if item.get("source") != "shopee":
         return validate_signature(item), None
@@ -57,12 +79,8 @@ def _signature_result(item, client):
         if status == "discarded_invalid_signature":
             return SignatureResult(status, False, True, "n8n_post_ack_hmac_sha256"), verdict_key
         return validate_signature(item), verdict_key
-    if int(item.get("attempt") or 0) < 3:
-        error = RuntimeError("Shopee signature verdict is not available yet")
-        error.error_type = "signature_verdict_pending"
-        error.retry_after = 1
-        error.retryable = True
-        raise error
+    if int(item.get("attempt") or 0) < 3 and _is_within_signature_grace(item):
+        raise SignatureVerdictPending("Shopee signature verdict is not available yet")
     return validate_signature(item), None
 
 
@@ -93,6 +111,11 @@ def route_once(client=None):
         destination = CHAT_READY if _is_chat(item) else ORDERS_READY
         if not forward(item, INBOX_PROCESSING, destination, r):
             raise RuntimeError("claim lost while routing")
+        return True
+    except SignatureVerdictPending as exc:
+        logger.info("Shopee signature verdict pending event=%s attempt=%s",
+                    item.get("event_id"), item.get("attempt", 0))
+        _retry(item, INBOX_PROCESSING, r, exc)
         return True
     except Exception as exc:
         logger.exception("router failed")
