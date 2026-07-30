@@ -39,6 +39,11 @@ READY_QUEUES = frozenset(QUEUE_PAIRS.values())
 MAX_ENVELOPE_BYTES = int(os.getenv("WEBHOOK_MAX_ENVELOPE_BYTES", str(1_250_000)))
 DEFAULT_LEASE_SECONDS = int(os.getenv("INGEST_LEASE_SECONDS", "300"))
 DEFAULT_ORPHAN_GRACE_SECONDS = int(os.getenv("INGEST_ORPHAN_GRACE_SECONDS", "30"))
+DEFAULT_CLAIM_TIMEOUT_SECONDS = max(1, int(os.getenv("INGEST_CLAIM_TIMEOUT_SECONDS", "5")))
+REDIS_SOCKET_TIMEOUT_SECONDS = max(
+    DEFAULT_CLAIM_TIMEOUT_SECONDS + 2.0,
+    float(os.getenv("INGEST_REDIS_SOCKET_TIMEOUT_SECONDS", "15")),
+)
 RETRY_DELAYS = (60, 300, 900, 3600, 14400, 43200)
 
 _FINISH_LUA = """
@@ -113,7 +118,7 @@ def redis_client() -> redis.Redis:
         os.getenv("INGEST_REDIS_URL", "redis://redis:6379/0"),
         decode_responses=True,
         socket_connect_timeout=1.5,
-        socket_timeout=5.0,
+        socket_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
         health_check_interval=30,
     )
 
@@ -235,7 +240,8 @@ def replay_spool_once(client: Optional[redis.Redis] = None, spool_dir: Optional[
     return replayed
 
 
-def claim(queue: str, processing: str, worker: str, timeout: int = 5,
+def claim(queue: str, processing: str, worker: str,
+          timeout: int = DEFAULT_CLAIM_TIMEOUT_SECONDS,
           client: Optional[redis.Redis] = None, *,
           lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Optional[dict[str, Any]]:
     if QUEUE_PAIRS.get(processing) != queue:

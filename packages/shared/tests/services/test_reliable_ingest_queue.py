@@ -60,6 +60,15 @@ class ReliableQueueTest(unittest.TestCase):
         self.assertEqual(self.envelope["raw_body"], '{ "code": 3 }')
         self.assertEqual(len(self.envelope["body_sha256"]), 64)
 
+    def test_redis_socket_timeout_exceeds_blocking_claim_timeout(self):
+        with patch.object(queue.redis.Redis, "from_url") as factory:
+            queue.redis_client()
+        kwargs = factory.call_args.kwargs
+        self.assertGreater(
+            kwargs["socket_timeout"],
+            queue.DEFAULT_CLAIM_TIMEOUT_SECONDS,
+        )
+
     def test_claim_token_prevents_stale_completion(self):
         queue.publish_envelope(self.envelope, self.redis)
         item = queue.claim(queue.INBOX_READY, queue.INBOX_PROCESSING, "worker", client=self.redis)
