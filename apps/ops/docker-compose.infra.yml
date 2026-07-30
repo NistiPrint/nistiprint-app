@@ -99,8 +99,11 @@ services:
       - GENERIC_TIMEZONE=America/Sao_Paulo
       - NODE_FUNCTION_ALLOW_BUILTIN=crypto
       - BLING_CLENT_SECRET=${BLING_CLENT_SECRET}
+      - SHOPEE_PUSH_PARTNER_KEY=${SHOPEE_PUSH_PARTNER_KEY:-}
+      # Compatibilidade temporária; não confundir com a Partner Key usada pelas APIs.
       - SHOPEE_PARTNER_KEY=${SHOPEE_PARTNER_KEY}
       - SHOPEE_CALLBACK_URL=${SHOPEE_CALLBACK_URL}
+      - SHOPEE_SIGNATURE_ENFORCEMENT=${SHOPEE_SIGNATURE_ENFORCEMENT:-audit}
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       # Persistência e execução
       - EXECUTIONS_DATA_PRUNE=true

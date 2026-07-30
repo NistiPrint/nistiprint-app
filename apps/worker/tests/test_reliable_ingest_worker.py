@@ -6,8 +6,11 @@ from apps.worker import reliable_ingest_worker as worker
 
 
 class FakeRedis:
+    def __init__(self, value=None):
+        self.value = value
+
     def get(self, _key):
-        return None
+        return self.value
 
 
 class SignatureVerdictTest(unittest.TestCase):
@@ -36,6 +39,25 @@ class SignatureVerdictTest(unittest.TestCase):
         self.assertIs(result, expected)
         self.assertIsNone(verdict_key)
         validate.assert_called_once_with(item)
+
+    def test_invalid_n8n_verdict_is_audit_only_under_optional_policy(self):
+        item = {"source": "shopee", "event_id": "optional"}
+        redis = FakeRedis('{"signature_status":"discarded_invalid_signature"}')
+        with patch.dict("os.environ", {"INGEST_SIGNATURE_POLICY_SHOPEE": "optional"}):
+            result, verdict_key = worker._signature_result(item, redis)
+        self.assertEqual(result.status, "signature_unverified")
+        self.assertTrue(result.valid)
+        self.assertFalse(result.terminal)
+        self.assertEqual(verdict_key, "np:ingest:signature:optional")
+
+    def test_invalid_n8n_verdict_is_terminal_under_required_policy(self):
+        item = {"source": "shopee", "event_id": "required"}
+        redis = FakeRedis('{"signature_status":"discarded_invalid_signature"}')
+        with patch.dict("os.environ", {"INGEST_SIGNATURE_POLICY_SHOPEE": "required"}):
+            result, _ = worker._signature_result(item, redis)
+        self.assertEqual(result.status, "discarded_invalid_signature")
+        self.assertFalse(result.valid)
+        self.assertTrue(result.terminal)
 
 
 if __name__ == "__main__":

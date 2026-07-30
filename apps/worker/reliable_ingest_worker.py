@@ -77,7 +77,14 @@ def _signature_result(item, client):
         if status == "signature_valid":
             return SignatureResult(status, True, True, "n8n_post_ack_hmac_sha256"), verdict_key
         if status == "discarded_invalid_signature":
-            return SignatureResult(status, False, True, "n8n_post_ack_hmac_sha256"), verdict_key
+            enforce = os.getenv("INGEST_SIGNATURE_POLICY_SHOPEE", "optional").strip().lower() == "required"
+            effective_status = status if enforce else "signature_unverified"
+            return SignatureResult(
+                effective_status,
+                not enforce,
+                enforce,
+                "n8n_post_ack_hmac_sha256_mismatch",
+            ), verdict_key
         return validate_signature(item), verdict_key
     if int(item.get("attempt") or 0) < 3 and _is_within_signature_grace(item):
         raise SignatureVerdictPending("Shopee signature verdict is not available yet")
