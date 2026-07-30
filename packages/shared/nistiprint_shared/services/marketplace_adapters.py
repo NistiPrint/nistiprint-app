@@ -248,9 +248,23 @@ class MercadoLivreAdapter:
         )
 
     def fetch_order_snapshot(self, order_id: str, integration: dict) -> CanonicalOrderSnapshot | dict:
-        order = meli_driver.get_order_detail(integration, [order_id])
+        requested_order_id = _numeric_id(order_id)
+        if not requested_order_id:
+            return {
+                "error": "ID de pedido Mercado Livre invalido",
+                "error_type": "invalid_provider_resource_id",
+                "retryable": False,
+            }
+        order = meli_driver.get_order_detail(integration, [requested_order_id])
         if not order or order.get("error"):
             return order or {"error": "Pedido nao encontrado no Mercado Livre"}
+        returned_order_id = _numeric_id(order.get("id"))
+        if returned_order_id != requested_order_id:
+            return {
+                "error": "Mercado Livre retornou pedido diferente do solicitado",
+                "error_type": "provider_identity_mismatch",
+                "retryable": False,
+            }
         shipment, sla = {}, {}
         shipment_id = _numeric_id((order.get("shipping") or {}).get("id"))
         if shipment_id:
@@ -267,7 +281,7 @@ class MercadoLivreAdapter:
         )
         return CanonicalOrderSnapshot(
             provider=self.provider,
-            order_id=str(order_id),
+            order_id=requested_order_id,
             order_status=_text(order.get("status")),
             payment_status=payment_status,
             shipping_status=_text(shipment.get("status")),
@@ -280,7 +294,12 @@ class MercadoLivreAdapter:
             },
             total=order.get("total_amount"),
             currency=order.get("currency_id") or "BRL",
-            raw={"order": order, "shipment": shipment, "sla": sla},
+            raw={
+                "external_id": requested_order_id,
+                "order": order,
+                "shipment": shipment,
+                "sla": sla,
+            },
         )
 
     @staticmethod

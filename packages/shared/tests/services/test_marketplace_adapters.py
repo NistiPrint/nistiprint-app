@@ -135,6 +135,37 @@ class TestMercadoLivreAdapter(unittest.TestCase):
         })
         self.assertEqual(result.error_type, "invalid_provider_resource_id")
 
+    def test_order_snapshot_preserves_validated_identity_for_mirror(self):
+        with (
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_order_detail",
+                return_value={"id": 2000017477489446, "status": "paid"},
+            ),
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment"
+            ) as get_shipment,
+        ):
+            snapshot = self.adapter.fetch_order_snapshot(
+                "2000017477489446", self.integration
+            )
+
+        self.assertEqual(snapshot.order_id, "2000017477489446")
+        self.assertEqual(snapshot.raw["external_id"], "2000017477489446")
+        self.assertEqual(snapshot.raw["order"]["id"], 2000017477489446)
+        get_shipment.assert_not_called()
+
+    def test_order_snapshot_rejects_provider_identity_mismatch(self):
+        with patch(
+            "nistiprint_shared.services.marketplace_adapters.meli_driver.get_order_detail",
+            return_value={"id": 2000017477489555, "status": "paid"},
+        ):
+            result = self.adapter.fetch_order_snapshot(
+                "2000017477489446", self.integration
+            )
+
+        self.assertEqual(result["error_type"], "provider_identity_mismatch")
+        self.assertFalse(result["retryable"])
+
 
 class TestShopeeAdapter(unittest.TestCase):
     def setUp(self):
