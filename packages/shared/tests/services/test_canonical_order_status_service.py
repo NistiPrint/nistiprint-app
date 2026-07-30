@@ -41,7 +41,7 @@ class TestCanonicalOrderStatusService(unittest.TestCase):
         self.assertEqual(resolved.internal_situacao_pedido_id, 4)
         self.assertEqual(resolved.status_domain, 'shipping')
 
-    def test_mercadolivre_cancel_precedence(self):
+    def test_mercadolivre_refund_after_delivery_is_returned(self):
         service = status_service.CanonicalOrderStatusService()
 
         with patch.object(service, '_resolve_from_db', return_value=None):
@@ -50,10 +50,10 @@ class TestCanonicalOrderStatusService(unittest.TestCase):
                 shipping_status='delivered',
             )
 
-        self.assertEqual(resolved.internal_situacao_pedido_id, 7)
-        self.assertEqual(resolved.status_domain, 'payment')
+        self.assertEqual(resolved.internal_situacao_pedido_id, 8)
+        self.assertEqual(resolved.status_domain, 'shipping')
 
-    def test_db_mapping_wins_over_fallback(self):
+    def test_marketplace_lifecycle_is_authoritative_over_legacy_db_mapping(self):
         table = MagicMock()
         table.select.return_value.eq.return_value.eq.return_value.eq.return_value.eq.return_value.limit.return_value.is_.return_value.execute.return_value.data = [
             {'internal_situacao_pedido_id': 3}
@@ -62,8 +62,8 @@ class TestCanonicalOrderStatusService(unittest.TestCase):
         with patch.object(status_service.supabase_db, 'table', return_value=table):
             resolved = status_service.CanonicalOrderStatusService().resolve_shopee('PROCESSED')
 
-        self.assertEqual(resolved.internal_situacao_pedido_id, 3)
-        self.assertEqual(resolved.source, 'db')
+        self.assertEqual(resolved.internal_situacao_pedido_id, 4)
+        self.assertEqual(resolved.source, 'marketplace_lifecycle')
 
 
 if __name__ == '__main__':

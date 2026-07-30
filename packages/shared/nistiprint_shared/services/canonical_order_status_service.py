@@ -22,28 +22,6 @@ DEFAULT_STATUS_MAPPINGS: dict[tuple[str, str, str], int] = {
     ("bling", "order", "24"): STATUS_PRONTO_ENVIO,
     ("bling", "order", "9"): STATUS_ENVIADO,
     ("bling", "order", "12"): STATUS_CANCELADO,
-    ("shopee", "order", "UNPAID"): STATUS_EM_ABERTO,
-    ("shopee", "order", "INVOICE_PENDING"): STATUS_EM_ANDAMENTO,
-    ("shopee", "order", "READY_TO_SHIP"): STATUS_EM_ANDAMENTO,
-    ("shopee", "order", "RETRY_SHIP"): STATUS_EM_ANDAMENTO,
-    ("shopee", "order", "PROCESSED"): STATUS_PRONTO_ENVIO,
-    ("shopee", "order", "SHIPPED"): STATUS_ENVIADO,
-    ("shopee", "order", "TO_CONFIRM_RECEIVE"): STATUS_ENVIADO,
-    ("shopee", "order", "COMPLETED"): STATUS_ENTREGUE,
-    ("shopee", "order", "CANCELLED"): STATUS_CANCELADO,
-    ("mercadolivre", "payment", "pending"): STATUS_EM_ABERTO,
-    ("mercadolivre", "payment", "in_process"): STATUS_EM_ABERTO,
-    ("mercadolivre", "payment", "authorized"): STATUS_EM_ANDAMENTO,
-    ("mercadolivre", "payment", "approved"): STATUS_EM_ANDAMENTO,
-    ("mercadolivre", "payment", "rejected"): STATUS_CANCELADO,
-    ("mercadolivre", "payment", "refunded"): STATUS_CANCELADO,
-    ("mercadolivre", "shipping", "to_be_shipped"): STATUS_PRONTO_ENVIO,
-    ("mercadolivre", "shipping", "handling"): STATUS_PRONTO_ENVIO,
-    ("mercadolivre", "shipping", "ready_to_ship"): STATUS_PRONTO_ENVIO,
-    ("mercadolivre", "shipping", "shipped"): STATUS_ENVIADO,
-    ("mercadolivre", "shipping", "not_delivered"): STATUS_ENVIADO,
-    ("mercadolivre", "shipping", "delivered"): STATUS_ENTREGUE,
-    ("mercadolivre", "shipping", "cancelled"): STATUS_CANCELADO,
 }
 
 MELI_STATUS_PRECEDENCE = (
@@ -124,7 +102,16 @@ class CanonicalOrderStatusService:
         *,
         integration_id: int | None = None,
     ) -> StatusResolution:
-        return self.resolve("shopee", order_status, status_domain="order", integration_id=integration_id)
+        from nistiprint_shared.services.marketplace_lifecycle_service import resolve_shopee
+        status = _normalize_status(order_status)
+        lifecycle = resolve_shopee({"order_status": status})
+        return StatusResolution(
+            lifecycle.target_situacao_pedido_id,
+            "shopee",
+            "order",
+            status,
+            "marketplace_lifecycle",
+        )
 
     def resolve_bling(
         self,
@@ -141,20 +128,22 @@ class CanonicalOrderStatusService:
         shipping_status: Any = None,
         integration_id: int | None = None,
     ) -> StatusResolution:
-        statuses = {
-            "payment": _normalize_status(payment_status),
-            "shipping": _normalize_status(shipping_status),
-        }
-        for domain, status in self._ordered_mercadolivre_statuses(statuses):
-            resolved = self.resolve(
-                "mercadolivre",
-                status,
-                status_domain=domain,
-                integration_id=integration_id,
-            )
-            if resolved.internal_situacao_pedido_id:
-                return resolved
-        return StatusResolution(None, "mercadolivre", None, None, "unmapped")
+        from nistiprint_shared.services.marketplace_lifecycle_service import resolve_mercadolivre
+        payment = _normalize_status(payment_status)
+        shipping = _normalize_status(shipping_status)
+        lifecycle = resolve_mercadolivre({
+            "order": {"payments": [{"status": payment}]} if payment else {},
+            "shipment": {"status": shipping} if shipping else {},
+        })
+        domain = "shipping" if shipping else ("payment" if payment else None)
+        external = shipping or payment
+        return StatusResolution(
+            lifecycle.target_situacao_pedido_id,
+            "mercadolivre",
+            domain,
+            external,
+            "marketplace_lifecycle",
+        )
 
     def _ordered_mercadolivre_statuses(self, statuses: dict[str, str | None]) -> Iterable[tuple[str, str]]:
         used = set()

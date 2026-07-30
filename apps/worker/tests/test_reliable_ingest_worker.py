@@ -14,6 +14,49 @@ class FakeRedis:
 
 
 class SignatureVerdictTest(unittest.TestCase):
+    def test_validated_404_retries_only_inside_short_window(self):
+        recent = {
+            "event_id": "recent-404",
+            "received_at": datetime.now(timezone.utc).isoformat(),
+            "attempt": 0,
+        }
+        error = RuntimeError("not found")
+        error.error_type = "provider_resource_not_found"
+        error.retryable = False
+        with patch.object(worker, "schedule_retry", return_value=True) as schedule, \
+             patch.object(worker, "move_to_dlq") as dlq:
+            worker._retry(recent, "processing", object(), error)
+        schedule.assert_called_once()
+        dlq.assert_not_called()
+
+        expired = {
+            "event_id": "expired-404",
+            "received_at": (
+                datetime.now(timezone.utc) - timedelta(minutes=6)
+            ).isoformat(),
+            "attempt": 0,
+        }
+        with patch.object(worker, "schedule_retry") as schedule, \
+             patch.object(worker, "move_to_dlq", return_value=True) as dlq:
+            worker._retry(expired, "processing", object(), error)
+        schedule.assert_not_called()
+        dlq.assert_called_once()
+
+    def test_terminal_provider_error_does_not_retry(self):
+        item = {
+            "event_id": "bad-resource",
+            "received_at": datetime.now(timezone.utc).isoformat(),
+            "attempt": 0,
+        }
+        error = RuntimeError("bad parameter")
+        error.error_type = "provider_parameter_error"
+        error.retryable = False
+        with patch.object(worker, "schedule_retry") as schedule, \
+             patch.object(worker, "move_to_dlq", return_value=True) as dlq:
+            worker._retry(item, "processing", object(), error)
+        schedule.assert_not_called()
+        dlq.assert_called_once()
+
     def test_recent_shopee_event_waits_for_post_ack_verdict(self):
         item = {
             "source": "shopee",

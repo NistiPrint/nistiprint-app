@@ -6,7 +6,13 @@ from typing import Any, Iterable
 
 STATUS_PENDING, STATUS_PAID, STATUS_IN_PRODUCTION, STATUS_READY = 1, 2, 3, 4
 STATUS_SHIPPED, STATUS_DELIVERED, STATUS_CANCELLED, STATUS_RETURNED = 5, 6, 7, 8
-RETURN_MARKERS = ("return", "returned", "returning", "returning_to_sender", "refunded", "refund")
+RETURN_STATES = {
+    "return", "returned", "returning", "returning_to_sender",
+    "returned_to_sender", "return_to_sender", "return_completed",
+    "refund", "refunded", "partial_refund", "partially_refunded",
+    "refund_update", "return_update",
+    "to_return", "requested", "accepted", "processing",
+}
 
 def _value(value: Any) -> str | None:
     return None if value in (None, "") else str(value).strip()
@@ -35,9 +41,26 @@ def _latest_timestamp(*values: Any) -> str | None:
             pass
     return max(parsed, key=lambda item: item[0])[1] if parsed else None
 
-def _contains_return(*values: Any) -> bool:
-    text = "|".join(str(value or "").lower() for value in values)
-    return any(marker in text for marker in RETURN_MARKERS)
+def _state_tokens(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        tokens = set()
+        for key, nested in value.items():
+            if str(key).lower() in {"status", "substatus", "tag", "tags", "type"}:
+                tokens.update(_state_tokens(nested))
+        return tokens
+    if isinstance(value, (list, tuple, set)):
+        tokens = set()
+        for nested in value:
+            tokens.update(_state_tokens(nested))
+        return tokens
+    normalized = _lower(value)
+    return {normalized.replace("-", "_").replace(" ", "_")} if normalized else set()
+
+def _has_explicit_return_state(*values: Any) -> bool:
+    tokens = set()
+    for value in values:
+        tokens.update(_state_tokens(value))
+    return bool(tokens & RETURN_STATES)
 
 @dataclass(frozen=True)
 class MarketplaceLifecycle:
@@ -101,12 +124,14 @@ def resolve_mercadolivre(detail: dict, webhook: dict | None = None) -> Marketpla
         shipment.get("date_first_printed") or shipment.get("date_shipped")
     )
 
-    if _contains_return(shipping_substatus, shipment.get("status_history"), order.get("tags")):
+    if _has_explicit_return_state(
+        shipping_substatus, shipment.get("status_history"), order.get("tags")
+    ):
         stage, target, reason = "returned", STATUS_RETURNED, "shipment_return"
     elif order_status in {"cancelled", "canceled"}:
         stage, target = ("returned", STATUS_RETURNED) if shipped_before else ("cancelled", STATUS_CANCELLED)
         reason = "order_cancelled_after_shipping" if shipped_before else "order_cancelled"
-    elif payment_status in {"refunded", "charged_back"}:
+    elif payment_status in {"refunded", "partially_refunded", "charged_back"}:
         stage, target = ("returned", STATUS_RETURNED) if shipped_before else ("cancelled", STATUS_CANCELLED)
         reason = "payment_reversed_after_shipping" if shipped_before else "payment_reversed"
     elif shipping_status in {"cancelled", "canceled"}:
@@ -119,9 +144,15 @@ def resolve_mercadolivre(detail: dict, webhook: dict | None = None) -> Marketpla
         stage, target, reason = "shipping_exception", STATUS_SHIPPED, "shipment_not_delivered"
     elif shipping_status == "ready_to_ship":
         stage, target, reason = "documentation_ready", STATUS_READY, "shipment_ready_to_ship"
-    elif payment_status in {"approved", "authorized"} or shipping_status == "handling":
+    elif (
+        payment_status in {"approved", "authorized"}
+        or order_status in {"confirmed", "paid"}
+        or shipping_status == "handling"
+    ):
         stage, target, reason = "paid_preparation", STATUS_PAID, "payment_approved"
-    elif payment_status in {"pending", "in_process"} or order_status in {"opened", "payment_required", "payment_in_process"}:
+    elif payment_status in {"pending", "in_process"} or order_status in {
+        "opened", "payment_required", "payment_in_process", "partially_paid",
+    }:
         stage, target, reason = "awaiting_payment", STATUS_PENDING, "payment_pending"
     elif payment_status == "rejected":
         stage, target, reason = "cancelled", STATUS_CANCELLED, "only_payment_rejected"
@@ -137,7 +168,7 @@ def resolve_shopee(detail: dict, webhook: dict | None = None) -> MarketplaceLife
     order_status = (_value(detail.get("order_status") or raw.get("order_status")) or "").upper() or None
     return_status = _value(detail.get("return_status") or detail.get("refund_status") or raw.get("return_status") or raw.get("refund_status") or webhook.get("return_status") or webhook.get("refund_status"))
     event_type = _value(webhook.get("event") or webhook.get("event_type") or webhook.get("code") or webhook.get("type"))
-    if _contains_return(order_status, return_status, event_type):
+    if order_status == "TO_RETURN" or _has_explicit_return_state(return_status, event_type):
         stage, target, reason = "returned", STATUS_RETURNED, "shopee_return_or_refund"
     else:
         mapping = {
@@ -149,7 +180,9 @@ def resolve_shopee(detail: dict, webhook: dict | None = None) -> MarketplaceLife
             "SHIPPED": ("shipped", STATUS_SHIPPED),
             "TO_CONFIRM_RECEIVE": ("shipped", STATUS_SHIPPED),
             "COMPLETED": ("delivered", STATUS_DELIVERED),
+            "IN_CANCEL": ("cancelled", STATUS_CANCELLED),
             "CANCELLED": ("cancelled", STATUS_CANCELLED),
+            "TO_RETURN": ("returned", STATUS_RETURNED),
         }
         stage, target = mapping.get(order_status, ("unknown", None))
         reason = f"shopee_order_status:{order_status or 'missing'}"

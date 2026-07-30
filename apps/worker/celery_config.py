@@ -115,6 +115,7 @@ celery_app = Celery(
         'nistiprint_shared.services.ai_personalization_service',
         'nistiprint_shared.services.order_erp_reference_service',
         'nistiprint_shared.services.marketplace_lifecycle_tasks',
+        'nistiprint_shared.services.marketplace_payment_reprocess_service',
     ]
 )
 celery_app.conf.update(

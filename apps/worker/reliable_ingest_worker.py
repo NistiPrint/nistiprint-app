@@ -29,7 +29,13 @@ MAX_ATTEMPTS = int(os.getenv("INGEST_MAX_ATTEMPTS", "7"))
 SIGNATURE_VERDICT_GRACE_SECONDS = max(
     1.0, float(os.getenv("INGEST_SIGNATURE_VERDICT_GRACE_SECONDS", "30"))
 )
-TERMINAL_ERRORS = {"unsupported_source", "unsupported_business_type", "not_chat"}
+TERMINAL_ERRORS = {
+    "unsupported_source", "unsupported_business_type", "not_chat",
+    "invalid_provider_resource", "invalid_provider_resource_id",
+    "provider_topic_resource_mismatch", "provider_parameter_error",
+    "provider_access_forbidden", "provider_identity_mismatch",
+    "marketplace_integration_ambiguous",
+}
 
 
 class SignatureVerdictPending(RuntimeError):
@@ -44,9 +50,10 @@ def _payload(item):
 
 
 def _is_chat(item):
-    payload, source = _payload(item), item.get("source")
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    return source == "shopee" and payload.get("code") == 10 and data.get("type") in ("message", "notification")
+    if item.get("source") != "shopee":
+        return False
+    from nistiprint_shared.services.marketplace_adapters import shopee_adapter
+    return shopee_adapter.parse_webhook(_payload(item)).classification == "chat"
 
 
 def _heartbeat(role, client):
@@ -176,7 +183,13 @@ def _consume_once(ready, processing, processor, client=None):
             error = RuntimeError(result.get("message") or "processing_error")
             error.error_type = result.get("error_type") or "processing_error"
             error.retry_after = result.get("retry_after")
-            error.retryable = result.get("retryable", error.error_type not in TERMINAL_ERRORS)
+            if "retryable" in result:
+                error.retryable = bool(result["retryable"])
+            else:
+                error.retryable = (
+                    error.error_type == "processing_error"
+                    or error.error_type not in TERMINAL_ERRORS
+                )
             _retry(item, processing, r, error, result=result)
         return True
     except Exception as exc:
@@ -190,6 +203,19 @@ def _retry(item, processing, client, exc, result=None):
     event_id = item.get("webhook_event_id")
     error_type = str(getattr(exc, "error_type", type(exc).__name__))
     retryable = bool(getattr(exc, "retryable", True))
+    if error_type == "provider_resource_not_found":
+        try:
+            received_at = datetime.fromisoformat(
+                str(item.get("received_at")).replace("Z", "+00:00")
+            )
+            if received_at.tzinfo is None:
+                received_at = received_at.replace(tzinfo=timezone.utc)
+            age_seconds = (
+                datetime.now(timezone.utc) - received_at.astimezone(timezone.utc)
+            ).total_seconds()
+        except (TypeError, ValueError):
+            age_seconds = 301
+        retryable = attempt <= 2 and age_seconds <= 300
     if not retryable or attempt >= MAX_ATTEMPTS:
         if event_id:
             finalize_event(int(event_id), "manual_intervention" if retryable else "failed_terminal",

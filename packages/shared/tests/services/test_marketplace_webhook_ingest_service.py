@@ -11,6 +11,34 @@ from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 
 
 class TestMarketplaceWebhookIngestService(unittest.TestCase):
+    def test_account_not_found_never_falls_back_to_another_integration(self):
+        service = MarketplaceWebhookIngestService()
+        rows = [
+            {"id": 11, "config": {"shop_id": "1001"}},
+            {"id": 12, "config": {"shop_id": "1002"}},
+        ]
+        with patch.object(service, "_active_marketplace_integrations", return_value=rows):
+            integration, error = service._resolve_marketplace_integration(
+                "shopee", account_identifier="9999"
+            )
+        self.assertIsNone(integration)
+        self.assertEqual(error["error_type"], "marketplace_integration_not_found")
+        self.assertTrue(error["retryable"])
+
+    def test_ambiguous_account_never_chooses_a_candidate(self):
+        service = MarketplaceWebhookIngestService()
+        rows = [
+            {"id": 11, "config": {"shop_id": "1001"}},
+            {"id": 12, "config": {"shop_id": "1001"}},
+        ]
+        with patch.object(service, "_active_marketplace_integrations", return_value=rows):
+            integration, error = service._resolve_marketplace_integration(
+                "shopee", account_identifier="1001"
+            )
+        self.assertIsNone(integration)
+        self.assertEqual(error["error_type"], "marketplace_integration_ambiguous")
+        self.assertFalse(error["retryable"])
+
     def test_extract_resource_id_ignores_endpoint_suffix(self):
         self.assertEqual(
             _extract_resource_id('/shipments/47344057080/assignment/v1', '/shipments/'),
@@ -59,10 +87,10 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
              patch.object(service, '_meli_integration', return_value={'access_token': 'token'}), \
              patch.object(service, '_lookup_meli_order_by_payment_id', return_value={'codigo_pedido': '98765', 'payment_status': 'approved'}) as lookup, \
              patch.object(service, '_find_direct_ingest_link', return_value={'channel_id': 22, 'process_webhooks': True, 'ingest_origin_mode': 'marketplace_direct'}), \
-             patch.object(service, '_fetch_meli_detail', return_value={'order': {'id': 98765, 'status': 'paid', 'payments': [{'status': 'approved'}]}, 'shipment': {'status': 'ready_to_ship'}}), \
+             patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_order_detail', return_value={'id': 98765, 'status': 'paid', 'payments': [{'status': 'approved'}]}), \
              patch.object(service, '_upsert_meli_mirror', return_value=44), \
              patch.object(service, '_upsert_pedido_status', return_value=55), \
-             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.meli_driver.get_collection', return_value={'error': 'not found'}):
+             patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_collection', return_value={'error': 'not found'}):
             result = service._process_mercadolivre({
                 'topic': 'payments',
                 'resource': '/collections/164407388685',
@@ -79,7 +107,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
         with patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 12}, None)), \
              patch.object(service, '_meli_integration', return_value={'access_token': 'token'}), \
              patch.object(service, '_lookup_meli_order_by_payment_id', return_value=None), \
-             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.meli_driver.get_collection', return_value={'error': 'not found'}):
+             patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_collection', return_value={'external_reference': 'cashback_2963193951'}):
             result = service._process_mercadolivre({
                 'topic': 'payments',
                 'resource': '/collections/999',
@@ -101,7 +129,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
 
         self.assertEqual(result['status'], 'skipped')
         self.assertEqual(result['event_status'], 'skipped_unsupported_topic')
-        self.assertEqual(result['topic'], 'fbm_stock_operations')
+        self.assertEqual(result['provider_topic'], 'fbm_stock_operations')
         resolve.assert_not_called()
 
     def test_meli_collection_notification_resolves_order(self):
@@ -109,10 +137,10 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
         with patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 12}, None)), \
              patch.object(service, '_meli_integration', return_value={'access_token': 'token'}), \
              patch.object(service, '_find_direct_ingest_link', return_value={'channel_id': 22, 'process_webhooks': True, 'ingest_origin_mode': 'marketplace_direct'}), \
-             patch.object(service, '_fetch_meli_detail', return_value={'id': 98765, 'status': 'paid'}), \
+             patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_order_detail', return_value={'id': 98765, 'status': 'paid'}), \
              patch.object(service, '_upsert_meli_mirror', return_value=44), \
              patch.object(service, '_upsert_pedido_status', return_value=55), \
-             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.meli_driver.get_collection', return_value={'order': {'id': 98765}}) as get_collection:
+             patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_collection', return_value={'order': {'id': 98765, 'type': 'mercadolibre'}}) as get_collection:
             result = service._process_mercadolivre({
                 'topic': 'payments',
                 'resource': '/collections/162789221162',
@@ -127,7 +155,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
     def test_shopee_driver_fetches_return_detail(self, mock_get):
         mock_get.return_value.status_code = 200
         mock_get.return_value.json.return_value = {
-            'response': {'return': {'return_sn': 'RET1', 'order_sn': 'SN123'}}
+            'response': {'return': {'return_sn': 'RET1', 'order_sn': 'SN123456'}}
         }
 
         result = shopee_driver.get_return_detail({
@@ -135,7 +163,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
             'credentials': {'partner_key': 'secret', 'access_token': 'token'},
         }, 'RET1')
 
-        self.assertEqual(result['order_sn'], 'SN123')
+        self.assertEqual(result['order_sn'], 'SN123456')
         self.assertEqual(
             mock_get.call_args.args[0],
             'https://partner.shopeemobile.com/api/v2/returns/get_return_detail',
@@ -147,19 +175,23 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
 
         with patch.object(service, '_resolve_marketplace_integration', return_value=({
                  'id': 12,
-                 'config': {'partner_id': '1', 'shop_id': '2'},
+                 'config': {
+                     'partner_id': '1',
+                     'shop_id': '2',
+                     'marketplace_adapter_mode': 'active',
+                 },
                  'credentials': {'partner_key': 'secret', 'access_token': 'token'},
              }, None)), \
              patch('nistiprint_shared.services.marketplace_webhook_ingest_service.credential_resolver_service.hydrate_integration', side_effect=lambda value: value), \
              patch.object(service, '_find_direct_ingest_link', return_value={'channel_id': 22, 'process_webhooks': True, 'ingest_origin_mode': 'marketplace_direct'}), \
-             patch.object(service, '_fetch_shopee_detail', return_value={'order_status': 'COMPLETED', 'external_id': 'SN123'}), \
+             patch('nistiprint_shared.services.marketplace_adapters.shopee_driver.get_order_detail', return_value={'order_status': 'TO_RETURN', 'external_id': 'SN123456'}), \
              patch.object(service, '_upsert_shopee_mirror', return_value=44), \
              patch.object(service, '_upsert_pedido_status', return_value=55) as upsert_status, \
-             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.shopee_driver.get_return_detail', return_value={'order_sn': 'SN123', 'status': 'RETURNED'}):
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.shopee_driver.get_return_detail', return_value={'order_sn': 'SN123456', 'status': 'RETURNED'}):
             result = service._process_shopee({
-                'return_sn': 'RET1',
-                'shop_id': '2',
-                'event_type': 'RETURN_UPDATE',
+                'code': 3,
+                'shop_id': 2,
+                'data': {'ordersn': 'SN123456', 'status': 'TO_RETURN'},
             }, correlation_id='cid')
 
         self.assertEqual(result['status'], 'success')
@@ -172,11 +204,12 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
     def test_shopee_webhook_persists_without_bling_materialization(self):
         service = MarketplaceWebhookIngestService()
         with patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 12}, None)), \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.credential_resolver_service.hydrate_integration', side_effect=lambda value: value), \
              patch.object(service, '_find_direct_ingest_link', return_value={'channel_id': 22, 'process_webhooks': True, 'ingest_origin_mode': 'marketplace_direct'}), \
-             patch.object(service, '_fetch_shopee_detail', return_value={'order_status': 'PROCESSED', 'external_id': 'SN123'}), \
+             patch('nistiprint_shared.services.marketplace_adapters.shopee_driver.get_order_detail', return_value={'order_status': 'PROCESSED', 'external_id': 'SN123456'}), \
              patch.object(service, '_upsert_shopee_mirror', return_value=44), \
              patch.object(service, '_upsert_pedido_status', return_value=55) as upsert_status:
-            result = service._process_shopee({'order_sn': 'SN123', 'shop_id': 'SHOP1'}, correlation_id='cid')
+            result = service._process_shopee({'code': 3, 'shop_id': 1, 'data': {'ordersn': 'SN123456'}}, correlation_id='cid')
 
         self.assertEqual(result['status'], 'success')
         self.assertEqual(result['pedido_id'], 55)
@@ -223,11 +256,12 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
     def test_shopee_without_bling_order_is_still_successful(self):
         service = MarketplaceWebhookIngestService()
         with patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 12}, None)), \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.credential_resolver_service.hydrate_integration', side_effect=lambda value: value), \
              patch.object(service, '_find_direct_ingest_link', return_value={'channel_id': 22, 'process_webhooks': True, 'ingest_origin_mode': 'marketplace_direct'}), \
-             patch.object(service, '_fetch_shopee_detail', return_value={'order_status': 'PROCESSED', 'external_id': 'SN123'}), \
+             patch('nistiprint_shared.services.marketplace_adapters.shopee_driver.get_order_detail', return_value={'order_status': 'PROCESSED', 'external_id': 'SN123456'}), \
              patch.object(service, '_upsert_shopee_mirror', return_value=44), \
              patch.object(service, '_upsert_pedido_status', return_value=55):
-            result = service._process_shopee({'order_sn': 'SN123', 'shop_id': 'SHOP1'}, correlation_id='cid')
+            result = service._process_shopee({'code': 3, 'shop_id': 1, 'data': {'ordersn': 'SN123456'}}, correlation_id='cid')
 
         self.assertEqual(result['status'], 'success')
         self.assertEqual(result['pedido_id'], 55)

@@ -158,9 +158,19 @@ def finalize_event(event_id: int, status: str, *, result: dict[str, Any] | None 
               "next_attempt_after": None, "processing_started_at": None,
               "processing_correlation_id": None, "last_error_type": error_type,
               "last_error_message": str(error_message)[:4000] if error_message else None}
-    for key in ("pedido_id", "provider_topic", "provider_resource", "provider_updated_at", "lifecycle_stage"):
+    for key in (
+        "pedido_id", "provider_topic", "provider_resource",
+        "provider_resource_type", "provider_resource_id", "resolution_status",
+        "resolved_order_ids", "provider_updated_at", "lifecycle_stage",
+    ):
         if result.get(key) is not None:
             fields[key] = result[key]
+    resolved_ids = result.get("resolved_order_ids") or []
+    resolved_order_id = result.get("external_order_id") or (
+        resolved_ids[0] if isinstance(resolved_ids, list) and resolved_ids else None
+    )
+    if resolved_order_id is not None:
+        fields["resolved_order_id"] = str(resolved_order_id)
     supabase_db.table("webhook_events").update(fields).eq("id", event_id).execute()
 
 

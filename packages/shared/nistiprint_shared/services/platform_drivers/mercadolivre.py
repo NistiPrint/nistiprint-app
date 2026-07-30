@@ -2,6 +2,8 @@ import requests
 import logging
 from typing import List, Dict, Optional
 
+from nistiprint_shared.services.marketplace_http import request_json
+
 logger = logging.getLogger("MercadoLivreDriver")
 
 
@@ -13,7 +15,11 @@ def _sanitize_resource_id(value: str | int | None, *, resource_name: str) -> str
     if not raw:
         raise ValueError(f"{resource_name} id ausente")
     sanitized = raw.split("/", 1)[0].strip()
-    if not sanitized or sanitized.lower() in {"orders", "shipments", "payments"}:
+    if (
+        not sanitized
+        or sanitized.lower() in {"orders", "shipments", "payments", "collections", "packs"}
+        or not sanitized.isdigit()
+    ):
         raise ValueError(f"{resource_name} id invalido: {value!r}")
     return sanitized
 
@@ -48,17 +54,23 @@ def test_connection(integration: Dict, path: Optional[str] = None) -> Dict:
     """
     Tests Mercado Livre connectivity using the same token source as the driver.
     """
-    response = requests.get(_ml_url(path or '/users/me'), headers=_auth_headers(integration))
-    if response.status_code != 200:
+    result = request_json(
+        requests.get,
+        _ml_url(path or "/users/me"),
+        provider="Mercado Livre",
+        resource_type="connection",
+        headers=_auth_headers(integration),
+    )
+    if not result.ok:
         return {
             "success": False,
-            "message": f"Erro na API do Mercado Livre: {response.status_code}",
-            "details": response.text,
+            "message": result.message,
+            **result.to_legacy(),
         }
     return {
         "success": True,
         "message": "Conexao estabelecida com sucesso.",
-        "details": response.json(),
+        "details": result.value,
     }
 
 
@@ -77,19 +89,16 @@ def get_order_detail(integration: Dict, order_ids: List[str]) -> Dict:
     order_id = _sanitize_resource_id(order_id, resource_name="order")
     url = _ml_url(f"/orders/{order_id}")
 
-    print(f"DEBUG: Mercado Livre API URL: {url}")
-
-    response = requests.get(url, headers=headers)
-
-    # Log raw response for debugging
-    print(f"DEBUG: Mercado Livre API Raw Response Status: {response.status_code}")
-    print(f"DEBUG: Mercado Livre API Raw Response Body: {response.text}")
-
-    if response.status_code != 200:
-        return {"error": f"Erro na API do Mercado Livre: {response.status_code}", "details": response.text}
-
-    data = response.json()
-    return data
+    logger.info("[meli] fetching resource_type=order resource_id=%s", order_id)
+    return request_json(
+        requests.get,
+        url,
+        provider="Mercado Livre",
+        resource_type="order",
+        resource_id=order_id,
+        success_statuses=(200, 206),
+        headers=headers,
+    ).to_legacy()
 
 
 def get_payment(integration: Dict, payment_id: str) -> Dict:
@@ -102,12 +111,14 @@ def get_payment(integration: Dict, payment_id: str) -> Dict:
     url = _ml_url(f"/payments/{payment_id}")
     logger.info("[ML Driver] Fetching payment: %s", url)
 
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        logger.error("[ML Driver] Error fetching payment %s: %s - %s", payment_id, response.status_code, response.text)
-        return {"error": f"Erro na API do Mercado Livre (payments): {response.status_code}", "details": response.text}
-
-    return response.json()
+    return request_json(
+        requests.get,
+        url,
+        provider="Mercado Livre",
+        resource_type="payment",
+        resource_id=payment_id,
+        headers=headers,
+    ).to_legacy()
 
 
 def get_collection(integration: Dict, collection_id: str) -> Dict:
@@ -116,18 +127,14 @@ def get_collection(integration: Dict, collection_id: str) -> Dict:
     collection_id = _sanitize_resource_id(collection_id, resource_name="collection")
     url = _ml_url(f"/collections/{collection_id}")
     logger.info("[ML Driver] Fetching collection: %s", url)
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        logger.error(
-            "[ML Driver] Error fetching collection %s: %s - %s",
-            collection_id, response.status_code, response.text,
-        )
-        return {
-            "error": f"Erro na API do Mercado Livre (collections): {response.status_code}",
-            "details": response.text,
-            "status_code": response.status_code,
-        }
-    return response.json()
+    return request_json(
+        requests.get,
+        url,
+        provider="Mercado Livre",
+        resource_type="collection",
+        resource_id=collection_id,
+        headers=headers,
+    ).to_legacy()
 
 
 def get_shipment(integration: Dict, shipment_id: str) -> Dict:
@@ -140,17 +147,14 @@ def get_shipment(integration: Dict, shipment_id: str) -> Dict:
     url = _ml_url(f"/shipments/{shipment_id}")
     logger.info(f"[ML Driver] Fetching shipment: {url}")
     
-    response = requests.get(url, headers=headers)
-    
-    # DEBUG LOGS
-    logger.info(f"DEBUG: ML Shipment Status: {response.status_code}")
-    logger.info(f"DEBUG: ML Shipment Body: {response.text}")
-    
-    if response.status_code != 200:
-        logger.error(f"[ML Driver] Error fetching shipment {shipment_id}: {response.status_code} - {response.text}")
-        return {"error": f"Erro na API do Mercado Livre (shipments): {response.status_code}", "details": response.text}
-
-    return response.json()
+    return request_json(
+        requests.get,
+        url,
+        provider="Mercado Livre",
+        resource_type="shipment",
+        resource_id=shipment_id,
+        headers=headers,
+    ).to_legacy()
 
 
 def get_shipment_sla(integration: Dict, shipment_id: str) -> Dict:
@@ -164,17 +168,30 @@ def get_shipment_sla(integration: Dict, shipment_id: str) -> Dict:
     url = _ml_url(f"/shipments/{shipment_id}/sla")
     logger.info(f"[ML Driver] Fetching shipment SLA: {url}")
     
-    response = requests.get(url, headers=headers)
-    
-    # DEBUG LOGS
-    logger.info(f"DEBUG: ML SLA Status: {response.status_code}")
-    logger.info(f"DEBUG: ML SLA Body: {response.text}")
-    
-    if response.status_code != 200:
-        logger.error(f"[ML Driver] Error fetching shipment SLA {shipment_id}: {response.status_code} - {response.text}")
-        return {"error": f"Erro na API do Mercado Livre (shipments/sla): {response.status_code}", "details": response.text}
+    return request_json(
+        requests.get,
+        url,
+        provider="Mercado Livre",
+        resource_type="shipment",
+        resource_id=shipment_id,
+        headers=headers,
+    ).to_legacy()
 
-    return response.json()
+
+def get_pack(integration: Dict, pack_id: str) -> Dict:
+    """Fetch a cart pack so one shipment can resolve all related orders."""
+    headers = _auth_headers(integration)
+    pack_id = _sanitize_resource_id(pack_id, resource_name="pack")
+    url = _ml_url(f"/packs/{pack_id}")
+    logger.info("[meli] fetching resource_type=pack resource_id=%s", pack_id)
+    return request_json(
+        requests.get,
+        url,
+        provider="Mercado Livre",
+        resource_type="pack",
+        resource_id=pack_id,
+        headers=headers,
+    ).to_legacy()
 
 
 def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[Dict]:
@@ -220,19 +237,18 @@ def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[D
         if offset:
             params["offset"] = offset
 
-    print(f"DEBUG: Mercado Livre API Orders List URL: {url}")
-    print(f"DEBUG: Mercado Livre API Orders List Params: {params}")
-
-    response = requests.get(url, headers=headers, params=params)
-
-    # Log raw response for debugging
-    print(f"DEBUG: Mercado Livre API Orders List Raw Response Status: {response.status_code}")
-    print(f"DEBUG: Mercado Livre API Orders List Raw Response Body: {response.text}")
-
-    if response.status_code != 200:
-        return [{"error": f"Erro na API do Mercado Livre: {response.status_code}", "details": response.text}]
-
-    data = response.json()
+    logger.info("[meli] fetching resource_type=orders_search")
+    result = request_json(
+        requests.get,
+        url,
+        provider="Mercado Livre",
+        resource_type="orders_search",
+        headers=headers,
+        params=params,
+    )
+    if not result.ok:
+        return [result.to_legacy()]
+    data = result.value or {}
 
     # Normalizar os dados para o DTO padrão
     normalized_orders = []

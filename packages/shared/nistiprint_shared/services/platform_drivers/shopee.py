@@ -4,10 +4,46 @@ import time
 import requests
 import logging
 import os
+import re
 from typing import List, Dict, Optional
 from nistiprint_shared.utils.date_utils import unix_to_app_iso
+from nistiprint_shared.services.marketplace_http import request_json
 
 logger = logging.getLogger("shopee_driver")
+
+SHOPEE_TRANSIENT_CODES = {
+    "error_network", "internal_server_error", "error_server",
+    "system_busy", "error_rate_limit",
+}
+SHOPEE_AUTH_CODES = {
+    "error_auth", "error_sign", "invalid_access_token",
+    "invalid_acceess_token", "error_api_permission", "user_is_unauthorized",
+}
+
+
+def _sanitize_order_sn(value: str) -> str:
+    order_sn = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", order_sn):
+        raise ValueError(f"order_sn Shopee invalido: {value!r}")
+    return order_sn
+
+
+def _shopee_api_error(data: dict, *, resource_type: str, resource_id: str | None = None) -> dict:
+    code = str(data.get("error") or "")
+    if code in SHOPEE_AUTH_CODES:
+        error_type, retryable = "credential_action_required", False
+    elif code in SHOPEE_TRANSIENT_CODES:
+        error_type, retryable = "provider_transient_error", True
+    else:
+        error_type, retryable = "provider_parameter_error", False
+    return {
+        "error": data.get("message") or "Erro reportado pela Shopee",
+        "code": code,
+        "error_type": error_type,
+        "retryable": retryable,
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+    }
 
 def _ts_to_iso(ts: Optional[int]) -> Optional[str]:
     """Convert Unix timestamp to ISO 8601 string."""
@@ -93,8 +129,11 @@ def test_connection(integration: Dict, path: Optional[str] = None) -> Dict:
     shop_id = int(shop_id_raw)
     timestamp = int(time.time())
     sign = _generate_sign(partner_id, partner_key, path, timestamp, access_token, shop_id)
-    response = requests.get(
+    result = request_json(
+        requests.get,
         f"{host}{path}",
+        provider="Shopee",
+        resource_type="connection",
         params={
             "partner_id": partner_id,
             "timestamp": timestamp,
@@ -103,17 +142,14 @@ def test_connection(integration: Dict, path: Optional[str] = None) -> Dict:
             "shop_id": shop_id,
         },
     )
-
-    if response.status_code != 200:
-        return {"success": False, "message": f"Erro na API da Shopee: {response.status_code}", "details": response.text}
-
-    data = response.json()
+    if not result.ok:
+        return {"success": False, "message": result.message, **result.to_legacy()}
+    data = result.value or {}
     if data.get("error"):
         return {
             "success": False,
-            "message": f"Erro reportado pela Shopee: {data.get('message')}",
-            "code": data.get("error"),
-            "details": data,
+            "message": data.get("message") or "Erro reportado pela Shopee",
+            **_shopee_api_error(data, resource_type="connection"),
         }
 
     return {"success": True, "message": "Conexao estabelecida com sucesso.", "details": data}
@@ -124,14 +160,11 @@ def get_order_detail(integration: Dict, order_sn_list: List[str]) -> Dict:
     """
     host = "https://partner.shopeemobile.com"
     
-    # Extract Credentials
-    config = integration.get("config", {})
-    credentials = integration.get("credentials", {})
-
-    partner_id_raw = config.get("partner_id") or credentials.get("partner_id") or os.getenv("SHOPEE_PARTNER_ID")
-    partner_key = config.get("partner_key") or credentials.get("partner_key") or os.getenv("SHOPEE_PARTNER_KEY")
-    shop_id_raw = config.get("shop_id") or credentials.get("shop_id")
-    access_token = integration.get("access_token") or credentials.get("access_token")
+    resolved = _resolve_credentials(integration)
+    partner_id_raw = resolved.get("partner_id")
+    partner_key = resolved.get("partner_key")
+    shop_id_raw = resolved.get("shop_id")
+    access_token = resolved.get("access_token")
 
     if not all([partner_id_raw, partner_key, shop_id_raw, access_token]):
         raise ValueError("Configuração da Shopee incompleta (partner_id, partner_key, shop_id ou access_token ausentes). Verifique SHOPEE_PARTNER_ID e SHOPEE_PARTNER_KEY nas variáveis de ambiente.")
@@ -145,48 +178,65 @@ def get_order_detail(integration: Dict, order_sn_list: List[str]) -> Dict:
     sign = _generate_sign(partner_id, partner_key, path, timestamp, access_token, shop_id)
     
     url = f"{host}{path}"
+    sanitized_order_sns = [_sanitize_order_sn(value) for value in order_sn_list]
     params = {
         "partner_id": partner_id,
         "timestamp": timestamp,
         "sign": sign,
         "access_token": access_token,
         "shop_id": shop_id,
-        "order_sn_list": ",".join(order_sn_list)
+        "order_sn_list": ",".join(sanitized_order_sns)
     }
     
     # Optional fields to get more info (like buyer details, items, etc)
     optional_fields = "buyer_user_id,buyer_username,recipient_address,item_list,create_time,update_time,pay_time,ship_time,total_amount,order_status,fulfillment_flag,package_list,shipping_carrier,message_to_seller,ship_by_date"
     params["response_optional_fields"] = optional_fields
 
-    logger.debug("Shopee API URL: %s", url)
-    logger.debug("Shopee API Params: %s", params)
-
-    response = requests.get(url, params=params)
-
-    logger.debug("Shopee API Raw Response Status: %s", response.status_code)
-    logger.debug("Shopee API Raw Response Body: %s", response.text)
-    
-    if response.status_code != 200:
-        return {"error": f"Erro na API da Shopee: {response.status_code}", "details": response.text}
-    
-    data = response.json()
+    logger.info(
+        "[shopee] fetching resource_type=order count=%s shop_id=%s",
+        len(sanitized_order_sns), shop_id,
+    )
+    result = request_json(
+        requests.get,
+        url,
+        provider="Shopee",
+        resource_type="order",
+        resource_id=sanitized_order_sns[0] if sanitized_order_sns else None,
+        params=params,
+    )
+    if not result.ok:
+        return result.to_legacy()
+    data = result.value or {}
     if data.get("error"):
-        return {"error": f"Erro reportado pela Shopee: {data.get('message')}", "code": data.get('error')}
+        return _shopee_api_error(
+            data, resource_type="order",
+            resource_id=sanitized_order_sns[0] if sanitized_order_sns else None,
+        )
         
     # Normalizar para DTO
     raw_response = data.get("response", {})
     order_list = raw_response.get("order_list", [])
     
     if not order_list:
-        return {"error": "Pedido não encontrado na Shopee."}
+        return {
+            "error": "Pedido nao encontrado na Shopee.",
+            "error_type": "provider_resource_not_found",
+            "retryable": False,
+        }
 
     # Pegamos o primeiro pois a busca é por ID específico
     order = order_list[0]
+    if str(order.get("order_sn") or "") != sanitized_order_sns[0]:
+        return {
+            "error": "Shopee retornou pedido diferente do solicitado",
+            "error_type": "provider_identity_mismatch",
+            "retryable": False,
+        }
 
     normalized_order = {
         "external_id":        order.get("order_sn", ""),
         "platform":           "shopee",
-        "shop_id":            int(integration['config'].get('shop_id') or 0) or None,
+        "shop_id":            shop_id,
         "order_status":       order.get("order_status"),
         "fulfillment_flag":   order.get("fulfillment_flag"),
         "shipping_carrier":   order.get("shipping_carrier")
@@ -228,8 +278,12 @@ def get_return_detail(integration: Dict, return_sn: str) -> Dict:
         partner_id, resolved["partner_key"], path, timestamp,
         resolved["access_token"], shop_id,
     )
-    response = requests.get(
+    result = request_json(
+        requests.get,
         f"{host}{path}",
+        provider="Shopee",
+        resource_type="return",
+        resource_id=str(return_sn),
         params={
             "partner_id": partner_id,
             "timestamp": timestamp,
@@ -239,17 +293,11 @@ def get_return_detail(integration: Dict, return_sn: str) -> Dict:
             "return_sn": str(return_sn),
         },
     )
-    if response.status_code != 200:
-        return {
-            "error": f"Erro na API de devolucoes da Shopee: {response.status_code}",
-            "details": response.text,
-        }
-    data = response.json()
+    if not result.ok:
+        return result.to_legacy()
+    data = result.value or {}
     if data.get("error"):
-        return {
-            "error": f"Erro reportado pela Shopee: {data.get('message')}",
-            "code": data.get("error"),
-        }
+        return _shopee_api_error(data, resource_type="return", resource_id=str(return_sn))
     payload = data.get("response") or {}
     if isinstance(payload.get("return"), dict):
         payload = payload["return"]
@@ -338,20 +386,19 @@ def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[D
     # Add optional fields as requested to maintain consistency with detail view
     params["response_optional_fields"] = "order_status"
 
-    logger.debug("Shopee API Orders List URL: %s", url)
-    logger.debug("Shopee API Orders List Params: %s", params)
-
-    response = requests.get(url, params=params)
-
-    logger.debug("Shopee API Orders List Raw Response Status: %s", response.status_code)
-    logger.debug("Shopee API Orders List Raw Response Body: %s", response.text)
-
-    if response.status_code != 200:
-        return [{"error": f"Erro na API da Shopee: {response.status_code}", "details": response.text}]
-
-    data = response.json()
+    logger.info("[shopee] fetching resource_type=orders_list shop_id=%s", shop_id)
+    result = request_json(
+        requests.get,
+        url,
+        provider="Shopee",
+        resource_type="orders_list",
+        params=params,
+    )
+    if not result.ok:
+        return [result.to_legacy()]
+    data = result.value or {}
     if data.get("error"):
-        return [{"error": f"Erro reportado pela Shopee: {data.get('message')}", "code": data.get('error')}]
+        return [_shopee_api_error(data, resource_type="orders_list")]
 
     # Normalizar os dados para o DTO padrão
     normalized_orders = []

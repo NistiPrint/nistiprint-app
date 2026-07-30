@@ -9,9 +9,12 @@ from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.credential_resolver_service import (
     credential_resolver_service,
 )
-from nistiprint_shared.services.marketplace_lifecycle_service import (
-    resolve_mercadolivre as resolve_meli_lifecycle,
-    resolve_shopee as resolve_shopee_lifecycle,
+from nistiprint_shared.services.marketplace_adapters import (
+    mercadolivre_adapter,
+    shopee_adapter,
+)
+from nistiprint_shared.services.marketplace_rollout_service import (
+    marketplace_rollout_service,
 )
 from nistiprint_shared.services.canonical_order_snapshot_service import (
     canonical_order_snapshot_service,
@@ -161,98 +164,105 @@ class MarketplaceWebhookIngestService:
 
     def _process_shopee(self, payload: dict, *, correlation_id: str, webhook_event_id: int | None = None) -> dict:
         body = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-        order_sn = _first_present(
-            body.get("order_sn"),
-            body.get("ordersn"),
-            body.get("order_id"),
-            ((body.get("orders") or [{}])[0] or {}).get("order_sn") if isinstance(body.get("orders"), list) and body.get("orders") else None,
-            (body.get("return_order") or {}).get("order_sn") if isinstance(body.get("return_order"), dict) else None,
-            (body.get("return_info") or {}).get("order_sn") if isinstance(body.get("return_info"), dict) else None,
-        )
-        return_sn = _first_present(body.get("return_sn"), body.get("returnsn"), body.get("return_id"))
-        shop_id = _first_present(body.get("shop_id"), body.get("shopid"), payload.get("shop_id"))
-
-        if not order_sn and not return_sn:
+        resolution = shopee_adapter.parse_webhook(payload)
+        resource = resolution.primary_resource
+        if resolution.classification in {"verification", "unsupported"}:
+            return {
+                "status": "skipped",
+                "event_status": "skipped_unsupported_event",
+                "resolution_status": resolution.status,
+                "message": resolution.message,
+                "retryable": False,
+            }
+        if resolution.classification == "chat":
+            return {
+                "status": "skipped",
+                "event_status": "skipped_misrouted_chat_event",
+                "resolution_status": "misrouted_chat",
+                "provider_resource_type": "chat",
+                "provider_resource_id": resource.resource_id if resource else None,
+                "message": "SellerChat deve ser processado exclusivamente pela fila de chat",
+                "retryable": False,
+            }
+        if not resource:
             return {
                 "status": "error",
-                "error_type": "missing_order_id",
-                "message": "Webhook Shopee sem order_sn",
+                "event_status": resolution.status,
+                "resolution_status": resolution.status,
+                "error_type": resolution.error_type or "invalid_provider_resource",
+                "message": resolution.message or "Webhook Shopee invalido",
+                "retryable": False,
             }
 
+        order_sn = resource.resource_id
         marketplace_inst, resolution_error = self._resolve_marketplace_integration(
             "shopee",
-            account_identifier=shop_id,
-            external_order_id=str(order_sn),
+            account_identifier=resource.account_id,
+            external_order_id=order_sn,
         )
+        metadata = {
+            "provider_topic": resource.topic,
+            "provider_resource": resource.resource_path,
+            "provider_resource_type": resource.resource_type,
+            "provider_resource_id": resource.resource_id,
+            "resolved_order_ids": [order_sn],
+        }
         if resolution_error:
-            return resolution_error
-
-        return_detail = {}
-        if not order_sn and return_sn:
-            integration = credential_resolver_service.hydrate_integration(marketplace_inst)
-            return_detail = shopee_driver.get_return_detail(integration, str(return_sn))
-            if return_detail.get("error"):
-                return {
-                    "status": "error",
-                    "error_type": "shopee_return_detail_unavailable",
-                    "message": return_detail.get("error"),
-                    "marketplace_integration_id": marketplace_inst.get("id"),
-                }
-            order_sn = _first_present(
-                return_detail.get("order_sn"),
-                return_detail.get("ordersn"),
-                (return_detail.get("order") or {}).get("order_sn")
-                if isinstance(return_detail.get("order"), dict) else None,
-            )
-            if not order_sn:
-                return {
-                    "status": "error",
-                    "error_type": "missing_order_id",
-                    "message": "Devolucao Shopee sem order_sn derivavel",
-                    "marketplace_integration_id": marketplace_inst.get("id"),
-                }
+            return {**resolution_error, **metadata, "resolution_status": "integration_unresolved"}
 
         link = self._find_direct_ingest_link(marketplace_inst.get("id"))
         inactive = self._inactive_source_result(
-            "shopee", link, str(order_sn), marketplace_inst, payload=payload
+            "shopee", link, order_sn, marketplace_inst, payload=payload
         )
         if inactive:
-            return inactive
-        detail = self._fetch_shopee_detail(marketplace_inst, str(order_sn))
-        if detail.get("error"):
+            return {**inactive, **metadata, "resolution_status": "resolved"}
+        integration = credential_resolver_service.hydrate_integration(marketplace_inst)
+        snapshot = shopee_adapter.fetch_order_snapshot(order_sn, integration)
+        if (
+            isinstance(snapshot, dict)
+            and snapshot.get("error_type") == "credential_action_required"
+        ):
+            refreshed = self._renew_marketplace_integration_once(marketplace_inst)
+            if refreshed:
+                marketplace_inst = refreshed
+                integration = credential_resolver_service.hydrate_integration(refreshed)
+                snapshot = shopee_adapter.fetch_order_snapshot(order_sn, integration)
+        if isinstance(snapshot, dict):
             logger.warning(
-                "[marketplace-webhook] shopee detail unavailable order_sn=%s integration_id=%s error=%s",
+                "[marketplace-webhook] shopee detail unavailable order_sn=%s integration_id=%s error_type=%s",
                 order_sn,
                 marketplace_inst.get("id"),
-                detail.get("error"),
+                snapshot.get("error_type"),
             )
             return {
                 "status": "error",
-                "error_type": "shopee_detail_unavailable",
-                "message": detail.get("error"),
-                "external_order_id": str(order_sn),
+                "event_status": snapshot.get("error_type") or "shopee_detail_unavailable",
+                "error_type": snapshot.get("error_type") or "shopee_detail_unavailable",
+                "message": snapshot.get("error"),
+                "retryable": bool(snapshot.get("retryable")),
+                "retry_after": snapshot.get("retry_after"),
+                "external_order_id": order_sn,
                 "marketplace_integration_id": marketplace_inst.get("id"),
+                "resolution_status": "provider_error",
+                **metadata,
             }
+        detail = snapshot.raw
 
         logger.info(
-            "[marketplace-webhook] shopee detail fetched order_sn=%s status=%s keys=%s",
+            "[marketplace-webhook] shopee detail fetched order_sn=%s status=%s",
             order_sn,
             detail.get("order_status"),
-            sorted(detail.keys()),
         )
 
         pedido_shopee_id = self._upsert_shopee_mirror(detail, marketplace_inst.get("id"))
         status_original = detail.get("order_status") or body.get("order_status")
-        if return_detail:
-            detail["return_status"] = _first_present(
-                return_detail.get("return_status"),
-                return_detail.get("status"),
-                "return_requested",
-            )
-            detail["return_detail"] = return_detail
-        lifecycle = resolve_shopee_lifecycle(detail, body)
+        rollout = marketplace_rollout_service.normalize(
+            "shopee", snapshot, body, marketplace_inst
+        )
+        lifecycle = rollout.lifecycle
+        rollout_comparison = rollout.comparison()
         pedido_id = self._upsert_pedido_status(
-            source="shopee", external_order_id=str(order_sn),
+            source="shopee", external_order_id=order_sn,
             marketplace_integration_id=marketplace_inst.get("id"),
             bling_integration_id=None, bling_loja_id=None,
             channel_id=(link or {}).get("channel_id"),
@@ -261,7 +271,10 @@ class MarketplaceWebhookIngestService:
             lifecycle_event={
                 **lifecycle.to_event(),
                 "webhook_event_id": webhook_event_id,
-                "provider_event_id": _first_present(body.get("event_id"), body.get("_id"), body.get("id")),
+                "provider_event_id": resource.provider_event_id,
+                "adapter_mode": rollout.mode,
+                "shadow_comparison": rollout_comparison,
+                "marketplace_integration_id": marketplace_inst.get("id"),
             },
             mirror_fields={"pedido_shopee_id": pedido_shopee_id},
             raw_customer=self._shopee_customer(detail), total=detail.get("total"),
@@ -270,144 +283,194 @@ class MarketplaceWebhookIngestService:
         )
         return {
             "status": "success", "message": f"Pedido Shopee {order_sn} atualizado pelo marketplace",
-            "pedido_id": pedido_id, "external_order_id": str(order_sn),
+            "pedido_id": pedido_id, "pedido_ids": [pedido_id] if pedido_id else [],
+            "external_order_id": order_sn,
             "marketplace_integration_id": marketplace_inst.get("id"),
             "internal_situacao_pedido_id": lifecycle.target_situacao_pedido_id,
             "external_status_id": lifecycle.order_status,
             "lifecycle_stage": lifecycle.lifecycle_stage,
             "provider_updated_at": lifecycle.observed_at,
-            "provider_topic": _first_present(body.get("event"), body.get("event_type"), body.get("code")),
+            "resolution_status": "resolved",
+            "adapter_mode": rollout.mode,
+            "shadow_comparison": rollout_comparison if rollout.mode == "shadow" else None,
+            **metadata,
         }
 
     def _process_mercadolivre(self, payload: dict, *, correlation_id: str, webhook_event_id: int | None = None) -> dict:
         body = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-        topic = str(body.get("topic") or "").strip().lower()
-        resource = str(body.get("resource") or "")
-        supported_topics = {"orders", "orders_v2", "payments", "shipments"}
-        if topic and topic not in supported_topics:
+        parsed = mercadolivre_adapter.parse_webhook(payload)
+        resource = parsed.primary_resource
+        if parsed.classification == "unsupported":
             return {
                 "status": "skipped",
                 "event_status": "skipped_unsupported_topic",
-                "skip_reason": "unsupported_topic",
-                "message": f"Topico Mercado Livre nao relacionado a pedidos: {topic}",
-                "topic": topic,
+                "resolution_status": parsed.status,
+                "skip_reason": parsed.status,
+                "message": parsed.message,
+                "provider_topic": str(body.get("topic") or "").strip().lower() or None,
+                "retryable": False,
             }
-        order_id = _first_present(
-            body.get("order_id"),
-            body.get("id") if str(body.get("topic") or "").endswith("orders") else None,
-            _extract_resource_id(resource, "/orders/"),
-        )
-        shipment_id = _first_present(body.get("shipment_id"), _extract_resource_id(resource, "/shipments/"))
-        payment_id = _first_present(
-            body.get("payment_id"),
-            _extract_resource_id(resource, "/payments/"),
-            _extract_resource_id(resource, "/collections/"),
-        )
-        payment_resource = "collections" if "/collections/" in resource else "payments"
-        seller_id = _first_present(
-            body.get("user_id"),
-            body.get("seller_id"),
-            payload.get("user_id"),
-            payload.get("seller_id"),
-        )
+        if not resource:
+            return {
+                "status": "error",
+                "event_status": parsed.status,
+                "resolution_status": parsed.status,
+                "error_type": parsed.error_type or "invalid_provider_resource",
+                "message": parsed.message or "Webhook Mercado Livre invalido",
+                "retryable": False,
+            }
+        metadata = {
+            "provider_topic": resource.topic,
+            "provider_resource": resource.resource_path,
+            "provider_resource_type": resource.resource_type,
+            "provider_resource_id": resource.resource_id,
+        }
 
         marketplace_inst, resolution_error = self._resolve_marketplace_integration(
             "mercadolivre",
-            account_identifier=seller_id,
-            external_order_id=str(order_id) if order_id else None,
+            account_identifier=resource.account_id,
+            external_order_id=parsed.primary_order_id,
         )
         if resolution_error:
-            return resolution_error
-
+            return {**resolution_error, **metadata, "resolution_status": "integration_unresolved"}
         integration = self._meli_integration(marketplace_inst)
-        derived_payment_status = None
-        derived_shipping_status = None
-        if not order_id and shipment_id:
-            shipment = meli_driver.get_shipment(integration, str(shipment_id))
-            if shipment and not shipment.get("error"):
-                order_id = _first_present(
-                    shipment.get("order_id"),
-                    (shipment.get("order") or {}).get("id") if isinstance(shipment.get("order"), dict) else None,
+        resolved = mercadolivre_adapter.resolve_order_ids(
+            resource,
+            integration,
+            payment_lookup=lambda payment_id: self._lookup_meli_order_by_payment_id(
+                marketplace_inst.get("id"), payment_id
+            ),
+        )
+        if resolved.error_type == "credential_action_required":
+            refreshed = self._renew_marketplace_integration_once(marketplace_inst)
+            if refreshed:
+                marketplace_inst = refreshed
+                integration = self._meli_integration(refreshed)
+                resolved = mercadolivre_adapter.resolve_order_ids(
+                    resource,
+                    integration,
+                    payment_lookup=lambda payment_id: self._lookup_meli_order_by_payment_id(
+                        marketplace_inst.get("id"), payment_id
+                    ),
                 )
-                derived_shipping_status = shipment.get("status")
-        if not order_id and payment_id:
-            payment = (
-                meli_driver.get_collection(integration, str(payment_id))
-                if payment_resource == "collections"
-                else meli_driver.get_payment(integration, str(payment_id))
-            )
-            if payment and not payment.get("error"):
-                order_id = _first_present(
-                    (payment.get("order") or {}).get("id") if isinstance(payment.get("order"), dict) else None,
-                    payment.get("order_id"),
-                    payment.get("external_reference"),
-                )
-                derived_payment_status = payment.get("status")
-            if not order_id:
-                mirrored_payment = self._lookup_meli_order_by_payment_id(
-                    marketplace_inst.get("id"), str(payment_id)
-                )
-                if mirrored_payment:
-                    order_id = mirrored_payment.get("codigo_pedido")
-                    derived_payment_status = _first_present(
-                        derived_payment_status,
-                        mirrored_payment.get("payment_status"),
-                    )
-
-        if not order_id and topic == "payments":
+        metadata["resolution_status"] = resolved.status
+        metadata["resolved_order_ids"] = list(resolved.resolved_order_ids)
+        if resolved.status == "unresolved_payment":
             return {
                 "status": "skipped",
                 "event_status": "skipped_unresolved_payment_reference",
                 "skip_reason": "payment_without_order_reference",
                 "message": "Pagamento Mercado Livre sem pedido associado; orders_v2 permanece autoritativo",
                 "marketplace_integration_id": marketplace_inst.get("id"),
-                "provider_topic": topic,
-                "provider_resource": resource,
+                "retryable": False,
+                **metadata,
             }
-
-        if not order_id:
+        if resolved.error_type:
             return {
                 "status": "error",
-                "error_type": "missing_order_id",
-                "message": "Webhook Mercado Livre sem order_id/resource derivavel",
+                "event_status": resolved.error_type,
+                "error_type": resolved.error_type,
+                "message": resolved.message,
+                "retryable": resolved.retryable,
+                "retry_after": resolved.retry_after,
                 "marketplace_integration_id": marketplace_inst.get("id"),
+                **metadata,
             }
+        results = [
+            self._process_meli_order(
+                order_id,
+                marketplace_inst=marketplace_inst,
+                payload=payload,
+                body=body,
+                resource=resource,
+                webhook_event_id=webhook_event_id,
+            )
+            for order_id in resolved.resolved_order_ids
+        ]
+        failure = next((row for row in results if row.get("status") not in {"success", "skipped"}), None)
+        if failure:
+            return {**failure, **metadata}
+        successes = [row for row in results if row.get("status") == "success"]
+        if not successes:
+            first = results[0] if results else {
+                "status": "error",
+                "error_type": "missing_order_id",
+                "message": "Recurso Mercado Livre nao resolveu pedidos",
+                "retryable": False,
+            }
+            return {**first, **metadata}
+        primary = successes[0]
+        pedido_ids = [row.get("pedido_id") for row in successes if row.get("pedido_id")]
+        return {
+            **primary,
+            "message": f"{len(successes)} pedido(s) Mercado Livre atualizado(s)",
+            "pedido_ids": pedido_ids,
+            "resolved_order_ids": list(resolved.resolved_order_ids),
+            **metadata,
+        }
 
+    def _process_meli_order(
+        self,
+        order_id: str,
+        *,
+        marketplace_inst: dict,
+        payload: dict,
+        body: dict,
+        resource,
+        webhook_event_id: int | None,
+    ) -> dict:
         link = self._find_direct_ingest_link(marketplace_inst.get("id"))
         inactive = self._inactive_source_result(
-            "mercadolivre", link, str(order_id), marketplace_inst, payload=payload
+            "mercadolivre", link, order_id, marketplace_inst, payload=payload
         )
         if inactive:
             return inactive
-        detail = self._fetch_meli_detail(marketplace_inst, str(order_id))
-        if detail.get("error"):
+        snapshot = mercadolivre_adapter.fetch_order_snapshot(
+            order_id, self._meli_integration(marketplace_inst)
+        )
+        if (
+            isinstance(snapshot, dict)
+            and snapshot.get("error_type") == "credential_action_required"
+        ):
+            refreshed = self._renew_marketplace_integration_once(marketplace_inst)
+            if refreshed:
+                marketplace_inst = refreshed
+                snapshot = mercadolivre_adapter.fetch_order_snapshot(
+                    order_id, self._meli_integration(refreshed)
+                )
+        if isinstance(snapshot, dict):
             logger.warning(
-                "[marketplace-webhook] meli detail unavailable order_id=%s integration_id=%s error=%s",
+                "[marketplace-webhook] meli detail unavailable order_id=%s integration_id=%s error_type=%s",
                 order_id,
                 marketplace_inst.get("id"),
-                detail.get("error"),
+                snapshot.get("error_type"),
             )
             return {
                 "status": "error",
-                "error_type": "mercadolivre_detail_unavailable",
-                "message": detail.get("error"),
-                "external_order_id": str(order_id),
+                "event_status": snapshot.get("error_type") or "mercadolivre_detail_unavailable",
+                "error_type": snapshot.get("error_type") or "mercadolivre_detail_unavailable",
+                "message": snapshot.get("error"),
+                "retryable": bool(snapshot.get("retryable")),
+                "retry_after": snapshot.get("retry_after"),
+                "external_order_id": order_id,
                 "marketplace_integration_id": marketplace_inst.get("id"),
             }
-
+        detail = snapshot.raw
         logger.info(
-            "[marketplace-webhook] meli detail fetched order_id=%s order_keys=%s shipment_keys=%s",
+            "[marketplace-webhook] meli detail fetched order_id=%s order_status=%s shipment_status=%s",
             order_id,
-            sorted((detail.get("order") or {}).keys()),
-            sorted((detail.get("shipment") or {}).keys()),
+            snapshot.order_status,
+            snapshot.shipping_status,
         )
-
         pedido_meli_id = self._upsert_meli_mirror(detail, marketplace_inst.get("id"))
         order = detail.get("order") or {}
-        shipment = detail.get("shipment") or {}
-        lifecycle = resolve_meli_lifecycle(detail, body)
-        payment_status = lifecycle.payment_status or derived_payment_status
-        shipping_status = lifecycle.shipping_status or derived_shipping_status
+        rollout = marketplace_rollout_service.normalize(
+            "mercadolivre", snapshot, body, marketplace_inst
+        )
+        lifecycle = rollout.lifecycle
+        rollout_comparison = rollout.comparison()
+        payment_status = lifecycle.payment_status
+        shipping_status = lifecycle.shipping_status
         status_original = (
             f"order:{lifecycle.order_status or '-'}|"
             f"payment:{payment_status or '-'}|"
@@ -415,7 +478,7 @@ class MarketplaceWebhookIngestService:
             f"substatus:{lifecycle.shipping_substatus or '-'}"
         )
         pedido_id = self._upsert_pedido_status(
-            source="mercadolivre", external_order_id=str(order_id),
+            source="mercadolivre", external_order_id=order_id,
             marketplace_integration_id=marketplace_inst.get("id"),
             bling_integration_id=None, bling_loja_id=None,
             channel_id=(link or {}).get("channel_id"),
@@ -424,7 +487,10 @@ class MarketplaceWebhookIngestService:
             lifecycle_event={
                 **lifecycle.to_event(),
                 "webhook_event_id": webhook_event_id,
-                "provider_event_id": _first_present(body.get("_id"), body.get("id")),
+                "provider_event_id": resource.provider_event_id,
+                "adapter_mode": rollout.mode,
+                "shadow_comparison": rollout_comparison,
+                "marketplace_integration_id": marketplace_inst.get("id"),
             },
             mirror_fields={"pedido_mercadolivre_id": pedido_meli_id},
             raw_customer=self._meli_customer(order), total=order.get("total_amount"),
@@ -433,15 +499,20 @@ class MarketplaceWebhookIngestService:
         )
         return {
             "status": "success", "message": f"Pedido Mercado Livre {order_id} atualizado pelo marketplace",
-            "pedido_id": pedido_id, "external_order_id": str(order_id),
+            "pedido_id": pedido_id, "external_order_id": order_id,
             "marketplace_integration_id": marketplace_inst.get("id"),
             "internal_situacao_pedido_id": lifecycle.target_situacao_pedido_id,
             "external_status_id": lifecycle.order_status,
             "status_domain": "lifecycle",
             "lifecycle_stage": lifecycle.lifecycle_stage,
             "provider_updated_at": lifecycle.observed_at,
-            "provider_topic": topic,
-            "provider_resource": resource,
+            "provider_topic": resource.topic,
+            "provider_resource": resource.resource_path,
+            "provider_resource_type": resource.resource_type,
+            "provider_resource_id": resource.resource_id,
+            "resolution_status": "resolved",
+            "adapter_mode": rollout.mode,
+            "shadow_comparison": rollout_comparison if rollout.mode == "shadow" else None,
         }
 
     def _inactive_source_result(
@@ -533,6 +604,8 @@ class MarketplaceWebhookIngestService:
         return {
             "status": "pending",
             "event_status": "pending_erp_order",
+            "error_type": "pending_dependency",
+            "retryable": True,
             "message": f"Webhook {source} aguardando pedido importado pelo ERP",
             "external_order_id": external_order_id,
             "marketplace_integration_id": marketplace_inst.get("id"),
@@ -707,6 +780,7 @@ class MarketplaceWebhookIngestService:
                 for row in candidates or []
                 if row.get("id") is not None
             },
+            "retryable": error_type == "marketplace_integration_not_found",
         }
 
     def _find_direct_ingest_link(self, marketplace_integration_id: int | None) -> dict | None:
@@ -824,6 +898,37 @@ class MarketplaceWebhookIngestService:
             "credentials": credentials,
             "access_token": marketplace_inst.get("access_token") or credentials.get("access_token"),
         })
+
+    def _renew_marketplace_integration_once(
+        self, marketplace_inst: dict
+    ) -> dict | None:
+        integration_id = marketplace_inst.get("id")
+        if not integration_id:
+            return None
+        try:
+            from nistiprint_shared.services.installed_integration_service import (
+                installed_integration_service,
+            )
+            installed_integration_service.renew_integration_token(
+                str(integration_id), execution_mode="webhook_401"
+            )
+            rows = (
+                supabase_db.table("installed_integrations")
+                .select("*")
+                .eq("id", integration_id)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            return dict(rows[0]) if rows else None
+        except Exception as exc:
+            logger.warning(
+                "[marketplace-webhook] credential renewal failed integration_id=%s error_type=%s",
+                integration_id,
+                type(exc).__name__,
+            )
+            return None
 
     def _upsert_shopee_mirror(self, detail: dict, marketplace_integration_id: int | None) -> int | None:
         if not marketplace_integration_id:
@@ -1475,8 +1580,12 @@ class MarketplaceWebhookIngestService:
             "pedido_id": result.get("pedido_id"),
             "numero_loja": result.get("external_order_id"),
             "resolved_order_id": result.get("external_order_id"),
+            "resolved_order_ids": result.get("resolved_order_ids"),
             "provider_topic": result.get("provider_topic"),
             "provider_resource": result.get("provider_resource"),
+            "provider_resource_type": result.get("provider_resource_type"),
+            "provider_resource_id": result.get("provider_resource_id"),
+            "resolution_status": result.get("resolution_status"),
             "provider_updated_at": result.get("provider_updated_at"),
             "lifecycle_stage": result.get("lifecycle_stage"),
             "last_status": result.get("event_status") or result.get("status"),
@@ -1516,8 +1625,3 @@ class MarketplaceWebhookIngestService:
 
 
 marketplace_webhook_ingest_service = MarketplaceWebhookIngestService()
-
-
-
-
-

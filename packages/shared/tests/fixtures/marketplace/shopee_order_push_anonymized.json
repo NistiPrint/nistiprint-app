@@ -1,0 +1,9 @@
+{
+  "code": 3,
+  "shop_id": 987654321,
+  "timestamp": 1785400000,
+  "data": {
+    "ordersn": "260730ABC123XYZ",
+    "status": "TO_RETURN"
+  }
+}
