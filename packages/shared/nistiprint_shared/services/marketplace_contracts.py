@@ -11,6 +11,7 @@ ResourceType = Literal[
     "payment",
     "collection",
     "pack",
+    "claim",
     "return",
     "chat",
     "verification",
@@ -92,6 +93,7 @@ class WebhookResolution:
     resources: tuple[MarketplaceResourceRef, ...] = ()
     resolved_order_ids: tuple[str, ...] = ()
     trace: tuple[dict[str, Any], ...] = ()
+    context: dict[str, Any] = field(default_factory=dict)
     error_type: str | None = None
     message: str | None = None
     retryable: bool = False
@@ -120,6 +122,7 @@ class WebhookResolution:
             resources=self.resources,
             resolved_order_ids=unique,
             trace=(*self.trace, *tuple(trace)),
+            context=self.context,
         )
 
 

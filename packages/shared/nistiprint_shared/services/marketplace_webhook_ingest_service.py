@@ -1,6 +1,7 @@
-﻿import logging
+import logging
 import os
 import traceback
+from dataclasses import replace
 from datetime import datetime
 from time import perf_counter
 from typing import Any
@@ -384,6 +385,7 @@ class MarketplaceWebhookIngestService:
                 body=body,
                 resource=resource,
                 webhook_event_id=webhook_event_id,
+                resolution_context=resolved.context,
             )
             for order_id in resolved.resolved_order_ids
         ]
@@ -418,6 +420,7 @@ class MarketplaceWebhookIngestService:
         body: dict,
         resource,
         webhook_event_id: int | None,
+        resolution_context: dict | None = None,
     ) -> dict:
         link = self._find_direct_ingest_link(marketplace_inst.get("id"))
         inactive = self._inactive_source_result(
@@ -455,7 +458,17 @@ class MarketplaceWebhookIngestService:
                 "external_order_id": order_id,
                 "marketplace_integration_id": marketplace_inst.get("id"),
             }
-        detail = snapshot.raw
+        detail = dict(snapshot.raw)
+        resolution_context = resolution_context or {}
+        for key in ("claim", "return"):
+            if isinstance(resolution_context.get(key), dict):
+                detail[key] = resolution_context[key]
+        if detail is not snapshot.raw:
+            snapshot = replace(
+                snapshot,
+                raw=detail,
+                return_status=(detail.get("return") or {}).get("status"),
+            )
         logger.info(
             "[marketplace-webhook] meli detail fetched order_id=%s order_status=%s shipment_status=%s",
             order_id,

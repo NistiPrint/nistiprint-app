@@ -1,4 +1,4 @@
-﻿
+
 import unittest
 from unittest.mock import patch
 
@@ -65,6 +65,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
             mock_get.call_args.args[0],
             'https://api.mercadolibre.com/shipments/47344057080',
         )
+        self.assertEqual(mock_get.call_args.kwargs['headers']['x-format-new'], 'true')
 
     @patch('nistiprint_shared.services.platform_drivers.mercadolivre.requests.get')
     def test_ml_driver_fetches_collection_resource(self, mock_get):

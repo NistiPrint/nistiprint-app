@@ -135,6 +135,65 @@ class TestMercadoLivreAdapter(unittest.TestCase):
         })
         self.assertEqual(result.error_type, "invalid_provider_resource_id")
 
+    def test_post_purchase_claim_resolves_typed_order_and_return(self):
+        parsed = self.adapter.parse_webhook({
+            "topic": "post_purchase",
+            "actions": ["claims_actions"],
+            "resource": "post-purchase/v1/claims/5298178312",
+            "user_id": 1,
+        })
+        self.assertEqual(parsed.primary_resource.resource_type, "claim")
+        claim = {
+            "id": 5298178312,
+            "resource": "order",
+            "resource_id": 2000017477489446,
+            "related_entities": ["return"],
+        }
+        return_detail = {
+            "id": 57341011,
+            "resource_type": "order",
+            "resource_id": 2000017477489446,
+            "subtype": "return_total",
+            "status": "delivered",
+        }
+        with (
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_claim",
+                return_value=claim,
+            ),
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_claim_returns",
+                return_value=return_detail,
+            ),
+        ):
+            resolved = self.adapter.resolve_order_ids(
+                parsed.primary_resource, self.integration
+            )
+        self.assertEqual(resolved.resolved_order_ids, ("2000017477489446",))
+        self.assertEqual(resolved.context["return"]["status"], "delivered")
+
+    def test_open_claim_without_return_does_not_infer_return(self):
+        parsed = self.adapter.parse_webhook({
+            "topic": "post_purchase",
+            "actions": ["claims"],
+            "resource": "/post-purchase/v1/claims/5298178312",
+            "user_id": 1,
+        })
+        with patch(
+            "nistiprint_shared.services.marketplace_adapters.meli_driver.get_claim",
+            return_value={
+                "id": 5298178312,
+                "resource": "order",
+                "resource_id": 2000017477489446,
+                "status": "opened",
+                "related_entities": [],
+            },
+        ):
+            resolved = self.adapter.resolve_order_ids(
+                parsed.primary_resource, self.integration
+            )
+        self.assertEqual(resolved.resolved_order_ids, ("2000017477489446",))
+        self.assertNotIn("return", resolved.context)
     def test_order_snapshot_preserves_validated_identity_for_mirror(self):
         with (
             patch(

@@ -40,6 +40,9 @@ class MercadoLivreAdapter:
         r"^/(?P<kind>orders|shipments|payments|collections|packs)/"
         r"(?P<id>[^/?#]+)(?:[/?#].*)?$"
     )
+    _CLAIM_RESOURCE_RE = re.compile(
+        r"^/(?:post-purchase/)?v1/claims/(?P<id>[^/?#]+)(?:[/?#].*)?$"
+    )
     _TOPIC_RESOURCE = {
         "orders": {"orders"},
         "orders_v2": {"orders"},
@@ -58,6 +61,43 @@ class MercadoLivreAdapter:
         body = _body(payload or {})
         topic = str(body.get("topic") or "").strip().lower()
         resource_path = str(body.get("resource") or "").strip()
+        if resource_path and not resource_path.startswith("/"):
+            resource_path = f"/{resource_path}"
+        if topic == "post_purchase":
+            actions = body.get("actions")
+            action_set = {
+                str(value).strip().lower()
+                for value in (actions if isinstance(actions, list) else [actions])
+                if value
+            }
+            match = self._CLAIM_RESOURCE_RE.match(resource_path)
+            if not match or not action_set.intersection({"claims", "claims_actions"}):
+                return WebhookResolution(
+                    self.provider, "unsupported", "unsupported_post_purchase_resource",
+                    error_type="unsupported_provider_resource",
+                    message="Post Purchase Mercado Livre sem claim tipada",
+                )
+            claim_id = _numeric_id(match.group("id"))
+            if not claim_id:
+                return WebhookResolution(
+                    self.provider, "invalid", "invalid_resource_id",
+                    error_type="invalid_provider_resource_id",
+                    message="ID de claim Mercado Livre invalido",
+                )
+            reference = MarketplaceResourceRef(
+                provider=self.provider,
+                resource_type="claim",
+                resource_id=claim_id,
+                resource_path=resource_path,
+                account_id=_text(body.get("user_id") or body.get("seller_id")),
+                provider_event_id=_text(body.get("_id") or body.get("id")),
+                occurred_at=_text(body.get("sent") or body.get("received")),
+                topic=topic,
+            )
+            return WebhookResolution(
+                self.provider, "order_event", "parsed", resources=(reference,),
+                trace=({"step": "parse", "resource_type": "claim"},),
+            )
         if topic not in self._TOPIC_RESOURCE:
             return WebhookResolution(
                 self.provider,
@@ -127,6 +167,50 @@ class MercadoLivreAdapter:
         if resource.resource_type == "order":
             return base.with_orders([resource.resource_id], trace=[{"step": "direct_order"}])
 
+        if resource.resource_type == "claim":
+            claim = meli_driver.get_claim(integration, resource.resource_id)
+            if claim.get("error"):
+                return self._api_failure(base, claim, "claim_resolution_failed")
+            claim_resource_type = str(claim.get("resource") or "").strip().lower()
+            order_id = _numeric_id(claim.get("resource_id"))
+            if claim_resource_type != "order" or not order_id:
+                return WebhookResolution(
+                    self.provider,
+                    "order_event",
+                    "unresolved",
+                    resources=(resource,),
+                    error_type="claim_without_order_reference",
+                    message="Claim Mercado Livre nao referencia uma order",
+                )
+            context = {"claim": claim}
+            related_entities = {
+                str(value).strip().lower()
+                for value in (claim.get("related_entities") or [])
+            }
+            if "return" in related_entities:
+                return_result = meli_driver.get_claim_returns(
+                    integration, resource.resource_id
+                )
+                if isinstance(return_result, dict) and return_result.get("error"):
+                    return self._api_failure(
+                        base, return_result, "claim_return_resolution_failed"
+                    )
+                if isinstance(return_result, list):
+                    return_result = next(
+                        (row for row in return_result if isinstance(row, dict)), {}
+                    )
+                if isinstance(return_result, dict):
+                    context["return"] = return_result
+            return WebhookResolution(
+                self.provider,
+                "order_event",
+                "resolving",
+                resources=(resource,),
+                context=context,
+            ).with_orders(
+                [order_id],
+                trace=[{"step": "claim_order", "claim_id": resource.resource_id}],
+            )
         if resource.resource_type == "shipment":
             shipment = meli_driver.get_shipment(integration, resource.resource_id)
             if shipment.get("error"):

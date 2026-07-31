@@ -141,7 +141,7 @@ def get_shipment(integration: Dict, shipment_id: str) -> Dict:
     """
     Fetches shipment details from Mercado Livre API.
     """
-    headers = _auth_headers(integration)
+    headers = {**_auth_headers(integration), "x-format-new": "true"}
     shipment_id = _sanitize_resource_id(shipment_id, resource_name="shipment")
 
     url = _ml_url(f"/shipments/{shipment_id}")
@@ -193,6 +193,37 @@ def get_pack(integration: Dict, pack_id: str) -> Dict:
         headers=headers,
     ).to_legacy()
 
+
+def get_claim(integration: Dict, claim_id: str) -> Dict:
+    """Fetch a Post Purchase claim by its typed claim identifier."""
+    headers = _auth_headers(integration)
+    claim_id = _sanitize_resource_id(claim_id, resource_name="claim")
+    url = _ml_url(f"/post-purchase/v1/claims/{claim_id}")
+    logger.info("[meli] fetching resource_type=claim resource_id=%s", claim_id)
+    return request_json(
+        requests.get,
+        url,
+        provider="Mercado Livre",
+        resource_type="claim",
+        resource_id=claim_id,
+        headers=headers,
+    ).to_legacy()
+
+
+def get_claim_returns(integration: Dict, claim_id: str) -> Dict:
+    """Fetch the return entity related to a Post Purchase claim."""
+    headers = _auth_headers(integration)
+    claim_id = _sanitize_resource_id(claim_id, resource_name="claim")
+    url = _ml_url(f"/post-purchase/v2/claims/{claim_id}/returns")
+    logger.info("[meli] fetching resource_type=return claim_id=%s", claim_id)
+    return request_json(
+        requests.get,
+        url,
+        provider="Mercado Livre",
+        resource_type="return",
+        resource_id=claim_id,
+        headers=headers,
+    ).to_legacy()
 
 def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[Dict]:
     """
