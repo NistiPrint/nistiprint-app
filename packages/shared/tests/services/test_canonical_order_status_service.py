@@ -38,7 +38,7 @@ class TestCanonicalOrderStatusService(unittest.TestCase):
                 shipping_status='ready_to_ship',
             )
 
-        self.assertEqual(resolved.internal_situacao_pedido_id, 4)
+        self.assertEqual(resolved.internal_situacao_pedido_id, 2)
         self.assertEqual(resolved.status_domain, 'shipping')
 
     def test_mercadolivre_refund_after_delivery_is_returned(self):

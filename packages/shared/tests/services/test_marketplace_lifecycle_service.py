@@ -26,13 +26,13 @@ class TestMarketplaceLifecycleService(unittest.TestCase):
         self.assertEqual(result.payment_status, "approved")
         self.assertEqual(result.target_situacao_pedido_id, STATUS_PAID)
 
-    def test_meli_ready_to_ship_is_documentation_ready(self):
+    def test_meli_ready_to_ship_requires_processing(self):
         result = resolve_mercadolivre({
             "order": {"status": "paid", "payments": [{"status": "approved"}]},
             "shipment": {"status": "ready_to_ship"},
         })
-        self.assertEqual(result.lifecycle_stage, "documentation_ready")
-        self.assertEqual(result.target_situacao_pedido_id, STATUS_READY)
+        self.assertEqual(result.lifecycle_stage, "paid_preparation")
+        self.assertEqual(result.target_situacao_pedido_id, STATUS_PAID)
 
     def test_meli_cancel_before_shipping_is_cancelled(self):
         result = resolve_mercadolivre({
@@ -76,8 +76,8 @@ class TestMarketplaceLifecycleService(unittest.TestCase):
                 "status_history": {"date_returned": None},
             },
         })
-        self.assertEqual(result.lifecycle_stage, "documentation_ready")
-        self.assertEqual(result.target_situacao_pedido_id, STATUS_READY)
+        self.assertEqual(result.lifecycle_stage, "paid_preparation")
+        self.assertEqual(result.target_situacao_pedido_id, STATUS_PAID)
 
     def test_meli_cross_docking_ready_to_ship_can_already_be_shipped(self):
         for substatus in ("picked_up", "authorized_by_carrier", "in_hub"):

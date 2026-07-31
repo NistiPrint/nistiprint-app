@@ -186,7 +186,7 @@ class MarketplaceRolloutService:
         elif shipping in {"shipped", "not_delivered"}:
             stage, target = "shipped", STATUS_SHIPPED
         elif shipping in {"to_be_shipped", "handling", "ready_to_ship"}:
-            stage, target = "documentation_ready", STATUS_READY
+            stage, target = "paid_preparation", STATUS_PAID
         elif payment in {"approved", "authorized"}:
             stage, target = "paid_preparation", STATUS_PAID
         elif payment in {"pending", "in_process"}:

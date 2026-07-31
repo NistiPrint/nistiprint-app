@@ -303,6 +303,8 @@ class CanonicalOrderRepository:
         erp_store_id: Any,
         erp_order_id: Any,
         marketplace_order_id: Any,
+        erp_order_number: Any = None,
+        marketplace_module_id: Any = None,
         payload: Dict[str, Any],
         reason: str = "marketplace_module_unresolved",
     ) -> None:
@@ -311,7 +313,9 @@ class CanonicalOrderRepository:
             "erp_integration_id": erp_integration_id,
             "erp_store_id": self.normalize_order_id(erp_store_id),
             "erp_order_id": erp_order_id,
+            "erp_order_number": self.normalize_order_id(erp_order_number),
             "marketplace_order_id": self.normalize_order_id(marketplace_order_id),
+            "marketplace_module_id": self.normalize_module_id(marketplace_module_id),
             "reason": reason,
             "payload": self._json_safe(payload or {}),
             "status": "pending",
@@ -345,6 +349,38 @@ class CanonicalOrderRepository:
             ).execute()
             return
         query.insert(record).execute()
+
+    def apply_pending_erp_reference_for_order(
+        self,
+        *,
+        pedido_id: int,
+        marketplace_module_id: str,
+        marketplace_order_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        rows = (
+            supabase_db.table("pending_order_reconciliations")
+            .select("id,erp_integration_id,erp_store_id,erp_order_id,erp_order_number")
+            .eq("marketplace_module_id", self.normalize_module_id(marketplace_module_id))
+            .eq("marketplace_order_id", self.normalize_order_id(marketplace_order_id))
+            .eq("reason", "direct_marketplace_reference")
+            .eq("status", "pending")
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            return None
+        reference = rows[0]
+        supabase_db.rpc("enrich_order_erp_reference", {
+            "p_pedido_id": pedido_id,
+            "p_erp_integration_id": reference.get("erp_integration_id"),
+            "p_erp_store_id": reference.get("erp_store_id"),
+            "p_erp_order_id": reference.get("erp_order_id"),
+            "p_erp_order_number": reference.get("erp_order_number"),
+            "p_marketplace_order_id": marketplace_order_id,
+        }).execute()
+        return reference
 
     def queue_marketplace_enrichment(
         self,

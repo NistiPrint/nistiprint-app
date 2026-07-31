@@ -110,5 +110,105 @@ class TestBlingOrderProcessingService(unittest.TestCase):
         defer.assert_called_once()
 
 
+    def test_reference_only_webhook_enriches_existing_marketplace_order(self):
+        query = MagicMock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = SimpleNamespace(data=[{
+            "id": 77, "erp_integration_id": None, "erp_store_id": None,
+            "erp_order_id": None, "erp_order_number": None,
+            "bling_integration_id": None, "bling_loja_id": None,
+            "bling_order_id": None, "bling_order_number": None,
+        }])
+        fake_db = MagicMock()
+        fake_db.table.return_value = query
+        fake_db.rpc.return_value = query
+
+        with patch.object(service, "supabase_db", fake_db), \
+             patch.object(service.canonical_order_repository, "resolve_module_id", return_value="shopee"):
+            result = service._process_bling_reference_webhook(
+                {"id": 987, "numero": "466320", "numeroLoja": "SN123",
+                 "loja": {"id": "204047801"}},
+                {},
+                {"id": 99},
+                {"ingest_origin_mode": "marketplace_direct",
+                 "marketplace_integration_id": 12},
+                correlation_id="cid",
+                webhook_event_id=123,
+            )
+
+        self.assertEqual(result["event_status"], "reference_applied")
+        self.assertEqual(result["pedido_id"], 77)
+        fake_db.rpc.assert_called_once_with(
+            "enrich_order_erp_reference",
+            {
+                "p_pedido_id": 77, "p_erp_integration_id": 99,
+                "p_erp_store_id": "204047801", "p_erp_order_id": 987,
+                "p_erp_order_number": "466320",
+                "p_marketplace_order_id": "SN123",
+            },
+        )
+
+    def test_reference_only_webhook_defers_when_marketplace_order_is_not_materialized(self):
+        query = MagicMock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = SimpleNamespace(data=[])
+        fake_db = MagicMock()
+        fake_db.table.return_value = query
+
+        with patch.object(service, "supabase_db", fake_db), \
+             patch.object(service.canonical_order_repository, "resolve_module_id", return_value="shopee"), \
+             patch.object(service.canonical_order_repository, "defer_unresolved_erp_order") as defer:
+            result = service._process_bling_reference_webhook(
+                {"id": 987, "numero": "466320", "numeroLoja": "SN123",
+                 "loja": {"id": "204047801"}},
+                {},
+                {"id": 99},
+                {"ingest_origin_mode": "marketplace_direct",
+                 "marketplace_integration_id": 12},
+                correlation_id="cid",
+                webhook_event_id=123,
+            )
+
+        self.assertEqual(result["event_status"], "reference_pending")
+        defer.assert_called_once()
+        self.assertEqual(defer.call_args.kwargs["reason"], "direct_marketplace_reference")
+        self.assertEqual(defer.call_args.kwargs["erp_order_number"], "466320")
+
+    def test_reference_only_webhook_does_not_overwrite_conflicting_reference(self):
+        query = MagicMock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = SimpleNamespace(data=[{
+            "id": 77, "erp_integration_id": 100, "erp_store_id": "204047801",
+            "erp_order_id": 111, "erp_order_number": "OLD",
+            "bling_integration_id": 100, "bling_loja_id": "204047801",
+            "bling_order_id": 111, "bling_order_number": "OLD",
+        }])
+        fake_db = MagicMock()
+        fake_db.table.return_value = query
+
+        with patch.object(service, "supabase_db", fake_db), \
+             patch.object(service.canonical_order_repository, "resolve_module_id", return_value="shopee"), \
+             patch.object(service.canonical_order_repository, "defer_unresolved_erp_order") as defer:
+            result = service._process_bling_reference_webhook(
+                {"id": 987, "numero": "466320", "numeroLoja": "SN123",
+                 "loja": {"id": "204047801"}},
+                {},
+                {"id": 99},
+                {"ingest_origin_mode": "marketplace_direct",
+                 "marketplace_integration_id": 12},
+                correlation_id="cid",
+                webhook_event_id=123,
+            )
+
+        self.assertEqual(result["event_status"], "reference_conflict")
+        defer.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

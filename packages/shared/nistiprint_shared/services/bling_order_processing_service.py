@@ -284,7 +284,7 @@ def _get_webhook_processing_link(bling_integration_id: int | None, loja_id: str 
 
     rows = (
         supabase_db.table('channel_connections')
-        .select('id,process_webhooks,ingest_origin_mode,marketplace_integration_id,channel_id')
+        .select('id,process_webhooks,ingest_origin_mode,marketplace_integration_id,marketplace_module_id,channel_id,aggregator_store_id,bling_integration_id')
         .eq('bling_integration_id', bling_integration_id)
         .eq('aggregator_store_id', str(loja_id))
         .eq('is_active', True)
@@ -292,7 +292,25 @@ def _get_webhook_processing_link(bling_integration_id: int | None, loja_id: str 
         .execute()
         .data
     )
-    return rows[0] if rows else None
+    if rows:
+        return rows[0]
+
+    rows = (
+        supabase_db.table('erp_marketplace_links')
+        .select('id,process_webhooks,ingest_origin_mode,marketplace_integration_id,marketplace_module_id,erp_store_id,erp_integration_id')
+        .eq('erp_integration_id', bling_integration_id)
+        .eq('erp_store_id', str(loja_id))
+        .eq('is_active', True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not rows:
+        return None
+    link = dict(rows[0])
+    link['bling_integration_id'] = link.get('erp_integration_id')
+    link['aggregator_store_id'] = link.get('erp_store_id')
+    return link
 
 
 def _preserve_original_bling_fields(detail_payload: dict, original_payload: dict) -> dict:
@@ -502,6 +520,187 @@ def ingest_step(stage: str, ctx: dict):
             _link_pedido_correlation(ctx.get('pedido_id'), ctx['correlation_id'])
             ctx['_pedido_mapping_written'] = True
 
+def _process_bling_reference_webhook(
+    payload: dict,
+    original_payload: dict,
+    bling_inst: dict,
+    processing_link: dict,
+    *,
+    correlation_id: str,
+    webhook_event_id: int | None,
+) -> dict:
+    """Consumes a Bling webhook only to bind ERP identity to a direct marketplace order."""
+    reference = _preserve_original_bling_fields(payload or {}, original_payload or {})
+    if reference.get("id") and (
+        not reference.get("numero") or not reference.get("numeroLoja")
+    ):
+        try:
+            detail = _fetch_bling_order_detail(bling_inst, reference["id"], require_materialization_fields=False)
+            reference = _preserve_original_bling_fields(detail, reference)
+        except BlingDetailUnavailableError as exc:
+            logger.warning(
+                "[bling-reference] detail unavailable integration_id=%s bling_id=%s: %s",
+                bling_inst.get("id"),
+                reference.get("id"),
+                exc,
+            )
+            return {
+                "status": "error",
+                "event_status": "reference_pending",
+                "error_type": getattr(exc, "error_type", "bling_detail_unavailable"),
+                "retryable": True,
+                "retry_after": getattr(exc, "retry_after", None),
+                "message": str(exc),
+                "correlation_id": correlation_id,
+            }
+
+    bling_id = reference.get("id")
+    bling_number = str(reference.get("numero") or "").strip()
+    store_id = str(_extract_bling_loja_id(reference) or "").strip()
+    marketplace_order_id = str(reference.get("numeroLoja") or "").strip()
+    marketplace_module_id = processing_link.get("marketplace_module_id")
+    if not marketplace_module_id:
+        marketplace_module_id = canonical_order_repository.resolve_module_id(
+            processing_link.get("marketplace_integration_id")
+        )
+
+    ref_payload = {
+        "mode": "reference_only",
+        "correlation_id": correlation_id,
+        "webhook_event_id": webhook_event_id,
+        "bling_integration_id": bling_inst.get("id"),
+        "bling_loja_id": store_id or None,
+        "bling_order_id": bling_id,
+        "bling_order_number": bling_number or None,
+        "numeroLoja": marketplace_order_id or None,
+        "marketplace_module_id": marketplace_module_id,
+    }
+
+    if not bling_id or not bling_number or not marketplace_order_id:
+        canonical_order_repository.defer_unresolved_erp_order(
+            erp_integration_id=bling_inst.get("id"),
+            erp_store_id=store_id or None,
+            erp_order_id=bling_id,
+            erp_order_number=bling_number or None,
+            marketplace_order_id=marketplace_order_id or None,
+            marketplace_module_id=marketplace_module_id,
+            payload=ref_payload,
+            reason="direct_marketplace_reference",
+        )
+        return {
+            "status": "success",
+            "event_status": "reference_ignored_invalid",
+            "resolution_status": "reference_ignored_invalid",
+            "retryable": False,
+            "message": "Webhook Bling sem numeroLoja, id ou numero completo",
+            "correlation_id": correlation_id,
+        }
+
+    if not marketplace_module_id:
+        canonical_order_repository.defer_unresolved_erp_order(
+            erp_integration_id=bling_inst.get("id"),
+            erp_store_id=store_id or None,
+            erp_order_id=bling_id,
+            erp_order_number=bling_number,
+            marketplace_order_id=marketplace_order_id,
+            payload=ref_payload,
+            reason="direct_marketplace_reference",
+        )
+        return {
+            "status": "success",
+            "event_status": "reference_pending",
+            "resolution_status": "reference_pending",
+            "retryable": False,
+            "message": "Vinculo marketplace da conta Bling ainda nao foi resolvido",
+            "correlation_id": correlation_id,
+        }
+
+    rows = (
+        supabase_db.table("pedidos")
+        .select(
+            "id,erp_integration_id,erp_store_id,erp_order_id,erp_order_number,"
+            "bling_integration_id,bling_loja_id,bling_order_id,bling_order_number"
+        )
+        .eq("marketplace_module_id", marketplace_module_id)
+        .eq("marketplace_order_id", marketplace_order_id)
+        .limit(2)
+        .execute()
+        .data
+        or []
+    )
+
+    if not rows:
+        canonical_order_repository.defer_unresolved_erp_order(
+            erp_integration_id=bling_inst.get("id"),
+            erp_store_id=store_id,
+            erp_order_id=bling_id,
+            erp_order_number=bling_number,
+            marketplace_order_id=marketplace_order_id,
+            marketplace_module_id=marketplace_module_id,
+            payload=ref_payload,
+            reason="direct_marketplace_reference",
+        )
+        return {
+            "status": "success",
+            "event_status": "reference_pending",
+            "resolution_status": "reference_pending",
+            "retryable": False,
+            "message": "Pedido marketplace ainda nao materializado",
+            "correlation_id": correlation_id,
+        }
+
+    pedido = rows[0]
+    existing_integration = pedido.get("erp_integration_id") or pedido.get("bling_integration_id")
+    existing_order_id = pedido.get("erp_order_id") or pedido.get("bling_order_id")
+    existing_number = pedido.get("erp_order_number") or pedido.get("bling_order_number")
+    if (
+        (existing_integration and str(existing_integration) != str(bling_inst.get("id")))
+        or (existing_order_id and str(existing_order_id) != str(bling_id))
+        or (existing_number and str(existing_number) != bling_number)
+    ):
+        canonical_order_repository.defer_unresolved_erp_order(
+            erp_integration_id=bling_inst.get("id"),
+            erp_store_id=store_id,
+            erp_order_id=bling_id,
+            erp_order_number=bling_number,
+            marketplace_order_id=marketplace_order_id,
+            marketplace_module_id=marketplace_module_id,
+            payload={**ref_payload, "existing_reference": pedido},
+            reason="direct_marketplace_reference_conflict",
+        )
+        return {
+            "status": "success",
+            "event_status": "reference_conflict",
+            "resolution_status": "reference_conflict",
+            "retryable": False,
+            "pedido_id": pedido.get("id"),
+            "message": "Pedido ja possui referencia ERP diferente",
+            "correlation_id": correlation_id,
+        }
+
+    supabase_db.rpc("enrich_order_erp_reference", {
+        "p_pedido_id": pedido["id"],
+        "p_erp_integration_id": bling_inst.get("id"),
+        "p_erp_store_id": store_id or None,
+        "p_erp_order_id": bling_id,
+        "p_erp_order_number": bling_number,
+        "p_marketplace_order_id": marketplace_order_id,
+    }).execute()
+    return {
+        "status": "success",
+        "event_status": "reference_applied",
+        "resolution_status": "reference_applied",
+        "retryable": False,
+        "pedido_id": pedido.get("id"),
+        "bling_integration_id": bling_inst.get("id"),
+        "bling_loja_id": store_id,
+        "bling_order_id": bling_id,
+        "bling_order_number": bling_number,
+        "numeroLoja": marketplace_order_id,
+        "correlation_id": correlation_id,
+    }
+
+
 def process_webhook(
     payload: dict,
     bling_integration_hint: int | None = None,
@@ -567,11 +766,17 @@ def process_webhook(
                 ingest_origin_mode = (processing_link or {}).get('ingest_origin_mode') or 'erp_bling'
                 skip_reason = None
                 event_status = 'skipped'
+                if processing_link and ingest_origin_mode == 'marketplace_direct':
+                    return _process_bling_reference_webhook(
+                        payload,
+                        original_payload,
+                        bling_inst,
+                        processing_link,
+                        correlation_id=correlation_id,
+                        webhook_event_id=webhook_event_id,
+                    )
                 if processing_link and processing_link.get('process_webhooks') is False:
                     skip_reason = 'process_webhooks=false'
-                elif processing_link and ingest_origin_mode == 'marketplace_direct':
-                    skip_reason = 'inactive_source'
-                    event_status = 'skipped_inactive_source'
 
                 if skip_reason:
                     ingest_ctx['status'] = 'skipped'
@@ -933,7 +1138,7 @@ def process_webhook(
 
 # ---------- helpers ----------
 
-def _fetch_bling_order_detail(bling_inst: dict, bling_order_id) -> dict:
+def _fetch_bling_order_detail(bling_inst: dict, bling_order_id, *, require_materialization_fields: bool = True) -> dict:
     """Busca pedido detalhado no Bling e falha de forma explícita se não houver detalhe."""
     if not bling_order_id:
         raise BlingDetailUnavailableError(
@@ -985,7 +1190,7 @@ def _fetch_bling_order_detail(bling_inst: dict, bling_order_id) -> dict:
             f"falha ao buscar detalhe Bling id={bling_order_id} inst={bling_inst.get('id')}"
         ) from e
 
-    if not detalhe or not (detalhe.get('itens') or detalhe.get('contato')):
+    if not detalhe or (require_materialization_fields and not (detalhe.get('itens') or detalhe.get('contato'))):
         raise BlingDetailUnavailableError(
             f"detalhe Bling indisponível para id={bling_order_id} inst={bling_inst.get('id')}"
         )
@@ -1066,6 +1271,25 @@ def _resolve_marketplace_instance(loja_id: str, bling_integration_id: int | None
         inst['plataforma_slug'] = (mod or {}).get('slug')
         return inst
 
+    # Fallback por vinculo ERP, inclusive quando nao existe integracao direta instalada.
+    try:
+        link_query = (supabase_db.table("erp_marketplace_links")
+            .select("marketplace_module_id,marketplace_integration_id")
+            .eq("erp_integration_id", bling_integration_id)
+            .eq("erp_store_id", loja_id)
+            .eq("is_active", True)
+            .limit(1).execute().data or [])
+        if link_query and link_query[0].get("marketplace_module_id"):
+            module_id = link_query[0]["marketplace_module_id"]
+            mod = supabase_db.table("integration_modules").select("id,slug,name").eq("id", module_id).maybe_single().execute().data or {}
+            return {
+                "id": link_query[0].get("marketplace_integration_id"),
+                "module_id": module_id,
+                "plataforma_slug": mod.get("slug") or module_id,
+                "instance_name": mod.get("name") or module_id,
+            }
+    except Exception as e:
+        logger.warning("[ingest] Erro no fallback ERP marketplace loja_id=%s: %s", loja_id, e)
     # Fallback: aceitar mapeamento por marketplace_module_id mesmo sem
     # installed_integration de marketplace.
     try:
@@ -2030,4 +2254,5 @@ def _bling_client_for_config(cfg):
         channel_id=canal_venda_id,
         function_name="ORDER_IMPORT",
     )
+
 

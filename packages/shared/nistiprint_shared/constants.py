@@ -48,7 +48,8 @@ Constantes globais para sincronização de ciclo de vida Pedido-Demanda.
 
 # IDs das situações_pedido no banco de dados
 STATUS_PEDIDO_PENDENTE = 1           # "Pendente"
-STATUS_PEDIDO_PAGO = 2               # "Pago"
+STATUS_PEDIDO_EM_ANDAMENTO = 2       # Em andamento
+STATUS_PEDIDO_PAGO = STATUS_PEDIDO_EM_ANDAMENTO
 STATUS_PEDIDO_EM_PRODUCAO = 3        # "Processando" - Pedido em produção
 STATUS_PEDIDO_PRONTO_ENVIO = 4       # "Pronto para Envio" - Pedido liberado para expedição
 STATUS_PEDIDO_ENVIADO = 5            # "Enviado"
@@ -59,7 +60,8 @@ STATUS_PEDIDO_DEVOLVIDO = 8          # "Devolvido"
 # Mapeamento de nomes para IDs
 STATUS_PEDIDO_MAP = {
     'PENDENTE': STATUS_PEDIDO_PENDENTE,
-    'PAGO': STATUS_PEDIDO_PAGO,
+    'PAGO': STATUS_PEDIDO_EM_ANDAMENTO,
+    'EM_ANDAMENTO': STATUS_PEDIDO_EM_ANDAMENTO,
     'EM_PRODUCAO': STATUS_PEDIDO_EM_PRODUCAO,
     'PROCESSANDO': STATUS_PEDIDO_EM_PRODUCAO,
     'PRONTO_ENVIO': STATUS_PEDIDO_PRONTO_ENVIO,
@@ -74,7 +76,7 @@ STATUS_PEDIDO_MAP = {
 STATUS_SINCRONIZACAO = {
     'ao_criar_demanda': STATUS_PEDIDO_EM_PRODUCAO,
     'ao_finalizar_demanda': STATUS_PEDIDO_PRONTO_ENVIO,
-    'ao_cancelar_demanda': STATUS_PEDIDO_PAGO,  # Reverte para Pago
+    'ao_cancelar_demanda': STATUS_PEDIDO_EM_ANDAMENTO,
 }
 
 # =============================================================================

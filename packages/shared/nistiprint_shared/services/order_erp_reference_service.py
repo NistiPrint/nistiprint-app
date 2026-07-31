@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from celery import shared_task
@@ -35,18 +36,18 @@ class OrderErpReferenceService:
             or []
         )
         if not rows:
-            return {"status": "not_found", "pedido_id": pedido_id, "message": "Pedido não encontrado"}
+            return {"status": "not_found", "pedido_id": pedido_id, "message": "Pedido nao encontrado"}
 
         pedido = dict(rows[0])
         ready = self._ready_reference(pedido)
         if ready:
             return {"status": "ready", "pedido_id": pedido_id, **ready}
         if not allow_remote:
-            return {"status": "pending", "pedido_id": pedido_id, "message": "Referência ERP ainda não disponível"}
+            return {"status": "pending", "pedido_id": pedido_id, "message": "Referencia ERP ainda nao disponivel"}
 
         marketplace_integration_id = pedido.get("marketplace_integration_id")
         if not marketplace_integration_id:
-            return {"status": "missing_link", "pedido_id": pedido_id, "message": "Pedido sem instância de marketplace"}
+            return {"status": "missing_link", "pedido_id": pedido_id, "message": "Pedido sem instancia de marketplace"}
 
         resolved = integration_capability_service.resolve(
             marketplace_integration_id,
@@ -83,7 +84,7 @@ class OrderErpReferenceService:
             and row.get("id") and row.get("numero")
         ]
         if not exact:
-            return {"status": "pending", "pedido_id": pedido_id, "message": "Pedido ainda não encontrado no ERP"}
+            return {"status": "pending", "pedido_id": pedido_id, "message": "Pedido ainda nao encontrado no ERP"}
         if len(exact) > 1:
             return {"status": "ambiguous", "pedido_id": pedido_id, "message": "Pedido encontrado mais de uma vez no ERP"}
 
@@ -141,6 +142,54 @@ class OrderErpReferenceService:
         }
 
 
+
+def _resolve_pending_references_in_batch(rows: list[dict]) -> dict:
+    """Consulta numeroLoja agrupando pedidos pela mesma conta Bling."""
+    from nistiprint_shared.services.bling.bling_client import BlingClient
+    grouped = {}
+    results = []
+    for row in rows:
+        pedido = (supabase_db.table("pedidos")
+            .select("id,marketplace_order_id,marketplace_integration_id,erp_store_id,bling_loja_id")
+            .eq("id", row.get("pedido_id")).limit(1).execute().data or [])
+        if not pedido:
+            results.append({"status": "not_found", "pedido_id": row.get("pedido_id")})
+            continue
+        pedido = pedido[0]
+        resolved = integration_capability_service.resolve(
+            pedido.get("marketplace_integration_id"), INVOICING,
+            context={"erp_store_id": pedido.get("erp_store_id") or pedido.get("bling_loja_id"),
+                     "external_order_id": pedido.get("marketplace_order_id")})
+        if not resolved.responsible_integration or resolved.reason == "ambiguous_erp_link":
+            results.append({"status": "missing_link", "pedido_id": pedido["id"]})
+            continue
+        link = resolved.link or {}
+        key = (int(resolved.integration_id), str(link.get("erp_store_id") or link.get("aggregator_store_id") or ""))
+        grouped.setdefault(key, []).append(pedido)
+    for (integration_id, store_id), pedidos in grouped.items():
+        ids = [str(p["marketplace_order_id"]) for p in pedidos if p.get("marketplace_order_id")]
+        try:
+            matches = BlingClient.create_client_for_integration_id(integration_id).get_order_numbers_by_store_numbers(ids) or []
+        except Exception as exc:
+            logger.warning("Falha no lote de referencias Bling: %s", exc, exc_info=True)
+            results.extend({"status": "error", "pedido_id": p["id"], "message": str(exc)} for p in pedidos)
+            continue
+        by_store = {str(m.get("numeroLoja")): m for m in matches if m.get("numeroLoja") and m.get("id") and m.get("numero")}
+        for pedido in pedidos:
+            match = by_store.get(str(pedido.get("marketplace_order_id")))
+            if not match:
+                results.append({"status": "pending", "pedido_id": pedido["id"], "message": "Pedido ainda nao encontrado no ERP"})
+                continue
+            supabase_db.rpc("enrich_order_erp_reference", {
+                "p_pedido_id": pedido["id"], "p_erp_integration_id": integration_id,
+                "p_erp_store_id": store_id or None, "p_erp_order_id": match["id"],
+                "p_erp_order_number": str(match["numero"]),
+                "p_marketplace_order_id": pedido.get("marketplace_order_id"),
+            }).execute()
+            results.append({"status": "ready", "pedido_id": pedido["id"]})
+    return {"ready": [r for r in results if r["status"] == "ready"],
+            "blocked": [r for r in results if r["status"] != "ready"]}
+
 order_erp_reference_service = OrderErpReferenceService()
 
 
@@ -157,15 +206,18 @@ def reconcile_pending_erp_references(limit: int = 50):
         .data
         or []
     )
-    applied = 0
+    batch = _resolve_pending_references_in_batch(rows)
+    ready_ids = [item.get("pedido_id") for item in batch["ready"]]
     for row in rows:
-        result = order_erp_reference_service.resolve_order(row.get("pedido_id"), allow_remote=True)
-        if result.get("status") == "ready":
-            applied += 1
+        if row.get("pedido_id") in ready_ids:
             continue
+        result = next((item for item in batch["blocked"] if item.get("pedido_id") == row.get("pedido_id")), {})
+        attempts = int(row.get("attempts") or 0) + 1
+        max_attempts = int(os.getenv("ERP_REFERENCE_MAX_ATTEMPTS", "20"))
         supabase_db.table("pending_order_reconciliations").update({
-            "attempts": int(row.get("attempts") or 0) + 1,
+            "attempts": attempts,
+            "status": "failed" if attempts >= max_attempts else "pending",
             "last_error": result.get("message") or result.get("status"),
             "updated_at": get_now_iso(),
         }).eq("id", row.get("id")).execute()
-    return {"status": "success", "processed": len(rows), "applied": applied}
+    return {"status": "success", "processed": len(rows), "applied": len(batch["ready"])}

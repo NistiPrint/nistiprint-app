@@ -265,7 +265,7 @@ class MarketplaceWebhookIngestService:
         pedido_id = self._upsert_pedido_status(
             source="shopee", external_order_id=order_sn,
             marketplace_integration_id=marketplace_inst.get("id"),
-            bling_integration_id=None, bling_loja_id=None,
+            bling_integration_id=(link or {}).get("bling_integration_id") or (link or {}).get("erp_integration_id"), bling_loja_id=(link or {}).get("aggregator_store_id") or (link or {}).get("erp_store_id"),
             channel_id=(link or {}).get("channel_id"),
             situacao_pedido_id=lifecycle.target_situacao_pedido_id,
             status_original=status_original,
@@ -493,7 +493,7 @@ class MarketplaceWebhookIngestService:
         pedido_id = self._upsert_pedido_status(
             source="mercadolivre", external_order_id=order_id,
             marketplace_integration_id=marketplace_inst.get("id"),
-            bling_integration_id=None, bling_loja_id=None,
+            bling_integration_id=(link or {}).get("bling_integration_id") or (link or {}).get("erp_integration_id"), bling_loja_id=(link or {}).get("aggregator_store_id") or (link or {}).get("erp_store_id"),
             channel_id=(link or {}).get("channel_id"),
             situacao_pedido_id=lifecycle.target_situacao_pedido_id,
             status_original=status_original,
@@ -1122,6 +1122,22 @@ class MarketplaceWebhookIngestService:
 
         # ERP is optional until printing or invoicing actually needs it.
         bling_ref = {}
+        if bling_integration_id:
+            try:
+                local_rows = (supabase_db.table("pedidos_bling")
+                    .select("id,bling_id,numero_pedido,numero_loja")
+                    .eq("bling_integration_id", bling_integration_id)
+                    .eq("numero_loja", str(external_order_id)).limit(1).execute().data or [])
+                if local_rows:
+                    local = local_rows[0]
+                    bling_ref = {
+                        "status": "found",
+                        "pedido_bling_id": local.get("id"),
+                        "bling_order_id": local.get("bling_id"),
+                        "bling_order_number": local.get("numero_pedido"),
+                    }
+            except Exception as exc:
+                logger.warning("[marketplace-webhook] falha lookup local Bling numeroLoja=%s: %s", external_order_id, exc)
         data_compra_marketplace = data_venda
         data_pagamento_marketplace = None
         data_envio_marketplace = None
@@ -1224,6 +1240,7 @@ class MarketplaceWebhookIngestService:
             "marketplace_order_id": str(external_order_id),
             "bling_order_id": bling_ref.get("bling_order_id"),
             "bling_order_number": bling_ref.get("bling_order_number"),
+            "pedido_bling_id": bling_ref.get("pedido_bling_id"),
             "ingest_source": source,
             "updated_at": get_now_iso(),
             **{key: value for key, value in mirror_fields.items() if value is not None},
@@ -1299,14 +1316,24 @@ class MarketplaceWebhookIngestService:
             pedido_id = int(transition["pedido_id"])
         else:
             pedido_id = canonical_order_repository.upsert(row, snapshot=snapshot, refs=refs)
-        canonical_order_repository.defer_unresolved_erp_order(
+        if not (
+            bling_ref.get("bling_order_id")
+            and bling_ref.get("bling_order_number")
+        ):
+            canonical_order_repository.defer_unresolved_erp_order(
+                pedido_id=pedido_id,
+                erp_integration_id=bling_integration_id,
+                erp_store_id=bling_loja_id,
+                erp_order_id=None,
+                marketplace_order_id=external_order_id,
+                marketplace_module_id=source,
+                payload={"marketplace_module_id": source, "marketplace_integration_id": marketplace_integration_id},
+                reason="erp_reference_pending",
+            )
+        canonical_order_repository.apply_pending_erp_reference_for_order(
             pedido_id=pedido_id,
-            erp_integration_id=None,
-            erp_store_id=None,
-            erp_order_id=None,
+            marketplace_module_id=source,
             marketplace_order_id=external_order_id,
-            payload={"marketplace_module_id": source, "marketplace_integration_id": marketplace_integration_id},
-            reason="erp_reference_pending",
         )
         persist_classification_from_payload(
             {"numeroLoja": str(external_order_id), "itens": snapshot_items},

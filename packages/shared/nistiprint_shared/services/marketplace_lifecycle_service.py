@@ -223,8 +223,8 @@ def resolve_mercadolivre(detail: dict, webhook: dict | None = None) -> Marketpla
             target = STATUS_DELIVERED
         elif shipping_status == "shipped" or shipping_substatus in MELI_SHIPPED_READY_SUBSTATUSES:
             target = STATUS_SHIPPED
-        elif shipping_status == "ready_to_ship":
-            target = STATUS_READY
+        elif shipping_status in {"to_be_shipped", "handling", "ready_to_ship"}:
+            target = STATUS_PAID
         else:
             target = STATUS_PAID if order_status in {"confirmed", "paid", "partially_refunded"} else None
         stage, reason = "partially_refunded", "partial_return_does_not_close_order"
@@ -244,8 +244,8 @@ def resolve_mercadolivre(detail: dict, webhook: dict | None = None) -> Marketpla
         stage, target, reason = "cancelled", STATUS_CANCELLED, "order_cancelled"
     elif order_status == "pending_cancel":
         stage, target, reason = "cancellation_pending", None, "order_cancellation_pending"
-    elif shipping_status == "ready_to_ship":
-        stage, target, reason = "documentation_ready", STATUS_READY, "shipment_ready_to_ship"
+    elif shipping_status in {"to_be_shipped", "handling", "ready_to_ship"}:
+        stage, target, reason = "paid_preparation", STATUS_PAID, "shipment_requires_processing"
     elif shipping_status in {"cancelled", "canceled"}:
         stage, target, reason = "shipment_cancelled", None, "shipment_is_not_order_cancellation"
     elif payment_status == "charged_back":
