@@ -13,6 +13,10 @@ from nistiprint_shared.services.marketplace_lifecycle_service import (
     resolve_mercadolivre,
     resolve_shopee,
 )
+from nistiprint_shared.services.order_status_observers import (
+    observe_mercadolivre,
+    observe_shopee,
+)
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 
@@ -387,6 +391,12 @@ class MercadoLivreAdapter:
         )
 
     @staticmethod
+    def observe(snapshot: CanonicalOrderSnapshot | dict, event: dict):
+        """Fatos por dominio, sem traducao. Ver §8 da spec de canonizacao."""
+        detail = snapshot.raw if isinstance(snapshot, CanonicalOrderSnapshot) else snapshot
+        return observe_mercadolivre(detail, event)
+
+    @staticmethod
     def normalize_lifecycle(snapshot: CanonicalOrderSnapshot | dict, event: dict):
         detail = snapshot.raw if isinstance(snapshot, CanonicalOrderSnapshot) else snapshot
         return resolve_mercadolivre(detail, event)
@@ -523,6 +533,12 @@ class ShopeeAdapter:
             currency=detail.get("currency") or "BRL",
             raw=detail,
         )
+
+    @staticmethod
+    def observe(snapshot: CanonicalOrderSnapshot | dict, event: dict):
+        """Fatos por dominio, sem traducao. Ver §8 da spec de canonizacao."""
+        detail = snapshot.raw if isinstance(snapshot, CanonicalOrderSnapshot) else snapshot
+        return observe_shopee(detail, event)
 
     @staticmethod
     def normalize_lifecycle(snapshot: CanonicalOrderSnapshot | dict, event: dict):

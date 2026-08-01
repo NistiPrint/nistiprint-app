@@ -10,8 +10,13 @@ from nistiprint_shared.services.reliable_ingest_service import extract_identity,
 
 
 class ReliableIngestSignatureTest(unittest.TestCase):
+    # "secret" era o valor destas fixtures ate 08/2026. Ele passou a ser
+    # rejeitado por `is_usable_secret` — e placeholder e curto demais —, que e
+    # justamente a protecao contra o incidente em que
+    # `INGEST_WEBHOOK_SECRETS_BLING=...` derrubou o ingest por 3 dias. O valor
+    # era incidental para estes testes, que verificam a validacao em si.
     def test_bling_validates_exact_raw_body(self):
-        raw, secret = '{ "eventId": "1" }', "secret"
+        raw, secret = '{ "eventId": "1" }', "segredo-de-teste-suficientemente-longo"
         signature = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()
         envelope = build_envelope("bling", json.loads(raw), raw_body=raw,
                                   headers={"x-bling-signature-256": signature})
@@ -24,8 +29,10 @@ class ReliableIngestSignatureTest(unittest.TestCase):
     def test_invalid_signature_is_terminal_even_in_optional_rollout(self):
         envelope = build_envelope("bling", {"eventId": "1"},
                                   headers={"x-bling-signature-256": "bad"})
-        with patch.dict(os.environ, {"INGEST_SIGNATURE_POLICY_BLING": "optional",
-                                    "INGEST_WEBHOOK_SECRETS_BLING": "secret"}):
+        with patch.dict(os.environ, {
+            "INGEST_SIGNATURE_POLICY_BLING": "optional",
+            "INGEST_WEBHOOK_SECRETS_BLING": "segredo-de-teste-suficientemente-longo",
+        }):
             result = validate_signature(envelope)
         self.assertTrue(result.terminal)
         self.assertEqual(result.status, "discarded_invalid_signature")

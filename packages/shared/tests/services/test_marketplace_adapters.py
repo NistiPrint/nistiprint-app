@@ -256,11 +256,13 @@ class TestShopeeAdapter(unittest.TestCase):
         expected = {
             "UNPAID": STATUS_PENDING,
             "READY_TO_SHIP": STATUS_PAID,
+            # PROCESSED = documentacao emitida pela Shopee -> fila de expedicao.
             "PROCESSED": STATUS_READY,
             "SHIPPED": STATUS_SHIPPED,
             "TO_CONFIRM_RECEIVE": STATUS_SHIPPED,
             "COMPLETED": STATUS_DELIVERED,
-            "IN_CANCEL": STATUS_CANCELLED,
+            # Solicitacao de cancelamento sujeita a recusa: nao projeta.
+            "IN_CANCEL": None,
             "CANCELLED": STATUS_CANCELLED,
             "TO_RETURN": STATUS_RETURNED,
         }

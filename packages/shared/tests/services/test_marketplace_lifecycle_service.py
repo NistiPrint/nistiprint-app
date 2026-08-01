@@ -27,6 +27,8 @@ class TestMarketplaceLifecycleService(unittest.TestCase):
         self.assertEqual(result.target_situacao_pedido_id, STATUS_PAID)
 
     def test_meli_ready_to_ship_requires_processing(self):
+        # `ready_to_ship` do Meli e "aguardando envio", nao "etiqueta emitida":
+        # nao equivale ao PROCESSED da Shopee e nao chega a 4.
         result = resolve_mercadolivre({
             "order": {"status": "paid", "payments": [{"status": "approved"}]},
             "shipment": {"status": "ready_to_ship"},
@@ -104,12 +106,16 @@ class TestMarketplaceLifecycleService(unittest.TestCase):
         self.assertIsNone(result.target_situacao_pedido_id)
 
     def test_meli_cancelled_shipment_does_not_cancel_paid_order(self):
+        # Etiqueta cancelada nao e venda cancelada. A venda segue paga e viva,
+        # entao a situacao continua sendo 2 — inclusive para um pedido visto
+        # pela primeira vez neste estado, que antes ficava sem situacao alguma.
         result = resolve_mercadolivre({
             "order": {"status": "paid", "payments": [{"status": "approved"}]},
             "shipment": {"status": "cancelled", "substatus": "pack_splitted"},
         })
-        self.assertEqual(result.lifecycle_stage, "shipment_cancelled")
-        self.assertIsNone(result.target_situacao_pedido_id)
+        self.assertEqual(result.shipping_status, "cancelled")
+        self.assertEqual(result.lifecycle_stage, "paid_preparation")
+        self.assertEqual(result.target_situacao_pedido_id, STATUS_PAID)
 
     def test_meli_chargeback_requires_final_settlement(self):
         pending = resolve_mercadolivre({
@@ -164,6 +170,7 @@ class TestMarketplaceLifecycleService(unittest.TestCase):
     def test_shopee_sequence_mapping(self):
         expected = {
             "READY_TO_SHIP": STATUS_PAID,
+            # PROCESSED = documentacao emitida pela Shopee -> fila de expedicao.
             "PROCESSED": STATUS_READY,
             "SHIPPED": STATUS_SHIPPED,
             "TO_CONFIRM_RECEIVE": STATUS_SHIPPED,

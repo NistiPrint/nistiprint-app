@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import uuid
@@ -13,6 +14,13 @@ from typing import Any
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.shopee_chat_service import extract_chat_provider_event_id
+from nistiprint_shared.services.webhook_secret_resolver import (
+    account_id_from_payload,
+    is_usable_secret,
+    webhook_secret_resolver,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -37,19 +45,57 @@ def _body(payload: dict[str, Any]) -> dict[str, Any]:
     return data if isinstance(data, dict) else payload
 
 
-def _secrets(source: str) -> list[str]:
+def _env_secrets(source: str) -> list[str]:
+    """Segredos vindos de variavel de ambiente. Fallback, nao fonte.
+
+    Placeholders sao filtrados: `INGEST_WEBHOOK_SECRETS_BLING=...` copiado do
+    `.env.example` produz uma lista nao-vazia sem segredo algum, e o resultado
+    e pior que a ausencia — todo evento vira `discarded_invalid_signature`
+    terminal em vez de `signature_unverified`.
+    """
     raw = os.getenv(f"INGEST_WEBHOOK_SECRETS_{source.upper()}", "")
+    values: list[str]
     try:
         decoded = json.loads(raw)
-        if isinstance(decoded, list):
-            return [str(value) for value in decoded if str(value)]
+        values = [str(value) for value in decoded] if isinstance(decoded, list) else []
     except (TypeError, ValueError):
-        pass
-    return [value.strip() for value in raw.split(",") if value.strip()]
+        values = []
+    if not values:
+        values = [value.strip() for value in raw.split(",")]
+    usable = [value for value in values if is_usable_secret(value)]
+    discarded = len([value for value in values if str(value).strip()]) - len(usable)
+    if discarded:
+        logger.warning(
+            "[ingest] %s valor(es) de INGEST_WEBHOOK_SECRETS_%s ignorados por serem "
+            "placeholder ou curtos demais",
+            discarded, source.upper(),
+        )
+    return usable
+
+
+def _secret_candidates(source: str, envelope: dict[str, Any]) -> tuple[list, str | None]:
+    """Segredos a testar e a conta que o proprio evento declara."""
+    account_id = account_id_from_payload(source, _payload(envelope))
+    candidates = webhook_secret_resolver.candidates(
+        source, account_hint=account_id, env_secrets=_env_secrets(source)
+    )
+    return candidates, account_id
 
 
 def _policy(source: str) -> str:
     return os.getenv(f"INGEST_SIGNATURE_POLICY_{source.upper()}", "optional").strip().lower()
+
+
+def _match_hmac(raw: str, signature: str, candidates: list):
+    """Devolve o candidato cujo segredo produz a assinatura, ou None."""
+    provided = re.sub(r"^(sha256=|v1=)", "", signature.strip(), flags=re.I)
+    for candidate in candidates:
+        digest = hmac.new(
+            candidate.secret.encode(), raw.encode(), hashlib.sha256
+        ).hexdigest()
+        if hmac.compare_digest(digest, provided):
+            return candidate
+    return None
 
 
 def _compare_hmac(raw: str, signature: str, secrets: list[str]) -> bool:
@@ -74,27 +120,53 @@ def _validate_meli(envelope: dict[str, Any], secrets: list[str]) -> tuple[bool |
 
 def validate_signature(envelope: dict[str, Any]) -> SignatureResult:
     source = str(envelope.get("source") or "").lower()
-    policy, secrets = _policy(source), _secrets(source)
+    policy = _policy(source)
     enforce = policy == "required"
     if policy == "disabled":
         return SignatureResult("signature_disabled", True, False)
+
+    candidates, account_id = _secret_candidates(source, envelope)
+    secrets = [candidate.secret for candidate in candidates]
     headers, raw = envelope.get("headers") or {}, str(envelope.get("raw_body") or "")
-    if source == "bling":
-        signature = headers.get("x-bling-signature-256") or headers.get("x-hub-signature-256")
-        result = _compare_hmac(raw, signature, secrets) if signature and secrets else None
+    matched = None
+
+    if source in ("bling", "shopee"):
+        signature = (
+            headers.get("x-bling-signature-256")
+            if source == "bling"
+            else headers.get("x-shopee-signature")
+        ) or headers.get("x-hub-signature-256")
+        if signature and candidates:
+            matched = _match_hmac(raw, signature, candidates)
+            result = matched is not None
+        else:
+            result = None
         strategy = "raw_body_hmac_sha256"
     elif source == "mercadolivre":
         result, strategy = _validate_meli(envelope, secrets)
-    elif source == "shopee":
-        signature = headers.get("x-shopee-signature") or headers.get("x-hub-signature-256")
-        result = _compare_hmac(raw, signature, secrets) if signature and secrets else None
-        strategy = "raw_body_hmac_sha256"
     else:
         result, strategy = None, "unsupported_source"
+
     if result is True:
+        if matched is not None:
+            # A conta so pode ser aprendida a partir de uma assinatura que
+            # bateu — caso contrario qualquer emissor escolheria seu vinculo.
+            webhook_secret_resolver.remember_account(
+                source, account_id, matched.integration_id
+            )
         return SignatureResult("signature_valid", True, enforce, strategy)
     if result is False:
         return SignatureResult("discarded_invalid_signature", False, True, strategy)
+
+    # Sem material para verificar. Distinguir "nao ha segredo configurado" de
+    # "o evento nao trouxe assinatura" e o que evita repetir o incidente de
+    # 30/07, em que um placeholder virou descarte terminal silencioso.
+    if not candidates:
+        logger.warning(
+            "[ingest] nenhum segredo utilizavel para %s; evento segue como nao verificado",
+            source,
+        )
+        strategy = "no_usable_secret"
     return SignatureResult("discarded_signature_unverifiable" if enforce else "signature_unverified",
                            not enforce, enforce, strategy)
 
