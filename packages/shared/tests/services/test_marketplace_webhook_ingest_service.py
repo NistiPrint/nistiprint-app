@@ -288,13 +288,14 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
                 status_original='SHIPPED', mirror_fields={'pedido_shopee_id': 44},
                 lifecycle_event=lifecycle_event,
                 raw_customer={'name': 'Cliente'}, total=10, currency='BRL',
-                data_venda='2026-06-23T10:00:00+00:00', details={},
+                data_venda='2026-06-23T10:00:00+00:00', details={"message_to_seller": "Nome: Maria"},
             )
 
         self.assertEqual(pedido_id, 55)
         apply_event.assert_called_once()
         kwargs = apply_event.call_args.kwargs
         self.assertEqual(kwargs['lifecycle_event'], lifecycle_event)
+        self.assertEqual(apply_event.call_args.args[0]["message_to_seller"], "Nome: Maria")
         self.assertTrue(kwargs['projection_enabled'])
         self.assertEqual(
             apply_event.call_args.args[0]['informacoes_cliente'],

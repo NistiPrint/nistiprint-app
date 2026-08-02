@@ -205,6 +205,7 @@ class ShopeeMapper(BaseOrderMapper):
             # Novas colunas explícitas para dados do marketplace
             "buyer_username": raw.get('buyer_username'),
             "marketplace_order_id": raw.get('order_sn'),
+            "message_to_seller": raw.get('message_to_seller'),
             "shipping_carrier": shipping_carrier,
             "contact_marketplace_id": raw.get("buyer_user_id"),
             "items": [

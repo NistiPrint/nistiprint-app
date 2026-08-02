@@ -264,6 +264,28 @@ class TestBlingOrderProcessingService(unittest.TestCase):
         self.assertEqual(result["event_status"], "reference_conflict")
         defer.assert_called_once()
 
+    def test_upsert_pedido_shopee_projects_message_without_overwriting_when_absent(self):
+        fake_db = MagicMock()
+        query = MagicMock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.upsert.return_value = query
+        query.execute.side_effect = [SimpleNamespace(data=[]), SimpleNamespace(data=[{"id": 1}])]
+        fake_db.table.return_value = query
+
+        with patch.object(service, "supabase_db", fake_db):
+            service._upsert_pedido_shopee({
+                "external_id": "SN123",
+                "raw": {"message_to_seller": "Nome: Maria"},
+            }, marketplace_integration_id=12)
+
+        upsert_payload = query.upsert.call_args.args[0]
+        self.assertEqual(upsert_payload["mensagem"], "Nome: Maria")
+
+        query.execute.side_effect = [SimpleNamespace(data=[]), SimpleNamespace(data=[{"id": 2}])]
+        with patch.object(service, "supabase_db", fake_db):
+            service._upsert_pedido_shopee({"external_id": "SN124", "raw": {}}, marketplace_integration_id=12)
+        self.assertNotIn("mensagem", query.upsert.call_args.args[0])
 
 if __name__ == "__main__":
     unittest.main()

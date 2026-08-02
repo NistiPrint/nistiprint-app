@@ -1526,6 +1526,11 @@ def _upsert_pedido_shopee(shopee_data: dict, marketplace_integration_id: int) ->
         logger.error("[upsert_pedido_shopee] Erro retornado pelo driver Shopee: %s", shopee_data.get('error'))
         raise ValueError(f"Erro ao buscar dados da Shopee: {shopee_data.get('error')}")
     
+    raw_payload = shopee_data.get('raw') if isinstance(shopee_data.get('raw'), dict) else {}
+    message_to_seller = shopee_data.get('message_to_seller')
+    if message_to_seller is None:
+        message_to_seller = raw_payload.get('message_to_seller')
+
     row = {
         'codigo_pedido':     shopee_data.get('external_id'),  # order_sn (equivale a Bling numeroLoja)
         'shop_id':           shopee_data.get('shop_id'),
@@ -1543,6 +1548,8 @@ def _upsert_pedido_shopee(shopee_data: dict, marketplace_integration_id: int) ->
         'enriched_at':       'now()',
         'marketplace_integration_id': marketplace_integration_id,
     }
+    if message_to_seller is not None:
+        row['mensagem'] = message_to_seller
     
     if not row.get('codigo_pedido'):
         logger.error("[upsert_pedido_shopee] codigo_pedido está null - shopee_data: %s", shopee_data)

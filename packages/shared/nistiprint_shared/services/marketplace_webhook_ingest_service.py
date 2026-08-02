@@ -1241,6 +1241,7 @@ class MarketplaceWebhookIngestService:
             "marketplace_order_id": str(external_order_id),
             "pedido_bling_id": bling_ref.get("pedido_bling_id"),
             "ingest_source": source,
+            "message_to_seller": (details or {}).get("message_to_seller"),
             "updated_at": get_now_iso(),
             # Campos logisticos canonicos: prazo de POSTAGEM (nao de entrega),
             # modalidade e identidade do comprador.

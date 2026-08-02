@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from nistiprint_shared.mappers.order_mappers import ShopeeMapper
 from nistiprint_shared.services.marketplace_adapters import (
     MercadoLivreAdapter,
     ShopeeAdapter,
@@ -280,6 +281,17 @@ class TestShopeeAdapter(unittest.TestCase):
         })
         self.assertEqual(result.target_situacao_pedido_id, STATUS_DELIVERED)
 
+
+    def test_shopee_mapper_preserves_message_to_seller(self):
+        mapped = ShopeeMapper.map({
+            "order_sn": "SN123",
+            "message_to_seller": "Nome: Maria",
+            "buyer_username": "maria123",
+            "recipient_address": {},
+            "item_list": [],
+        })
+
+        self.assertEqual(mapped["message_to_seller"], "Nome: Maria")
 
 if __name__ == "__main__":
     unittest.main()
