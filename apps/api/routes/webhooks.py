@@ -10,12 +10,9 @@ Fluxo correto dos webhooks do Bling:
 Ver: docs/02-features/webhooks_fluxo_correto.md
 """
 
-import hmac
-import os
 from flask import Blueprint, request, jsonify
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.redis_queue_tasks import (LIVE_QUEUE_ALIASES, _serialize_queue_item, clear_queue, get_queue_items, get_queue_stats, get_redis_client, move_items)
-from nistiprint_shared.services.reliable_ingest_queue import (build_envelope, publish_envelope, spool_envelope, INBOX_READY)
 from nistiprint_shared.services.webhook_monitoring_service import webhook_monitoring_service
 from nistiprint_shared.services.marketplace_lifecycle_tasks import (
     reconcile_marketplace_lifecycle_task,
@@ -35,60 +32,32 @@ logger = logging.getLogger("WebhooksPedidos")
 webhooks_bp = Blueprint('webhooks', __name__, url_prefix='/api/v2/webhooks')
 
 
-def _marketplace_webhook_authorized():
-    """Autoriza a entrada direta na inbox.
-
-    Estes endpoints ignoram a validacao de assinatura, que por convencao vive no
-    n8n (ver docs/tecnico/convencao-validacao-assinatura.md). Como o n8n escreve
-    direto no Redis e nao passa por aqui, esta rota e uma porta paralela para a
-    mesma fila — e por isso precisa ser fechada por padrao.
-
-    Era fail-open: sem `MARKETPLACE_WEBHOOK_TOKEN` definido, qualquer requisicao
-    era aceita e enfileirada. Agora e fail-closed.
-    """
-    expected = os.environ.get('MARKETPLACE_WEBHOOK_TOKEN')
-    if not expected:
-        logger.error(
-            'MARKETPLACE_WEBHOOK_TOKEN nao configurado: entrada direta na inbox '
-            'recusada. Defina a variavel ou use o gateway n8n.'
-        )
-        return False
-    provided = request.headers.get('X-Webhook-Token') or request.args.get('token')
-    return hmac.compare_digest(str(provided or ''), str(expected))
-
-
-def _enqueue_marketplace_webhook(source: str):
-    if not _marketplace_webhook_authorized():
-        return jsonify({'success': False, 'error': 'webhook token invalido'}), 403
-    max_bytes = int(os.getenv('WEBHOOK_MAX_BYTES', str(1024 * 1024)))
-    if request.content_length and request.content_length > max_bytes:
-        return jsonify({'success': False, 'error': 'payload excede o limite'}), 413
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, dict):
-        return jsonify({'success': False, 'error': 'payload JSON invalido'}), 400
-    envelope = build_envelope(source, payload, dict(request.headers))
-    try:
-        publish_envelope(envelope)
-        delivery = 'redis'
-    except Exception as redis_error:
-        logger.warning('Redis indisponivel no webhook %s; tentando spool: %s', source, redis_error)
-        try:
-            spool_envelope(envelope)
-            delivery = 'spool'
-        except Exception as spool_error:
-            logger.error('Redis e spool indisponiveis para %s: %s', source, spool_error, exc_info=True)
-            return jsonify({'success': False, 'source': source, 'queued': False, 'error': 'transporte temporariamente indisponivel'}), 503
-    return jsonify({'success': True, 'source': source, 'queued': True, 'queue': INBOX_READY, 'delivery': delivery, 'event_id': envelope['event_id']}), 200
-
-
-@webhooks_bp.route('/shopee', methods=['POST'])
-def receive_shopee_webhook():
-    return _enqueue_marketplace_webhook('shopee')
-
-
-@webhooks_bp.route('/mercadolivre', methods=['POST'])
-def receive_mercadolivre_webhook():
-    return _enqueue_marketplace_webhook('mercadolivre')
+# ---------------------------------------------------------------------------
+# Porta paralela de ingest — APOSENTADA em 02/08/2026
+# ---------------------------------------------------------------------------
+#
+# `POST /api/v2/webhooks/shopee` e `/mercadolivre` enfileiravam direto na inbox
+# (`np:ingest:inbox:ready:v1`), a mesma fila que o n8n alimenta. Duas entradas
+# para a mesma fila, com garantias diferentes:
+#
+#   n8n  -> valida assinatura na borda (Shopee HMAC, ML allowlist de IP)
+#   rota -> nao validava nada; ate 01/08 era fail-open, e a variavel
+#           `MARKETPLACE_WEBHOOK_TOKEN` nao existia em nenhum `.env`.
+#           Qualquer um que soubesse a URL injetava evento na fila.
+#
+# A convencao adotada em `docs/tecnico/convencao-validacao-assinatura.md` diz que
+# a inbox e confiavel por construcao — tudo que esta la ja foi aceito na borda.
+# Essa garantia so vale enquanto a borda for a unica porta. Fechar o buraco com
+# um token o deixava trancado, mas ainda existente: mais uma coisa para lembrar
+# de proteger a cada mudanca.
+#
+# O n8n escreve direto no Redis e nunca usou estes endpoints. Removidos.
+#
+# Se um dia for preciso reinjetar um evento manualmente, o caminho e
+# `POST /api/v2/webhooks/events/<id>/reprocess`, que parte de um evento ja
+# persistido e auditado — nao de um payload cru vindo de fora.
+#
+# `MARKETPLACE_WEBHOOK_TOKEN` deixa de ter uso e pode sair do ambiente.
 
 
 @webhooks_bp.route('/marketplace/reconcile', methods=['POST'])

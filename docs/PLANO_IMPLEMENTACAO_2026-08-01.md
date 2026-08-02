@@ -1,5 +1,91 @@
 # Plano de Implementação — Correções Prioritárias
 
+> ## Estado em 02/08/2026
+>
+> **Fase 0 concluída.** Beat reiniciado, código publicado, filas drenadas.
+>
+> | Item | Estado |
+> |---|---|
+> | F0.1 assinatura (confirmar env + alerta) | ✅ env limpo · ✅ porta paralela removida · ⏳ alerta de `discarded_invalid_signature` |
+> | F0.3a referência ERP (id + número Bling) | ✅ backoff calibrado; 64 falsos negativos reabertos |
+> | F0.3b buyer/modalidade/prazo no ingest direto | ✅ canonizado; chat vinculado saltou de 26 para 821 pedidos |
+> | F0.4 reiniciar beat | ✅ 1.496 reconciliações aplicadas, 262 efeitos processados |
+> | F0.5 observabilidade das tasks | ✅ 4 de 4 tasks registrando |
+> | F0.6 autoridade do Bling | ✅ centralizada; 2 caminhos desprotegidos corrigidos |
+> | F0.7 religar consolidação | ⏸️ proposital, aguarda F2.1/F2.2 |
+> | F0.8 propagar `kwargs` | ✅ |
+> | F1.3 roteador de IA | ✅ backend + UI (provedor, modelo, fallback) |
+> | F2.2 chave × busca de rascunho | ✅ + teto de 24h na janela |
+> | F4.1 ordenação de impressão | ✅ chave do legado restaurada |
+> | F4.3 bugs de impressão | ✅ plataforma vem de `marketplace_module_id` |
+> | **Novo:** rascunho reage a cancelamento | ✅ 398 pedidos cancelados removidos |
+> | **Novo:** estado terminal na fila ERP | ✅ 64 reclassificados |
+>
+> **Testes:** 349 passando, 5 falhas pré-existentes (não relacionadas).
+>
+> ### Limpeza estrutural (02/08)
+>
+> | Item | Antes | Depois |
+> |---|---|---|
+> | Colunas duplicadas em `pedidos` | `bling_*` ≡ `erp_*` em 100% de 7.176 linhas | removidas |
+> | `pedidos.shop_id_shopee` | 100% nula, com bloco de código morto lendo | removida |
+> | Implementações da regra de modalidade | 3 divergentes | **1** |
+> | Serviços de classificação table-driven | `flex_classifier` + `fulfillment_classifier` | removidos |
+> | Tabelas de regras de classificação | 2 (com linhas duplicadas por 2 seeds) | removidas |
+> | Views de compatibilidade sem leitor | 3 | removidas |
+> | Arquivos `.bak`/`.legacy` versionados | 11 | removidos |
+> | Tabelas órfãs | `debug_rpc_logs`, `identificadores_alternativos` | removidas |
+> | Snapshot temporário `_snapshot_produtos_tipo_20260508` | presente | removido |
+>
+> **Critério de remoção:** vazio **e** sem referência em código. Vazio sozinho não bastou — a maioria das 59 tabelas vazias é feature ainda não ativada (estoque, produção, `print_jobs`, `produtos_externos`) e continua de pé. Ficaram também as vazias **com** leitor: `vinculos_integracao_pedido`, `cache_dashboard_pedidos`, `vinculos_bling`, `transicoes_situacao`, `canal_modalidade_mapeamento`, `webhook_logs`.
+>
+> **Achado colateral:** existem **duas** tabelas de de-para de SKU — `vinculos_bling` (usada pelo caminho Bling em `bling_order_processing_service`) e `produtos_externos` (a que o resolvedor canônico deveria usar). Ambas vazias. Consolidar as duas é pré-requisito da Fase 3.
+>
+> **Não resolvido:** `marketplace_order_id` ≡ `codigo_pedido_externo` em 100% das linhas. As duas são muito usadas em código; consolidar exige refatoração dedicada.
+>
+> ### Incidente do `DROP COLUMN` — 02/08, ~20 min de ingest parado
+>
+> Ao remover as colunas `bling_*` eu verifiquei índices e views, **mas não triggers nem funções**. O Postgres não valida corpo de função plpgsql no momento do `DROP`, então nada falhou ali — a quebra só apareceu no primeiro webhook:
+>
+> ```
+> record "new" has no field "bling_integration_id"
+> ```
+>
+> Quatro objetos referenciavam as colunas removidas:
+>
+> | Objeto | Papel | Impacto |
+> |---|---|---|
+> | `sync_canonical_order_compat_fields` (trigger) | **era o mecanismo que espelhava `bling_* ↔ erp_*`** | todo INSERT/UPDATE em `pedidos` falhava — ingest parado |
+> | `enrich_order_erp_reference` | grava a referência ERP | toda reconciliação falharia |
+> | `list_pedidos_filtrados` | tela principal de pedidos | listagem quebrada |
+> | `list_pedidos_filtrados_v2` | listagem alternativa | idem |
+>
+> Havia uma ironia útil no primeiro: o trigger era exatamente a razão de os 7.176 pedidos terem valores idênticos nas duas famílias. Ele copiava `bling_* → erp_*` e depois `erp_* → bling_*` a cada escrita. A duplicação que eu removi tinha um guardião ativo, e eu não olhei para ele.
+>
+> Nas duas funções de listagem preservei os nomes `bling_*` na assinatura de retorno — o frontend consome essas chaves. Só a origem do dado mudou. Renomear no contrato da API é trabalho à parte.
+>
+> **Segunda onda — o lado do código.** Depois dos objetos de banco, sete pontos de código ainda selecionavam as colunas: `order_erp_reference_service` (dentro do lote), `order_filters_adapter` (3×), `nfe.py`, `marketplace_lifecycle_tasks`, `file_processors`, `demanda/core.py` e um script de backfill. Cada um só aparecia quando aquele caminho executava — corrigir de um em um, por log de produção, é o pior jeito possível.
+>
+> **Guarda automatizada:** `packages/shared/tests/test_colunas_pedidos_existem.py` percorre a AST procurando cadeias `.table("pedidos")` e inspeciona os literais passados a `select`/`eq`/`update`. A primeira versão usava janela de texto e deu 4 falsos positivos — os mesmos nomes existem legitimamente em `channel_connections.bling_integration_id` e em variáveis locais. Análise sintática sabe a diferença; `grep` não.
+>
+> O teste já provou o valor: pegou uma ocorrência em `demanda/core.py:603` que eu havia perdido nas duas varreduras manuais.
+>
+> **Checklist para o próximo `DROP COLUMN`:**
+>
+> ```sql
+> -- 1. funções e triggers (o que faltou desta vez)
+> select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+>  where n.nspname = 'public' and pg_get_functiondef(p.oid) ilike '%<coluna>%';
+>
+> -- 2. views, índices, constraints, defaults, políticas RLS
+> ```
+>
+> ```
+> 3. código: rodar test_colunas_pedidos_existem.py com a coluna na lista
+>    ANTES de aplicar o DROP — ele falha listando todos os pontos de uma vez.
+> ```
+
+
 **Data:** 01/08/2026
 **Base:** `ASSESSMENT_PONTOS_CRITICOS_2026-08-01.md`, revisado com as decisões de produto do Leandro
 **Horizonte:** 6 fases, ~8 semanas de engenharia
@@ -66,7 +152,80 @@ Caminho crítico: **F0 → F1**. Tudo em Personalizados depende de `buyer_userna
 
 ---
 
-### F0.3 · Restaurar enriquecimento no ingest direto 🔴 *(pré-requisito de F1)*
+### F0.3a · Referência ERP no ingest direto ✅ *(concluído em 02/08)*
+
+**Escopo definido pelo negócio:** para o ingest direto, o que falta buscar no Bling é apenas o **id interno** e o **número do pedido** (o que o usuário vê no Bling). O pedido pode ainda não existir lá, e precisa ser enriquecido minutos depois.
+
+**Isso já era feito** por `pending_order_reconciliations` + `reconcile_pending_erp_references`. O defeito não era ausência de mecanismo — era **calibragem**.
+
+**Latência real do Bling**, medida em 02/08 usando só itens criados após o restart do beat (antes disso a fila estava represada e a média era artefato do outage):
+
+```
+n=22    menor=1min    mediana=49min    p90=90min    maior=97min
+```
+
+**A política anterior era 20 tentativas a cada 60s — desistia em ~20 minutos.** Menos da metade da mediana. Os 64 itens em `failed` não eram pedidos ausentes do Bling: eram pedidos que ainda não tinham chegado quando o sistema parou de perguntar.
+
+**Implementado:**
+
+1. Coluna `next_attempt_after` + índice parcial, com **backoff progressivo** (1, 2, 5, 10, 15, 20, 30, 30, 45, 60 min — 218 min acumulados). O formato da curva justifica: quase nada resolve nos primeiros minutos, a maior parte entre 30 e 90. Consultar a cada 60s por horas gastaria centenas de chamadas de API para o mesmo resultado
+2. **Desistência por idade, não por contagem** — horizonte de 24h (`ERP_REFERENCE_HORIZON_HOURS`). A contagem media a paciência em consultas; o que importa é há quanto tempo o pedido existe sem aparecer
+3. **64 falsos negativos reabertos** (excluindo os terminais)
+
+**Resultado:** 1.500 aplicados, 71 pendentes, **0 em `failed`**.
+
+---
+
+### F0.3b · Buyer, modalidade e prazo no ingest direto 🔴 *(pré-requisito de F1 — em aberto)*
+
+> **Atenção:** medição de 02/08 nos pedidos dos últimos 3 dias mostra **cobertura zero**, pior que os 11,4% do assessment original:
+>
+> | Fonte | Pedidos | `buyer_username` | `modalidade_logistica` | `data_limite_envio` |
+> |---|---:|---:|---:|---:|
+> | shopee (direto) | 1.333 | **0** | **0** | **0** |
+> | mercadolivre (direto) | 253 | **0** | **0** | **0** |
+> | bling | 6 | **0** | 6 | **0** |
+>
+> Sem `buyer_username` não há como ancorar a conversa de chat, e sem chat a IA de personalização não tem contexto. Sem `modalidade_logistica` e `data_limite_envio` não há janela logística, e sem janela a consolidação da Fase 2 não tem por onde agrupar.
+
+**Resolvido em 02/08.** A causa não era falta de busca — os dados sempre foram buscados e guardados em `pedido_snapshots.platform_fields`. Eles nunca eram **promovidos** para as colunas de `pedidos`. `modalidade_logistica` chegava a ser calculada em `_upsert_pedido_status`, era usada no cálculo de coleta e descartada antes do insert.
+
+Criado `logistics_canonicalization.py`, no mesmo padrão da canonização de status: driver observa, camada provider-agnóstica decide.
+
+**`data_limite_envio` é prazo de POSTAGEM, não de entrega** — é o único que a produção consegue usar; prazo de entrega inclui transporte, que não controlamos.
+
+| Provider | Campo canônico | Cobertura medida |
+|---|---|---|
+| Shopee | `ship_by_date` | 1.314 / 1.397 (94%) |
+| Mercado Livre | `sla.expected_date`, de `/shipments/{id}/sla` | 280 / 317 (88%) |
+| Mercado Livre | `lead_time.buffering.date` *(retaguarda)* | +4 → **90% combinado** |
+
+O endpoint de SLA já era consultado pelo driver e gravado no snapshot; a primeira versão desta canonização usava `buffering.date` e cobria só 19%. O SLA é a fonte certa e quintuplicou a cobertura.
+
+**Modalidade** — vocabulário `STANDARD` / `FLEX` / `FULFILLMENT` / `RETIRADA`, com `EXPRESS` como alias histórico de `FLEX`:
+
+```
+Shopee   Shopee Xpress / fulfilled_by_local_seller  1024 -> STANDARD
+         Full / fulfilled_by_shopee                  239 -> FULFILLMENT
+         Entrega Rápida                              123 -> FLEX
+         Retirada pelo Comprador                      11 -> RETIRADA
+ML       me2 / xd_drop_off                            95 -> STANDARD
+         me2 / fulfillment                            20 -> FULFILLMENT
+         me2 / self_service                            4 -> FLEX
+```
+
+O ingest lia `shipment.logistic_type`; o payload real traz `shipment.logistic.type`. Por isso **nenhum pedido ML jamais foi classificado como FLEX**.
+
+**Resultado do backfill:**
+
+| | Total | Prazo | Modalidade | `buyer_username` |
+|---|---:|---:|---:|---:|
+| Shopee | 1.561 | 1.477 (95%) | **1.561 (100%)** | **1.561 (100%)** |
+| Mercado Livre | 317 | 267 (84%) | **317 (100%)** | — (ML não expõe) |
+
+**Pedidos Shopee com conversa de chat vinculada: 26 → 821.** É o que destrava a Fase 1.
+
+> **Decisão a revisar:** o mapeamento ficou em código, não em tabela. Existe `flex_classification_rules` (6 linhas, com duplicatas de dois seeds) e `flex_classifier_service`, que nunca foram ligados ao ingest direto e só cobrem flex — não prazo, fulfillment nem retirada. Optei por código porque este mapeamento é contrato, não configuração. Mas a canonização de status usa tabela (`integration_status_mappings`), então há inconsistência de estilo entre as duas camadas. Vale decidir qual das duas prevalece.
 
 **Problema.** A migração Shopee de Bling para API direta derrubou a cobertura de campos essenciais:
 

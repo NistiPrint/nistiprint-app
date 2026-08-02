@@ -615,7 +615,6 @@ class DemandaCoreService:
                 erp_store_id,
                 erp_order_id,
                 erp_order_number,
-                bling_integration_id,
                 marketplace_integration_id,
                 pedido_bling_id
             ''').in_('id', pedido_ids).execute()
@@ -666,7 +665,7 @@ class DemandaCoreService:
                 raw_payload = bling_data.get('raw_payload') or {}
                 bling_order_id = pedido.get('erp_order_id') or bling_data.get('bling_id') or raw_payload.get('id')
                 bling_numero = pedido.get('erp_order_number') or bling_data.get('numero_pedido') or raw_payload.get('numero')
-                bling_integration_id = pedido.get('erp_integration_id') or pedido.get('bling_integration_id') or bling_data.get('bling_integration_id')
+                bling_integration_id = pedido.get('erp_integration_id') or bling_data.get('bling_integration_id')
                 try:
                     bling_integration_key = int(bling_integration_id) if bling_integration_id is not None else None
                 except (TypeError, ValueError):

@@ -10,11 +10,33 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { personalizadosService } from '@/services/personalizadosService';
 
-const MODEL_OPTIONS = [
+const PROVIDER_OPTIONS = [
+  { value: 'gemini', label: 'Gemini (Google)' },
+  { value: 'openrouter', label: 'OpenRouter' },
+];
+
+// O Gemini tem catálogo fechado, então cabe um select. O OpenRouter muda de
+// catálogo toda semana — uma lista fixa aqui viraria bloqueio em vez de ajuda,
+// então o campo é livre, com sugestões.
+const GEMINI_MODELS = [
   { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (recomendado)' },
   { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (mais preciso)' },
   { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (mais rápido)' },
 ];
+
+const OPENROUTER_SUGGESTIONS = [
+  'openrouter/auto',
+  'anthropic/claude-sonnet-4',
+  'openai/gpt-4o-mini',
+  'google/gemini-2.0-flash-001',
+];
+
+const DEFAULT_MODEL_BY_PROVIDER = {
+  gemini: 'gemini-2.5-flash',
+  openrouter: 'openrouter/auto',
+};
+
+const FALLBACK_NONE = '__none__';
 
 const DEFAULT_PROMPT = `**Role**: You are a highly specialized AI assistant for an e-commerce operation. Your primary function is to act as a data extractor and processor for customer orders, with an extreme focus on accuracy.
 
@@ -29,7 +51,9 @@ function ConfiguracoesIA() {
   const [testing, setTesting] = useState(false);
 
   const [promptTemplate, setPromptTemplate] = useState('');
+  const [provider, setProvider] = useState('gemini');
   const [modelName, setModelName] = useState('gemini-2.5-flash');
+  const [fallbackProvider, setFallbackProvider] = useState(FALLBACK_NONE);
   const [maxProcessing, setMaxProcessing] = useState(50);
 
   const [testResult, setTestResult] = useState(null);
@@ -50,7 +74,9 @@ function ConfiguracoesIA() {
         } else {
           setPromptTemplate(DEFAULT_PROMPT);
         }
-        if (cfg.model_name) setModelName(cfg.model_name.replace(/"/g, ''));
+        if (cfg.provider) setProvider(cfg.provider);
+        if (cfg.model_name) setModelName(String(cfg.model_name).replace(/"/g, ''));
+        setFallbackProvider(cfg.fallback_provider || FALLBACK_NONE);
         if (cfg.max_processing) setMaxProcessing(cfg.max_processing);
       } else {
         setPromptTemplate(DEFAULT_PROMPT);
@@ -63,13 +89,23 @@ function ConfiguracoesIA() {
     }
   };
 
+  // Trocar de provedor troca o modelo junto: o modelo do provedor anterior
+  // quase nunca existe no novo, e salvar o par inválido só falharia no servidor.
+  const handleProviderChange = (novoProvider) => {
+    setProvider(novoProvider);
+    setModelName(DEFAULT_MODEL_BY_PROVIDER[novoProvider] || '');
+    if (fallbackProvider === novoProvider) setFallbackProvider(FALLBACK_NONE);
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setTestResult(null);
     try {
       const data = await personalizadosService.updateConfig({
         prompt_template: promptTemplate,
+        provider,
         model_name: modelName,
+        fallback_provider: fallbackProvider === FALLBACK_NONE ? '' : fallbackProvider,
         max_processing: maxProcessing,
       });
       if (data.success) {
@@ -149,28 +185,93 @@ function ConfiguracoesIA() {
           </CardContent>
         </Card>
 
-        {/* Modelo e Limite */}
+        {/* Provedor, Modelo e Limite */}
         <Card>
           <CardHeader>
-            <CardTitle>Modelo e Processamento</CardTitle>
-            <CardDescription>Configure qual modelo Gemini usar e quantos pedidos processar por vez.</CardDescription>
+            <CardTitle>Provedor e Modelo</CardTitle>
+            <CardDescription>
+              Escolha qual serviço executa a extração dos nomes. A troca vale imediatamente,
+              sem publicar o sistema de novo.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <Label htmlFor="model-name">Modelo Gemini</Label>
-                <Select value={modelName} onValueChange={setModelName}>
-                  <SelectTrigger id="model-name">
+                <Label htmlFor="provider">Provedor</Label>
+                <Select value={provider} onValueChange={handleProviderChange}>
+                  <SelectTrigger id="provider">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {MODEL_OPTIONS.map((opt) => (
+                    {PROVIDER_OPTIONS.map((opt) => (
                       <SelectItem key={opt.value} value={opt.value}>
                         {opt.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Cada provedor usa sua própria chave de API, definida no servidor.
+                </p>
+              </div>
+
+              <div>
+                <Label htmlFor="model-name">Modelo</Label>
+                {provider === 'gemini' ? (
+                  <Select value={modelName} onValueChange={setModelName}>
+                    <SelectTrigger id="model-name">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {GEMINI_MODELS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <>
+                    <Input
+                      id="model-name"
+                      list="openrouter-models"
+                      value={modelName}
+                      onChange={(e) => setModelName(e.target.value)}
+                      placeholder="openrouter/auto"
+                    />
+                    <datalist id="openrouter-models">
+                      {OPENROUTER_SUGGESTIONS.map((m) => (
+                        <option key={m} value={m} />
+                      ))}
+                    </datalist>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      <code>openrouter/auto</code> deixa o OpenRouter escolher o modelo a cada
+                      pedido. Qualquer <code>fornecedor/modelo</code> também é aceito.
+                    </p>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="fallback-provider">Provedor reserva</Label>
+                <Select value={fallbackProvider} onValueChange={setFallbackProvider}>
+                  <SelectTrigger id="fallback-provider">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={FALLBACK_NONE}>Nenhum</SelectItem>
+                    {PROVIDER_OPTIONS.filter((o) => o.value !== provider).map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Usado só se o provedor principal falhar, com o modelo padrão dele.
+                </p>
               </div>
               <div>
                 <Label htmlFor="max-processing">Limite de Pedidos</Label>
@@ -182,6 +283,9 @@ function ConfiguracoesIA() {
                   value={maxProcessing}
                   onChange={(e) => setMaxProcessing(parseInt(e.target.value) || 50)}
                 />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Quantos pedidos processar por execução.
+                </p>
               </div>
             </div>
           </CardContent>

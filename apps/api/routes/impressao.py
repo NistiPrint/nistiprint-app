@@ -137,7 +137,7 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             return None
 
         pedido = pedido_result.data
-        erp_number = pedido.get('erp_order_number') or pedido.get('bling_order_number')
+        erp_number = pedido.get('erp_order_number')
         if not erp_number:
             return None
 

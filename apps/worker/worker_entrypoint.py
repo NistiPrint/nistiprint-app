@@ -23,7 +23,7 @@ DEFAULT_LOG_BACKUP_COUNT = int(os.environ.get("WORKER_LOG_BACKUP_COUNT", "30"))
 
 PIPELINE_LOGGERS = (
     "bling_order_processing",
-    "flex_classifier",
+    "nistiprint_shared.services.logistics_canonicalization",
     "shopee_driver",
     "demanda_producao",
 )

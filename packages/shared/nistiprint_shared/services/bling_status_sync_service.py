@@ -280,7 +280,7 @@ def get_integrations_for_pedido(pedido_id):
     try:
         # Buscar dados do pedido
         pedido_res = supabase_db.table('pedidos').select(
-            'id, origem, canal_venda_id, shop_id_shopee'
+            'id, origem, canal_venda_id, marketplace_integration_id'
         ).eq('id', pedido_id).maybe_single().execute()
         
         if not pedido_res.data:
@@ -326,28 +326,32 @@ def get_integrations_for_pedido(pedido_id):
                             'type': 'marketplace'
                         })
         
-        # 2. Buscar integrações marketplace por shop_id (para Shopee, etc.)
-        if origem and origem.lower() in ['shopee', 'amazon', 'mercadolivre', 'shein', 'tiktok']:
-            shop_id = pedido.get('shop_id_shopee')
-            if shop_id:
-                # Buscar integrações do módulo que tenham este shop_id no config
-                module_id = origem.lower()
-                integracoes_res = supabase_db.table('installed_integrations').select(
-                    'id, module_id, instance_name, is_active, config'
-                ).eq('module_id', module_id).eq('is_active', True).execute()
-                
-                for integracao in integracoes_res.data or []:
-                    config = integracao.get('config', {})
-                    if config.get('shop_id') == shop_id:
-                        # Verificar se já não foi adicionada
-                        if not any(i['id'] == integracao['id'] for i in integracoes):
-                            integracoes.append({
-                                'id': integracao['id'],
-                                'module_id': integracao['module_id'],
-                                'instance_name': integracao['instance_name'],
-                                'type': 'marketplace'
-                            })
-        
+        # 2. Integracao de marketplace declarada no proprio pedido.
+        #
+        # Antes esta busca partia de `pedidos.shop_id_shopee` cruzando com
+        # `installed_integrations.config->shop_id`, e so para uma lista fixa de
+        # origens ('shopee','amazon','mercadolivre','shein','tiktok') — que ja
+        # nao cobria `amazonfba_classic`, `tiktokshop`, `magazineluiza`,
+        # `lojaintegrada` nem `kwai`.
+        #
+        # Nao importava: `shop_id_shopee` estava nula em 100% dos 7.176 pedidos,
+        # entao o bloco inteiro nunca executava. O pedido carrega
+        # `marketplace_integration_id` resolvido no ingest; e dele que se parte.
+        marketplace_integration_id = pedido.get('marketplace_integration_id')
+        if marketplace_integration_id and not any(
+            i['id'] == marketplace_integration_id for i in integracoes
+        ):
+            extra = supabase_db.table('installed_integrations').select(
+                'id, module_id, instance_name, is_active'
+            ).eq('id', marketplace_integration_id).eq('is_active', True).maybe_single().execute()
+            if extra.data:
+                integracoes.append({
+                    'id': extra.data['id'],
+                    'module_id': extra.data['module_id'],
+                    'instance_name': extra.data['instance_name'],
+                    'type': 'marketplace'
+                })
+
         return integracoes
         
     except Exception as e:

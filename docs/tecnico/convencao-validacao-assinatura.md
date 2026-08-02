@@ -63,21 +63,28 @@ o palpite.
 **5. A inbox tem uma única porta.** A convenção só vale enquanto o n8n for o
 único caminho até a fila. Ver abaixo.
 
-## A porta paralela
+## A porta paralela — removida em 02/08/2026
 
-`POST /api/v2/webhooks/shopee` e `/mercadolivre` enfileiram no **mesmo** inbox
-sem validar assinatura, e o n8n não os usa — ele escreve direto no Redis.
+`POST /api/v2/webhooks/shopee` e `/mercadolivre` enfileiravam no **mesmo** inbox
+sem validar assinatura, e o n8n nunca os usou — ele escreve direto no Redis.
 
 Até 01/08/2026 `_marketplace_webhook_authorized()` era **fail-open**: sem
 `MARKETPLACE_WEBHOOK_TOKEN` definido, aceitava qualquer requisição. A variável
 não existia em nenhum `.env`. Qualquer um que conhecesse a URL podia injetar
 eventos na fila.
 
-Corrigido: a rota agora é fail-closed e a comparação do token usa
-`hmac.compare_digest`. **Defina `MARKETPLACE_WEBHOOK_TOKEN`** se essa entrada for
-usada; caso contrário ela permanece fechada, que é o estado correto.
+A correção intermediária tornou a rota fail-closed. Mas trancar uma porta não é
+o mesmo que não ter a porta: enquanto ela existir, a regra 5 acima depende de
+alguém lembrar de mantê-la trancada a cada mudança.
 
-Se um dia essa rota for aposentada, melhor ainda: uma porta a menos.
+**As duas rotas foram removidas.** A garantia "tudo que está na inbox foi aceito
+na borda" agora é estrutural, não um acordo.
+
+Para reinjetar um evento manualmente, use
+`POST /api/v2/webhooks/events/<id>/reprocess`, que parte de um evento já
+persistido e auditado — não de um payload cru vindo de fora.
+
+`MARKETPLACE_WEBHOOK_TOKEN` deixou de ter uso e pode sair do ambiente.
 
 ## O que muda no app
 

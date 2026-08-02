@@ -118,7 +118,7 @@ def resolve_order_ids_from_origin(
         order_ids.update(row["id"] for row in linked_rows if row.get("id") is not None)
 
     # Path 2: direct denormalized field
-    direct_rows = supabase_db.table("pedidos").select("id").eq("bling_loja_id", loja_id).execute().data or []
+    direct_rows = supabase_db.table("pedidos").select("id").eq("erp_store_id", loja_id).execute().data or []
     order_ids.update(row["id"] for row in direct_rows if row.get("id") is not None)
 
     # Path 3: fallback through channel_connections mapping
@@ -152,10 +152,13 @@ def resolve_order_ids_from_origin(
             order_ids.update(row["id"] for row in rows if row.get("id") is not None)
 
         if bling_integration_id is not None:
+            # `channel_connections.bling_integration_id` continua existindo; o
+            # que mudou foi o lado de `pedidos`, onde a coluna virou
+            # `erp_integration_id`.
             rows = (
                 supabase_db.table("pedidos")
                 .select("id")
-                .eq("bling_integration_id", bling_integration_id)
+                .eq("erp_integration_id", bling_integration_id)
                 .execute()
                 .data
                 or []
@@ -208,7 +211,7 @@ def build_origin_options(supabase_db) -> List[Dict[str, Any]]:
 
     order_rows = (
         supabase_db.table("pedidos")
-        .select("id, marketplace_integration_id, bling_loja_id, pedido_bling_id")
+        .select("id, marketplace_integration_id, erp_store_id, pedido_bling_id")
         .in_("marketplace_integration_id", marketplace_ids)
         .execute()
         .data
@@ -231,7 +234,7 @@ def build_origin_options(supabase_db) -> List[Dict[str, Any]]:
             continue
 
         totals_by_marketplace[marketplace_id] = totals_by_marketplace.get(marketplace_id, 0) + 1
-        store_id = row.get("bling_loja_id")
+        store_id = row.get("erp_store_id")
         if not store_id and row.get("pedido_bling_id") is not None:
             store_id = pb_store_map.get(row["pedido_bling_id"])
         if store_id:

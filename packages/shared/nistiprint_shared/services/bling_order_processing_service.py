@@ -33,7 +33,7 @@ from nistiprint_shared.services.personalized_classification_service import (
 )
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
-from nistiprint_shared.services import flex_classifier_service, fulfillment_classifier_service
+from nistiprint_shared.services import logistics_canonicalization
 from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso, parse_datetime, normalize_to_iso
 
 logger = logging.getLogger("bling_order_processing")
@@ -83,6 +83,60 @@ def _normalize_carrier(value: str | None) -> str:
     return "".join(char for char in nfkd if not unicodedata.combining(char)).lower().strip()
 
 
+def _canonizar_logistica(
+    shopee_data: dict | None,
+    meli_data: dict | None,
+    numero_loja: str | None,
+    marketplace_slug: str | None,
+) -> FlexClassificationResult:
+    """Classificacao logistica do caminho Bling, via canonizacao unica.
+
+    Antes existiam `_classify_fulfillment` e `_classify_flex` aqui, ~150 linhas
+    que faziam a mesma pergunta que o ingest direto fazia do seu proprio jeito.
+    Tres implementacoes da mesma regra, e as tres divergiam:
+
+    - a de fulfillment tinha um "fallback deterministico para Shopee" que
+      duplicava o que a tabela de regras deveria decidir;
+    - a de flex exigia `mode == 'me2'` E `option_name in ('prioritario','flex')`
+      para o ML, alem de ler `shipment.logistic_type` — campo que nao existe no
+      payload real (o correto e `shipment.logistic.type`). Nenhum pedido ML
+      jamais foi classificado como FLEX por esse caminho;
+    - o ingest direto usava `if 'entrega rapida' in carrier` inline.
+
+    Agora os dois caminhos perguntam para `logistics_canonicalization`.
+    """
+    if marketplace_slug == 'shopee':
+        detalhe = dict(shopee_data or {})
+        # `_resolve_shipping_carrier` cobre o caso do carrier vir do espelho
+        # `pedidos_shopee` em vez do payload.
+        detalhe.setdefault('shipping_carrier', _resolve_shipping_carrier(shopee_data, numero_loja))
+        canonico = logistics_canonicalization.resolve('shopee', detalhe)
+    elif marketplace_slug == 'mercadolivre':
+        canonico = logistics_canonicalization.resolve('mercadolivre', meli_data)
+    else:
+        return FlexClassificationResult(
+            is_flex=False,
+            is_fulfillment=False,
+            modalidade='STANDARD',
+            motivo=f"plataforma={marketplace_slug!r} sem canonizacao logistica",
+            raw_decision={'marketplace_slug': marketplace_slug, 'numero_loja': numero_loja},
+        )
+
+    return FlexClassificationResult(
+        is_flex=canonico.is_flex,
+        is_fulfillment=canonico.is_fulfillment,
+        modalidade=canonico.modalidade_logistica,
+        motivo=canonico.reason,
+        matched_rule_id=None,
+        raw_decision={
+            'marketplace_slug': marketplace_slug,
+            'modalidade': canonico.modalidade_logistica,
+            'prazo_postagem': canonico.data_limite_envio,
+            'prazo_origem': canonico.dispatch_deadline_source,
+        },
+    )
+
+
 def _classify_fulfillment(
     shopee_data: dict | None,
     meli_data: dict | None,
@@ -92,59 +146,8 @@ def _classify_fulfillment(
     marketplace_integration_id: int | None = None,
     correlation_id: str | None = None,
 ) -> FlexClassificationResult:
-    """
-    Classifica se o pedido é fulfillment usando fulfillment_classifier_service.
-    """
-    shipping_carrier = _resolve_shipping_carrier(shopee_data, numero_loja)
-    fulfillment_flag = (shopee_data or {}).get('fulfillment_flag')
-
-    # Fallback determinístico para Shopee, mesmo sem regra parametrizada no banco.
-    if marketplace_slug == 'shopee':
-        is_full_carrier = str(shipping_carrier or '').strip().lower() == 'full'
-        is_fulfillment_flag = str(fulfillment_flag or '').strip() == 'fulfilled_by_shopee'
-        if is_full_carrier or is_fulfillment_flag:
-            motivo = (
-                f"fallback_shopee carrier={shipping_carrier!r} fulfillment_flag={fulfillment_flag!r} "
-                f"→ is_fulfillment=True"
-            )
-            return FlexClassificationResult(
-                is_flex=False,
-                is_fulfillment=True,
-                modalidade='FULFILLMENT',
-                motivo=motivo,
-                matched_rule_id=None,
-                raw_decision={
-                    'source': 'fallback_shopee',
-                    'shipping_carrier': shipping_carrier,
-                    'fulfillment_flag': fulfillment_flag,
-                }
-            )
-
-    fields = {
-        'fulfillment_flag': fulfillment_flag,
-        'shipping_carrier': shipping_carrier,
-        'canal_venda_id': canal_venda_id
-    }
-
-    if marketplace_slug == 'mercadolivre' and meli_data:
-        shipment = meli_data.get('shipment') or {}
-        fields['logistic_type'] = shipment.get('logistic_type') or shipment.get('shipping_type')
-
-    res = fulfillment_classifier_service.classify(
-        supabase_db,
-        fields=fields,
-        marketplace_integration_id=marketplace_integration_id,
-        log_context={'correlation_id': correlation_id, 'numero_loja': numero_loja}
-    )
-
-    return FlexClassificationResult(
-        is_flex=False, # Não é flex aqui
-        is_fulfillment=res.is_fulfillment,
-        modalidade=res.modalidade,
-        motivo=res.motivo,
-        matched_rule_id=res.matched_rule_id,
-        raw_decision={'fields': fields, 'res': res.__dict__}
-    )
+    """Mantido pela assinatura; a decisao vive na canonizacao."""
+    return _canonizar_logistica(shopee_data, meli_data, numero_loja, marketplace_slug)
 
 
 def _classify_flex(
@@ -154,6 +157,7 @@ def _classify_flex(
     marketplace_slug: str | None,
     is_fulfillment: bool = False,
 ) -> FlexClassificationResult:
+    """Mantido pela assinatura; a decisao vive na canonizacao."""
     if is_fulfillment:
         return FlexClassificationResult(
             is_flex=False,
@@ -161,81 +165,7 @@ def _classify_flex(
             modalidade='FULFILLMENT',
             motivo='pedido ja classificado como fulfillment, ignorando flex',
         )
-
-    if marketplace_slug == 'mercadolivre':
-        if not meli_data:
-             return FlexClassificationResult(
-                is_flex=False,
-                modalidade='STANDARD',
-                motivo='meli_data ausente para mercadolivre',
-            )
-        
-        shipment = meli_data.get('shipment') or {}
-        shipping_option = shipment.get('shipping_option') or {}
-        
-        mode = str(shipment.get('mode') or '').lower()
-        # MELI returns logistic_type at the root of shipment detail
-        shipping_type = str(shipment.get('logistic_type') or shipment.get('shipping_type') or '').lower()
-        option_name_raw = str(shipping_option.get('name') or '')
-        option_name = _normalize_carrier(option_name_raw) # Reusing existing normalization
-        
-        logger.info("[flex] MELI comparison: mode=%s, type=%s, option=%s (raw=%s)", 
-                    mode, shipping_type, option_name, option_name_raw)
-        
-        is_meli_flex = (
-            mode == "me2" and 
-            shipping_type == "self_service" and 
-            (option_name == "prioritario" or option_name == "flex")
-        )
-        
-        if is_meli_flex:
-            return FlexClassificationResult(
-                is_flex=True,
-                modalidade='FLEX',
-                motivo=f"meli: mode={mode}, type={shipping_type}, option={option_name}",
-                raw_decision={'mode': mode, 'shipping_type': shipping_type, 'option_name': option_name}
-            )
-        else:
-             return FlexClassificationResult(
-                is_flex=False,
-                modalidade='STANDARD',
-                motivo=f"meli: nao atende criterios flex (mode={mode}, type={shipping_type}, option={option_name})",
-                raw_decision={'mode': mode, 'shipping_type': shipping_type, 'option_name': option_name}
-            )
-
-    if marketplace_slug != 'shopee':
-        return FlexClassificationResult(
-            is_flex=False,
-            modalidade='STANDARD',
-            motivo=f"plataforma={marketplace_slug!r} nao e shopee ou mercadolivre",
-            raw_decision={'marketplace_slug': marketplace_slug, 'numero_loja': numero_loja},
-        )
-
-    carrier = _resolve_shipping_carrier(shopee_data, numero_loja)
-    normalized_carrier = _normalize_carrier(carrier)
-
-    if not normalized_carrier:
-        return FlexClassificationResult(
-            is_flex=False,
-            modalidade='STANDARD',
-            motivo='shipping_carrier ausente',
-            raw_decision={'marketplace_slug': marketplace_slug, 'shipping_carrier': carrier},
-        )
-
-    if 'entrega rapida' in normalized_carrier:
-        return FlexClassificationResult(
-            is_flex=True,
-            modalidade='FLEX',
-            motivo=f"shipping_carrier={carrier!r} contem 'entrega rapida'",
-            raw_decision={'marketplace_slug': marketplace_slug, 'shipping_carrier': carrier},
-        )
-
-    return FlexClassificationResult(
-        is_flex=False,
-        modalidade='STANDARD',
-        motivo=f"shipping_carrier={carrier!r} nao contem 'entrega rapida'",
-        raw_decision={'marketplace_slug': marketplace_slug, 'shipping_carrier': carrier},
-    )
+    return _canonizar_logistica(shopee_data, meli_data, numero_loja, marketplace_slug)
 
 
 def _build_payload_summary(payload: dict) -> dict:
@@ -619,8 +549,7 @@ def _process_bling_reference_webhook(
     rows = (
         supabase_db.table("pedidos")
         .select(
-            "id,erp_integration_id,erp_store_id,erp_order_id,erp_order_number,"
-            "bling_integration_id,bling_loja_id,bling_order_id,bling_order_number"
+            "id,erp_integration_id,erp_store_id,erp_order_id,erp_order_number"
         )
         .eq("marketplace_module_id", marketplace_module_id)
         .eq("marketplace_order_id", marketplace_order_id)
@@ -651,9 +580,9 @@ def _process_bling_reference_webhook(
         }
 
     pedido = rows[0]
-    existing_integration = pedido.get("erp_integration_id") or pedido.get("bling_integration_id")
-    existing_order_id = pedido.get("erp_order_id") or pedido.get("bling_order_id")
-    existing_number = pedido.get("erp_order_number") or pedido.get("bling_order_number")
+    existing_integration = pedido.get("erp_integration_id")
+    existing_order_id = pedido.get("erp_order_id")
+    existing_number = pedido.get("erp_order_number")
     if (
         (existing_integration and str(existing_integration) != str(bling_inst.get("id")))
         or (existing_order_id and str(existing_order_id) != str(bling_id))

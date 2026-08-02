@@ -70,7 +70,7 @@ def reconcile_marketplace_lifecycle(
 ) -> dict:
     rows = (
         supabase_db.table("pedidos")
-        .select("id,numero_pedido,marketplace_module_id,marketplace_order_id,marketplace_integration_id,situacao_pedido_id,erp_order_number,bling_order_number,updated_at")
+        .select("id,numero_pedido,marketplace_module_id,marketplace_order_id,marketplace_integration_id,situacao_pedido_id,erp_order_number,updated_at")
         .in_("marketplace_module_id", ["shopee", "mercadolivre"])
         .in_("situacao_pedido_id", list(BACKFILL_ACTIVE_STATUS_IDS))
         .order("id")
@@ -143,8 +143,6 @@ def reconcile_marketplace_lifecycle(
                 }
                 if str(row.get("erp_order_number") or "").upper().startswith("SHOPEE-"):
                     update["erp_order_number"] = None
-                if str(row.get("bling_order_number") or "").upper().startswith("SHOPEE-"):
-                    update["bling_order_number"] = None
                 (
                     supabase_db.table("pedidos")
                     .update(update)

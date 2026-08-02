@@ -96,10 +96,11 @@ As 805 regressões corretamente ignoradas são a prova de que a guarda funciona 
 
 **Lacunas.**
 
-- **`marketplace_order_effects`: 260 registros, 100% `pending`, tipo `alert_active_demands`.** O efeito colateral nunca é consumido. Na prática: **um pedido cancelado no marketplace não gera alerta na demanda ativa que o contém.** Este é o furo direto no requisito "consistência da produção das demandas".
+- ~~**`marketplace_order_effects`: 260 registros, 100% `pending`**~~ → **resolvido em 02/08.** Com o beat reiniciado, os 262 efeitos foram processados. Ver §4.4.
 - 14 transições `unmapped` (Shopee) sem processo de triagem visível.
-- Duplicação de modelo de timeline: `eventos_pedido` (0 linhas) e `transicoes_situacao` (0 linhas) coexistem com `marketplace_order_transitions` (3.858), que é o que realmente é usado.
+- **Correção do assessment:** `eventos_pedido` **não é tabela morta.** Ela é escrita pelo RPC `process_marketplace_order_effect`, que estava parado — hoje tem 262 linhas (86 cancelamentos + 176 devoluções). Quem continua sem uso é `transicoes_situacao` (0 linhas), coexistindo com `marketplace_order_transitions` (3.858), que é a fonte real.
 - Situação interna **"Produzido" com 0 pedidos** — o estado que faria a ponte entre produção e expedição nunca é atingido.
+- **Achado novo (02/08): 398 pedidos cancelados estavam vinculados a demandas em RASCUNHO.** O RPC só alertava demandas já publicadas, então os 262 efeitos foram marcados `processed` com **zero alertas** — sucesso silencioso sobre um caso não coberto. Se qualquer rascunho fosse publicado, a produção receberia pedidos cancelados. Corrigido e limpo (§4.7).
 
 ---
 
@@ -462,6 +463,32 @@ Zero tentativas e zero erros significa que a task **nunca foi disparada** — n�
 **Lacuna de observabilidade que mascarou isso.** `reconcile_pending` e `process_pending_effects` vivem em `packages/shared/services/` e têm apenas `@shared_task` — **não usam o decorator `@log_task_execution`**, que existe em `apps/worker/task_logger.py`. Por isso não aparecem em `task_execution_logs` nem quando rodam. As duas únicas tasks visíveis lá (`process_eventos_producao_task`, `renew_app_managed_credentials_task`) são justamente as que moram em `apps/worker/tasks/`. Ou seja: **metade das tasks agendadas é invisível no painel de execução**.
 
 **Consequência da `consolidar-pedidos-pendentes` desligada:** nenhuma demanda é criada desde 16/07 — é o que trava toda a cadeia de produção.
+
+### 4.7 Estado após as correções de 02/08
+
+Beat reiniciado, código publicado. Resultado medido:
+
+| Métrica | 01/08 | 02/08 |
+|---|---:|---:|
+| `pending_order_reconciliations` pendentes | 1.609 | **7** |
+| — resolvidos (`applied`) | 0 | **1.496** |
+| — encerrados por situação terminal | — | **64** |
+| — falhas reais (`failed`) | 0 | **64** |
+| `marketplace_order_effects` pendentes | 261 | **0** (262 processados) |
+| `eventos_pedido` | 0 | **262** |
+| Tasks agendadas com registro de execução | 2 de 4 | **4 de 4** |
+| Pedidos cancelados dentro de rascunhos | 398 | **0** |
+| `alertas_demanda` | 0 | **398** (rastro da limpeza) |
+
+**Três descobertas que só apareceram depois de ligar as filas:**
+
+1. **Cancelado dentro de rascunho.** O RPC filtrava demandas em `AGUARDANDO/EM_PRODUCAO/COLETA_PARCIAL/COLETADO`; as 39 demandas estão em `RASCUNHO`. Os 262 efeitos processaram com zero alertas — comportamento correto para o código escrito, e errado para o negócio. Agora rascunho remove o pedido e ajusta a quantidade; demanda publicada continua exigindo decisão humana.
+
+2. **Metade da fila de falhas não era falha.** Dos 128 itens que esgotaram 20 tentativas, 64 eram devoluções e 18 entregas — pedidos que o Bling nunca importaria, por definição. Novo estado `skipped_terminal` separa "não tinha o que resolver" de "falhou", e o encerramento acontece antes de gastar chamada de API.
+
+3. **Fila órfã.** 5 itens com `reason = marketplace_module_unresolved` parados desde 29/06: a task filtra `reason = erp_reference_pending` e **nenhuma outra os consome**. Continuam em aberto.
+
+**O que permanece:** 64 falhas legítimas (pedidos ML em `Pronto para Envio`, `Em Andamento`, `Entregue`, `Enviado` sem pedido correspondente no Bling) — exigem investigação caso a caso, possivelmente ligada ao vínculo ML com `marketplace_integration_id = NULL`.
 
 ### 4.5 Dívida arquitetural
 

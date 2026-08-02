@@ -53,16 +53,16 @@ def generate_nfe():
         if not instance_id and numero_loja_list:
             pedidos_res = (
                 supabase_db.table('pedidos')
-                .select('codigo_pedido_externo, bling_integration_id, marketplace_integration_id, bling_loja_id')
+                .select('codigo_pedido_externo, erp_integration_id, marketplace_integration_id, erp_store_id')
                 .in_('codigo_pedido_externo', numero_loja_list)
                 .execute()
             )
             rows = pedidos_res.data or []
             integration_ids = sorted(
                 {
-                    int(row['bling_integration_id'])
+                    int(row['erp_integration_id'])
                     for row in rows
-                    if row.get('bling_integration_id') is not None
+                    if row.get('erp_integration_id') is not None
                 }
             )
             if len(integration_ids) == 1:
@@ -89,7 +89,7 @@ def generate_nfe():
                             row['marketplace_integration_id'],
                             INVOICING,
                             context={
-                                'erp_store_id': row.get('bling_loja_id'),
+                                'erp_store_id': row.get('erp_store_id'),
                                 'external_order_id': row.get('codigo_pedido_externo'),
                                 **request_context,
                             },

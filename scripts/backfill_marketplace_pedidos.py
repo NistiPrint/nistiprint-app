@@ -17,7 +17,7 @@ def main():
     logger.info("Iniciando backfill de pedidos sem marketplace_integration_id...")
     
     # Buscar pedidos órfãos
-    orfaos = supabase_db.table('pedidos').select('id, pedido_bling_id, bling_integration_id') \
+    orfaos = supabase_db.table('pedidos').select('id, pedido_bling_id, erp_integration_id') \
         .is_('marketplace_integration_id', 'null').eq('origem', 'BLING').execute().data or []
     
     logger.info(f"Encontrados {len(orfaos)} pedidos órfãos para reprocessar")

@@ -25,6 +25,7 @@ from nistiprint_shared.services.canonical_order_repository import (
 )
 from nistiprint_shared.services.correlation_service import generate_correlation_id, set_correlation_id
 from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
+from nistiprint_shared.services import logistics_canonicalization
 from nistiprint_shared.services.personalized_classification_service import (
     persist_classification_from_payload,
 )
@@ -1142,7 +1143,14 @@ class MarketplaceWebhookIngestService:
         data_pagamento_marketplace = None
         data_envio_marketplace = None
         payment_time_source = None
-        modalidade = "STANDARD"
+        # Canonizacao logistica: prazo de postagem, modalidade e identidade do
+        # comprador. Antes isto era `if "entrega rapida" in carrier` inline aqui,
+        # e o resultado nem chegava a ser gravado — `modalidade` era calculada,
+        # usada para o calculo de coleta e descartada. Dai `modalidade_logistica`,
+        # `data_limite_envio` e `buyer_username` estarem zerados em producao.
+        logistica = logistics_canonicalization.resolve(source, details)
+        modalidade = logistica.modalidade_logistica
+
         if source == "shopee":
             data_compra_marketplace = (details or {}).get("create_time") or data_venda
             if (details or {}).get("pay_time"):
@@ -1150,9 +1158,6 @@ class MarketplaceWebhookIngestService:
                 payment_time_source = "shopee.pay_time"
             raw = (details or {}).get("raw") or {}
             data_envio_marketplace = (details or {}).get("ship_time") or unix_to_app_iso(raw.get("ship_time"))
-            carrier = str((details or {}).get("shipping_carrier") or "").lower()
-            if "entrega rÃ¡pida" in carrier or "entrega rapida" in carrier:
-                modalidade = "FLEX"
             logger.info(
                 "[marketplace-webhook] shopee resolve timestamps order_sn=%s status=%s source=%s resolved=%s",
                 external_order_id,
@@ -1167,17 +1172,11 @@ class MarketplaceWebhookIngestService:
             )
         elif source == "mercadolivre":
             order = (details or {}).get("order") or {}
-            shipment = (details or {}).get("shipment") or {}
             data_compra_marketplace = order.get("date_created") or data_venda
             if _meli_date_approved(order):
                 data_pagamento_marketplace = _meli_date_approved(order)
                 payment_time_source = "mercadolivre.payments.date_approved"
             data_envio_marketplace = order.get("date_closed")
-            option = shipment.get("shipping_option") if isinstance(shipment.get("shipping_option"), dict) else {}
-            logistic_type = str(shipment.get("logistic_type") or shipment.get("shipping_type") or "").lower()
-            option_name = str(option.get("name") or "").lower()
-            if logistic_type == "self_service" and option_name in ("prioritario", "flex"):
-                modalidade = "FLEX"
             logger.info(
                 "[marketplace-webhook] meli resolve timestamps order_id=%s status=%s source=%s resolved=%s",
                 external_order_id,
@@ -1198,10 +1197,14 @@ class MarketplaceWebhookIngestService:
             compra_dt=_parse_datetime(data_compra_marketplace),
         )
         logger.info(
-            "[marketplace-webhook] coleta calculada source=%s external_order_id=%s modalidade=%s contexto=%s",
+            "[marketplace-webhook] coleta calculada source=%s external_order_id=%s modalidade=%s "
+            "prazo_postagem=%s (%s) motivo=%s contexto=%s",
             source,
             external_order_id,
             modalidade,
+            logistica.data_limite_envio,
+            logistica.dispatch_deadline_source or "nao informado",
+            logistica.reason,
             {
                 "data_coleta": coleta_contexto.get("data_coleta"),
                 "horario_corte": coleta_contexto.get("horario_corte"),
@@ -1222,8 +1225,6 @@ class MarketplaceWebhookIngestService:
             "erp_store_id": str(bling_loja_id) if bling_loja_id not in (None, "") else None,
             "erp_order_id": bling_ref.get("bling_order_id"),
             "erp_order_number": bling_ref.get("bling_order_number"),
-            "bling_integration_id": bling_integration_id,
-            "bling_loja_id": str(bling_loja_id) if bling_loja_id not in (None, "") else None,
             "canal_venda_id": channel_id,
             "situacao_pedido_id": situacao_pedido_id,
             "status_original": status_original,
@@ -1238,11 +1239,12 @@ class MarketplaceWebhookIngestService:
             "data_envio_marketplace": data_envio_marketplace,
             "regra_logistica_integracao_id": (coleta_contexto.get("regra") or {}).get("id"),
             "marketplace_order_id": str(external_order_id),
-            "bling_order_id": bling_ref.get("bling_order_id"),
-            "bling_order_number": bling_ref.get("bling_order_number"),
             "pedido_bling_id": bling_ref.get("pedido_bling_id"),
             "ingest_source": source,
             "updated_at": get_now_iso(),
+            # Campos logisticos canonicos: prazo de POSTAGEM (nao de entrega),
+            # modalidade e identidade do comprador.
+            **logistica.to_order_fields(),
             **{key: value for key, value in mirror_fields.items() if value is not None},
         }
         row = {key: value for key, value in row.items() if value is not None}

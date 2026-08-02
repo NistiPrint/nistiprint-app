@@ -344,9 +344,8 @@ def _build_local_print_order(pedido_row, snapshot, item_rows):
     order['numero'] = (
         order.get('numero')
         or pedido_row.get('erp_order_number')
-        or pedido_row.get('bling_order_number')
     )
-    order['id'] = order.get('id') or pedido_row.get('erp_order_id') or pedido_row.get('bling_order_id')
+    order['id'] = order.get('id') or pedido_row.get('erp_order_id')
     order['contato'] = _build_contact_from_sources(pedido_row, snapshot, order.get('contato'))
     order['itens'] = order.get('itens') or _build_items_from_snapshot(snapshot, item_rows)
     order['totalProdutos'] = (
@@ -377,7 +376,7 @@ def _fetch_local_print_orders(order_ids, module_id, marketplace_integration_id=N
         query = (
             supabase_db.table('pedidos')
             .select(
-                'id,marketplace_order_id,codigo_pedido_externo,numero_pedido,erp_order_id,erp_order_number,bling_order_id,bling_order_number,'
+                'id,marketplace_order_id,codigo_pedido_externo,numero_pedido,erp_order_id,erp_order_number,'
                 'cliente_nome,cliente_documento,cliente_telefone,cliente_email,total_pedido,servico_logistico,'
                 'informacoes_cliente,marketplace_integration_id'
             )
