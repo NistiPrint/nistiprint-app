@@ -22,6 +22,9 @@ from nistiprint_shared.services.webhook_secret_resolver import (
 
 logger = logging.getLogger(__name__)
 
+#: Aviso de placeholder no env e uma vez por origem, nao por evento.
+_WARNED_ENV_PLACEHOLDER: set[str] = set()
+
 
 @dataclass(frozen=True)
 class SignatureResult:
@@ -64,10 +67,11 @@ def _env_secrets(source: str) -> list[str]:
         values = [value.strip() for value in raw.split(",")]
     usable = [value for value in values if is_usable_secret(value)]
     discarded = len([value for value in values if str(value).strip()]) - len(usable)
-    if discarded:
+    if discarded and source not in _WARNED_ENV_PLACEHOLDER:
+        _WARNED_ENV_PLACEHOLDER.add(source)
         logger.warning(
             "[ingest] %s valor(es) de INGEST_WEBHOOK_SECRETS_%s ignorados por serem "
-            "placeholder ou curtos demais",
+            "placeholder ou curtos demais; remova a variavel ou deixe-a vazia",
             discarded, source.upper(),
         )
     return usable
@@ -83,6 +87,18 @@ def _secret_candidates(source: str, envelope: dict[str, Any]) -> tuple[list, str
 
 
 def _policy(source: str) -> str:
+    """Politica de assinatura da origem.
+
+    - `required`  — sem assinatura valida, o evento e descartado.
+    - `optional`  — falta de material nao descarta, mas assinatura **invalida**
+                    descarta: e a politica normal de regime.
+    - `observe`   — valida e registra o veredito real, mas nunca descarta.
+                    Existe para estrear ou trocar a fonte do segredo sem risco:
+                    em 30/07 um placeholder em `optional` derrubou 2.829 eventos
+                    do Bling em tres dias, porque `optional` protege contra
+                    segredo ausente e nao contra segredo errado.
+    - `disabled`  — nao valida nada.
+    """
     return os.getenv(f"INGEST_SIGNATURE_POLICY_{source.upper()}", "optional").strip().lower()
 
 
@@ -156,16 +172,22 @@ def validate_signature(envelope: dict[str, Any]) -> SignatureResult:
             )
         return SignatureResult("signature_valid", True, enforce, strategy)
     if result is False:
+        if policy == "observe":
+            # Registra o veredito verdadeiro para inspecao, sem descartar.
+            logger.warning(
+                "[ingest] assinatura invalida em %s sob politica observe: evento "
+                "segue para processamento (estrategia=%s)",
+                source, strategy,
+            )
+            return SignatureResult("signature_invalid_observed", True, False, strategy)
         return SignatureResult("discarded_invalid_signature", False, True, strategy)
 
     # Sem material para verificar. Distinguir "nao ha segredo configurado" de
     # "o evento nao trouxe assinatura" e o que evita repetir o incidente de
     # 30/07, em que um placeholder virou descarte terminal silencioso.
     if not candidates:
-        logger.warning(
-            "[ingest] nenhum segredo utilizavel para %s; evento segue como nao verificado",
-            source,
-        )
+        # O resolvedor ja avisa uma vez por origem. Aqui basta registrar o
+        # motivo na propria linha do evento, sem repetir o aviso a cada webhook.
         strategy = "no_usable_secret"
     return SignatureResult("discarded_signature_unverifiable" if enforce else "signature_unverified",
                            not enforce, enforce, strategy)

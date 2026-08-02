@@ -32,7 +32,17 @@ CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis-celery:63
 CELERY_RESULT_BACKEND = None
 
 def get_default_schedules():
-    """Fallback de agendamentos caso o banco esteja inacessível ou vazio."""
+    """Fallback usado APENAS quando `celery_task_schedules` nao existe no banco.
+
+    Enquanto a configuracao existir — e ela existe em producao — estes valores
+    nao tem efeito nenhum. Sao mantidos como rede de seguranca para um ambiente
+    novo, nao como documentacao do que roda. Consultar o banco, nunca este
+    dicionario, para saber o que esta ativo.
+
+    Os intervalos abaixo espelham a configuracao de producao de propositio: um
+    default divergente vira armadilha, porque quem le o codigo conclui uma coisa
+    e o beat faz outra.
+    """
     return {
         'reconcile-pending-erp-references': {
             'task': 'nistiprint_shared.services.order_erp_reference_service.reconcile_pending',
@@ -44,7 +54,7 @@ def get_default_schedules():
         },
         'processar-eventos-producao-periodic': {
             'task': 'tasks.eventos_tasks.process_eventos_producao',
-            'schedule': 10,
+            'schedule': 300,
         },
         'renew-app-managed-credentials': {
             'task': 'tasks.token_renewal_tasks.renew_app_managed_credentials',
@@ -87,12 +97,27 @@ def load_dynamic_schedules():
                 )
                 continue
             if task_config.get('enabled', True):
-                schedules[task_name] = {
+                entry = {
                     'task': task_config.get('task_name', task_name),
                     'schedule': task_config.get('schedule_seconds', 60),
                 }
-                # Log minimalista para não poluir
-                logger.info(f"Task periódica ativa: {task_name} ({task_config.get('schedule_seconds')}s)")
+                # `kwargs`/`args` eram descartados silenciosamente: uma task
+                # configurada como `dry_run: true` no banco rodava com os
+                # defaults da assinatura. Configuracao que nao chega na execucao
+                # e pior que configuracao ausente, porque parece estar valendo.
+                kwargs = task_config.get('kwargs')
+                if isinstance(kwargs, dict) and kwargs:
+                    entry['kwargs'] = kwargs
+                args = task_config.get('args')
+                if isinstance(args, (list, tuple)) and args:
+                    entry['args'] = list(args)
+                schedules[task_name] = entry
+                logger.info(
+                    "Task periódica ativa: %s (%ss)%s",
+                    task_name,
+                    task_config.get('schedule_seconds'),
+                    f" kwargs={sorted(kwargs)}" if entry.get('kwargs') else "",
+                )
             else:
                 logger.info(f"Task periódica desativada via banco: {task_name}")
                 

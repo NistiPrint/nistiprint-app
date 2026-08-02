@@ -44,6 +44,42 @@ placeholder virou descarte terminal de 2.829 eventos.
 filtrados, e ausência de segredo utilizável volta a produzir
 `signature_unverified` em vez de descarte.
 
+**Integridade do corpo verificada.** O HMAC é sobre os bytes exatos, então o
+`raw_body` precisa sobreviver intacto ao trajeto n8n → Redis → Postgres. Medido
+em 2.835 eventos: `sha256(convert_to(raw_body,'UTF8')) = payload_hash` em 100%
+dos casos, sem nenhum caractere não-ASCII (o payload do Bling tem 367–397 bytes
+e carrega apenas IDs, timestamps e `companyId`). O round-trip não é fonte de
+falha de assinatura.
+
+O único elo não verificável com os dados atuais é o **formato do header**
+(`x-bling-signature-256`: hex ou base64, com ou sem prefixo), porque o header
+não é persistido — só o corpo. Persistir o header junto do `raw_body` tornaria
+esse tipo de diagnóstico possível sem esperar tráfego novo. Enquanto isso, as
+duas implementações de HMAC aceitam hex **e** base64, o que remove a dependência
+de acertar o formato.
+
+### Validação na borda (n8n)
+
+> Convenção adotada: **a decisão de autenticidade vive no n8n**. Ver
+> `docs/tecnico/convencao-validacao-assinatura.md`.
+
+O workflow `Bling Webhook Handler` passou a validar HMAC antes do envelope, para
+que tráfego inválido não entre na fila. Nós `Verify Bling Signature` e
+`Assinatura aceita?`; segredos em `BLING_CLIENT_SECRETS` (array JSON).
+
+Estreia em **modo observação**: o veredito é calculado e anexado ao item, mas
+nada é bloqueado até `BLING_SIGNATURE_ENFORCE=true`. Sem segredo utilizável ou
+sem header, o resultado é `signature_unverified` — nunca `invalid`. Placeholders
+e valores com menos de 8 caracteres são descartados da lista, pela mesma razão
+que no app.
+
+**Custo assumido:** o segredo do Bling passa a existir em dois lugares — o env
+do n8n e o banco lido pelo app. É a mesma duplicação que causou o incidente
+original, aceita conscientemente em troca de filtrar na borda. Cadastrar uma
+quarta conta Bling exige atualizar `BLING_CLIENT_SECRETS` também; se isso for
+esquecido, o modo observação evita o outage, mas o enforcement passará a
+rejeitar aquela conta.
+
 **Impacto enquanto durou:** nenhuma atualização de status vinda do ERP chegou, e
 nenhum pedido ganhou identidade Bling por webhook — só pela reconciliação, que
 também está desligada (§2).
@@ -151,10 +187,28 @@ comportaria N pedidos em vez de 1 — o mesmo bug, apenas multiplicado.
 `packages/shared/nistiprint_shared/services/webhook_secret_resolver.py` (novo) e
 `reliable_ingest_service.py`.
 
-**Segredo vem do banco.** `installed_integrations.credentials.client_secret` das
-integrações ativas, com cache de processo e TTL de 5 min. Env vira fallback de
-emergência, não fonte. Cadastrar a 4ª conta Bling pela interface passa a bastar —
-antes, o OAuth e a API funcionavam e os webhooks eram descartados em silêncio.
+**Segredo vem do banco**, com cache de processo e TTL de 5 min. Env vira fallback
+de emergência, não fonte. Cadastrar a 4ª conta Bling pela interface passa a
+bastar — antes, o OAuth e a API funcionavam e os webhooks eram descartados em
+silêncio.
+
+Cada provider guarda o segredo em um lugar diferente, porque o modelo de
+aplicativo é diferente. Tratar os três igual gerou avisos falsos na primeira
+publicação:
+
+| Origem | Modelo | Segredo | Onde |
+|---|---|---|---|
+| Bling | 1 app por conta | `client_secret` | cofre `app_profile` (3) + `credentials` |
+| Shopee | 1 app parceiro para N lojas | `partner_key` | cofre `app_profile` (1) |
+| Mercado Livre | 1 app para N contas | `client_secret` | **não cadastrado** |
+
+Restringir a validação a uma conta só faz sentido quando cada conta tem segredo
+próprio — ou seja, apenas no Bling. Shopee e Mercado Livre usam o segredo do
+perfil, compartilhado.
+
+O cofre (`integration_secret_values`, cifrado) é consultado primeiro, via
+`integration_secret_service.get_secret_map`; `credentials` em texto claro
+permanece como compatibilidade.
 
 **Validação contra uma conta, não contra todas.** O payload do Bling traz
 `companyId`. Com o vínculo `companyId → integração` conhecido, valida-se apenas
@@ -175,8 +229,51 @@ Testes: `tests/services/test_webhook_secret_resolver.py`, incluindo o cenário
 exato do incidente. Duas fixtures antigas usavam `"secret"` como segredo e foram
 atualizadas — o valor era incidental e hoje é justamente o que o filtro rejeita.
 
-Pendente: definir `INGEST_SIGNATURE_POLICY_BLING` explicitamente e confirmar que
-`INGEST_WEBHOOK_SECRETS_BLING` está **vazia ou ausente** em produção.
+**Avisos são por origem, não por evento.** Em volume alto, um aviso por webhook
+treina a equipe a ignorar avisos — que é exatamente como o incidente de 30/07
+passou três dias despercebido.
+
+### Estado de verificação após a correção
+
+Cada origem tem um mecanismo diferente, porque cada provider oferece um
+mecanismo diferente:
+
+| Origem | Mecanismo | Onde |
+|---|---|---|
+| Bling | HMAC `client_secret`, por conta | app (`validate_signature`) |
+| Shopee | HMAC `partner_key`, compartilhado | n8n valida; app é fallback |
+| Mercado Livre | **allowlist de IP** — não há assinatura | n8n, na borda |
+
+**Mercado Livre não assina os webhooks.** Confirmado nos cabeçalhos de tráfego
+real: `connection, host, x-forwarded-*, x-real-ip, content-length, user-agent
+(github.com/go-loco/restful), accept, content-type, traceparent, x-b3-*`. Não há
+`x-signature`. O `_validate_meli` do app, que implementa o HMAC de manifesto
+documentado pelo ML, nunca teve material para validar — sempre
+`missing_signature_material`.
+
+A garantia de origem passou a ser a faixa de IPs publicada pelo ML, checada no
+workflow n8n `MercadoLivre Webhook Handler` (nós `Resolve Client IP` e
+`IP autorizado?`), antes do envelope e de qualquer persistência. IP fora da lista
+recebe 403 e não entra no inbox nem na fila legada.
+
+**Qual IP é confiável.** O proxy reverso *acrescenta* o peer real ao final de
+`X-Forwarded-For`; o primeiro item é o que o cliente enviou e é forjável. A
+guarda usa `X-Real-IP` (que o proxy define com `$remote_addr`) e, na falta dele,
+o **último** item de `X-Forwarded-For`. Tráfego real confirma um único IP em
+ambos os cabeçalhos. Se um segundo proxy entrar na cadeia, este cálculo precisa
+ser revisto.
+
+Nenhum evento é descartado por falta de segredo: sem segredo utilizável o
+resultado é `signature_unverified`, não terminal.
+
+Pendente:
+
+- Definir `INGEST_SIGNATURE_POLICY_BLING` explicitamente e confirmar que
+  `INGEST_WEBHOOK_SECRETS_BLING` e `..._MERCADOLIVRE` estão **vazias ou
+  ausentes** em produção (o log acusa o placeholder uma vez por origem).
+- Revisar a allowlist de IP do ML periodicamente: é configuração do provider e
+  muda sem aviso. Uma mudança lá derruba o ingest do mesmo jeito que o
+  placeholder derrubou o do Bling.
 
 ---
 

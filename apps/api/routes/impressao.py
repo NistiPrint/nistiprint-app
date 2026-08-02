@@ -19,6 +19,20 @@ logger = logging.getLogger("ImpressaoAPI")
 
 impressao_api_bp = Blueprint('impressao_api', __name__, url_prefix='/api/v2/pedidos/impressao')
 
+# Nome de exibicao por marketplace. O template usa este valor para o cabecalho
+# do pedido e para escolher o icone.
+MARKETPLACE_DISPLAY_NAMES = {
+    'shopee': 'Shopee',
+    'mercadolivre': 'Mercado Livre',
+    'amazonfba_classic': 'Amazon',
+    'amazon_fulfillment': 'Amazon',
+    'shein': 'Shein',
+    'tiktokshop': 'TikTok Shop',
+    'kwai': 'Kwai',
+    'lojaintegrada': 'Loja Integrada',
+    'magazineluiza': 'Magazine Luiza',
+}
+
 
 @impressao_api_bp.route('', methods=['GET'])
 @login_required
@@ -61,12 +75,7 @@ def get_impressao_data():
                     'message': 'Pedido sem número Bling ou dados para impressão',
                 })
 
-        orders_data.sort(
-            key=lambda order: (
-                0 if order.get('hasCustomItem') == 0 else 1,
-                str(order.get('numeroLoja') or ''),
-            )
-        )
+        orders_data.sort(key=_print_sort_key)
 
         return ApiResponse.success({
             'orders': orders_data,
@@ -78,6 +87,42 @@ def get_impressao_data():
     except Exception as e:
         logger.error(f"Erro ao buscar dados de impressão: {e}", exc_info=True)
         return ApiResponse.error(str(e), 500)
+
+
+def _primeira_custom_tag(order: dict) -> str:
+    """Primeira tag de personalizacao do pedido, em ordem de item."""
+    for item in order.get('itens') or []:
+        tag = (item.get('custom_tag') or '').strip()
+        if tag:
+            return tag
+    return ''
+
+
+def _print_sort_key(order: dict):
+    """Ordem de impressao — mesma chave do legado.
+
+    Do legado (`kb/legado/services/bling/bling.py`):
+
+        1. itens personalizados: nao depois sim (agrupa pedidos com item
+           personalizado)
+        2. quais itens personalizados: ordem alfabetica (agrupa os
+           personalizados por modelo)
+        3. quantidade total de itens: ordem crescente
+        4. quantos itens diferentes: ordem crescente
+
+    A versao anterior mantinha so o primeiro criterio e usava `numeroLoja` como
+    desempate. `numeroLoja` e efetivamente aleatorio em relacao ao produto, o
+    que desfazia justamente o agrupamento por modelo — que e o ganho
+    operacional da ordenacao: quem imprime quer as mesmas capas juntas.
+    """
+    itens = order.get('itens') or []
+    return (
+        1 if order.get('hasCustomItem') else 0,
+        order.get('total_items') or 0,
+        len(itens),
+        len([i for i in itens if (i.get('custom_tag') or '').strip()]),
+        _primeira_custom_tag(order),
+    )
 
 
 def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> dict | None:
@@ -96,14 +141,24 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
         if not erp_number:
             return None
 
-        # 2. Buscar vínculos de integração
-        vinculos_result = supabase_db.table('vinculos_integracao_pedido').select('*').eq('pedido_id', pedido_id).execute()
-        vinculos = vinculos_result.data or []
-
-        # Filtrar por plataforma se especificado
+        # 2. Plataforma de origem.
+        #
+        # Antes isto vinha de `vinculos_integracao_pedido`, tabela que esta
+        # vazia em producao. O efeito era duplo: `plataforma` chegava sempre em
+        # branco no template (que a usa para o icone e o cabecalho do pedido) e,
+        # pior, informar `plataforma_filter` fazia *todo* pedido ser descartado,
+        # porque a lista de vinculos nunca tinha nada para casar.
+        #
+        # A origem canonica ja esta no proprio pedido.
+        plataforma_slug = (pedido.get('marketplace_module_id') or '').strip().lower()
         if plataforma_filter:
-            vinculos = [v for v in vinculos if v.get('plataforma', '').upper() == plataforma_filter.upper()]
-            if not vinculos:
+            filtro = plataforma_filter.strip().lower()
+            # `BLING` nao e marketplace: e o caminho de ingest. Um pedido
+            # ingerido via ERP satisfaz o filtro qualquer que seja seu canal.
+            if filtro == 'bling':
+                if (pedido.get('ingest_source') or '').lower() != 'bling':
+                    return None
+            elif plataforma_slug != filtro:
                 return None
 
         # 3. Buscar itens do pedido com tag_impressao_pdf do produto
@@ -167,21 +222,11 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             except:
                 contato = {}
 
-        # 7. Determinar plataforma e numeroLoja
-        plataforma_nome = ''
-        numero_loja = ''
-        for v in vinculos:
-            plat = v.get('plataforma', '').upper()
-            if plat == 'SHOPEE':
-                numero_loja = pedido.get('codigo_pedido_externo', '')
-                plataforma_nome = 'Shopee'
-                break
-            elif plat == 'BLING':
-                plataforma_nome = 'Bling'
-
-        # Se não encontrou Shopee, usar o external_id como fallback
-        if not numero_loja:
-            numero_loja = pedido.get('codigo_pedido_externo', '')
+        # 7. Nome de exibição da plataforma e numeroLoja
+        plataforma_nome = MARKETPLACE_DISPLAY_NAMES.get(
+            plataforma_slug, plataforma_slug.replace('_', ' ').title()
+        ) if plataforma_slug else ''
+        numero_loja = pedido.get('marketplace_order_id') or pedido.get('codigo_pedido_externo', '')
 
         # 8. Calcular total
         total_produtos = sum(i.get('valor', 0) * i.get('quantidade', 0) for i in itens_formatted)

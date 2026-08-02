@@ -76,6 +76,7 @@ class TestBlingOrderProcessingService(unittest.TestCase):
         with patch.object(service, "_resolve_situacao_interna", return_value=4), \
              patch.object(service.logistica_coleta_service, "calcular_data_coleta", return_value={}), \
              patch.object(service.canonical_order_repository, "resolve_module_id", return_value="shopee"), \
+             patch.object(service.canonical_order_repository, "resolve_erp_marketplace_link", return_value=None), \
              patch.object(service.canonical_order_repository, "upsert", return_value=77) as upsert, \
              patch.object(service, "_upsert_itens_pedido"):
             pedido_id = service._upsert_pedido_master(
@@ -90,6 +91,60 @@ class TestBlingOrderProcessingService(unittest.TestCase):
         self.assertEqual(canonical_order["marketplace_module_id"], "shopee")
         self.assertEqual(canonical_order["marketplace_order_id"], "SN123")
         self.assertEqual(canonical_order["erp_order_id"], 987)
+
+    def _upsert_master_with_link(self, link, order_exists):
+        """Executa _upsert_pedido_master com um vinculo ERP x marketplace dado."""
+        payload = {
+            "id": 987, "numero": "466320", "numeroLoja": "SN123",
+            "loja": {"id": "204047801"}, "situacao": {"id": 2},
+            "contato": {"nome": "Maria"}, "itens": [], "total": 10,
+        }
+        with patch.object(service, "_resolve_situacao_interna", return_value=4), \
+             patch.object(service.logistica_coleta_service, "calcular_data_coleta", return_value={}), \
+             patch.object(service.canonical_order_repository, "resolve_module_id", return_value="shopee"), \
+             patch.object(service.canonical_order_repository, "resolve_erp_marketplace_link", return_value=link), \
+             patch.object(service.canonical_order_repository, "order_exists", return_value=order_exists), \
+             patch.object(service.canonical_order_repository, "upsert", return_value=77) as upsert, \
+             patch.object(service, "_upsert_itens_pedido"):
+            service._upsert_pedido_master(
+                payload, pedido_bling_id=10, pedido_shopee_id=20,
+                bling_integration_id=99, marketplace_integration_id=12,
+                canal_venda_id=22, is_flex=False, modalidade="STANDARD",
+                shopee_data={"buyer_username": "maria"},
+            )
+        return upsert.call_args.args[0]
+
+    def test_bling_does_not_overwrite_status_of_direct_marketplace_order(self):
+        # Onde o marketplace integra direto, ele dita o ciclo de vida. O Bling
+        # segue gravando identidade e fatos de ERP; so a projecao e suprimida.
+        order = self._upsert_master_with_link(
+            {"marketplace_module_id": "shopee", "ingest_origin_mode": "marketplace_direct"},
+            order_exists=True,
+        )
+        # O payload enviado ao RPC filtra chaves nulas, entao a ausencia da
+        # chave e o que faz o COALESCE preservar a situacao vigente.
+        self.assertNotIn("situacao_pedido_id", order)
+        self.assertEqual(order["erp_order_id"], 987)
+        self.assertEqual(order["status_original"], "2")
+
+    def test_bling_projects_when_it_sees_the_order_first(self):
+        # Sem pedido materializado, projetar e melhor que deixar sem situacao.
+        order = self._upsert_master_with_link(
+            {"marketplace_module_id": "shopee", "ingest_origin_mode": "marketplace_direct"},
+            order_exists=False,
+        )
+        self.assertEqual(order["situacao_pedido_id"], 4)
+
+    def test_bling_remains_authoritative_without_direct_integration(self):
+        order = self._upsert_master_with_link(
+            {"marketplace_module_id": "shopee", "ingest_origin_mode": "erp_bling"},
+            order_exists=True,
+        )
+        self.assertEqual(order["situacao_pedido_id"], 4)
+
+    def test_missing_link_defaults_to_erp_authority(self):
+        order = self._upsert_master_with_link(None, order_exists=True)
+        self.assertEqual(order["situacao_pedido_id"], 4)
 
     def test_upsert_master_defers_order_without_marketplace_identity(self):
         payload = {

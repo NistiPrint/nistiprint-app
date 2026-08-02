@@ -18,6 +18,7 @@ from nistiprint_shared.services.integration_resolution_service import (
 from nistiprint_shared.services.credential_resolver_service import (
     credential_resolver_service,
 )
+from nistiprint_shared.services.order_status_decision import is_authoritative
 from nistiprint_shared.services.canonical_order_status_service import (
     canonical_order_status_service,
 )
@@ -1714,15 +1715,17 @@ def _upsert_pedido_master(payload, *,
     marketplace_module_id = canonical_order_repository.resolve_module_id(
         marketplace_integration_id, marketplace_slug
     )
-    if not marketplace_module_id:
-        link = canonical_order_repository.resolve_erp_marketplace_link(
-            bling_integration_id, bling_loja_id
+    # O vinculo e resolvido sempre, nao apenas quando falta o module_id: ele
+    # tambem carrega o `ingest_origin_mode`, que decide se o Bling pode ditar
+    # o ciclo de vida deste pedido.
+    link = canonical_order_repository.resolve_erp_marketplace_link(
+        bling_integration_id, bling_loja_id
+    )
+    if not marketplace_module_id and link:
+        marketplace_module_id = link.get('marketplace_module_id')
+        marketplace_integration_id = (
+            marketplace_integration_id or link.get('marketplace_integration_id')
         )
-        if link:
-            marketplace_module_id = link.get('marketplace_module_id')
-            marketplace_integration_id = (
-                marketplace_integration_id or link.get('marketplace_integration_id')
-            )
 
     if not marketplace_module_id or not codigo_externo:
         canonical_order_repository.defer_unresolved_erp_order(
@@ -1735,6 +1738,30 @@ def _upsert_pedido_master(payload, *,
         raise OrderIdentityUnresolvedError(
             f"Pedido Bling {bling_id} aguardando resolução marketplace/numeroLoja"
         )
+
+    # Autoridade por origem (secao 7.4 da spec de canonizacao). Onde o
+    # marketplace integra direto, ele dita o ciclo de vida e o Bling complementa
+    # apenas ERP/NF. O fato externo continua registrado em `status_original` e a
+    # identidade fiscal continua sendo gravada; so a projecao e suprimida.
+    #
+    # Excecao deliberada: se o pedido ainda nao existe, o Bling chegou primeiro.
+    # Nesse caso projetar e melhor que deixar o pedido sem situacao alguma — a
+    # mesma regra que o RPC canonico aplica na primeira aparicao.
+    ingest_origin_mode = (link or {}).get('ingest_origin_mode') or 'erp_bling'
+    if not is_authoritative(ingest_origin_mode, 'erp', 'order'):
+        if canonical_order_repository.order_exists(marketplace_module_id, codigo_externo):
+            logger.info(
+                "[ingest] Bling nao autoritativo para %s/%s (modo=%s): situacao "
+                "preservada, apenas fatos de ERP aplicados",
+                marketplace_module_id, codigo_externo, ingest_origin_mode,
+            )
+            situacao_pedido_id = None
+        else:
+            logger.info(
+                "[ingest] Bling chegou antes do marketplace em %s/%s (modo=%s): "
+                "projetando situacao inicial",
+                marketplace_module_id, codigo_externo, ingest_origin_mode,
+            )
 
     data = {
         'marketplace_module_id':      marketplace_module_id,

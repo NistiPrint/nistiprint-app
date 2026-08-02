@@ -12,16 +12,25 @@ from celery import shared_task
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.app_config_service import app_config_service
+from nistiprint_shared.services.ai import (
+    DEFAULT_MODEL_BY_PROVIDER,
+    DEFAULT_PROVIDER,
+    PROVIDERS,
+    AIResponse,
+    ai_router,
+    extract_json,
+    validate_model,
+)
+from nistiprint_shared.services.ai.gemini_provider import ALLOWED_MODELS as GEMINI_MODELS
 from nistiprint_shared.utils.resource_helper import get_prompt_template_path
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_MODELS = (
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-2.0-flash",
-)
-DEFAULT_MODEL = "gemini-2.0-flash"
+#: Mantido por compatibilidade com chamadores antigos. A allowlist real por
+#: provedor vive em `services/ai/` — o OpenRouter nao tem lista fixa, porque o
+#: catalogo dele muda toda semana.
+ALLOWED_MODELS = GEMINI_MODELS
+DEFAULT_MODEL = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER]
 DEFAULT_MAX_PROCESSING = 50
 CHAT_CONTEXT_LIMIT = 60
 CHAT_LOOKBACK_DAYS = 7
@@ -32,7 +41,6 @@ _httpx_client = httpx.Client(
     limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
     timeout=httpx.Timeout(30.0, connect=5.0),
 )
-_genai_client = None
 _shopee_channel_ids = None
 
 
@@ -105,12 +113,12 @@ def load_prompt_template() -> str:
 
 
 def get_model_name() -> str:
-    configured_model = app_config_service.get_config("model_name")
-    if isinstance(configured_model, str):
-        configured_model = configured_model.strip().replace('"', "")
-    if configured_model in ALLOWED_MODELS:
-        return configured_model
-    return os.environ.get("GEMINI_MODEL", DEFAULT_MODEL)
+    """Modelo efetivo, ja resolvido pelo roteador para o provedor ativo."""
+    return ai_router.resolve_settings()["model"]
+
+
+def get_provider_name() -> str:
+    return ai_router.resolve_settings()["provider"]
 
 
 def get_max_processing() -> int:
@@ -122,22 +130,65 @@ def get_max_processing() -> int:
 
 
 def get_ai_config() -> Dict[str, Any]:
+    settings = ai_router.resolve_settings()
     return {
         "prompt_template": load_prompt_template(),
-        "model_name": get_model_name(),
+        "provider": settings["provider"],
+        "model_name": settings["model"],
+        "fallback_provider": settings["fallback_provider"],
+        "timeout_seconds": settings["timeout_seconds"],
         "max_processing": get_max_processing(),
-        "allowed_models": list(ALLOWED_MODELS),
+        "providers": list(PROVIDERS),
+        # O Gemini tem allowlist; o OpenRouter aceita `openrouter/auto` ou
+        # qualquer `vendor/model`, entao a UI deve oferecer campo livre nele.
+        "allowed_models": {
+            "gemini": list(GEMINI_MODELS),
+            "openrouter": [DEFAULT_MODEL_BY_PROVIDER["openrouter"]],
+        },
+        "openrouter_accepts_free_text_model": True,
     }
 
 
-def update_ai_config(prompt_template=None, model_name=None, max_processing=None) -> Dict[str, Any]:
+def update_ai_config(
+    prompt_template=None,
+    model_name=None,
+    max_processing=None,
+    provider=None,
+    fallback_provider=None,
+    timeout_seconds=None,
+) -> Dict[str, Any]:
     if prompt_template is not None:
         app_config_service.set_config("prompt_template", prompt_template)
 
-    if model_name is not None:
-        if model_name not in ALLOWED_MODELS:
-            raise ValueError(f"Modelo invalido: {model_name}")
-        app_config_service.set_config("model_name", model_name)
+    # Provedor e modelo sao validados como par: `gemini-2.0-flash` no OpenRouter
+    # e `openrouter/auto` no Gemini sao ambos invalidos, e o erro so apareceria
+    # na primeira chamada real se validassemos cada um isolado.
+    settings = ai_router.resolve_settings()
+    novo_provider = (provider or settings["provider"]).strip().lower()
+    novo_modelo = model_name if model_name is not None else settings["model"]
+    if provider is not None and model_name is None:
+        # Trocar so o provedor: adota o modelo default dele, senao herdaria um
+        # modelo do provedor anterior que nao existe no novo.
+        novo_modelo = DEFAULT_MODEL_BY_PROVIDER.get(novo_provider, novo_modelo)
+
+    if provider is not None or model_name is not None:
+        validate_model(novo_provider, novo_modelo)
+        app_config_service.set_config("ia_provider", novo_provider)
+        app_config_service.set_config("ia_model", novo_modelo)
+
+    if fallback_provider is not None:
+        normalizado = str(fallback_provider).strip().lower()
+        if normalizado and normalizado not in PROVIDERS:
+            raise ValueError(f"Provedor de fallback invalido: {fallback_provider}")
+        if normalizado == novo_provider:
+            raise ValueError("Fallback nao pode ser igual ao provedor primario")
+        app_config_service.set_config("ia_fallback_provider", normalizado)
+
+    if timeout_seconds is not None:
+        try:
+            app_config_service.set_config("ia_timeout_seconds", max(1, int(timeout_seconds)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("timeout_seconds invalido") from exc
 
     if max_processing is not None:
         try:
@@ -149,43 +200,26 @@ def update_ai_config(prompt_template=None, model_name=None, max_processing=None)
     return get_ai_config()
 
 
-def _get_genai_client():
-    global _genai_client
-    if _genai_client is not None:
-        return _genai_client
-
-    from dotenv import find_dotenv
-    # Imprime o caminho exato do arquivo .env que o Python está carregando
-    print("Caminho do .env:", find_dotenv())
-
-    # Força o carregamento e sobrescreve variáveis antigas da memória
-    # load_dotenv(override=True)
-    api_key = os.getenv("NISTIPRINT_AI_KEY")
-    print(api_key[-4:])
-    if not api_key:
-        raise RuntimeError("NISTIPRINT_AI_KEY nao configurada")
-
-    try:
-        from google import genai
-    except Exception as exc:  # pragma: no cover - depende de ambiente
-        raise RuntimeError(f"Falha ao importar cliente Gemini: {exc}") from exc
-
-    _genai_client = genai.Client(api_key=api_key)
-    return _genai_client
-
-
 def run_model(prompt_payload: str) -> Dict[str, Any]:
-    client = _get_genai_client()
-    prompt = f"{load_prompt_template()}\n\n{prompt_payload}"
-    response = client.models.generate_content(
-        model=get_model_name(),
-        contents=prompt,
-    )
-    if not response or not response.text:
-        raise ValueError("Resposta vazia do modelo")
+    """Executa o prompt no provedor configurado e devolve o JSON extraido.
 
-    text = response.text.replace("```json", "").replace("```", "").strip()
-    return json.loads(text)
+    O par (provedor, modelo) vem de `configuracoes_aplicacao`; ver
+    `nistiprint_shared.services.ai.router`. Esta funcao mantem a assinatura
+    antiga por compatibilidade — quem precisa dos metadados da execucao usa
+    `run_model_detailed`.
+    """
+    return run_model_detailed(prompt_payload)[0]
+
+
+def run_model_detailed(prompt_payload: str) -> tuple[Dict[str, Any], AIResponse]:
+    """Igual a `run_model`, mas devolve tambem a resposta bruta do provedor.
+
+    Os metadados importam para auditoria: com `openrouter/auto` o modelo e
+    escolhido do outro lado, entao sem registrar `model_used` nao ha como
+    explicar depois por que dois pedidos parecidos sairam diferentes.
+    """
+    response = ai_router.complete(load_prompt_template(), prompt_payload)
+    return extract_json(response.text), response
 
 
 def _normalize_order_row(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -842,7 +876,7 @@ def _process_single_order_sync(pedido_id: int, force: bool = False):
     chat_context = order.get("chat_messages") or []
 
     try:
-        result = run_model(prompt_payload)
+        result, ai_response = run_model_detailed(prompt_payload)
         if order.get("chat_context_ambiguous"):
             result["status"] = "NEEDS_REVIEW"
             result["reasoning"] = (
@@ -850,7 +884,17 @@ def _process_single_order_sync(pedido_id: int, force: bool = False):
                 "o contexto de sete dias requer revisao. " + str(result.get("reasoning") or "")
             ).strip()
         _persistir_personalizacao(order, result)
-        log_ai_execution(order_sn, prompt_payload, chat_context, "success", result=result)
+        # Provedor e modelo efetivo ficam no log: com `openrouter/auto` quem
+        # escolhe o modelo e o OpenRouter, e sem isso nao ha como auditar
+        # depois qual modelo produziu determinado nome.
+        log_ai_execution(
+            order_sn,
+            prompt_payload,
+            chat_context,
+            "success",
+            result=result,
+            metadata=ai_response.to_metadata(),
+        )
         return {
             "success": True,
             "status": "success",

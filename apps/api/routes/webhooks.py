@@ -10,6 +10,7 @@ Fluxo correto dos webhooks do Bling:
 Ver: docs/02-features/webhooks_fluxo_correto.md
 """
 
+import hmac
 import os
 from flask import Blueprint, request, jsonify
 from nistiprint_shared.database.supabase_db_service import supabase_db
@@ -35,11 +36,25 @@ webhooks_bp = Blueprint('webhooks', __name__, url_prefix='/api/v2/webhooks')
 
 
 def _marketplace_webhook_authorized():
+    """Autoriza a entrada direta na inbox.
+
+    Estes endpoints ignoram a validacao de assinatura, que por convencao vive no
+    n8n (ver docs/tecnico/convencao-validacao-assinatura.md). Como o n8n escreve
+    direto no Redis e nao passa por aqui, esta rota e uma porta paralela para a
+    mesma fila — e por isso precisa ser fechada por padrao.
+
+    Era fail-open: sem `MARKETPLACE_WEBHOOK_TOKEN` definido, qualquer requisicao
+    era aceita e enfileirada. Agora e fail-closed.
+    """
     expected = os.environ.get('MARKETPLACE_WEBHOOK_TOKEN')
     if not expected:
-        return True
+        logger.error(
+            'MARKETPLACE_WEBHOOK_TOKEN nao configurado: entrada direta na inbox '
+            'recusada. Defina a variavel ou use o gateway n8n.'
+        )
+        return False
     provided = request.headers.get('X-Webhook-Token') or request.args.get('token')
-    return provided == expected
+    return hmac.compare_digest(str(provided or ''), str(expected))
 
 
 def _enqueue_marketplace_webhook(source: str):

@@ -34,8 +34,30 @@ _PLACEHOLDERS = {
 
 _MIN_SECRET_LENGTH = 8
 
-#: Onde o `client_secret` mora em cada provider.
-_MODULE_BY_SOURCE = {"bling": "bling", "mercadolivre": "mercadolivre", "shopee": "shopee"}
+#: Cada provider guarda o segredo de assinatura em um lugar diferente, porque o
+#: modelo de aplicativo e diferente:
+#:
+#: - Bling: um aplicativo por conta. O segredo e o `client_secret` daquele
+#:   aplicativo, e a conta emissora importa para escolher qual usar.
+#: - Shopee: um aplicativo (parceiro) para N lojas. O segredo e o `partner_key`
+#:   do perfil, compartilhado por todas as lojas.
+#: - Mercado Livre: um aplicativo para N contas, segredo `client_secret` do
+#:   perfil.
+#:
+#: `per_account` diz se faz sentido restringir a validacao a uma conta: so tem
+#: efeito quando cada conta tem segredo proprio.
+@dataclass(frozen=True)
+class _SourceSecretModel:
+    module_id: str
+    secret_kind: str
+    per_account: bool
+
+
+_SECRET_MODEL = {
+    "bling": _SourceSecretModel("bling", "client_secret", True),
+    "shopee": _SourceSecretModel("shopee", "partner_key", False),
+    "mercadolivre": _SourceSecretModel("mercadolivre", "client_secret", False),
+}
 
 #: Chave em `installed_integrations.config` que guarda a identidade da conta no
 #: provider, aprendida na primeira validacao bem-sucedida.
@@ -87,6 +109,7 @@ class WebhookSecretResolver:
         self._lock = threading.Lock()
         self._cache: dict[str, list[SecretCandidate]] = {}
         self._loaded_at: dict[str, float] = {}
+        self._warned: set[str] = set()
 
     # -- API ---------------------------------------------------------------- #
 
@@ -165,9 +188,11 @@ class WebhookSecretResolver:
             if source is None:
                 self._cache.clear()
                 self._loaded_at.clear()
+                self._warned.clear()
             else:
                 self._cache.pop(source, None)
                 self._loaded_at.pop(source, None)
+                self._warned.discard(source)
 
     # -- interno ------------------------------------------------------------ #
 
@@ -183,8 +208,8 @@ class WebhookSecretResolver:
         return loaded
 
     def _load(self, source: str) -> list[SecretCandidate]:
-        module_id = _MODULE_BY_SOURCE.get(source)
-        if not module_id:
+        model = _SECRET_MODEL.get(source)
+        if not model:
             return []
         account_key = _ACCOUNT_KEYS.get(source)
         try:
@@ -192,8 +217,8 @@ class WebhookSecretResolver:
 
             rows = (
                 supabase_db.table("installed_integrations")
-                .select("id,credentials,config")
-                .eq("module_id", module_id)
+                .select("id,credentials,config,app_profile_id")
+                .eq("module_id", model.module_id)
                 .eq("is_active", True)
                 .execute()
                 .data
@@ -207,24 +232,69 @@ class WebhookSecretResolver:
             return []
 
         candidates: list[SecretCandidate] = []
+        seen: set[str] = set()
         for row in rows if isinstance(rows, list) else []:
-            credentials = row.get("credentials") or {}
-            if not isinstance(credentials, dict):
-                continue
-            secret = credentials.get("client_secret")
-            if not is_usable_secret(secret):
-                continue
             config = row.get("config") if isinstance(row.get("config"), dict) else {}
             account_id = str(config.get(account_key) or "").strip() or None
+            secret = self._secret_for_row(row, model)
+            if not is_usable_secret(secret) or secret in seen:
+                continue
+            seen.add(secret)
             candidates.append(
-                SecretCandidate(str(secret).strip(), row.get("id"), account_id, "db")
+                SecretCandidate(
+                    secret,
+                    row.get("id") if model.per_account else None,
+                    account_id if model.per_account else None,
+                    "db",
+                )
             )
         if not candidates:
-            logger.warning(
-                "[webhook-secret] nenhuma integracao ativa de %s com client_secret utilizavel",
-                source,
-            )
+            self._warn_missing(source, model)
         return candidates
+
+    @staticmethod
+    def _secret_for_row(row: dict, model: "_SourceSecretModel") -> str | None:
+        """Cofre primeiro; `credentials` em texto claro como compatibilidade."""
+        profile_id = row.get("app_profile_id")
+        if profile_id:
+            try:
+                from nistiprint_shared.services.integration_secret_service import (
+                    integration_secret_service,
+                )
+
+                stored = integration_secret_service.get_secret_map(
+                    "app_profile", profile_id
+                ).get(model.secret_kind)
+                if is_usable_secret(stored):
+                    return str(stored).strip()
+            except Exception as exc:  # pragma: no cover
+                logger.warning(
+                    "[webhook-secret] falha ao ler cofre do perfil %s: %s",
+                    profile_id, exc,
+                )
+        credentials = row.get("credentials")
+        if isinstance(credentials, dict):
+            value = credentials.get(model.secret_kind)
+            if is_usable_secret(value):
+                return str(value).strip()
+        return None
+
+    def _warn_missing(self, source: str, model: "_SourceSecretModel") -> None:
+        """Avisa uma vez por origem, nao uma vez por evento.
+
+        Em volume alto (milhares de eventos/dia) um aviso por evento treina a
+        equipe a ignorar avisos, que e como o incidente de 30/07 passou tres
+        dias despercebido.
+        """
+        with self._lock:
+            if source in self._warned:
+                return
+            self._warned.add(source)
+        logger.warning(
+            "[webhook-secret] nenhum %s utilizavel para %s: assinatura seguira "
+            "sem verificacao ate o segredo ser cadastrado no perfil do aplicativo",
+            model.secret_kind, source,
+        )
 
 
 webhook_secret_resolver = WebhookSecretResolver()

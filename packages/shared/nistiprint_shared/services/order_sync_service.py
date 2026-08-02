@@ -4,6 +4,7 @@ import unicodedata
 from typing import List, Dict, Any, Optional
 from nistiprint_shared.services.platform_api_service import platform_api_service
 from nistiprint_shared.services.order_service import order_service
+from nistiprint_shared.services.canonical_order_repository import canonical_order_repository
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso
@@ -304,6 +305,23 @@ class OrderSyncService:
                 is_flex
             )
             
+            # Autoridade por origem (secao 7.4 da spec de canonizacao). Onde o
+            # marketplace integra direto, ele dita o ciclo de vida; o Bling
+            # complementa apenas ERP/NF. O fato externo segue registrado em
+            # `status_original` — so a projecao interna e suprimida.
+            erp_autoritativo = canonical_order_repository.erp_can_project_status_for_store(
+                resolved_bling_integration_id,
+                loja_id,
+                has_marketplace_identity=bool(order_sn),
+            )
+            if not erp_autoritativo:
+                logger.info(
+                    "[FASE 1] Bling nao autoritativo para pedido %s (numeroLoja=%s): "
+                    "situacao preservada",
+                    bling_id,
+                    order_sn or "N/A",
+                )
+
             order_core_dto = {
                 'numero_pedido': bling_numero,
                 'codigo_pedido_externo': external_id,
@@ -316,9 +334,12 @@ class OrderSyncService:
                 'servico_logistico': servico_logistico,
                 'data_venda': clean_date(bling_order_data.get('data')),
                 'total_pedido': safe_float(bling_order_data.get('total')),
-                'situacao_pedido_id': self._map_bling_status(bling_order_data.get('situacao', {}).get('id')),
                 'status_original': str(bling_order_data.get('situacao', {}).get('id'))
             }
+            if erp_autoritativo:
+                order_core_dto['situacao_pedido_id'] = self._map_bling_status(
+                    bling_order_data.get('situacao', {}).get('id')
+                )
 
             items_dto = []
             for item in bling_order_data.get('itens', []):

@@ -10,6 +10,7 @@ from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.canonical_order_repository import canonical_order_repository
 from nistiprint_shared.services.integration_capability_service import INVOICING, integration_capability_service
 from nistiprint_shared.utils.date_utils import get_now_iso
+from nistiprint_shared.utils.task_logging import log_task_execution
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,7 @@ order_erp_reference_service = OrderErpReferenceService()
 
 
 @shared_task(name="nistiprint_shared.services.order_erp_reference_service.reconcile_pending")
+@log_task_execution(task_type="PEDIDO", task_name="reconcile_pending_erp_references")
 def reconcile_pending_erp_references(limit: int = 50):
     rows = (
         supabase_db.table("pending_order_reconciliations")

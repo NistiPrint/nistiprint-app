@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from nistiprint_shared.services import reliable_ingest_service as svc
 from nistiprint_shared.services.webhook_secret_resolver import (
+    _SECRET_MODEL,
     SecretCandidate,
     WebhookSecretResolver,
     account_id_from_payload,
@@ -32,14 +33,12 @@ def _bling_envelope(secret=None, company_id=COMPANY_A, body=None):
     }
 
 
-def _resolver(rows):
+def _resolver(rows, source="bling"):
+    """Resolver com o cache ja aquecido, sem tocar no banco."""
     resolver = WebhookSecretResolver()
-    patcher = patch.object(resolver, "_load", return_value=rows)
-    patcher.start()
-    resolver._from_db("bling")
-    patcher.stop()
     with patch.object(resolver, "_load", return_value=rows):
-        return resolver
+        resolver._from_db(source)
+    return resolver
 
 
 class UsableSecretTest(unittest.TestCase):
@@ -93,6 +92,51 @@ class CandidateOrderingTest(unittest.TestCase):
         resolver = _resolver([SecretCandidate(SECRET_A, 1, None, "db")])
         chosen = resolver.candidates("bling", env_secrets=[SECRET_B, "..."])
         self.assertEqual([c.origin for c in chosen], ["db", "env"])
+
+
+class SecretModelPerProviderTest(unittest.TestCase):
+    """Cada provider guarda o segredo em um lugar diferente.
+
+    Bling tem um aplicativo por conta (segredo por conta, `client_secret`);
+    Shopee tem um aplicativo parceiro para N lojas (`partner_key` compartilhado).
+    Tratar os dois igual foi o que gerou os avisos falsos na primeira publicacao.
+    """
+
+    def test_shopee_reads_partner_key_from_the_app_profile(self):
+        resolver = WebhookSecretResolver()
+        row = {"id": 6, "app_profile_id": 9, "credentials": {}, "config": {}}
+        with patch(
+            "nistiprint_shared.services.integration_secret_service.integration_secret_service"
+        ) as vault:
+            vault.get_secret_map.return_value = {"partner_key": SECRET_A}
+            secret = resolver._secret_for_row(row, _SECRET_MODEL["shopee"])
+        self.assertEqual(secret, SECRET_A)
+
+    def test_shopee_does_not_read_client_secret(self):
+        resolver = WebhookSecretResolver()
+        row = {"id": 6, "app_profile_id": None, "credentials": {"client_secret": SECRET_A}, "config": {}}
+        self.assertIsNone(resolver._secret_for_row(row, _SECRET_MODEL["shopee"]))
+
+    def test_bling_falls_back_to_plaintext_credentials(self):
+        resolver = WebhookSecretResolver()
+        row = {"id": 1, "app_profile_id": None, "credentials": {"client_secret": SECRET_A}, "config": {}}
+        self.assertEqual(resolver._secret_for_row(row, _SECRET_MODEL["bling"]), SECRET_A)
+
+    def test_shared_app_secret_is_not_narrowed_by_account(self):
+        # Restringir por conta so faz sentido quando cada conta tem segredo
+        # proprio. Na Shopee todas as lojas compartilham o partner_key.
+        resolver = _resolver([SecretCandidate(SECRET_A, None, None, "db")], "shopee")
+        chosen = resolver.candidates("shopee", account_hint="123456")
+        self.assertEqual(len(chosen), 1)
+
+    def test_missing_secret_warns_once_per_source(self):
+        resolver = WebhookSecretResolver()
+        with patch.object(resolver, "_load", wraps=resolver._load), patch(
+            "nistiprint_shared.services.webhook_secret_resolver.logger"
+        ) as log:
+            for _ in range(5):
+                resolver._warn_missing("shopee", _SECRET_MODEL["shopee"])
+        self.assertEqual(log.warning.call_count, 1)
 
 
 class ValidateSignatureTest(unittest.TestCase):
@@ -167,6 +211,20 @@ class ValidateSignatureTest(unittest.TestCase):
                 _bling_envelope(SECRET_A, company_id=COMPANY_B)
             )
         self.assertEqual(result.status, "discarded_invalid_signature")
+
+    def test_observe_policy_records_the_verdict_without_discarding(self):
+        # Rede de seguranca para estrear ou trocar a fonte do segredo: se o
+        # segredo estiver errado, o veredito aparece no log e no evento, mas o
+        # ingest nao para.
+        rows = [SecretCandidate(SECRET_A, 1, COMPANY_A, "db")]
+        svc.webhook_secret_resolver.invalidate()
+        with self._with_db(rows), patch.dict(
+            "os.environ", {"INGEST_SIGNATURE_POLICY_BLING": "observe"}
+        ):
+            result = svc.validate_signature(_bling_envelope("segredo-que-nao-bate"))
+        self.assertEqual(result.status, "signature_invalid_observed")
+        self.assertTrue(result.valid)
+        self.assertFalse(result.terminal)
 
     def test_policy_disabled_short_circuits(self):
         with patch.dict("os.environ", {"INGEST_SIGNATURE_POLICY_BLING": "disabled"}):

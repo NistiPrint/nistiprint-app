@@ -2,6 +2,7 @@ import logging
 from celery import shared_task
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.bling.bling_client import BlingClient
+from nistiprint_shared.services.canonical_order_repository import canonical_order_repository
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
 
 logger = logging.getLogger(__name__)
@@ -228,18 +229,26 @@ def _update_pedido_status(pedido_id, bling_id, detail):
                 'numero_loja': detail.get('numeroLoja'),
             }).execute()
 
-        # 2. Verifica origem do pedido antes de propagar status
-        pedido_res = supabase_db.table('pedidos').select('origem').eq('id', pedido_id).maybe_single().execute()
-        
-        if pedido_res.data:
-            origem = pedido_res.data.get('origem', '').upper()
-            # Lista de marketplaces onde o status deve vir da plataforma, não do Bling
-            marketplaces = ['SHOPEE', 'AMAZON', 'MERCADOLIVRE', 'SHEIN', 'TIKTOK']
-            
-            if origem in marketplaces:
-                logger.info(f"Pedido {pedido_id} é de marketplace ({origem}), não propagando status do Bling")
-                return True
-        
+        # 2. Autoridade por origem (secao 7.4 da spec de canonizacao).
+        #
+        # Antes esta guarda era uma lista literal de marketplaces comparada com
+        # `pedidos.origem`. Ela envelhecia a cada canal novo e ja estava furada:
+        # os valores reais em producao sao `AMAZONFBA_CLASSIC`, `TIKTOKSHOP`,
+        # `MAGAZINELUIZA`, `LOJAINTEGRADA` e `KWAI`, e nenhum casa com uma lista
+        # que dizia `AMAZON` e `TIKTOK`. Alem de deixar passar, ela tambem
+        # bloqueava demais: um pedido Shopee ingerido via `erp_bling` tem sim o
+        # Bling como autoridade, e a lista o barrava do mesmo jeito.
+        #
+        # Agora a pergunta e feita ao vinculo (`ingest_origin_mode`), que e a
+        # mesma fonte usada pelo ingest canonico.
+        if not canonical_order_repository.erp_can_project_status(pedido_id):
+            logger.info(
+                "[status-sync] Bling nao autoritativo para pedido %s: situacao "
+                "preservada, fatos de ERP aplicados em pedidos_bling",
+                pedido_id,
+            )
+            return True
+
         # 3. Propaga para pedidos via mapping integration_status_mappings
         mapping_res = supabase_db.table('integration_status_mappings') \
             .select('internal_situacao_pedido_id') \

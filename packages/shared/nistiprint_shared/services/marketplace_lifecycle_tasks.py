@@ -13,6 +13,7 @@ from nistiprint_shared.services.marketplace_lifecycle_service import (
     resolve_mercadolivre,
     resolve_shopee,
 )
+from nistiprint_shared.utils.task_logging import log_task_execution
 
 logger = logging.getLogger(__name__)
 
@@ -166,11 +167,13 @@ def reconcile_marketplace_lifecycle(
 
 
 @shared_task(name="nistiprint_shared.services.marketplace_lifecycle_tasks.process_pending_effects")
+@log_task_execution(task_type="PEDIDO", task_name="process_pending_effects")
 def process_pending_effects_task(limit: int = 100):
     return process_pending_effects(limit=limit)
 
 
 @shared_task(name="nistiprint_shared.services.marketplace_lifecycle_tasks.reconcile_marketplace_lifecycle")
+@log_task_execution(task_type="PEDIDO", task_name="reconcile_marketplace_lifecycle")
 def reconcile_marketplace_lifecycle_task(
     dry_run: bool = True,
     days: int = 60,

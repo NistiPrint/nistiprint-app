@@ -7,6 +7,7 @@ import logging
 from flask import Blueprint, g, request
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.ai import AIProviderError
 from nistiprint_shared.services.ai_personalization_service import (
     delete_logs,
     get_ai_config,
@@ -234,9 +235,13 @@ def put_config():
             prompt_template=body.get("prompt_template"),
             model_name=body.get("model_name"),
             max_processing=body.get("max_processing"),
+            provider=body.get("provider"),
+            fallback_provider=body.get("fallback_provider"),
+            timeout_seconds=body.get("timeout_seconds"),
         )
         return ApiResponse.success({"config": config}, message="Configuracoes atualizadas com sucesso.")
-    except ValueError as exc:
+    except (ValueError, AIProviderError) as exc:
+        # Par provedor/modelo invalido e erro do operador, nao do servidor.
         return ApiResponse.error(str(exc), 400)
     except Exception as exc:
         logger.error("Erro ao atualizar configuracoes de IA: %s", exc, exc_info=True)

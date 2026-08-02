@@ -275,15 +275,68 @@ class ConsolidationService:
         Returns:
             Chave de consolidação
         """
+        # `pedidos` nao tem as colunas `produto_id` nem `id_produto_miolo` —
+        # o produto vive nos itens. As duas flags estavam ligadas na regra
+        # global e, na pratica, nunca tiveram efeito: `pedido.get(...)` devolvia
+        # None e a chave saia sem eles. Configuracao que aparenta valer e nao
+        # vale e pior que configuracao ausente, entao aqui o no-op fica dito em
+        # voz alta em vez de silencioso.
+        if regra.agrupar_por_produto or regra.agrupar_por_miolo:
+            logger.warning(
+                "Regra de consolidacao pede agrupamento por produto/miolo, mas o "
+                "pedido nao carrega essa identidade (ela vive em itens_pedido). "
+                "Agrupando apenas por canal/modalidade/flex/data — ajuste a regra "
+                "ou implemente a resolucao por item."
+            )
+
+        data_entrega = None
+        if regra.agrupar_por_data_entrega:
+            data_entrega = (
+                pedido.get('data_entrega')
+                or (str(pedido.get('data_limite_envio') or '')).split('T')[0]
+                or None
+            )
+
         return ConsolidacaoChave(
             canal_venda_id=pedido.get('canal_venda_id'),
             modalidade=modalidade,
             is_flex=bool(pedido.get('is_flex')),
-            produto_id=pedido.get('produto_id') if regra.agrupar_por_produto else None,
-            miolo_id=pedido.get('id_produto_miolo') if regra.agrupar_por_miolo else None,
-            data_entrega=pedido.get('data_entrega') or (str(pedido.get('data_limite_envio') or '')).split('T')[0] if regra.agrupar_por_data_entrega else None
+            produto_id=None,
+            miolo_id=None,
+            data_entrega=data_entrega,
         )
     
+    #: Teto absoluto da janela deslizante, contado da criacao do rascunho.
+    #: Um rascunho que nunca fecha nao e uma demanda — e uma fila.
+    TETO_JANELA_HORAS = 24
+
+    def _teto_da_janela(
+        self,
+        rascunho: Dict[str, Any],
+        regra: RegrasConsolidacaoCanal
+    ) -> Optional[datetime]:
+        """Momento maximo ate onde o rascunho pode ser estendido.
+
+        O teto e `created_at + max(TETO_JANELA_HORAS, janela_configurada)` — se
+        alguem configurar uma janela maior que o teto, a intencao explicita
+        vence o default.
+        """
+        criado_em = rascunho.get('created_at')
+        if not criado_em:
+            return None
+        try:
+            base = datetime.fromisoformat(str(criado_em).replace('Z', '+00:00'))
+        except ValueError:
+            logger.warning("created_at ilegivel no rascunho %s: %s", rascunho.get('id'), criado_em)
+            return None
+
+        horas = max(self.TETO_JANELA_HORAS, regra.janela_agrupamento_horas or 0)
+        teto = base + timedelta(hours=horas)
+        if base.tzinfo is None:
+            agora = get_now()
+            teto = teto.replace(tzinfo=agora.tzinfo)
+        return teto
+
     def _buscar_rascunho_compativel(
         self,
         chave: ConsolidacaoChave
@@ -291,7 +344,20 @@ class ConsolidationService:
         """
         Busca rascunho compatível para agrupamento.
         """
-        # Construir query dinâmica baseada na chave
+        # A busca precisa aplicar *todos* os campos que a chave declara.
+        #
+        # Antes, `_calcular_chave` compunha produto, miolo e data de entrega, e
+        # esta busca so filtrava canal/modalidade/flex (e produto). O resultado
+        # era uma chave que prometia uma granularidade e uma busca que entregava
+        # outra: pedidos com datas de entrega diferentes caiam no mesmo rascunho
+        # sem que a regra pedisse isso.
+        if chave.canal_venda_id in (None, ''):
+            # `.eq(coluna, None)` no PostgREST nao casa linha alguma; melhor
+            # dizer que nao ha rascunho compativel do que emitir uma query que
+            # silenciosamente nunca acha nada.
+            logger.warning("Chave de consolidacao sem canal_venda_id; nao ha rascunho compativel")
+            return None
+
         query = self.demandas_table.select('*') \
             .eq('status', 'RASCUNHO') \
             .eq('canal_venda_id', chave.canal_venda_id) \
@@ -300,17 +366,17 @@ class ConsolidationService:
             .gt('rascunho_expira_em', get_now_iso()) \
             .order('rascunho_expira_em', desc=False) \
             .limit(1)
-        
-        # Adicionar filtros opcionais
+
         if chave.produto_id:
             query = query.eq('produto_id', chave.produto_id)
-        
-        # Executar query
+        if chave.data_entrega:
+            query = query.eq('data_entrega', chave.data_entrega)
+
         response = query.execute()
-        
+
         if not response.data:
             return None
-        
+
         return response.data[0]
     
     # ========================================================================
@@ -363,10 +429,20 @@ class ConsolidationService:
         quantidade_pedido = self._calcular_quantidade_pedido(pedido)
         
         # Atualizar rascunho
+        #
+        # A janela e deslizante — cada pedido reabre o prazo — mas agora com
+        # teto absoluto. Sem ele, um fluxo continuo de pedidos empurra o
+        # vencimento indefinidamente e o rascunho nunca fecha: foi assim que a
+        # demanda DEM-20260710065646-27 ficou 6 dias aberta e acumulou 1.038
+        # pedidos, tornando-se inutilizavel para producao.
+        novo_vencimento = get_now() + timedelta(hours=regra.janela_agrupamento_horas)
+        teto = self._teto_da_janela(rascunho, regra)
+        if teto and novo_vencimento > teto:
+            novo_vencimento = teto
+
         update_data = {
             'quantidade': (rascunho.get('quantidade') or 0) + quantidade_pedido,
-            # Janela deslizante: reabre prazo a cada pedido
-            'rascunho_expira_em': (get_now() + timedelta(hours=regra.janela_agrupamento_horas)).isoformat()
+            'rascunho_expira_em': novo_vencimento.isoformat()
         }
         
         # Sinalização de revisão (Opção A)

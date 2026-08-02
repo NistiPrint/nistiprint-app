@@ -75,7 +75,10 @@ class CanonicalOrderRepository:
             return None
         response = (
             supabase_db.table("erp_marketplace_links")
-            .select("marketplace_module_id,marketplace_integration_id,erp_store_id")
+            .select(
+                "marketplace_module_id,marketplace_integration_id,erp_store_id,"
+                "ingest_origin_mode"
+            )
             .eq("erp_integration_id", erp_integration_id)
             .eq("erp_store_id", str(erp_store_id))
             .limit(1)
@@ -89,6 +92,101 @@ class CanonicalOrderRepository:
             row.get("marketplace_module_id")
         )
         return row
+
+    def resolve_ingest_origin_mode_for_order(
+        self, pedido_id: Any
+    ) -> Optional[str]:
+        """Modo de ingest do vinculo que governa este pedido.
+
+        Retorna `None` quando o pedido existe mas o vinculo nao pode ser
+        resolvido. Quem decide autoridade deve tratar `None` como *nao
+        autoritativo* sempre que houver identidade de marketplace: preservar a
+        situacao e sempre reversivel, sobrescrever nao e.
+        """
+        if pedido_id in (None, ""):
+            return None
+        rows = (
+            supabase_db.table("pedidos")
+            .select("erp_integration_id,erp_store_id,marketplace_module_id")
+            .eq("id", pedido_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            return None
+        pedido = rows[0]
+        link = self.resolve_erp_marketplace_link(
+            pedido.get("erp_integration_id"), pedido.get("erp_store_id")
+        )
+        if link and link.get("ingest_origin_mode"):
+            return link["ingest_origin_mode"]
+        # Sem vinculo resolvido: um pedido sem identidade de marketplace e um
+        # pedido puramente ERP, e o Bling manda nele. Com identidade, a duvida
+        # resolve a favor de preservar.
+        if not pedido.get("marketplace_module_id"):
+            return "erp_bling"
+        return None
+
+    def erp_can_project_status(self, pedido_id: Any) -> bool:
+        """O ERP pode ditar `situacao_pedido_id` deste pedido?
+
+        Guarda unica para todo escritor vindo do Bling. Substitui as listas de
+        marketplace escritas a mao, que envelheciam a cada canal novo: `origem`
+        em producao ja traz `AMAZONFBA_CLASSIC`, `TIKTOKSHOP`, `MAGAZINELUIZA`,
+        `LOJAINTEGRADA` e `KWAI`, nenhum deles casando com uma lista que dizia
+        `AMAZON` e `TIKTOK`.
+        """
+        from nistiprint_shared.services.order_status_decision import is_authoritative
+
+        mode = self.resolve_ingest_origin_mode_for_order(pedido_id)
+        if mode is None:
+            return False
+        return is_authoritative(mode, "erp", "order")
+
+    def erp_can_project_status_for_store(
+        self,
+        erp_integration_id: Any,
+        erp_store_id: Any,
+        *,
+        has_marketplace_identity: bool = True,
+    ) -> bool:
+        """Mesma pergunta, quando ainda nao existe `pedido_id`.
+
+        Usada por sincronizacoes que montam o payload antes de gravar. Sem
+        vinculo resolvido, um pedido com identidade de marketplace resolve a
+        duvida a favor de preservar; um pedido puramente ERP segue com o Bling
+        como autoridade.
+        """
+        from nistiprint_shared.services.order_status_decision import is_authoritative
+
+        link = self.resolve_erp_marketplace_link(erp_integration_id, erp_store_id)
+        mode = (link or {}).get("ingest_origin_mode")
+        if not mode:
+            if has_marketplace_identity:
+                return False
+            mode = "erp_bling"
+        return is_authoritative(mode, "erp", "order")
+
+    def order_exists(
+        self, marketplace_module_id: Any, marketplace_order_id: Any
+    ) -> bool:
+        module_id = self.normalize_module_id(marketplace_module_id)
+        order_id = self.normalize_order_id(marketplace_order_id)
+        if not module_id or not order_id:
+            return False
+        rows = (
+            supabase_db.table("pedidos")
+            .select("id")
+            .eq("marketplace_module_id", module_id)
+            .eq("marketplace_order_id", order_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        return bool(rows)
 
     def upsert(
         self,
