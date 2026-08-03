@@ -299,6 +299,7 @@ def reconcile_pending_erp_references(limit: int = 50):
     batch = _resolve_pending_references_in_batch(ativos)
     ready_ids = [item.get("pedido_id") for item in batch["ready"]]
     esgotados = 0
+    esgotados_pedidos: list[int] = []
 
     for row in ativos:
         if row.get("pedido_id") in ready_ids:
@@ -307,6 +308,7 @@ def reconcile_pending_erp_references(limit: int = 50):
             (item for item in batch["blocked"] if item.get("pedido_id") == row.get("pedido_id")),
             {},
         )
+        motivo = result.get("message") or result.get("status") or "Motivo desconhecido"
         attempts = int(row.get("attempts") or 0) + 1
 
         # Desistencia por idade, nao por contagem. A contagem media a paciencia
@@ -315,12 +317,25 @@ def reconcile_pending_erp_references(limit: int = 50):
         esgotou = _excedeu_horizonte(row.get("created_at"))
         if esgotou:
             esgotados += 1
+            esgotados_pedidos.append(row.get("pedido_id"))
+
+        # Motivo de cada item nao aplicado, por pedido. Antes so ficava no
+        # last_error da tabela — invisivel no log da task, entao "processed 4,
+        # applied 1" nao dizia por que os outros 3 nao aplicaram, e um pedido
+        # podia empilhar dezenas de tentativas sem ninguem perceber.
+        logger.info(
+            "Reconciliacao ERP: pedido %s nao aplicado (tentativa %s%s): %s",
+            row.get("pedido_id"),
+            attempts,
+            ", ESGOTOU horizonte" if esgotou else "",
+            motivo,
+        )
 
         supabase_db.table("pending_order_reconciliations").update({
             "attempts": attempts,
             "status": "failed" if esgotou else "pending",
             "next_attempt_after": None if esgotou else _proxima_tentativa_iso(attempts),
-            "last_error": result.get("message") or result.get("status"),
+            "last_error": motivo,
             "updated_at": get_now_iso(),
         }).eq("id", row.get("id")).execute()
 
@@ -329,10 +344,11 @@ def reconcile_pending_erp_references(limit: int = 50):
         # isso acontecia em silencio: o item so mudava de status no banco e
         # ninguem era avisado.
         logger.error(
-            "Reconciliacao ERP: %s pedidos passaram de %sh sem referencia de ERP — "
-            "nao serao faturaveis nem imprimiveis ate intervencao manual",
+            "Reconciliacao ERP: %s pedidos passaram de %sh sem referencia de ERP "
+            "(pedido_id: %s) — nao serao faturaveis nem imprimiveis ate intervencao manual",
             esgotados,
             HORIZONTE_HORAS,
+            ", ".join(str(p) for p in esgotados_pedidos),
         )
 
     return {
