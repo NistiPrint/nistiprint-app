@@ -191,12 +191,19 @@ def _resolve_pending_references_in_batch(rows: list[dict]) -> dict:
     pedidos_por_id = {}
     for row in rows:
         pedido = (supabase_db.table("pedidos")
-            .select("id,marketplace_order_id,marketplace_integration_id,marketplace_module_id,erp_store_id")
+            .select("id,marketplace_order_id,marketplace_integration_id,marketplace_module_id,erp_store_id,pack_id,erp_order_id")
             .eq("id", row.get("pedido_id")).limit(1).execute().data or [])
         if not pedido:
             results.append({"status": "not_found", "pedido_id": row.get("pedido_id")})
             continue
         pedido = pedido[0]
+        # Irmao de pacote ja resolvido: `enrich_order_erp_reference` aplica a
+        # referencia no pacote inteiro de uma vez, entao o irmao chega aqui
+        # pronto. Gastar uma consulta ao Bling para redescobrir o que ele ja tem
+        # so serviria para ele reivindicar de novo o mesmo pedido do ERP.
+        if pedido.get("erp_order_id"):
+            results.append({"status": "ready", "pedido_id": pedido["id"]})
+            continue
         pedidos_por_id[pedido["id"]] = pedido
         resolved = integration_capability_service.resolve(
             pedido.get("marketplace_integration_id"), INVOICING,
@@ -240,12 +247,25 @@ def _resolve_pending_references_in_batch(rows: list[dict]) -> dict:
             if not match:
                 results.append({"status": "pending", "pedido_id": pedido["id"], "message": "Pedido ainda nao encontrado no ERP"})
                 continue
-            supabase_db.rpc("enrich_order_erp_reference", {
-                "p_pedido_id": pedido["id"], "p_erp_integration_id": integration_id,
-                "p_erp_store_id": store_id or None, "p_erp_order_id": match["id"],
-                "p_erp_order_number": str(match["numero"]),
-                "p_marketplace_order_id": pedido.get("marketplace_order_id"),
-            }).execute()
+            # Isolado por pedido de proposito. Antes, uma excecao aqui abortava o
+            # lote inteiro e derrubava a task: um pedido problematico impedia a
+            # reconciliacao de todos os outros da rodada. O caso real foi um
+            # pacote ML, mas a fragilidade era estrutural — qualquer erro do
+            # banco tinha o mesmo alcance.
+            try:
+                supabase_db.rpc("enrich_order_erp_reference", {
+                    "p_pedido_id": pedido["id"], "p_erp_integration_id": integration_id,
+                    "p_erp_store_id": store_id or None, "p_erp_order_id": match["id"],
+                    "p_erp_order_number": str(match["numero"]),
+                    "p_marketplace_order_id": pedido.get("marketplace_order_id"),
+                }).execute()
+            except Exception as exc:
+                logger.warning(
+                    "Falha ao aplicar referencia ERP no pedido %s (bling_id=%s): %s",
+                    pedido["id"], match.get("id"), exc, exc_info=True,
+                )
+                results.append({"status": "error", "pedido_id": pedido["id"], "message": str(exc)})
+                continue
             results.append({"status": "ready", "pedido_id": pedido["id"]})
     return {"ready": [r for r in results if r["status"] == "ready"],
             "blocked": [r for r in results if r["status"] != "ready"]}

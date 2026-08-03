@@ -131,10 +131,38 @@ Exemplos alvo:
 
 ## Classificacao e deteccao de modalidade nova
 
+A classificacao roda no **banco**, por trigger em `pedido_snapshots` e
+`pedidos`, nao no worker de ingest. O extrator Python continua existindo e
+continua correto, mas deixou de ser a unica garantia: pedido entra por webhook
+de marketplace, por ingest de ERP e por reprocessamento manual, e uma regra que
+vale para todo pedido pertence ao lugar por onde todo pedido passa.
+
+O que motivou a mudanca: apos o backfill inicial, todo pedido novo voltou a
+entrar sem modalidade — inclusive um Flex obvio, com o dado correto ja gravado
+no snapshot. A regra estava certa, o dado estava certo, e a correcao do
+extrator estava no repositorio e nao no processo em execucao.
+
 O ingest classifica o pedido aplicando `regras_classificacao_modalidade` em
 ordem de prioridade. Cada regra casa um caminho de `pedido_snapshots.platform_fields`
 (ex.: metodo de envio, servico logistico) contra um valor, e aponta para uma
 modalidade.
+
+Tres alvos, do mais confiavel para o menos:
+
+| Alvo | Fonte | Prioridade |
+| --- | --- | --- |
+| `CHAVE` | `pedidos.metodo_envio_chave` — `logistics_channel_id` (Shopee, dentro de `package_list[]`), `logistic_type` (ML) | 10..99 |
+| `ROTULO` | `pedidos.metodo_envio_rotulo` — `shipping_carrier` | 900 |
+| `CANONICA` | `pedidos.modalidade_logistica`, derivado por `logistics_canonicalization` | 950 |
+
+O alvo `CANONICA` e desvio consciente da regra "nunca classificar como Comum
+por omissao" logo abaixo: `logistics_canonicalization` grava `STANDARD` tambem
+quando nao reconhece sinal nenhum. Decisao de 02/08/2026: o custo de o volume
+inteiro aparecer como nao classificado e maior que o de um canal exotico cair
+em Comum. Existe so como ultimo recurso, para o pedido ingerido via Bling, que
+nao carrega `package_list`. Onde a chave estavel discorda da canonica, a chave
+ganha — e ela ja provou estar certa: a canonicalizacao rotulou como STANDARD 38
+pedidos de Retirada e 2 de Turbo que o `logistics_channel_id` acertou.
 
 Regras de deteccao:
 
@@ -151,6 +179,59 @@ Regras de deteccao:
 Um metodo de envio desconhecido nunca e classificado como Comum ou STANDARD por
 omissao. Essa e a diferenca entre replicar o dado do marketplace e antecipar a
 mudanca dele.
+
+## Canais de envio: observar, nao cadastrar
+
+A lista de canais de um marketplace nao vem de catalogo cadastrado nem de um
+endpoint da plataforma. Catalogo desatualiza em silencio; nem toda plataforma
+expoe a lista. `metodos_envio_observados` guarda o distinct do trafego ja
+ingerido, com contagem e primeira ocorrencia — canal novo aparece sozinho, sem
+deploy.
+
+A tela vive em Integracoes > Logistica e tem duas partes:
+
+| Secao | O que resolve | Escopo |
+| --- | --- | --- |
+| Canais de envio | canal observado -> modalidade | por marketplace (o canal e da plataforma) |
+| Janela de coleta | modalidade -> corte, coleta, ponto | por conta (varia entre lojas) |
+
+A separacao nao e cosmetica: "Shopee Xpress" significa a mesma coisa em toda
+conta Shopee, mas o horario de corte nao. Associar canal por conta obrigaria a
+repetir a mesma decisao N vezes e permitiria N respostas diferentes para a
+mesma pergunta.
+
+Associar reclassifica retroativamente os pedidos **pendentes** que usam o
+canal. Pedido ja despachado nao muda: a demanda que o levou para producao ja
+existe, e reescrever a modalidade dele reescreveria a historia do lote.
+
+Desassociar desativa a regra, nunca apaga. Quem associou o que e historico de
+cadastro — um DELETE apagaria a explicacao de por que 4 mil pedidos foram para
+Comum na semana passada.
+
+Consequencia de design: a tela nunca fica "completa". Ela fica **zerada**,
+quando nenhum canal esta sem modalidade. E fila de trabalho, nao cadastro.
+
+## Criterio de pendencia
+
+A torre conta apenas pedido que ainda e trabalho do galpao:
+
+- `despachado_em IS NULL`, e
+- `situacao_pedido_id IN (2, 3, 4)` — Em Andamento, Produzido, Pronto para
+  Envio, e
+- modalidade com `entra_na_torre = true` (fallback `NOT is_fulfillment` para o
+  pedido ainda nao classificado).
+
+Lista positiva, nunca negativa por `flag_cancelado`: a negativa deixaria
+Enviado e Entregue dentro do escopo, e quebra de novo assim que alguem criar
+uma situacao nova.
+
+`despacho_arvore` e `despacho_escopo_pedidos` compartilham esse predicado
+palavra por palavra. Se divergirem, a tela promete um total que o lancamento
+nao entrega — e o lancamento carimba `despachado_em` em pedido que nao devia
+estar la.
+
+Full / fulfillment nao entra: quem despacha e o marketplace. O pedido continua
+classificado e visivel no detalhe, apenas fora do contador de conferencia.
 
 ## Arvore de totalizadores
 
@@ -203,8 +284,57 @@ Regras:
 
 ## Modalidades de prazo relativo
 
+A janela de coleta de uma modalidade `RELATIVO` e cadastrada na mesma tela das
+demais (Integracoes > Logistica), mas com outra forma: minutos apos a venda em
+vez de hora de parede.
+
+| | `FIXO` | `RELATIVO` |
+| --- | --- | --- |
+| Campos | `horario_corte`, `horario_coleta` | `offset_etiqueta_min`, `offset_coleta_min` |
+| Ancora | hora do dia | `pedidos.data_venda` |
+| Dias de atendimento | configuraveis | sempre todos |
+| Compartilhamento | um corte serve o lote inteiro | um relogio por pedido |
+
+`tg_regra_logistica_sync_modalidade` zera os campos da forma oposta em vez de
+deixa-los conviver: uma linha Turbo com `horario_corte` esquecido de uma edicao
+anterior mentiria para quem le a tabela.
+
+O offset por conta vence o do catalogo, do mesmo jeito que o horario de corte.
+O compromisso e ancorado em `data_venda`, nunca em `now()` — reprocessar o
+pedido amanha nao pode empurrar o prazo dele para amanha.
+
 Modalidades `RELATIVO` nao possuem janela diaria e nao aparecem como no
 acumulavel para conferencia. Elas formam uma esteira separada.
+
+### Quando o pedido sai da esteira
+
+A esteira usa criterio proprio: o pedido sai quando pertence a uma demanda
+**publicada** (status diferente de `RASCUNHO` e nao cancelada), nao quando
+recebe `despachado_em`.
+
+A torre continua usando `despachado_em`, e a diferenca e deliberada. Sao duas
+perguntas distintas:
+
+| | Pergunta | Criterio |
+| --- | --- | --- |
+| Torre | o que ainda precisa ser lancado? | `despachado_em IS NULL` |
+| Esteira | alguem ja assumiu este prazo? | nao esta em demanda publicada |
+
+Um Turbo dentro de um rascunho — alguem comecou a montar o lote e parou no
+meio — continua sendo responsabilidade de ninguem, com o relogio correndo. A
+faixa de alerta muda de texto nesse caso ("em rascunho, ainda nao publicado"),
+mas nao some.
+
+### Faixa de alerta
+
+Ocupa a largura da tela acima do cabecalho, em qualquer rota. Reflete estado,
+nao evento: aparece enquanto existir pedido na esteira e some sozinha quando o
+ultimo sai. Nao tem botao de dispensar — nao se dispensa um prazo que continua
+correndo, e um alerta que da para fechar e um alerta que sera fechado.
+
+O relogio e recalculado no cliente a partir de `compromisso_em`, nao do
+`minutos_restantes` da RPC: a contagem precisa continuar correndo entre um
+refetch e outro.
 
 - Fila FIFO ordenada por prazo de etiqueta.
 - Cada pedido carrega o proprio relogio regressivo.
@@ -265,15 +395,21 @@ apos a migration.
 
 ## Migration and transition
 
-- `pedidos.is_flex` passa a ser derivado de `modalidade_logistica_id` durante a
-  transicao, para nao quebrar de uma vez os consumidores atuais em API, worker,
-  impressao e alertas. Removido em fase posterior.
+- `pedidos.is_flex` e `pedidos.modalidade_logistica` (texto) sao derivados de
+  `modalidade_logistica_id` por trigger, para nao quebrar de uma vez os
+  consumidores atuais em API, worker, impressao e alertas. Removidos em fase
+  posterior. Nao escrever nessas colunas: a fonte de verdade e a FK.
 - `demandas_producao.modalidade_logistica` (varchar) migra para FK.
-- `regras_logisticas_canal` e migrada para `modalidades_logisticas`, com o
-  vinculo `canal_venda_id` traduzido para `marketplace_integration_id`.
-- `pontos_coleta` permanece e passa a ser referenciado pela modalidade.
-- Backfill de `modalidade_logistica_id` a partir de `is_flex` e do metodo de
-  envio observado em `pedido_snapshots.platform_fields`.
+- **Correcao de rumo (03/08/2026).** A versao anterior desta spec previa que
+  `regras_logisticas_canal` fosse absorvida por `modalidades_logisticas`. A
+  absorcao correta e a inversa: `regras_logisticas_integracao` e quem tem tela,
+  historico e seis consumidores, entao ela sobrevive e ganha
+  `modalidade_id` (FK). `modalidade_config_conta` foi removida — era a mesma
+  tabela com menos campos e sem tela.
+- `pontos_coleta` e referenciado pela **regra por conta**, nunca pelo catalogo:
+  a mesma modalidade tem pontos diferentes em contas diferentes.
+- Backfill de `modalidade_logistica_id` a partir do metodo de envio observado
+  em `pedido_snapshots.platform_fields`.
 
 ## Acceptance criteria
 

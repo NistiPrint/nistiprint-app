@@ -3,10 +3,14 @@ import Header from './Header';
 import RightSidebar from './RightSidebar';
 import Sidebar from './Sidebar';
 import Breadcrumbs from './Breadcrumbs';
+import AlertaTurbo from '@/components/despacho/AlertaTurbo';
 
 function MainLayout() {
   return (
     <div className="flex flex-col h-screen bg-gray-50/50 overflow-hidden">
+      {/* Acima do Header de propósito: o prazo do Turbo é de 40 minutos, e o
+          alerta precisa alcançar o operador em qualquer tela. */}
+      <AlertaTurbo />
       <Header />
       <div className="flex flex-1 overflow-hidden relative">
         <Sidebar />

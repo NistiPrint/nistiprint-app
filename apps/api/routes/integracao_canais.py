@@ -654,7 +654,8 @@ def listar_regras_logisticas_integracao():
     try:
         marketplace_integration_id = request.args.get('marketplace_integration_id')
         query = supabase_db.table('regras_logisticas_integracao').select(
-            "*, pontos_coleta(nome), installed_integrations(id, instance_name, module_id)"
+            "*, pontos_coleta(nome), installed_integrations(id, instance_name, module_id),"
+            " modalidades_logisticas(id, codigo, nome, cor, tipo_prazo, entra_na_torre)"
         ).order('marketplace_integration_id').order('horario_coleta').order('prioridade_uso')
         if marketplace_integration_id:
             query = query.eq('marketplace_integration_id', int(marketplace_integration_id))
@@ -671,24 +672,32 @@ def criar_regra_logistica_integracao():
     """Cria regra logística por integração."""
     try:
         data = request.get_json() or {}
-        required = ['marketplace_integration_id', 'modalidade', 'tipo_envio', 'horario_corte', 'horario_coleta']
-        for field in required:
+        # `modalidade_id` e a fonte de verdade; a coluna `modalidade` (texto) e
+        # projetada por trigger no banco. Aceitar apenas o id impede que a tela
+        # reintroduza o vocabulario paralelo que a unificacao acabou de fechar.
+        for field in ('marketplace_integration_id', 'modalidade_id', 'tipo_envio'):
             if data.get(field) in (None, ''):
                 return jsonify({'success': False, 'error': f'Campo obrigatório: {field}'}), 400
 
         dias_semana = data.get('dias_semana') or [1, 2, 3, 4, 5]
         if any(int(d) < 1 or int(d) > 7 for d in dias_semana):
             return jsonify({'success': False, 'error': 'dias_semana deve usar 1=segunda ... 7=domingo'}), 400
-        if str(data['horario_coleta']) < str(data['horario_corte']):
-            return jsonify({'success': False, 'error': 'horario_coleta deve ser maior ou igual a horario_corte'}), 400
+
+        # A forma da janela segue o tipo de prazo da modalidade: hora de parede
+        # para FIXO, minutos após a venda para RELATIVO. O banco valida de novo
+        # no trigger — aqui é só para a mensagem chegar legível na tela.
+        modalidade = supabase_db.table('modalidades_logisticas').select(
+            'id, codigo, tipo_prazo'
+        ).eq('id', int(data['modalidade_id'])).limit(1).execute()
+        tipo_prazo = ((modalidade.data or [{}])[0]).get('tipo_prazo') or 'FIXO'
 
         payload = {
             'marketplace_integration_id': int(data['marketplace_integration_id']),
-            'modalidade': str(data['modalidade']).upper(),
+            'modalidade_id': int(data['modalidade_id']),
+            # Placeholder: o trigger tg_regra_logistica_sync_modalidade
+            # sobrescreve com o codigo real da modalidade.
+            'modalidade': 'STANDARD',
             'tipo_envio': str(data['tipo_envio']).upper(),
-            'horario_corte': data['horario_corte'],
-            'horario_coleta': data['horario_coleta'],
-            'horario_limite': data.get('horario_limite') or data['horario_coleta'],
             'ponto_coleta_id': data.get('ponto_coleta_id'),
             'dias_semana': [int(d) for d in dias_semana],
             'ativo': bool(data.get('ativo', True)),
@@ -697,6 +706,28 @@ def criar_regra_logistica_integracao():
             'created_at': datetime.utcnow().isoformat(),
             'updated_at': datetime.utcnow().isoformat(),
         }
+
+        if tipo_prazo == 'RELATIVO':
+            for field in ('offset_etiqueta_min', 'offset_coleta_min'):
+                if data.get(field) in (None, ''):
+                    return jsonify({'success': False, 'error': f'Modalidade de prazo relativo: {field} é obrigatório'}), 400
+            etiqueta = int(data['offset_etiqueta_min'])
+            coleta = int(data['offset_coleta_min'])
+            if etiqueta <= 0 or coleta <= 0:
+                return jsonify({'success': False, 'error': 'Os prazos em minutos devem ser maiores que zero'}), 400
+            if coleta < etiqueta:
+                return jsonify({'success': False, 'error': 'A coleta não pode vir antes da etiqueta'}), 400
+            payload['offset_etiqueta_min'] = etiqueta
+            payload['offset_coleta_min'] = coleta
+        else:
+            for field in ('horario_corte', 'horario_coleta'):
+                if data.get(field) in (None, ''):
+                    return jsonify({'success': False, 'error': f'Campo obrigatório: {field}'}), 400
+            if str(data['horario_coleta']) < str(data['horario_corte']):
+                return jsonify({'success': False, 'error': 'horario_coleta deve ser maior ou igual a horario_corte'}), 400
+            payload['horario_corte'] = data['horario_corte']
+            payload['horario_coleta'] = data['horario_coleta']
+            payload['horario_limite'] = data.get('horario_limite') or data['horario_coleta']
         result = supabase_db.table('regras_logisticas_integracao').insert(payload).execute()
         return jsonify({'success': True, 'data': (result.data or [None])[0]}), 201
     except Exception as e:
@@ -710,13 +741,15 @@ def atualizar_regra_logistica_integracao(regra_id: int):
     """Atualiza regra logística por integração."""
     try:
         data = request.get_json() or {}
+        # `modalidade` fora da lista de propósito: e coluna projetada.
         allowed = {
-            'modalidade', 'tipo_envio', 'horario_corte', 'horario_coleta', 'horario_limite', 'ponto_coleta_id',
-            'dias_semana', 'ativo', 'prioridade_uso', 'descricao'
+            'modalidade_id', 'tipo_envio', 'horario_corte', 'horario_coleta', 'horario_limite', 'ponto_coleta_id',
+            'dias_semana', 'ativo', 'prioridade_uso', 'descricao',
+            'offset_etiqueta_min', 'offset_coleta_min'
         }
         updates = {k: v for k, v in data.items() if k in allowed}
-        if 'modalidade' in updates:
-            updates['modalidade'] = str(updates['modalidade']).upper()
+        if 'modalidade_id' in updates:
+            updates['modalidade_id'] = int(updates['modalidade_id'])
         if 'tipo_envio' in updates:
             updates['tipo_envio'] = str(updates['tipo_envio']).upper()
         if 'dias_semana' in updates:
@@ -745,4 +778,84 @@ def remover_regra_logistica_integracao(regra_id: int):
         return jsonify({'success': True})
     except Exception as e:
         logger.error(f"Erro ao remover regra logística por integração {regra_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@integracao_canais_bp.route('/logistica/modalidades', methods=['GET'])
+@login_required
+def listar_modalidades_logisticas():
+    """Modalidades cadastradas, opcionalmente filtradas pelo modulo da integração."""
+    try:
+        module_id = request.args.get('module_id')
+        marketplace_integration_id = request.args.get('marketplace_integration_id')
+
+        if not module_id and marketplace_integration_id:
+            ii = supabase_db.table('installed_integrations').select('module_id').eq(
+                'id', int(marketplace_integration_id)
+            ).limit(1).execute()
+            module_id = ((ii.data or [{}])[0]).get('module_id')
+
+        query = supabase_db.table('modalidades_logisticas').select('*').eq('ativo', True).order('ordem_exibicao')
+        if module_id:
+            query = query.eq('module_id', module_id)
+        result = query.execute()
+        return jsonify({'success': True, 'data': result.data or []})
+    except Exception as e:
+        logger.error(f"Erro ao listar modalidades logísticas: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@integracao_canais_bp.route('/logistica/canais', methods=['GET'])
+@login_required
+def listar_canais_envio_observados():
+    """Canais de envio vistos no tráfego real, com a modalidade associada.
+
+    Não é catálogo cadastrado: é o distinct do que a origem de fato mandou,
+    alimentado pelo ingest. Canal novo aparece aqui sozinho, sem deploy.
+    """
+    try:
+        marketplace_integration_id = request.args.get('marketplace_integration_id')
+        result = supabase_db.rpc('canais_envio_observados', {
+            'p_integration_id': int(marketplace_integration_id) if marketplace_integration_id else None
+        }).execute()
+        return jsonify({'success': True, 'data': result.data or []})
+    except Exception as e:
+        logger.error(f"Erro ao listar canais de envio observados: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@integracao_canais_bp.route('/logistica/canais/associar', methods=['POST'])
+@login_required
+def associar_canal_modalidade():
+    """Associa um canal de envio a uma modalidade e reclassifica os pendentes.
+
+    `modalidade_id` nulo desassocia: a regra e desativada (não apagada, para o
+    histórico continuar auditável) e os pedidos pendentes voltam para
+    "Modalidade não classificada".
+    """
+    try:
+        data = request.get_json() or {}
+        module_id = data.get('module_id')
+        chave = data.get('chave')
+        if not module_id or not chave:
+            return jsonify({'success': False, 'error': 'module_id e chave são obrigatórios'}), 400
+
+        modalidade_id = data.get('modalidade_id')
+        result = supabase_db.rpc('associar_canal_modalidade', {
+            'p_module_id': str(module_id),
+            'p_chave': str(chave),
+            'p_modalidade_id': int(modalidade_id) if modalidade_id not in (None, '', 'none') else None,
+            'p_campo_origem': data.get('campo_origem'),
+        }).execute()
+
+        row = (result.data or [{}])[0] if isinstance(result.data, list) else (result.data or {})
+        return jsonify({
+            'success': True,
+            'data': {
+                'regra_id': row.get('out_regra_id'),
+                'pedidos_reclassificados': row.get('out_pedidos_reclassificados', 0),
+            }
+        })
+    except Exception as e:
+        logger.error(f"Erro ao associar canal de envio à modalidade: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500

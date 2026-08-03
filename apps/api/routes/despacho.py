@@ -155,16 +155,58 @@ def get_escopo():
             .select(
                 "id,numero_pedido,codigo_pedido_externo,cliente_nome,total_pedido,"
                 "data_venda,data_limite_envio,compromisso_logistico_em,"
-                "metodo_envio_chave,metodo_envio_rotulo,modalidade_logistica_id"
+                "metodo_envio_chave,metodo_envio_rotulo,modalidade_logistica_id,pack_id"
             )
             .in_("id", pedido_ids)
             .order("compromisso_logistico_em", desc=False)
             .execute()
         )
+        pedidos = pedidos_result.data or []
+
+        # Irmaos de pacote: esta e a tela onde a confusao custa caro. Dois
+        # pedidos do mesmo pacote aparecem com o mesmo `numero_pedido` (o do
+        # ERP), e e daqui que sai a demanda de producao. Sem o marcador, a
+        # leitura natural e "duplicata" — e a reacao natural a duplicata,
+        # momentos antes de lancar, e remover uma das linhas.
+        pacotes = {}
+        try:
+            pack_result = supabase_db.rpc(
+                "pedidos_pacotes", {"p_pedido_ids": [p["id"] for p in pedidos]}
+            ).execute()
+            pacotes = {row["pedido_id"]: row for row in (pack_result.data or [])}
+        except Exception:
+            logger.warning("Falha ao resolver pacotes do escopo", exc_info=True)
+
+        for pedido in pedidos:
+            pacote = pacotes.get(pedido["id"])
+            pedido["pack_irmaos"] = (pacote or {}).get("irmaos") or 0
+            pedido["pack_irmaos_ids"] = (pacote or {}).get("irmaos_ids") or []
+
+        # Quebra por prazo do no inteiro, nao so do horizonte selecionado.
+        # O card da torre mostra o total do no; a tela abre com horizonte
+        # "atrasado + hoje" e mostra menos. Sem os buckets, a diferenca parece
+        # pedido sumido — e a duvida certa ("cade os outros?") vira desconfianca
+        # no contador, que e justamente o numero que existe para ser conferido
+        # contra o painel do marketplace.
+        buckets = {}
+        try:
+            arvore = supabase_db.rpc("despacho_arvore", {"p_data": p_data}).execute()
+            for row in (arvore.data or []):
+                if (row.get("nivel") == 2
+                        and row.get("integration_id") == integration_id
+                        and row.get("modalidade_id") == modalidade_id):
+                    buckets[row.get("bucket_prazo")] = row.get("qtd_pedidos") or 0
+        except Exception:
+            logger.warning("Falha ao obter buckets do no", exc_info=True)
 
         return jsonify({
             "success": True,
-            "data": {"total": len(pedido_ids), "pedidos": pedidos_result.data or []},
+            "data": {
+                "total": len(pedido_ids),
+                "pedidos": pedidos,
+                "buckets": buckets,
+                "total_no": sum(buckets.values()) if buckets else len(pedido_ids),
+            },
         })
     except Exception as exc:
         logger.error("Erro ao obter escopo de despacho: %s", exc, exc_info=True)

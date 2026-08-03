@@ -1,4 +1,6 @@
-﻿from flask import Blueprint, request, jsonify
+﻿import logging
+
+from flask import Blueprint, request, jsonify
 from routes.auth import login_required
 from nistiprint_shared.services.order_service import order_service
 from nistiprint_shared.models.situacao_pedido import SituacaoPedido
@@ -13,6 +15,8 @@ from utils.order_filters_adapter import (
     resolve_order_ids_from_origin,
     sanitize_search_term,
 )
+
+logger = logging.getLogger(__name__)
 
 unified_orders_bp = Blueprint('unified_orders', __name__, url_prefix='/api/v2/order')
 
@@ -85,9 +89,32 @@ def get_unified_orders_advanced():
             pedidos = rpc_result.data or []
         total_count = pedidos[0].get('total_count', 0) if pedidos else 0
 
-        # 3. Formatação da resposta para compatibilidade com o frontend
+        # 3. Pacotes: irmãos que vão na mesma caixa e compartilham o número do
+        # ERP. Sem esse marcador, duas linhas com o mesmo `numero_pedido`
+        # parecem duplicata na tela — e o operador tende a "resolver" duplicata
+        # cancelando uma delas.
+        #
+        # Enriquecimento por fora da RPC de listagem de propósito: ela tem 174
+        # linhas e é o caminho quente da tela de pedidos. Uma chamada extra por
+        # página, sobre os ids já carregados, custa menos que reescrevê-la.
+        pacotes_por_pedido = {}
+        pedido_ids = [p.get('id') for p in pedidos if p.get('id')]
+        if pedido_ids:
+            try:
+                pack_result = supabase_db.rpc('pedidos_pacotes', {'p_pedido_ids': pedido_ids}).execute()
+                pacotes_por_pedido = {row['pedido_id']: row for row in (pack_result.data or [])}
+            except Exception:
+                # Marcador de pacote é contexto, não dado crítico: a lista de
+                # pedidos não pode deixar de carregar por causa dele.
+                logger.warning("Falha ao resolver pacotes dos pedidos listados", exc_info=True)
+
+        # 4. Formatação da resposta para compatibilidade com o frontend
         formatted_orders = []
         for p in pedidos:
+            pacote = pacotes_por_pedido.get(p.get('id'))
+            p['pack_id'] = (pacote or {}).get('pack_id')
+            p['pack_irmaos'] = (pacote or {}).get('irmaos') or 0
+            p['pack_irmaos_ids'] = (pacote or {}).get('irmaos_ids') or []
             # Garantir estrutura de status esperada pelo PedidosListPage.jsx
             p['status'] = {
                 'id': p.get('situacao_pedido_id'),

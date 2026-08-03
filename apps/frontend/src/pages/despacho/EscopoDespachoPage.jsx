@@ -1,6 +1,8 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import PacoteBadge from '@/components/pedidos/PacoteBadge';
 import { useProducaoSidebar } from '@/lib/hooks/useProducaoSidebar';
 import { ArrowLeft, ChevronRight } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -107,6 +109,8 @@ export default function EscopoDespachoPage() {
   };
 
   const total = dados?.total ?? 0;
+  const totalNo = dados?.total_no ?? total;
+  const foraDoHorizonte = Math.max(0, totalNo - total);
 
   return (
     <div className="p-6">
@@ -129,25 +133,38 @@ export default function EscopoDespachoPage() {
         <CardContent className="py-5">
           <div className="mb-3 text-sm font-medium">Horizonte</div>
           <div className="flex flex-wrap gap-2">
-            {HORIZONTE_STEPS.map((step, idx) => (
-              <button
-                key={step}
-                type="button"
-                onClick={() => setHorizonteAte(idx)}
-                className={
-                  'rounded-full border px-3 py-1 text-xs transition-colors ' +
-                  (idx <= horizonteAte
-                    ? 'border-primary bg-primary/10 text-primary'
-                    : 'border-border text-muted-foreground hover:border-primary/40')
-                }
-              >
-                até {HORIZONTE_LABEL[step]}
-              </button>
-            ))}
+            {HORIZONTE_STEPS.map((step, idx) => {
+              const qtd = dados?.buckets?.[step] ?? 0;
+              return (
+                <button
+                  key={step}
+                  type="button"
+                  onClick={() => setHorizonteAte(idx)}
+                  className={
+                    'rounded-full border px-3 py-1 text-xs transition-colors ' +
+                    (idx <= horizonteAte
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-muted-foreground hover:border-primary/40')
+                  }
+                >
+                  até {HORIZONTE_LABEL[step]}
+                  {/* A contagem por bucket fica no próprio botão: é o que
+                      responde "quanto entra se eu estender?" antes do clique. */}
+                  {qtd > 0 && <span className="ml-1.5 opacity-70">{qtd}</span>}
+                </button>
+              );
+            })}
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
             Compare o total abaixo com a tela do marketplace antes de lançar.
           </p>
+          {foraDoHorizonte > 0 && (
+            <p className="mt-1 text-xs text-amber-700">
+              {foraDoHorizonte} pedido{foraDoHorizonte > 1 ? 's' : ''} deste card
+              {foraDoHorizonte > 1 ? ' estão' : ' está'} fora do horizonte selecionado.
+              O card da torre mostra {totalNo}.
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -160,7 +177,14 @@ export default function EscopoDespachoPage() {
       <Card className="mb-6">
         <CardContent className="flex items-center justify-between py-5">
           <div>
-            <div className="text-3xl font-semibold leading-none">{loading ? '—' : total}</div>
+            <div className="text-3xl font-semibold leading-none">
+              {loading ? '—' : total}
+              {!loading && foraDoHorizonte > 0 && (
+                <span className="ml-2 align-middle text-base font-normal text-muted-foreground">
+                  de {totalNo}
+                </span>
+              )}
+            </div>
             <div className="text-xs text-muted-foreground mt-1">pedidos no escopo selecionado</div>
           </div>
           <Button size="lg" disabled={loading || lancando || total === 0} onClick={lancar}>
@@ -187,6 +211,7 @@ export default function EscopoDespachoPage() {
       )}
 
       {!loading && dados?.pedidos?.length > 0 && (
+        <TooltipProvider>
         <div className="overflow-hidden rounded-md border">
           <table className="w-full text-sm">
             <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
@@ -202,7 +227,23 @@ export default function EscopoDespachoPage() {
               {dados.pedidos.map((pedido) => (
                 <tr key={pedido.id} className="border-t">
                   <td className="px-3 py-2">
-                    {pedido.numero_pedido || pedido.codigo_pedido_externo}
+                    <div className="flex items-center gap-2">
+                      <span>{pedido.numero_pedido || pedido.codigo_pedido_externo}</span>
+                      {/* Irmãos de pacote compartilham numero_pedido. Sem o
+                          marcador, as duas linhas parecem duplicata — e a
+                          reação a uma duplicata, momentos antes de lançar
+                          produção, é remover uma delas. */}
+                      <PacoteBadge
+                        variant="inline"
+                        irmaos={pedido.pack_irmaos}
+                        irmaosIds={pedido.pack_irmaos_ids}
+                      />
+                    </div>
+                    {pedido.pack_irmaos > 0 && pedido.codigo_pedido_externo && (
+                      <div className="font-mono text-[11px] text-muted-foreground">
+                        {pedido.codigo_pedido_externo}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2">{pedido.cliente_nome || '—'}</td>
                   <td className="px-3 py-2">
@@ -232,6 +273,7 @@ export default function EscopoDespachoPage() {
             </tbody>
           </table>
         </div>
+        </TooltipProvider>
       )}
     </div>
   );

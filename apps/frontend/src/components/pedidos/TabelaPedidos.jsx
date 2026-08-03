@@ -12,6 +12,7 @@ import { formatAppDateTime } from '@/lib/dateTime';
 import { getOrderTimestamps } from '@/lib/orderTimestamps';
 import { useEffect, useState } from 'react';
 import MarketplaceService from '@/services/MarketplaceService';
+import PacoteBadge from '@/components/pedidos/PacoteBadge';
 
 export default function TabelaPedidos({
   pedidos,
@@ -135,6 +136,7 @@ export default function TabelaPedidos({
                       {pedido.is_fulfillment && <Tooltip><TooltipTrigger><div className="h-2 w-2 rounded-full bg-green-500" /></TooltipTrigger><TooltipContent>Fulfillment</TooltipContent></Tooltip>}
                       {pedido.is_flex && <Tooltip><TooltipTrigger><div className="h-2 w-2 rounded-full bg-orange-400" /></TooltipTrigger><TooltipContent>Entrega rápida (Flex)</TooltipContent></Tooltip>}
                       {pedido.is_personalizado && <Tooltip><TooltipTrigger><div className="h-2 w-2 rounded-full bg-purple-400" /></TooltipTrigger><TooltipContent>Pedido personalizado</TooltipContent></Tooltip>}
+                      <PacoteBadge irmaos={pedido.pack_irmaos} irmaosIds={pedido.pack_irmaos_ids} />
                     </div>
                   </TableCell>
                   <TableCell>

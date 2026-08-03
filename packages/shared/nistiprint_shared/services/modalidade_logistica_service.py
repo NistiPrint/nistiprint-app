@@ -41,14 +41,42 @@ from nistiprint_shared.database.supabase_db_service import supabase_db
 logger = logging.getLogger(__name__)
 
 
+def _first_package(*containers: dict[str, Any]) -> dict[str, Any]:
+    """Primeiro pacote de `package_list`, venha de onde vier.
+
+    A Shopee expoe `logistics_channel_id` dentro de `package_list[]`, nunca na
+    raiz de `get_order_detail`. Ler so a raiz devolvia None para 100% dos
+    pedidos, o que fazia `classify_pedido` retornar antes de tocar o banco.
+
+    Pedido multi-pacote e possivel na API, mas nao existe na operacao: os
+    pacotes de um mesmo pedido compartilham o canal logistico, porque o canal e
+    escolhido no checkout. Se um dia aparecer pedido com canais distintos, o
+    modelo de "uma modalidade por pedido" e que precisa mudar — nao este
+    extrator.
+    """
+    for container in containers:
+        packages = container.get("package_list")
+        if isinstance(packages, list) and packages and isinstance(packages[0], dict):
+            return packages[0]
+    return {}
+
+
 def _extract_shopee(detail: dict[str, Any] | None) -> tuple[str | None, str | None, str]:
     detail = detail or {}
     raw = detail.get("raw") or {}
+    package = _first_package(detail, raw)
     chave = (
-        detail.get("logistics_channel_id")
+        package.get("logistics_channel_id")
+        # Raiz por ultimo, e nao por primeiro: se a Shopee promover o campo para
+        # o nivel do pedido, o pacote continua sendo a fonte mais especifica.
+        or detail.get("logistics_channel_id")
         or raw.get("logistics_channel_id")
     )
-    rotulo = detail.get("shipping_carrier") or raw.get("shipping_carrier")
+    rotulo = (
+        package.get("shipping_carrier")
+        or detail.get("shipping_carrier")
+        or raw.get("shipping_carrier")
+    )
     return (
         str(chave) if chave not in (None, "") else None,
         str(rotulo) if rotulo not in (None, "") else None,
@@ -116,36 +144,45 @@ def classify_pedido(
         return
 
     chave, rotulo, campo_origem = extract_metodo_envio(module_id, detail)
-    if not chave:
-        return
 
-    try:
-        supabase_db.table("pedidos").update({
-            "metodo_envio_chave": chave,
-            "metodo_envio_rotulo": rotulo,
-        }).eq("id", pedido_id).execute()
-    except Exception:
-        logger.warning(
-            "[modalidade] falha ao gravar metodo_envio pedido_id=%s module_id=%s",
-            pedido_id, module_id, exc_info=True,
-        )
-        return
+    if chave:
+        try:
+            supabase_db.table("pedidos").update({
+                "metodo_envio_chave": chave,
+                "metodo_envio_rotulo": rotulo,
+            }).eq("id", pedido_id).execute()
+        except Exception:
+            logger.warning(
+                "[modalidade] falha ao gravar metodo_envio pedido_id=%s module_id=%s",
+                pedido_id, module_id, exc_info=True,
+            )
 
-    try:
-        supabase_db.rpc("registrar_metodo_envio_observado", {
-            "p_module_id": module_id,
-            "p_integration_id": integration_id,
-            "p_campo_origem": campo_origem,
-            "p_chave": chave,
-            "p_rotulo": rotulo,
-            "p_pedido_id": pedido_id,
-        }).execute()
-    except Exception:
-        # Deteccao de metodo novo e observabilidade, nao caminho critico.
-        # Uma falha aqui nao pode impedir a classificacao em si.
-        logger.warning(
-            "[modalidade] falha ao registrar metodo observado pedido_id=%s chave=%s",
-            pedido_id, chave, exc_info=True,
+        try:
+            supabase_db.rpc("registrar_metodo_envio_observado", {
+                "p_module_id": module_id,
+                "p_integration_id": integration_id,
+                "p_campo_origem": campo_origem,
+                "p_chave": chave,
+                "p_rotulo": rotulo,
+                "p_pedido_id": pedido_id,
+            }).execute()
+        except Exception:
+            # Deteccao de metodo novo e observabilidade, nao caminho critico.
+            # Uma falha aqui nao pode impedir a classificacao em si.
+            logger.warning(
+                "[modalidade] falha ao registrar metodo observado pedido_id=%s chave=%s",
+                pedido_id, chave, exc_info=True,
+            )
+    else:
+        # Sem chave, seguir mesmo assim. `classificar_pedido_modalidade` tem um
+        # terceiro alvo (MODALIDADE_CANONICA, sobre `pedidos.modalidade_logistica`)
+        # que cobre o pedido ingerido via Bling, onde nao existe package_list.
+        # Retornar aqui — como esta funcao fazia antes — era o que impedia esses
+        # pedidos de serem classificados por qualquer caminho.
+        logger.info(
+            "[modalidade] sem chave de metodo de envio pedido_id=%s module_id=%s; "
+            "seguindo para o fallback canonico",
+            pedido_id, module_id,
         )
 
     try:
