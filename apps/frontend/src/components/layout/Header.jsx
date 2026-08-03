@@ -81,6 +81,12 @@ const navigation = [
     type: 'collapsible',
     children: [
       {
+        name: 'Torre de Despacho',
+        href: '/despacho',
+        type: 'link',
+        permission: { a: 'producao', I: 'ler' }
+      },
+      {
         name: 'Produção',
         href: '/producao',
         type: 'link',

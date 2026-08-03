@@ -26,6 +26,7 @@ from nistiprint_shared.services.canonical_order_repository import (
 from nistiprint_shared.services.correlation_service import generate_correlation_id, set_correlation_id
 from nistiprint_shared.services.logistica_coleta_service import logistica_coleta_service
 from nistiprint_shared.services import logistics_canonicalization
+from nistiprint_shared.services.modalidade_logistica_service import classify_pedido as classify_modalidade_logistica
 from nistiprint_shared.services.personalized_classification_service import (
     persist_classification_from_payload,
 )
@@ -1343,6 +1344,24 @@ class MarketplaceWebhookIngestService:
             pedido_id,
             log=logger,
         )
+        # Classificacao de modalidade logistica (spec: docs/specs/02-domains/despacho).
+        # Roda em paralelo com `logistics_canonicalization` acima (que resolve
+        # is_flex/modalidade_logistica legado): esta chamada popula o catalogo
+        # novo (metodo_envio_chave/rotulo, modalidade_logistica_id,
+        # compromisso_logistico_em) sem que um dependa do outro. Nunca lanca
+        # excecao — falha aqui nunca pode derrubar o ingest do pedido.
+        try:
+            classify_modalidade_logistica(
+                pedido_id=pedido_id,
+                module_id=source,
+                integration_id=marketplace_integration_id,
+                detail=details,
+            )
+        except Exception:
+            logger.warning(
+                "[marketplace-webhook] falha ao classificar modalidade logistica pedido_id=%s source=%s",
+                pedido_id, source, exc_info=True,
+            )
         return pedido_id
 
     def _customer_name(self, customer: dict | None) -> str | None:

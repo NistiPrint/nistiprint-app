@@ -1,6 +1,6 @@
 import { useLayout } from '@/contexts/LayoutContext';
 import { cn } from '@/lib/utils';
-import { ClipboardList, Layers, Users } from 'lucide-react';
+import { ClipboardList, Layers, TowerControl, Users } from 'lucide-react';
 import { useEffect } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
@@ -10,6 +10,12 @@ const vendasMenu = [
     href: '/vendas/pedidos',
     icon: ClipboardList,
     description: 'Gestão unificada de pedidos e demandas'
+  },
+  {
+    name: 'Torre de Despacho',
+    href: '/despacho',
+    icon: TowerControl,
+    description: 'Lançar demandas por regra logística'
   },
   {
     name: 'Demandas',

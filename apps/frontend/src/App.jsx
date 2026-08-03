@@ -51,6 +51,8 @@ import TaskControlCenter from './pages/admin/TaskControlCenter'
 import { AILogsPage } from './pages/ai/AILogsPage'
 import AuditoriaPage from './pages/auditoria/AuditoriaPage'
 import ConfiguracoesIA from './pages/configuracoes/ConfiguracoesIA'
+import TorreDespachoPage from './pages/despacho/TorreDespachoPage'
+import EscopoDespachoPage from './pages/despacho/EscopoDespachoPage'
 import ConsolidarPage from './pages/consolidar/ConsolidarPage'
 import ConsolidarReviewPage from './pages/consolidar/ConsolidarReviewPage'
 import RascunhosListPage from './pages/consolidar/RascunhosListPage'
@@ -117,6 +119,9 @@ function App() {
             <Route path='pedidos' element={<PedidosListPage />} />
             <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
           </Route>
+
+          <Route path='despacho' element={<TorreDespachoPage />} />
+          <Route path='despacho/escopo' element={<EscopoDespachoPage />} />
 
           <Route path='consolidar' element={<ConsolidarPage />} />
           <Route path='consolidar/revisao' element={<ConsolidarReviewPage />} />
