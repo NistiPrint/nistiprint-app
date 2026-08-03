@@ -16,6 +16,36 @@ from nistiprint_shared.utils.task_logging import log_task_execution
 logger = logging.getLogger(__name__)
 
 
+def _ml_pack_ids_por_pedido(order_ids: list) -> dict:
+    """Mapa marketplace_order_id -> pack_id para pedidos Mercado Livre.
+
+    Um pedido ML enviado junto com outro(s) do mesmo comprador (pack) as vezes
+    e importado no Bling sob o pack_id, nao o id do pedido individual —
+    "Numero da Loja" no Bling vem preenchido com o pack mesmo quando o pedido
+    interno tem um so item. Sem tentar o pack_id como alternativa, esses
+    pedidos nunca reconciliam. Visto em 03/08: pedido 54449, numeroLoja real
+    2000014317620711 != marketplace_order_id 2000017713411420 (o pack_id
+    esta em pedidos_mercadolivre.raw_order->>'pack_id').
+    """
+    if not order_ids:
+        return {}
+    rows = (
+        supabase_db.table("pedidos_mercadolivre")
+        .select("codigo_pedido,raw_order")
+        .in_("codigo_pedido", [str(o) for o in order_ids])
+        .execute()
+        .data
+        or []
+    )
+    pacotes = {}
+    for row in rows:
+        order_id = str(row.get("codigo_pedido") or "").strip()
+        pack_id = str((row.get("raw_order") or {}).get("pack_id") or "").strip()
+        if order_id and pack_id and pack_id != order_id:
+            pacotes[order_id] = pack_id
+    return pacotes
+
+
 class OrderErpReferenceService:
     """Resolves Bling references without making ERP a prerequisite for ingest."""
 
@@ -72,18 +102,27 @@ class OrderErpReferenceService:
         if not external_order_id:
             return {"status": "missing_identity", "pedido_id": pedido_id, "message": "Pedido sem identidade externa"}
 
+        pack_id = None
+        if pedido.get("marketplace_module_id") == "mercadolivre":
+            pack_id = _ml_pack_ids_por_pedido([external_order_id]).get(external_order_id)
+        candidatos = [external_order_id] + ([pack_id] if pack_id else [])
+
         try:
             client = BlingClient.create_client_for_integration_id(erp_integration_id)
-            matches = client.get_order_numbers_by_store_numbers([external_order_id]) or []
+            matches = client.get_order_numbers_by_store_numbers(candidatos) or []
         except Exception as exc:
             logger.warning("Falha ao resolver ERP do pedido %s: %s", pedido_id, exc, exc_info=True)
             return {"status": "error", "pedido_id": pedido_id, "message": str(exc)}
 
-        exact = [
-            row for row in matches
-            if str(row.get("numeroLoja") or external_order_id).strip() == external_order_id
-            and row.get("id") and row.get("numero")
-        ]
+        por_numero: dict[str, list] = {}
+        for row in matches:
+            numero_loja = str(row.get("numeroLoja") or "").strip()
+            if numero_loja in candidatos and row.get("id") and row.get("numero"):
+                por_numero.setdefault(numero_loja, []).append(row)
+
+        # Prioriza o match pelo id do pedido; so cai pro pack_id se o Bling nao
+        # tiver registrado o pedido individualmente.
+        exact = por_numero.get(external_order_id) or (por_numero.get(pack_id) if pack_id else None) or []
         if not exact:
             return {"status": "pending", "pedido_id": pedido_id, "message": "Pedido ainda nao encontrado no ERP"}
         if len(exact) > 1:
@@ -149,14 +188,16 @@ def _resolve_pending_references_in_batch(rows: list[dict]) -> dict:
     from nistiprint_shared.services.bling.bling_client import BlingClient
     grouped = {}
     results = []
+    pedidos_por_id = {}
     for row in rows:
         pedido = (supabase_db.table("pedidos")
-            .select("id,marketplace_order_id,marketplace_integration_id,erp_store_id")
+            .select("id,marketplace_order_id,marketplace_integration_id,marketplace_module_id,erp_store_id")
             .eq("id", row.get("pedido_id")).limit(1).execute().data or [])
         if not pedido:
             results.append({"status": "not_found", "pedido_id": row.get("pedido_id")})
             continue
         pedido = pedido[0]
+        pedidos_por_id[pedido["id"]] = pedido
         resolved = integration_capability_service.resolve(
             pedido.get("marketplace_integration_id"), INVOICING,
             context={"erp_store_id": pedido.get("erp_store_id"),
@@ -167,17 +208,35 @@ def _resolve_pending_references_in_batch(rows: list[dict]) -> dict:
         link = resolved.link or {}
         key = (int(resolved.integration_id), str(link.get("erp_store_id") or link.get("aggregator_store_id") or ""))
         grouped.setdefault(key, []).append(pedido)
+
+    # Pedido ML dentro de um pack pode estar no Bling sob o pack_id, nao o id
+    # do pedido individual. Ver _ml_pack_ids_por_pedido.
+    ml_order_ids = [
+        p["marketplace_order_id"] for p in pedidos_por_id.values()
+        if p.get("marketplace_module_id") == "mercadolivre" and p.get("marketplace_order_id")
+    ]
+    pack_ids = _ml_pack_ids_por_pedido(ml_order_ids)
+
     for (integration_id, store_id), pedidos in grouped.items():
-        ids = [str(p["marketplace_order_id"]) for p in pedidos if p.get("marketplace_order_id")]
+        ids = set()
+        for p in pedidos:
+            order_id = p.get("marketplace_order_id")
+            if not order_id:
+                continue
+            ids.add(str(order_id))
+            pack_id = pack_ids.get(str(order_id))
+            if pack_id:
+                ids.add(pack_id)
         try:
-            matches = BlingClient.create_client_for_integration_id(integration_id).get_order_numbers_by_store_numbers(ids) or []
+            matches = BlingClient.create_client_for_integration_id(integration_id).get_order_numbers_by_store_numbers(list(ids)) or []
         except Exception as exc:
             logger.warning("Falha no lote de referencias Bling: %s", exc, exc_info=True)
             results.extend({"status": "error", "pedido_id": p["id"], "message": str(exc)} for p in pedidos)
             continue
         by_store = {str(m.get("numeroLoja")): m for m in matches if m.get("numeroLoja") and m.get("id") and m.get("numero")}
         for pedido in pedidos:
-            match = by_store.get(str(pedido.get("marketplace_order_id")))
+            order_id = str(pedido.get("marketplace_order_id") or "")
+            match = by_store.get(order_id) or by_store.get(pack_ids.get(order_id, ""))
             if not match:
                 results.append({"status": "pending", "pedido_id": pedido["id"], "message": "Pedido ainda nao encontrado no ERP"})
                 continue
