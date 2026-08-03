@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { reprocessamentoService } from '@/services/reprocessamentoService';
-import { Activity, Brain, Database, Loader2, RefreshCw, Upload } from 'lucide-react';
+import { Activity, AlertTriangle, Brain, Database, Loader2, RefreshCw, Undo2, Upload } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -72,6 +72,142 @@ function FerramentasPage() {
           toast.error(`Erro: ${error.message}`);
       }
   }
+
+  // Corte histórico: marcar pedidos pendentes travados como entregues.
+  // Fluxo em dois passos deliberado — prévia primeiro, aplicar depois — porque
+  // a ação altera o status de milhares de pedidos de uma vez. Cancelado,
+  // Entregue e Devolvido são situações finais e nunca são tocados.
+  const [dataCorte, setDataCorte] = useState('');
+  const [previa, setPrevia] = useState(null);
+  const [loadingCorte, setLoadingCorte] = useState(false);
+  const [ultimoLote, setUltimoLote] = useState(null);
+
+  const chamarCorte = async (dryRun) => {
+    if (!dataCorte) {
+      toast.warning('Informe a data de corte.');
+      return null;
+    }
+    setLoadingCorte(true);
+    try {
+      const response = await fetch('/api/v2/ferramentas/marcar-entregues-ate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ data: dataCorte, dry_run: dryRun }),
+      });
+      const data = await response.json();
+      if (!data.success) {
+        toast.error(data.message || 'Erro na operação.');
+        return null;
+      }
+      return data;
+    } catch (error) {
+      toast.error(`Erro: ${error.message}`);
+      return null;
+    } finally {
+      setLoadingCorte(false);
+    }
+  };
+
+  const handlePreviaCorte = async () => {
+    setUltimoLote(null);
+    const data = await chamarCorte(true);
+    if (data) {
+      setPrevia(data);
+      if (!data.total) toast.info(data.message);
+    }
+  };
+
+  const handleAplicarCorte = async () => {
+    const total = previa?.total || 0;
+    if (!confirm(
+      `Isso marcará ${total} pedidos pendentes (Em Aberto, Em Andamento, Produzido, ` +
+      `Pronto para Envio, Enviado) como "Entregue" e os removerá da torre de despacho.\n\n` +
+      `Pedidos Cancelados, Entregues e Devolvidos dentro do período não são afetados — ` +
+      `são situações finais.\n\nA ação pode ser desfeita logo em seguida. Continuar?`
+    )) return;
+
+    const data = await chamarCorte(false);
+    if (data) {
+      toast.success(data.message);
+      setUltimoLote(data.lote);
+      setPrevia(null);
+    }
+  };
+
+  const handleDesfazerCorte = async () => {
+    if (!ultimoLote) return;
+    setLoadingCorte(true);
+    try {
+      const response = await fetch('/api/v2/ferramentas/desfazer-lote-manutencao', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ lote: ultimoLote }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        toast.success(data.message);
+        setUltimoLote(null);
+      } else {
+        toast.error(data.message || 'Erro ao desfazer.');
+      }
+    } catch (error) {
+      toast.error(`Erro: ${error.message}`);
+    } finally {
+      setLoadingCorte(false);
+    }
+  };
+
+  // Ressincronização a partir da origem do ingest.
+  const [contas, setContas] = useState([]);
+  const [contasCarregadas, setContasCarregadas] = useState(false);
+  const [dias, setDias] = useState('7');
+  const [limite, setLimite] = useState('');
+  const [ressyncEmAndamento, setRessyncEmAndamento] = useState(null);
+  const [ressyncResultado, setRessyncResultado] = useState(null);
+
+  const carregarContas = async () => {
+    try {
+      const response = await fetch('/api/v2/ferramentas/ressincronizar/contas', {
+        headers: { Accept: 'application/json' },
+      });
+      const data = await response.json();
+      if (data.success) {
+        setContas(data.data || []);
+        setContasCarregadas(true);
+      } else {
+        toast.error(data.message || 'Erro ao carregar contas.');
+      }
+    } catch (error) {
+      toast.error(`Erro: ${error.message}`);
+    }
+  };
+
+  const handleRessincronizar = async (conta) => {
+    setRessyncEmAndamento(conta.integration_id);
+    setRessyncResultado(null);
+    try {
+      const response = await fetch('/api/v2/ferramentas/ressincronizar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          integration_id: conta.integration_id,
+          dias: parseInt(dias, 10) || 7,
+          limite: limite ? parseInt(limite, 10) : null,
+        }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        toast.success(`${conta.nome}: ${data.message}`);
+        setRessyncResultado({ conta: conta.nome, ...data.data });
+      } else {
+        toast.error(data.message || 'Erro na ressincronização.');
+      }
+    } catch (error) {
+      toast.error(`Erro: ${error.message}`);
+    } finally {
+      setRessyncEmAndamento(null);
+    }
+  };
 
   const handleReprocessOrder = async (e) => {
     e.preventDefault();
@@ -162,11 +298,12 @@ function FerramentasPage() {
       <h1 className="text-3xl font-bold mb-6">Ferramentas Administrativas</h1>
 
       <Tabs defaultValue="import" className="w-full">
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="import">Importação Manual</TabsTrigger>
           <TabsTrigger value="reprocess">
             <Database className="w-4 h-4 mr-2" /> Reprocessamento
           </TabsTrigger>
+          <TabsTrigger value="ressync">Ressincronizar</TabsTrigger>
           <TabsTrigger value="maintenance">Manutenção</TabsTrigger>
         </TabsList>
 
@@ -324,7 +461,190 @@ function FerramentasPage() {
           </div>
         </TabsContent>
 
-        <TabsContent value="maintenance">
+        <TabsContent value="ressync">
+            <Card>
+                <CardHeader>
+                    <CardTitle>Ressincronizar a partir da origem</CardTitle>
+                    <CardDescription>
+                        Relê os pedidos pendentes direto no marketplace e reprocessa pela pipeline
+                        normal de ingest. Use quando a base estiver defasada ou incoerente.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="flex flex-wrap gap-4">
+                        <div className="space-y-2 w-32">
+                            <Label htmlFor="ressyncDias">Últimos dias</Label>
+                            <Input
+                                id="ressyncDias"
+                                type="number"
+                                min="1"
+                                value={dias}
+                                onChange={(e) => setDias(e.target.value)}
+                            />
+                        </div>
+                        <div className="space-y-2 w-40">
+                            <Label htmlFor="ressyncLimite">Limite (opcional)</Label>
+                            <Input
+                                id="ressyncLimite"
+                                type="number"
+                                min="1"
+                                placeholder="sem limite"
+                                value={limite}
+                                onChange={(e) => setLimite(e.target.value)}
+                            />
+                        </div>
+                    </div>
+
+                    {!contasCarregadas ? (
+                        <Button onClick={carregarContas} variant="outline">
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            Carregar contas de marketplace
+                        </Button>
+                    ) : (
+                        <div className="space-y-2">
+                            {contas.length === 0 && (
+                                <p className="text-sm text-muted-foreground">
+                                    Nenhuma conta de marketplace ativa encontrada.
+                                </p>
+                            )}
+                            {contas.map((conta) => (
+                                <div
+                                    key={conta.integration_id}
+                                    className="flex items-center justify-between gap-3 rounded-md border p-3"
+                                >
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-medium text-sm">{conta.nome}</span>
+                                            <span className={`text-[10px] rounded-full px-2 py-0.5 ${
+                                                conta.rota === 'direta'
+                                                    ? 'bg-green-100 text-green-800'
+                                                    : 'bg-blue-100 text-blue-800'
+                                            }`}>
+                                                {conta.rota === 'direta' ? 'API própria' : 'via Bling'}
+                                            </span>
+                                        </div>
+                                        <p className="text-xs text-muted-foreground mt-0.5">
+                                            {conta.module_id}
+                                            {conta.shop_id ? ` · shop_id ${conta.shop_id}` : ''}
+                                        </p>
+                                    </div>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        disabled={ressyncEmAndamento !== null}
+                                        onClick={() => handleRessincronizar(conta)}
+                                    >
+                                        {ressyncEmAndamento === conta.integration_id ? (
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                        ) : (
+                                            <RefreshCw className="mr-2 h-4 w-4" />
+                                        )}
+                                        Ressincronizar
+                                    </Button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {ressyncResultado && (
+                        <div className="rounded-md border p-3 text-sm space-y-1">
+                            <p className="font-medium">{ressyncResultado.conta}</p>
+                            <p className="text-muted-foreground">
+                                {ressyncResultado.listados} listados na origem ·{' '}
+                                {ressyncResultado.processados} reprocessados ·{' '}
+                                {ressyncResultado.total_erros || 0} erros
+                            </p>
+                            {ressyncResultado.erros?.length > 0 && (
+                                <ul className="text-xs text-destructive mt-2 space-y-0.5">
+                                    {ressyncResultado.erros.map((err) => (
+                                        <li key={err.externo}>{err.externo}: {err.erro}</li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    )}
+                </CardContent>
+            </Card>
+        </TabsContent>
+
+        <TabsContent value="maintenance" className="space-y-4">
+            <Card>
+                <CardHeader>
+                    <CardTitle>Corte histórico de pedidos</CardTitle>
+                    <CardDescription>
+                        Marca pedidos pendentes travados por falta de atualização como "Entregue" e os
+                        remove da torre de despacho. Use para limpar o histórico que aparece como backlog aberto.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                        <div className="flex items-start gap-2">
+                            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                            <div>
+                                <p className="font-medium">Altera situação de pedidos pendentes</p>
+                                <p className="text-xs mt-1">
+                                    Pedidos ainda <strong>pendentes</strong> (Em Aberto, Em Andamento, Produzido,
+                                    Pronto para Envio, Enviado) no período passam a "Entregue" — presunção de que
+                                    a situação nunca foi atualizada. <strong>Cancelados</strong>, <strong>Entregues</strong> e{' '}
+                                    <strong>Devolvidos</strong> são situações finais e não são tocados.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="space-y-2 max-w-xs">
+                        <Label htmlFor="dataCorte">Marcar pedidos com data de venda até</Label>
+                        <Input
+                            id="dataCorte"
+                            type="date"
+                            value={dataCorte}
+                            onChange={(e) => { setDataCorte(e.target.value); setPrevia(null); }}
+                        />
+                    </div>
+
+                    {previa && previa.total > 0 && (
+                        <div className="rounded-md border p-3 text-sm">
+                            <p className="font-medium mb-2">
+                                {previa.total} pedidos serão marcados como Entregue:
+                            </p>
+                            <ul className="space-y-1 text-muted-foreground">
+                                {previa.detalhes.map((d) => (
+                                    <li key={d.situacao_anterior} className="flex justify-between max-w-xs">
+                                        <span>{d.situacao_anterior}</span>
+                                        <span className="font-medium text-foreground">{d.quantidade}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+
+                    <div className="flex flex-wrap gap-2">
+                        <Button onClick={handlePreviaCorte} variant="outline" disabled={loadingCorte || !dataCorte}>
+                            {loadingCorte ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Database className="mr-2 h-4 w-4" />}
+                            Ver prévia
+                        </Button>
+                        {previa && previa.total > 0 && (
+                            <Button onClick={handleAplicarCorte} variant="destructive" disabled={loadingCorte}>
+                                {loadingCorte ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                                Aplicar em {previa.total} pedidos
+                            </Button>
+                        )}
+                        {ultimoLote && (
+                            <Button onClick={handleDesfazerCorte} variant="outline" disabled={loadingCorte}>
+                                <Undo2 className="mr-2 h-4 w-4" />
+                                Desfazer último corte
+                            </Button>
+                        )}
+                    </div>
+
+                    {ultimoLote && (
+                        <p className="text-xs text-muted-foreground">
+                            Lote {ultimoLote} — o estado anterior foi salvo e pode ser restaurado.
+                        </p>
+                    )}
+                </CardContent>
+            </Card>
+
             <Card>
                 <CardHeader>
                     <CardTitle>Manutenção de Produtos</CardTitle>
