@@ -69,6 +69,8 @@ def get_arvore():
                 "nome": row["marketplace_nome"],
                 "qtd_pedidos": 0,
                 "qtd_itens": 0,
+                "corte_em": None,
+                "coleta_em": None,
                 "compromisso_mais_proximo": None,
                 "modalidades": {},
             })
@@ -76,6 +78,8 @@ def get_arvore():
             if row["nivel"] == 0:
                 mkt["qtd_pedidos"] = row["qtd_pedidos"]
                 mkt["qtd_itens"] = row["qtd_itens"]
+                mkt["corte_em"] = row["corte_em"]
+                mkt["coleta_em"] = row["coleta_em"]
                 mkt["compromisso_mais_proximo"] = row["compromisso_mais_proximo"]
                 continue
 
@@ -87,6 +91,8 @@ def get_arvore():
                 "tipo_prazo": row["tipo_prazo"],
                 "qtd_pedidos": 0,
                 "qtd_itens": 0,
+                "corte_em": None,
+                "coleta_em": None,
                 "compromisso_mais_proximo": None,
                 "buckets": {},
             })
@@ -94,6 +100,8 @@ def get_arvore():
             if row["nivel"] == 1:
                 mod["qtd_pedidos"] = row["qtd_pedidos"]
                 mod["qtd_itens"] = row["qtd_itens"]
+                mod["corte_em"] = row["corte_em"]
+                mod["coleta_em"] = row["coleta_em"]
                 mod["compromisso_mais_proximo"] = row["compromisso_mais_proximo"]
                 continue
 

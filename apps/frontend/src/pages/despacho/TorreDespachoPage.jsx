@@ -1,7 +1,7 @@
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { useProducaoSidebar } from '@/lib/hooks/useProducaoSidebar';
-import { Clock, Package, RefreshCw } from 'lucide-react';
+import { Clock, Package, RefreshCw, Truck } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -36,6 +36,13 @@ function ModalidadeCard({ marketplace, modalidade, onAbrir }) {
   const atrasadoBucket = modalidade.buckets?.find((b) => b.bucket === 'atrasado');
   const temAtrasado = atrasadoBucket && atrasadoBucket.qtd_pedidos > 0;
   const naoClassificada = modalidade.modalidade_id === null;
+  // A coleta é o processo físico — é o caminhão que vai passar, e é assim que o
+  // operador pensa no lote. O corte é secundário na leitura, mas é ele que
+  // manda: define até quando o lote precisa estar pronto para pegar essa
+  // coleta. Modalidade RELATIVO (Turbo) não tem janela recorrente; ali vale o
+  // relógio próprio do pedido.
+  const coleta = formatCompromisso(modalidade.coleta_em);
+  const corte = formatCompromisso(modalidade.corte_em);
   const compromisso = formatCompromisso(modalidade.compromisso_mais_proximo);
 
   return (
@@ -67,11 +74,26 @@ function ModalidadeCard({ marketplace, modalidade, onAbrir }) {
                 </Badge>
               )}
             </div>
-            {compromisso && (
-              <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-                <Clock className="h-3 w-3" />
-                próximo compromisso {compromisso}
-              </div>
+            {coleta ? (
+              <>
+                <div className="mt-1 flex items-center gap-1 text-xs font-medium text-foreground">
+                  <Truck className="h-3.5 w-3.5" />
+                  próxima coleta {coleta}
+                </div>
+                {corte && (
+                  <div className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <Clock className="h-3 w-3" />
+                    pronto até {corte}
+                  </div>
+                )}
+              </>
+            ) : (
+              compromisso && (
+                <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                  <Clock className="h-3 w-3" />
+                  prazo {compromisso}
+                </div>
+              )
             )}
           </div>
           <div className="text-right">
@@ -180,7 +202,7 @@ export default function TorreDespachoPage() {
         <div>
           <h1 className="text-xl font-semibold">Torre de despacho</h1>
           <p className="text-sm text-muted-foreground">
-            Ordenado por tempo até o compromisso logístico
+            Ordenado pela próxima coleta. Cada card é o lote que precisa estar pronto para ela.
           </p>
         </div>
         <button

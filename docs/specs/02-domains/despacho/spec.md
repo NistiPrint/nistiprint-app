@@ -219,7 +219,75 @@ A torre conta apenas pedido que ainda e trabalho do galpao:
 - `situacao_pedido_id IN (2, 3, 4)` — Em Andamento, Produzido, Pronto para
   Envio, e
 - modalidade com `entra_na_torre = true` (fallback `NOT is_fulfillment` para o
-  pedido ainda nao classificado).
+  pedido ainda nao classificado), e
+- nao pertence a demanda publicada (status diferente de `RASCUNHO` e nao
+  cancelada).
+
+Rascunho continua aparecendo na torre. A escolha assume o risco de o mesmo
+pedido ser lancado duas vezes em favor de nunca esconder pedido por causa de um
+rascunho que ninguem terminou: sumir em silencio e pior que aparecer duas vezes.
+
+## Corte e coleta
+
+Sao dois momentos com papeis distintos, e confundi-los custa lote:
+
+| | O que e | Papel |
+| --- | --- | --- |
+| Corte | ate quando o lote precisa estar pronto | define **quem entra** na coleta |
+| Coleta | quando a transportadora passa | e o **processo fisico** |
+
+A torre ordena e destaca a **coleta**, porque e assim que a operacao pensa no
+lote ("o caminhao das 17h"). O corte aparece como "pronto ate". Ordenar pelo
+corte colocaria na frente um lote que fecha antes mas sai depois.
+
+O corte tambem e o saneamento que o operador nao deveria ter que fazer na mao:
+corte que ja passou nao aceita mais pedido, e quem chega depois ja entra na
+proxima janela.
+
+### Janela calculada na leitura
+
+`corte_em` e `coleta_em` sao calculados por `proxima_janela_logistica` a cada
+consulta, e **sempre no futuro**. Uma janela diaria recorrente — "corte 13:00"
+— nao e um instante, e uma regra que se repete; guardar a proxima ocorrencia
+como timestamp cria um valor que envelhece sozinho toda meia-noite.
+
+`dias_semana` e respeitado: consultada num sabado, uma modalidade Seg-Sex
+devolve a segunda.
+
+`pedidos.compromisso_logistico_em` permanece armazenado e correto **apenas para
+`RELATIVO`**, que ancora em `data_venda` e pode legitimamente estar no passado —
+atraso de Turbo e informacao real. Para `FIXO` a coluna e mantida por rotina,
+so para consumidores legados (ver abaixo).
+
+### Fechamento automatico da janela
+
+Uma task roda em cada horario de corte e de coleta cadastrado na aba Logistica.
+Ela **nao** e o que mantem a torre correta — o calculo na leitura ja garante
+isso. Ela faz o que calculo nenhum faz: agir no instante em que a janela vira.
+
+| Janela | Efeito |
+| --- | --- |
+| Corte | fecha o lote e cria a demanda `RASCUNHO` com os pedidos daquele momento |
+| Coleta | regrava `compromisso_logistico_em` dos pedidos `FIXO` pendentes |
+
+A distincao define o modo de falha, e e o ponto principal deste desenho: job
+parado significa automacao perdida naquele ciclo, nunca numero errado na tela.
+
+O fechamento cria `RASCUNHO` e nunca publica. A conferencia contra o painel do
+marketplace e o proposito da torre, e um job nao pode faze-la. Tambem nao
+carimba `despachado_em`: rascunho nao e despacho, e o pedido continua na torre
+ate alguem publicar.
+
+**Idempotencia.** `janelas_despacho_execucoes` tem unique em
+(integracao, modalidade, tipo, janela). `despacho_fechar_corte` reserva a
+janela antes de trabalhar, entao chamada repetida ou concorrente nao cria
+segundo lote — a guarda esta na propria funcao, nao na disciplina de quem
+chama.
+
+**Catch-up.** O job pergunta `janelas_despacho_vencidas` em vez de assumir que
+rodou na hora. Beat reiniciado, worker fora do ar ou horario editado na tela
+nao fazem o lote ser pulado em silencio: a janela e recuperada na proxima
+execucao, dentro de 26h.
 
 Lista positiva, nunca negativa por `flag_cancelado`: a negativa deixaria
 Enviado e Entregue dentro do escopo, e quebra de novo assim que alguem criar

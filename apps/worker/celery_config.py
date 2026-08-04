@@ -121,10 +121,73 @@ def load_dynamic_schedules():
             else:
                 logger.info(f"Task periódica desativada via banco: {task_name}")
                 
+        schedules.update(load_janela_despacho_schedules())
         return schedules
     except Exception as e:
         logger.error(f"Erro ao carregar tasks dinâmicas: {e}. Usando padrões de código.")
         return get_default_schedules()
+
+
+def load_janela_despacho_schedules():
+    """Uma entrada de beat por horário de corte e de coleta cadastrado.
+
+    Gerado a partir de `regras_logisticas_integracao` — a aba Logística — e não
+    de constante em código: cadastrar uma modalidade nova não pode exigir
+    deploy, e essa promessa vale também para o agendador.
+
+    A contrapartida é que o schedule é lido no start do beat. Editar um horário
+    na tela não reagenda o processo em execução. Isso é tolerável porque a task
+    não depende do instante exato: ela pergunta ao banco quais janelas venceram
+    e ainda não foram processadas (`janelas_despacho_vencidas`) e recupera o que
+    tiver ficado para trás. O cron diz "olhe agora"; o banco diz o que fazer.
+
+    Entradas duplicadas são deduplicadas pela chave: dois marketplaces com corte
+    às 13:00 geram um disparo só, e a task fecha as duas janelas.
+    """
+    from celery.schedules import crontab
+    from nistiprint_shared.database.supabase_db_service import supabase_db
+
+    entradas = {}
+    try:
+        regras = (
+            supabase_db.table('regras_logisticas_integracao')
+            .select('horario_corte,horario_coleta,ativo')
+            .eq('ativo', True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        logger.error(
+            "Falha ao carregar janelas de despacho para o beat: %s. "
+            "O fechamento automático não será agendado; a torre continua correta "
+            "porque calcula corte e coleta na leitura.", exc,
+        )
+        return {}
+
+    horarios = set()
+    for regra in regras:
+        for campo in ('horario_corte', 'horario_coleta'):
+            valor = regra.get(campo)
+            if not valor:
+                continue
+            try:
+                hora, minuto = str(valor)[:5].split(':')
+                horarios.add((int(hora), int(minuto)))
+            except (ValueError, TypeError):
+                logger.warning("Horário logístico ilegível ignorado: %r", valor)
+
+    for hora, minuto in sorted(horarios):
+        entradas[f'fechar-janela-despacho-{hora:02d}{minuto:02d}'] = {
+            'task': 'nistiprint_shared.services.despacho_janela_service.fechar_janelas',
+            'schedule': crontab(hour=hora, minute=minuto),
+        }
+
+    logger.info(
+        "Fechamento de janela agendado em %s horários: %s",
+        len(entradas), sorted(f'{h:02d}:{m:02d}' for h, m in horarios),
+    )
+    return entradas
 
 # Criação do App Celery
 celery_app = Celery(
@@ -141,6 +204,7 @@ celery_app = Celery(
         'nistiprint_shared.services.order_erp_reference_service',
         'nistiprint_shared.services.marketplace_lifecycle_tasks',
         'nistiprint_shared.services.marketplace_payment_reprocess_service',
+        'nistiprint_shared.services.despacho_janela_service',
     ]
 )
 celery_app.conf.update(
