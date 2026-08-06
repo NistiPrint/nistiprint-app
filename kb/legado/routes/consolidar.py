@@ -1,7 +1,10 @@
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
+from uuid import uuid4
 import pandas as pd
 from flask import request, render_template, Blueprint
+from werkzeug.utils import secure_filename
 from routes.auth import login_required
 from services.file_processors import process_mercadolivre, process_shopee, process_amazon, process_shein
 from constants import PLATFORM_X_CNPJ
@@ -18,6 +21,20 @@ def _ensure_temp_dir():
     return basedir
 
 basedir = _ensure_temp_dir()
+
+
+def _build_temp_upload_path(filename):
+    safe_name = secure_filename(filename or 'upload.xlsx')
+    stem = Path(safe_name).stem or 'upload'
+    suffix = Path(safe_name).suffix or '.tmp'
+    unique_name = f"{stem}_{uuid4().hex}{suffix}"
+    return os.path.join(basedir, unique_name)
+
+
+def _safe_remove(filepath):
+    if filepath and os.path.exists(filepath):
+        os.remove(filepath)
+
 
 @consolidar_bp.route('/consolidar', methods=['GET', 'POST'])
 @login_required
@@ -47,7 +64,7 @@ def consolidar():
         }
 
         if _file and (_file.filename.endswith('.xlsx') or _file.filename.endswith('.csv')):
-            filepath = os.path.join(basedir, _file.filename)
+            filepath = _build_temp_upload_path(_file.filename)
             _file.save(filepath)
 
         # Obter o CNPJ da plataforma selecionada
@@ -62,7 +79,7 @@ def consolidar():
             new_file_path = prepare_ml_file(filepath)
             result = process_mercadolivre(
                 new_file_path, period_filter, options, bling_client)
-            os.remove(new_file_path)
+            _safe_remove(new_file_path)
         elif 'Shopee' in options['platform']:
             result = process_shopee(filepath, period_filter, options, bling_client)
         elif options['platform'] == 'Amazon':
@@ -89,7 +106,7 @@ def consolidar():
                 'options': options
             }
 
-        os.remove(filepath)
+        _safe_remove(filepath)
 
         return render_template('results.html', results=results, period_filter=period_filter, options=options)
 

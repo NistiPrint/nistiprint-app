@@ -1,8 +1,10 @@
 import os
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from sqlalchemy import text
+import requests
 from services.database.database import db
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import current_app
@@ -25,22 +27,340 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# AI Model Initialization
-model_version = "gemini-2.5-flash"
-model = None
-try:
-    # Unified AI Model Initialization using API Key from environment variable
-    logger.info("Attempting to initialize Google Generative AI model...")
-    api_key = os.getenv('AISTUDIO_APIKEY')
-    if api_key:
+DEFAULT_AI_PROVIDER = os.getenv('AI_PERSONALIZATION_PROVIDER', 'google').strip().lower()
+DEFAULT_GOOGLE_MODEL = os.getenv('GOOGLE_GENERATIVE_MODEL', 'gemini-2.5-flash-lite').strip()
+DEFAULT_OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'openrouter/free').strip()
+DEFAULT_DEEPSEEK_MODEL = os.getenv('DEEPSEEK_MODEL', 'deepseek-chat').strip()
+
+_AI_CLIENT_CACHE = {}
+
+
+class AIProviderClient:
+    provider_name = 'unknown'
+    timeout = 120
+
+    def __init__(self, model_name):
+        self.model_name = model_name
+
+    def generate_content(self, prompt):
+        raise NotImplementedError
+
+    def describe(self):
+        return {
+            'provider': self.provider_name,
+            'model': self.model_name,
+            'source': f'{self.provider_name}:{self.model_name}'
+        }
+
+    def _build_messages(self, prompt):
+        return [
+            {
+                'role': 'user',
+                'content': prompt
+            }
+        ]
+
+    def _handle_http_error(self, response):
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            raise _build_provider_error(self.provider_name, response) from exc
+
+
+class GoogleAIClient(AIProviderClient):
+    provider_name = 'google'
+
+    def __init__(self, model_name, api_key):
+        super().__init__(model_name)
+        if not api_key:
+            raise RuntimeError('AISTUDIO_APIKEY environment variable not found.')
+
         import google.generativeai as genai
+
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_version)
-        logger.info("Google Generative AI model initialized successfully using API key.")
+        self._model = genai.GenerativeModel(model_name)
+        logger.info("Google Generative AI model initialized successfully.")
+
+    def generate_content(self, prompt):
+        response = self._model.generate_content(prompt)
+        return getattr(response, 'text', None)
+
+
+class OpenRouterAIClient(AIProviderClient):
+    provider_name = 'openrouter'
+
+    def __init__(self, model_name, api_key):
+        super().__init__(model_name)
+        if not api_key:
+            raise RuntimeError('OPENROUTER_API_KEY environment variable not found.')
+        self.api_key = api_key
+        self.endpoint = os.getenv('OPENROUTER_API_URL', 'https://openrouter.ai/api/v1/chat/completions').strip()
+        fallback_models = os.getenv('OPENROUTER_FALLBACK_MODELS', '').strip()
+        self.fallback_models = [model.strip() for model in fallback_models.split(',') if model.strip()]
+        self.max_retries = max(1, int(os.getenv('OPENROUTER_MAX_RETRIES', '2')))
+        self.retry_delay_seconds = max(0, int(os.getenv('OPENROUTER_RETRY_DELAY_SECONDS', '2')))
+
+    def _build_payload(self, prompt, model_name):
+        return {
+            'model': model_name,
+            'messages': self._build_messages(prompt),
+            'response_format': {
+                'type': 'json_object'
+            }
+        }
+
+    def _build_headers(self):
+        return {
+            'Authorization': f'Bearer {self.api_key}',
+            'HTTP-Referer': os.getenv('OPENROUTER_HTTP_REFERER', 'https://nistiprint.local'),
+            'X-OpenRouter-Title': os.getenv('OPENROUTER_APP_NAME', 'NistiPrint AI Personalization')
+        }
+
+    def generate_content(self, prompt):
+        candidate_models = [self.model_name] + [model for model in self.fallback_models if model != self.model_name]
+        last_error = None
+
+        for model_name in candidate_models:
+            for attempt in range(1, self.max_retries + 1):
+                response = requests.post(
+                    self.endpoint,
+                    headers=self._build_headers(),
+                    json=self._build_payload(prompt, model_name),
+                    timeout=self.timeout
+                )
+
+                if response.ok:
+                    payload = response.json()
+                    if model_name != self.model_name:
+                        logger.warning(
+                            f"OpenRouter fallback model '{model_name}' used after failing primary model '{self.model_name}'."
+                        )
+                    return _extract_chat_completion_text(payload)
+
+                last_error = _build_provider_error(self.provider_name, response)
+                if response.status_code != 429:
+                    raise last_error
+
+                logger.warning(
+                    f"OpenRouter rate limit for model '{model_name}' on attempt {attempt}/{self.max_retries}: {last_error}"
+                )
+                if attempt < self.max_retries and self.retry_delay_seconds:
+                    time.sleep(self.retry_delay_seconds)
+
+            logger.warning(f"OpenRouter exhausted retries for model '{model_name}'.")
+
+        raise last_error or RuntimeError('OpenRouter request failed without a detailed error.')
+
+
+class DeepSeekAIClient(AIProviderClient):
+    provider_name = 'deepseek'
+
+    def __init__(self, model_name, api_key):
+        super().__init__(model_name)
+        if not api_key:
+            raise RuntimeError('DEEPSEEK_API_KEY environment variable not found.')
+        self.api_key = api_key
+        self.endpoint = os.getenv('DEEPSEEK_API_URL', 'https://api.deepseek.com/chat/completions').strip()
+
+    def generate_content(self, prompt):
+        response = requests.post(
+            self.endpoint,
+            headers={
+                'Authorization': f'Bearer {self.api_key}'
+            },
+            json={
+                'model': self.model_name,
+                'messages': self._build_messages(prompt),
+                'response_format': {
+                    'type': 'json_object'
+                }
+            },
+            timeout=self.timeout
+        )
+        self._handle_http_error(response)
+        payload = response.json()
+        return _extract_chat_completion_text(payload)
+
+
+def _build_provider_error(provider_name, response):
+    response_body = response.text.strip()
+    if len(response_body) > 2000:
+        response_body = response_body[:2000] + '...'
+
+    if provider_name == 'openrouter' and 'No endpoints available matching your guardrail restrictions and data policy' in response_body:
+        return RuntimeError(
+            'openrouter account policy blocked this request. Review privacy/guardrail settings at '
+            'https://openrouter.ai/settings/privacy and allow at least one compatible endpoint.'
+        )
+
+    return RuntimeError(
+        f"{provider_name} API request failed with status {response.status_code}: {response_body or response.reason}"
+    )
+
+
+def _extract_chat_completion_text(payload):
+    choices = payload.get('choices') or []
+    if not choices:
+        raise RuntimeError('AI provider returned no choices.')
+
+    message = choices[0].get('message') or {}
+    content = message.get('content')
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get('type') == 'text':
+                text_parts.append(part.get('text', ''))
+        combined = ''.join(text_parts).strip()
+        if combined:
+            return combined
+
+    raise RuntimeError('AI provider returned an unsupported message format.')
+
+
+def _normalize_ai_json_text(response_text):
+    normalized = (response_text or '').replace('```json', '').replace('```', '').strip()
+
+    start = normalized.find('{')
+    end = normalized.rfind('}')
+    if start != -1 and end != -1 and end >= start:
+        normalized = normalized[start:end + 1]
+
+    return normalized.strip()
+
+
+def _strip_invalid_json_literal_suffixes(raw_json):
+    cleaned = []
+    in_string = False
+    escape = False
+    literal_buffer = []
+
+    def flush_literal(next_char=None):
+        nonlocal literal_buffer
+        if not literal_buffer:
+            return
+        literal = ''.join(literal_buffer)
+        valid_literals = {'null', 'true', 'false'}
+        if literal in valid_literals or literal.isdigit() or _is_float_literal(literal):
+            cleaned.append(literal)
+        else:
+            for candidate in ('null', 'true', 'false'):
+                if literal.startswith(candidate):
+                    cleaned.append(candidate)
+                    break
+            else:
+                trimmed = literal.rstrip('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ×•™š')
+                cleaned.append(trimmed or literal)
+        literal_buffer = []
+
+    for char in raw_json:
+        if in_string:
+            cleaned.append(char)
+            if escape:
+                escape = False
+            elif char == '\\':
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            flush_literal(char)
+            in_string = True
+            cleaned.append(char)
+            continue
+
+        if literal_buffer:
+            if char in ',}] \n\r\t':
+                flush_literal(char)
+                cleaned.append(char)
+            else:
+                literal_buffer.append(char)
+            continue
+
+        if char in 'ntf-0123456789':
+            literal_buffer.append(char)
+            continue
+
+        cleaned.append(char)
+
+    flush_literal()
+    return ''.join(cleaned)
+
+
+def _is_float_literal(value):
+    try:
+        float(value)
+        return any(separator in value for separator in ('.', 'e', 'E'))
+    except ValueError:
+        return False
+
+
+def parse_ai_json_response(response_text):
+    normalized = _normalize_ai_json_text(response_text)
+    if not normalized:
+        raise json.JSONDecodeError('Empty AI response after normalization', response_text or '', 0)
+
+    try:
+        return json.loads(normalized)
+    except json.JSONDecodeError:
+        repaired = _strip_invalid_json_literal_suffixes(normalized)
+        decoder = json.JSONDecoder()
+        parsed, end = decoder.raw_decode(repaired)
+        trailing = repaired[end:].strip()
+        if trailing:
+            logger.warning(f'Ignored trailing content after JSON response: {trailing[:200]}')
+        return parsed
+
+
+def _resolve_model_name(provider_name, model_name=None):
+    if model_name:
+        return model_name
+
+    if provider_name == 'google':
+        return DEFAULT_GOOGLE_MODEL
+    if provider_name == 'openrouter':
+        return DEFAULT_OPENROUTER_MODEL
+    if provider_name == 'deepseek':
+        return DEFAULT_DEEPSEEK_MODEL
+
+    raise RuntimeError(f"Unsupported AI provider: {provider_name}")
+
+
+def get_ai_client(provider_name=None, model_name=None):
+    provider_name = (provider_name or DEFAULT_AI_PROVIDER).strip().lower()
+    resolved_model_name = _resolve_model_name(provider_name, model_name)
+    cache_key = f'{provider_name}:{resolved_model_name}'
+
+    if cache_key in _AI_CLIENT_CACHE:
+        return _AI_CLIENT_CACHE[cache_key]
+
+    logger.info(f"Initializing AI client for provider '{provider_name}' with model '{resolved_model_name}'")
+
+    if provider_name == 'google':
+        client = GoogleAIClient(resolved_model_name, os.getenv('AISTUDIO_APIKEY'))
+    elif provider_name == 'openrouter':
+        client = OpenRouterAIClient(resolved_model_name, os.getenv('OPENROUTER_API_KEY'))
+    elif provider_name == 'deepseek':
+        client = DeepSeekAIClient(resolved_model_name, os.getenv('DEEPSEEK_API_KEY'))
     else:
-        logger.warning("AISTUDIO_APIKEY environment variable not found. AI model not initialized.")
-except Exception as e:
-    logger.error(f"Failed to initialize AI model: {e}")
+        raise RuntimeError(f"Unsupported AI provider: {provider_name}")
+
+    _AI_CLIENT_CACHE[cache_key] = client
+    return client
+
+
+def get_active_ai_settings(provider_name=None, model_name=None):
+    provider_name = (provider_name or DEFAULT_AI_PROVIDER).strip().lower()
+    resolved_model_name = _resolve_model_name(provider_name, model_name)
+    return {
+        'provider': provider_name,
+        'model': resolved_model_name,
+        'source': f'{provider_name}:{resolved_model_name}'
+    }
 
 
 def save_log_to_file(order_sn, content, log_type="processing"):
@@ -230,6 +550,49 @@ def get_orders_with_chats(order_sn=None):
         session.close()
 
 
+def _has_meaningful_text(value):
+    if value is None:
+        return False
+    return bool(str(value).strip())
+
+
+def has_customer_personalization_input(order):
+    if _has_meaningful_text(order.get('message_to_seller')):
+        return True
+
+    buyer_username = ((order.get('buyer_info') or {}).get('username') or '').strip()
+    for msg in order.get('chat_messages') or []:
+        if msg.get('type') == 'bundle_message':
+            continue
+        if buyer_username and msg.get('from_user_name') != buyer_username:
+            continue
+        if _has_meaningful_text(msg.get('display_content')) or _has_meaningful_text(msg.get('content')):
+            return True
+
+    return False
+
+
+def build_no_customer_input_result(order):
+    return {
+        'order_id': str(order['order_id']),
+        'shopee_order_sn': order['shopee_order_sn'],
+        'status': 'NO_PERSONALIZATION_FOUND',
+        'reasoning': 'No buyer message to seller or buyer chat message was available, so AI processing was skipped.',
+        'personalized_items': [
+            {
+                'item_id': str(item['id']),
+                'item_description': item.get('descricao', ''),
+                'quantity_to_personalize': int(item.get('quantidade', 1) or 1),
+                'customization_name': None,
+                'name_source_message_id': None,
+                'customization_initial': None,
+                'initial_source_message_id': None,
+            }
+            for item in (order.get('items') or [])
+        ]
+    }
+
+
 def generate_prompt_payload(order):
     prompt_payload = ">>> ORDER DATA\n"
     prompt_payload += f"\n  Order ID: {order['order_id']}"
@@ -263,22 +626,20 @@ def generate_prompt_payload(order):
     return prompt_payload
 
 
-def run_model(prompt_payload):
+def run_model(prompt_payload, provider_name=None, model_name=None):
     """
-    Runs the generative model using the pre-initialized model instance.
+    Runs the configured AI provider against the assembled prompt.
     """
-    if not model:
-        raise RuntimeError("AI model is not initialized. Check startup logs for errors.")
-
     prompt = f"{PROMPT_TEMPLATE}\n{prompt_payload}"
+    client = get_ai_client(provider_name=provider_name, model_name=model_name)
 
     try:
-        response = model.generate_content(prompt)
+        response_text = client.generate_content(prompt)
     except Exception as e:
         logging.error(f"Falha ao processar prompt, error: {e}")
         raise
 
-    return response
+    return response_text, client.describe()
 
 def delete_extraction_records(order_data, session=None):
     """
@@ -308,7 +669,7 @@ def delete_extraction_records(order_data, session=None):
             raise
 
 
-def save_extraction_results(order_data, extraction_result):
+def save_extraction_results(order_data, extraction_result, model_info=None):
     """
     Save the extraction results to the database.
 
@@ -352,7 +713,9 @@ def save_extraction_results(order_data, extraction_result):
                 initial_source_message_id=item.get('initial_source_message_id'),
                 extraction_metadata={
                     'extraction_timestamp': datetime.utcnow().isoformat(),
-                    'source': 'gemini-2.5-flash',
+                    'source': (model_info or {}).get('source', 'unknown'),
+                    'provider': (model_info or {}).get('provider'),
+                    'model': (model_info or {}).get('model'),
                     'version': '1.0',
                     'processed_at': datetime.utcnow().isoformat()
                 }
@@ -491,10 +854,13 @@ def get_personalizations_by_bling_orders(bling_order_numbers):
         return {}
 
 
-def _process_single_order(app, order, processed_count, total_orders):
+def _process_single_order(app, order, processed_count, total_orders, provider_name=None, model_name=None):
     with app.app_context():
         order_sn = order.get('shopee_order_sn') or order.get('numeroLoja')
-        logger.info(f"Processing order {processed_count} of {total_orders} (Order SN: {order_sn})")
+        model_info = get_active_ai_settings(provider_name=provider_name, model_name=model_name)
+        logger.info(
+            f"Processing order {processed_count} of {total_orders} (Order SN: {order_sn}, AI: {model_info['source']})"
+        )
 
         chat_context = order.get('chat_messages', [])
         prompt_payload = generate_prompt_payload(order)
@@ -505,18 +871,47 @@ def _process_single_order(app, order, processed_count, total_orders):
         status = 'success'
 
         try:
-            response = run_model(prompt_payload)
-            if response and response.text:
-                ai_response_text = response.text
-                ai_result = ai_response_text.replace("```json", "").replace("```", "")
-                ai_result = json.loads(ai_result)
-                save_success = save_extraction_results(order, ai_result)
+            if not has_customer_personalization_input(order):
+                logger.info(f"Skipping AI processing for order {order_sn}: no buyer message to seller or buyer chat content.")
+                ai_result = build_no_customer_input_result(order)
+                save_success = save_extraction_results(
+                    order,
+                    ai_result,
+                    model_info={
+                        'provider': 'system',
+                        'model': 'no-ai',
+                        'source': 'system:no-ai'
+                    }
+                )
                 if not save_success:
                     status = 'db_error'
-                    error_message = 'Failed to save extraction results.'
+                    error_message = 'Failed to save shortcut extraction results.'
+                else:
+                    status = 'skipped_no_customer_input'
             else:
-                status = 'no_response'
-                error_message = 'No response from AI model.'
+                response_text, model_info = run_model(
+                    prompt_payload,
+                    provider_name=provider_name,
+                    model_name=model_name
+                )
+                if response_text:
+                    ai_response_text = response_text
+                    ai_result = parse_ai_json_response(ai_response_text)
+
+                    if not isinstance(ai_result, dict):
+                        raise RuntimeError(f"AI response must be a JSON object, got {type(ai_result).__name__}.")
+
+                    save_success = save_extraction_results(order, ai_result, model_info=model_info)
+                    if not save_success:
+                        status = 'db_error'
+                        error_message = 'Failed to save extraction results.'
+                else:
+                    status = 'no_response'
+                    error_message = 'No response from AI model.'
+        except json.JSONDecodeError as e:
+            status = 'invalid_json'
+            error_message = f'Failed to decode AI response as JSON: {e}'
+            logger.error(f"Error processing order {order_sn}: {error_message}", exc_info=True)
         except Exception as e:
             status = 'error'
             error_message = str(e)
@@ -537,7 +932,7 @@ def _process_single_order(app, order, processed_count, total_orders):
                 order_sn=order_sn,
                 input_data=prompt_payload,
                 chat_context=chat_context,
-                extracted_personalization=ai_result.get('personalized_items') if ai_result else None,
+                extracted_personalization=ai_result.get('personalized_items') if isinstance(ai_result, dict) else None,
                 model_result=ai_result,
                 status=status,
                 error_message=error_message
@@ -548,7 +943,8 @@ def _process_single_order(app, order, processed_count, total_orders):
 def process_orders(limit=None, order_sn=None):
     """Main function to process orders and extract personalizations."""
     try:
-        logger.info("Starting order processing...")
+        ai_settings = get_active_ai_settings()
+        logger.info(f"Starting order processing with AI provider '{ai_settings['source']}'")
         app = current_app._get_current_object()
 
         orders = get_orders_with_chats(order_sn=order_sn)
@@ -563,16 +959,27 @@ def process_orders(limit=None, order_sn=None):
 
         processed_count = 0
         # Using ThreadPoolExecutor to process orders in parallel
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=3) as executor:
             # Create a future for each order
-            futures = {executor.submit(_process_single_order, app, order, i + 1, total_orders): order for i, order in enumerate(orders)}
+            futures = {
+                executor.submit(
+                    _process_single_order,
+                    app,
+                    order,
+                    i + 1,
+                    total_orders,
+                    ai_settings['provider'],
+                    ai_settings['model']
+                ): order
+                for i, order in enumerate(orders)
+            }
 
             for future in as_completed(futures):
                 order = futures[future]
                 try:
                     # Get the result of the future
                     status = future.result()
-                    if status == 'success':
+                    if status in ('success', 'skipped_no_customer_input'):
                         processed_count += 1
                 except Exception as exc:
                     order_sn_exc = order.get('shopee_order_sn') or order.get('numeroLoja')

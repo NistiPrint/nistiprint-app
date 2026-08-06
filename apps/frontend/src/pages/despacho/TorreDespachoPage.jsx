@@ -36,14 +36,20 @@ function ModalidadeCard({ marketplace, modalidade, onAbrir }) {
   const atrasadoBucket = modalidade.buckets?.find((b) => b.bucket === 'atrasado');
   const temAtrasado = atrasadoBucket && atrasadoBucket.qtd_pedidos > 0;
   const naoClassificada = modalidade.modalidade_id === null;
-  // A coleta é o processo físico — é o caminhão que vai passar, e é assim que o
-  // operador pensa no lote. O corte é secundário na leitura, mas é ele que
-  // manda: define até quando o lote precisa estar pronto para pegar essa
-  // coleta. Modalidade RELATIVO (Turbo) não tem janela recorrente; ali vale o
-  // relógio próprio do pedido.
+  // A coleta é o processo físico — o caminhão que vai passar — e é o prazo real
+  // de produção. O corte NÃO é prazo: é a regra de pertencimento. Pedido pago
+  // até o corte sai nessa coleta; pago depois, na próxima. Por isso ele aparece
+  // como "fecha às", nunca como "pronto até".
+  //
+  // Um lote pode ter mais de uma saída (coleta local 17h, ponto de coleta 19h).
+  // O prazo final é a última: é ela que decide se a demanda atrasou, e é o que
+  // permite registrar coleta parcial às 17h sem a demanda ficar vermelha.
   const coleta = formatCompromisso(modalidade.coleta_em);
   const corte = formatCompromisso(modalidade.corte_em);
   const compromisso = formatCompromisso(modalidade.compromisso_mais_proximo);
+  const janelas = modalidade.janelas || [];
+  const temSegundaSaida = janelas.length > 1;
+  const coletas = modalidade.coletas || [];
 
   return (
     <Card
@@ -79,11 +85,20 @@ function ModalidadeCard({ marketplace, modalidade, onAbrir }) {
                 <div className="mt-1 flex items-center gap-1 text-xs font-medium text-foreground">
                   <Truck className="h-3.5 w-3.5" />
                   próxima coleta {coleta}
+                  {temSegundaSaida && (
+                    <span className="text-muted-foreground font-normal">
+                      {' · envio até '}
+                      {formatCompromisso(modalidade.prazo_final_em)?.split(', ')[1]}
+                      {janelas[janelas.length - 1]?.ponto_nome
+                        ? ` (${janelas[janelas.length - 1].ponto_nome})`
+                        : ''}
+                    </span>
+                  )}
                 </div>
                 {corte && (
                   <div className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground">
                     <Clock className="h-3 w-3" />
-                    pronto até {corte}
+                    lote fecha às {corte.split(', ')[1]} — pago depois disso entra na próxima
                   </div>
                 )}
               </>
@@ -102,8 +117,33 @@ function ModalidadeCard({ marketplace, modalidade, onAbrir }) {
           </div>
         </div>
 
-        {modalidade.buckets?.length > 0 && (
+        {/* Quebra por coleta: qual caminhão leva quantos. É o recorte que
+            define os lotes de produção — o pedido pago depois do corte não
+            some, ele aparece aqui na coleta seguinte. */}
+        {coletas.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2 border-t pt-3">
+            {coletas.map((c, idx) => {
+              const rotulo = formatCompromisso(c.coleta_em);
+              return (
+                <span
+                  key={c.coleta_em}
+                  className={
+                    'inline-flex items-center gap-1 text-xs rounded-full px-2 py-0.5 ' +
+                    (idx === 0
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-muted text-muted-foreground')
+                  }
+                >
+                  <Truck className="h-3 w-3" />
+                  {rotulo}: {c.qtd_pedidos}
+                </span>
+              );
+            })}
+          </div>
+        )}
+
+        {modalidade.buckets?.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2">
             {modalidade.buckets
               .slice()
               .sort((a, b) => {

@@ -18,7 +18,7 @@ def process_mercadolivre(file, period_filter=None, options=None, bling_client=No
     print(f"[ML DEBUG] Total lines read from file: {len(data)}")
 
     valid_states = [
-        'Pronta para emitir NF-e de venda',
+        'Pronta para emitir NF-e da venda',
         'Emita a Nota Fiscal eletrônica (NF-e)',
         'Aguardando disponibilidade de estoque',
         'Anúncio sem dados fiscais',
@@ -104,7 +104,6 @@ def process_mercadolivre(file, period_filter=None, options=None, bling_client=No
             
         else:
             print(f"{log_prefix} STATUS: INVALID (No valid state found)")
-
 
     for i, row in enumerate(records):
         state = str(row.get('Estado', ''))

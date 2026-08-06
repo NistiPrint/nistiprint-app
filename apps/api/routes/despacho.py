@@ -93,8 +93,11 @@ def get_arvore():
                 "qtd_itens": 0,
                 "corte_em": None,
                 "coleta_em": None,
+                "prazo_final_em": None,
                 "compromisso_mais_proximo": None,
                 "buckets": {},
+                "coletas": {},
+                "janelas": [],
             })
 
             if row["nivel"] == 1:
@@ -102,7 +105,19 @@ def get_arvore():
                 mod["qtd_itens"] = row["qtd_itens"]
                 mod["corte_em"] = row["corte_em"]
                 mod["coleta_em"] = row["coleta_em"]
+                mod["prazo_final_em"] = row["prazo_final_em"]
                 mod["compromisso_mais_proximo"] = row["compromisso_mais_proximo"]
+                continue
+
+            # Níveis 2 e 3 são dois recortes do MESMO conjunto do nível 1, não
+            # sub-níveis: prazo do marketplace (urgência) e coleta (qual
+            # caminhão). Somar um com o outro conta cada pedido duas vezes.
+            if row["nivel"] == 3:
+                mod["coletas"][row["coleta_grupo"]] = {
+                    "coleta_em": row["coleta_grupo"],
+                    "qtd_pedidos": row["qtd_pedidos"],
+                    "qtd_itens": row["qtd_itens"],
+                }
                 continue
 
             mod["buckets"][row["bucket_prazo"]] = {
@@ -111,10 +126,32 @@ def get_arvore():
                 "qtd_itens": row["qtd_itens"],
             }
 
+        # Saídas de despacho de cada lote: um mesmo corte pode ter coleta local
+        # às 17h e entrega em ponto de coleta às 19h. É o que permite registrar
+        # coleta parcial sem a demanda ficar atrasada — ainda há uma saída.
+        for mkt in marketplaces.values():
+            for mod in mkt["modalidades"].values():
+                if not mod.get("modalidade_id") or not mod.get("coleta_em"):
+                    continue
+                try:
+                    dia = str(mod["coleta_em"])[:10]
+                    janelas = supabase_db.rpc("janelas_logisticas", {
+                        "p_modalidade_id": mod["modalidade_id"],
+                        "p_integration_id": mkt["integration_id"],
+                        "p_dia": dia,
+                    }).execute()
+                    mod["janelas"] = janelas.data or []
+                except Exception:
+                    logger.warning("Falha ao obter janelas da modalidade %s", mod.get("modalidade_id"), exc_info=True)
+
         payload = []
         for mkt in marketplaces.values():
             mkt["modalidades"] = [
-                {**mod, "buckets": list(mod["buckets"].values())}
+                {
+                    **mod,
+                    "buckets": list(mod["buckets"].values()),
+                    "coletas": sorted(mod["coletas"].values(), key=lambda c: c["coleta_em"] or ""),
+                }
                 for mod in mkt["modalidades"].values()
             ]
             payload.append(mkt)

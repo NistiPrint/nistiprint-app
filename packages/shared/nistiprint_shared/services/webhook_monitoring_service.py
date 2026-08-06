@@ -14,6 +14,15 @@ from nistiprint_shared.utils.date_utils import get_now_iso
 logger = logging.getLogger(__name__)
 
 
+REPROCESSABLE_STATUSES = frozenset({
+    'failed',
+    'failed_terminal',
+    'dead_letter',
+    'manual_intervention',
+    'pending_retry',
+})
+
+
 SENSITIVE_KEYS = {
     'authorization',
     'access_token',
@@ -247,10 +256,18 @@ class WebhookMonitoringService:
             return {'success': False, 'error': 'Evento de webhook nao encontrado', 'status_code': 404}
 
         event = rows[0]
-        if event.get('last_status') not in ('failed', 'dead_letter', 'manual_intervention', 'pending_retry'):
+        # failed_terminal entra na lista porque "terminal" descreve a decisao de
+        # nao retentar automaticamente, nao a impossibilidade de replay: quando a
+        # causa do erro foi um bug nosso (ex.: resolucao de shipment), o operador
+        # precisa poder reenfileirar o evento apos o deploy da correcao.
+        if event.get('last_status') not in REPROCESSABLE_STATUSES:
             return {
                 'success': False,
-                'error': 'Apenas eventos com status failed, dead_letter, pending_retry ou manual_intervention podem ser reprocessados',
+                'error': (
+                    'Apenas eventos com status '
+                    + ', '.join(sorted(REPROCESSABLE_STATUSES))
+                    + ' podem ser reprocessados'
+                ),
                 'status_code': 400,
             }
 

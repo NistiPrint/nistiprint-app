@@ -249,6 +249,34 @@ class MercadoLivreAdapter:
                         orders,
                         trace=[{"step": "shipment_pack", "pack_id": pack_id}],
                     )
+            # O formato novo de /shipments/{id} (x-format-new) nao expoe
+            # order_id nem pack_id no root. /shipments/{id}/items continua
+            # carregando o order_id de cada item, inclusive em packs.
+            items_result = meli_driver.get_shipment_items(
+                integration, resource.resource_id
+            )
+            if items_result.get("error"):
+                return self._api_failure(
+                    base, items_result, "shipment_items_resolution_failed"
+                )
+            item_orders: list[str] = []
+            for row in items_result.get("items") or []:
+                if not isinstance(row, dict):
+                    continue
+                candidate = _numeric_id(row.get("order_id"))
+                if candidate and candidate not in item_orders:
+                    item_orders.append(candidate)
+            if item_orders:
+                return base.with_orders(
+                    item_orders,
+                    trace=[
+                        {
+                            "step": "shipment_items",
+                            "shipment_id": resource.resource_id,
+                            "order_count": len(item_orders),
+                        }
+                    ],
+                )
             return WebhookResolution(
                 self.provider,
                 "order_event",

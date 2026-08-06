@@ -1,4 +1,10 @@
-"""Controlled replay of unresolved Mercado Livre payment webhook events."""
+"""Controlled replay of unresolved Mercado Livre webhook events.
+
+Originalmente escrito so para `payments`, o replay foi parametrizado por topico
+quando o header `x-format-new` quebrou a resolucao de `shipments` (o formato novo
+de /shipments/{id} deixou de expor order_id/pack_id) e centenas de eventos
+morreram como `failed_terminal`, travando pedidos em "Em Andamento".
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -21,21 +27,42 @@ ELIGIBLE_STATUSES = (
     "pending_retry",
 )
 PAYMENT_RESOURCE_TYPES = {"payment", "collection"}
+SHIPMENT_RESOURCE_TYPES = {"shipment"}
+
+# Prefixo do provider_resource -> resource_type, usado quando o evento antigo
+# nao gravou provider_resource_type.
+_RESOURCE_PREFIXES = {
+    "/payments/": "payment",
+    "/collections/": "collection",
+    "/shipments/": "shipment",
+}
 
 
-def _resource_type(row: dict) -> str | None:
+def _resource_type(row: dict, allowed: set[str] = PAYMENT_RESOURCE_TYPES) -> str | None:
     typed = str(row.get("provider_resource_type") or "").strip().lower()
-    if typed in PAYMENT_RESOURCE_TYPES:
+    if typed in allowed:
         return typed
     resource = str(row.get("provider_resource") or "").strip().lower()
-    if resource.startswith("/payments/"):
-        return "payment"
-    if resource.startswith("/collections/"):
-        return "collection"
+    for prefix, kind in _RESOURCE_PREFIXES.items():
+        if resource.startswith(prefix) and kind in allowed:
+            return kind
     return None
 
 
-class MarketplacePaymentReprocessService:
+class MarketplaceEventReprocessService:
+    """Replay controlado de webhooks do Mercado Livre por topico."""
+
+    def __init__(
+        self,
+        *,
+        topic: str = "payments",
+        resource_types: set[str] = PAYMENT_RESOURCE_TYPES,
+        label: str = "payment",
+    ) -> None:
+        self.topic = topic
+        self.resource_types = set(resource_types)
+        self.label = label
+
     def list_candidates(self, *, limit: int = 100) -> list[dict[str, Any]]:
         capped = max(1, min(int(limit or 100), 500))
         rows = (
@@ -46,7 +73,7 @@ class MarketplacePaymentReprocessService:
                 "provider_resource_id,resolution_status,last_error_type"
             )
             .eq("source", "mercadolivre")
-            .eq("provider_topic", "payments")
+            .eq("provider_topic", self.topic)
             .in_("last_status", list(ELIGIBLE_STATUSES))
             .order("id")
             .limit(capped * 3)
@@ -56,7 +83,7 @@ class MarketplacePaymentReprocessService:
         )
         candidates = []
         for row in rows:
-            if _resource_type(row) not in PAYMENT_RESOURCE_TYPES:
+            if _resource_type(row, self.resource_types) not in self.resource_types:
                 continue
             if not isinstance(row.get("raw_payload"), dict) or not row["raw_payload"]:
                 continue
@@ -81,7 +108,7 @@ class MarketplacePaymentReprocessService:
                 "candidates": [
                     {
                         "webhook_event_id": row["id"],
-                        "resource_type": _resource_type(row),
+                        "resource_type": _resource_type(row, self.resource_types),
                         "resource_id": row.get("provider_resource_id"),
                         "last_status": row.get("last_status"),
                         "last_error_type": row.get("last_error_type"),
@@ -99,7 +126,7 @@ class MarketplacePaymentReprocessService:
                 reservation = (
                     supabase_db.table("webhook_events")
                     .update({
-                        "last_status": "payment_reprocess_reserving",
+                        "last_status": f"{self.label}_reprocess_reserving",
                         "resolution_status": "reprocess_reserving",
                         "last_attempt_at": now,
                     })
@@ -115,7 +142,7 @@ class MarketplacePaymentReprocessService:
                 envelope = build_envelope(
                     "mercadolivre",
                     row["raw_payload"],
-                    event_id=f"payment-reprocess:{event_id}:{now}",
+                    event_id=f"{self.label}-reprocess:{event_id}:{now}",
                     received_at=row.get("received_at") or now,
                     provider_delivery_id=row.get("provider_event_id"),
                 )
@@ -125,7 +152,7 @@ class MarketplacePaymentReprocessService:
                 (
                     supabase_db.table("webhook_events")
                     .update({
-                        "last_status": "payment_reprocess_queued",
+                        "last_status": f"{self.label}_reprocess_queued",
                         "resolution_status": "reprocess_queued",
                         "attempt_count": 0,
                         "next_attempt_after": None,
@@ -144,11 +171,11 @@ class MarketplacePaymentReprocessService:
                     .update({
                         "last_status": previous_status,
                         "resolution_status": "reprocess_publish_failed",
-                        "last_error_type": "payment_reprocess_publish_failed",
+                        "last_error_type": f"{self.label}_reprocess_publish_failed",
                         "last_error_message": str(exc)[:1000],
                     })
                     .eq("id", event_id)
-                    .eq("last_status", "payment_reprocess_reserving")
+                    .eq("last_status", f"{self.label}_reprocess_reserving")
                     .execute()
                 )
                 failed.append({
@@ -164,7 +191,20 @@ class MarketplacePaymentReprocessService:
         }
 
 
-marketplace_payment_reprocess_service = MarketplacePaymentReprocessService()
+# Alias mantido para compatibilidade com imports existentes.
+MarketplacePaymentReprocessService = MarketplaceEventReprocessService
+
+marketplace_payment_reprocess_service = MarketplaceEventReprocessService(
+    topic="payments",
+    resource_types=PAYMENT_RESOURCE_TYPES,
+    label="payment",
+)
+
+marketplace_shipment_reprocess_service = MarketplaceEventReprocessService(
+    topic="shipments",
+    resource_types=SHIPMENT_RESOURCE_TYPES,
+    label="shipment",
+)
 
 
 @shared_task(
@@ -178,6 +218,22 @@ def reprocess_unresolved_payments_task(
     limit: int = 100,
 ):
     return marketplace_payment_reprocess_service.reprocess(
+        dry_run=dry_run,
+        limit=limit,
+    )
+
+
+@shared_task(
+    name=(
+        "nistiprint_shared.services.marketplace_payment_reprocess_service."
+        "reprocess_unresolved_shipments"
+    )
+)
+def reprocess_unresolved_shipments_task(
+    dry_run: bool = True,
+    limit: int = 100,
+):
+    return marketplace_shipment_reprocess_service.reprocess(
         dry_run=dry_run,
         limit=limit,
     )

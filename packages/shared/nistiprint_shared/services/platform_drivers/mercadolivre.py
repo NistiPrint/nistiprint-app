@@ -157,6 +157,32 @@ def get_shipment(integration: Dict, shipment_id: str) -> Dict:
     ).to_legacy()
 
 
+def get_shipment_items(integration: Dict, shipment_id: str) -> Dict:
+    """
+    Fetches the items linked to a shipment.
+
+    O formato novo de /shipments/{id} (header ``x-format-new``) nao expoe mais
+    ``order_id`` nem ``pack_id`` no root, entao este recurso e a fonte
+    autoritativa para correlacionar um shipment aos pedidos que o compoem.
+    A API responde com um array no root; ``list_key`` envelopa em ``items``.
+    """
+    headers = _auth_headers(integration)
+    shipment_id = _sanitize_resource_id(shipment_id, resource_name="shipment")
+
+    url = _ml_url(f"/shipments/{shipment_id}/items")
+    logger.info("[meli] fetching resource_type=shipment_items resource_id=%s", shipment_id)
+
+    return request_json(
+        requests.get,
+        url,
+        provider="Mercado Livre",
+        resource_type="shipment_items",
+        resource_id=shipment_id,
+        headers=headers,
+        list_key="items",
+    ).to_legacy()
+
+
 def get_shipment_sla(integration: Dict, shipment_id: str) -> Dict:
     """
     Fetches shipment SLA (Service Level Agreement) details from Mercado Livre API.

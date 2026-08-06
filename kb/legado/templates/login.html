@@ -1,73 +1,237 @@
-{% extends "layouts/base.html" %}
+﻿{% extends "layouts/base.html" %}
 
 {% block title %}Login - Nisti Print{% endblock %}
 
 {% block extra_styles %}
 <style>
-  .login-card {
-    max-width: 400px;
-    margin: 2rem auto;
-    padding: 2rem;
-    box-shadow: 0 0 15px rgba(0,0,0,0.1);
-    border-radius: 8px;
-    background-color: #fff;
+  .login-shell {
+    width: min(1080px, 100%);
+    display: grid;
+    grid-template-columns: 1.1fr 0.9fr;
+    background: #ffffff;
+    border-radius: 28px;
+    overflow: hidden;
+    box-shadow: 0 24px 80px rgba(31, 41, 55, 0.16);
   }
-  .login-logo {
+
+  .login-hero {
+    padding: 3.5rem;
+    background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 55%, #38bdf8 100%);
+    color: #ffffff;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-height: 620px;
+  }
+
+  .login-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: fit-content;
+    padding: 0.45rem 0.9rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.16);
+    font-size: 0.9rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .login-hero h1 {
+    font-size: clamp(2.2rem, 4vw, 3.6rem);
+    line-height: 1.05;
+    font-weight: 700;
+    margin: 1.5rem 0 1rem;
+  }
+
+  .login-hero p {
+    font-size: 1.05rem;
+    max-width: 30rem;
+    color: rgba(255, 255, 255, 0.86);
+  }
+
+  .login-points {
+    display: grid;
+    gap: 0.9rem;
+    margin-top: 2rem;
+  }
+
+  .login-point {
     display: flex;
     align-items: center;
+    gap: 0.75rem;
+    color: rgba(255, 255, 255, 0.92);
+  }
+
+  .login-panel {
+    padding: 3rem;
+    display: flex;
+    flex-direction: column;
     justify-content: center;
-    margin-bottom: 1.5rem;
   }
-  .login-logo img {
-    height: 50px;
-    margin-right: 10px;
+
+  .login-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    margin-bottom: 2rem;
   }
-  .login-logo h1 {
+
+  .login-brand img {
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+    box-shadow: 0 10px 30px rgba(37, 99, 235, 0.22);
+  }
+
+  .login-brand strong {
+    display: block;
+    font-size: 1.5rem;
+    color: #0f172a;
+  }
+
+  .login-brand span {
+    color: #64748b;
+    font-size: 0.95rem;
+  }
+
+  .login-title {
+    font-size: 1.9rem;
     font-weight: 700;
-    font-family: 'Lato', sans-serif;
-    font-size: 1.8rem;
-    margin: 0;
+    color: #0f172a;
+    margin-bottom: 0.5rem;
   }
+
+  .login-subtitle {
+    color: #64748b;
+    margin-bottom: 2rem;
+  }
+
+  .login-form .form-group label {
+    font-weight: 700;
+    color: #334155;
+  }
+
+  .login-form .form-control {
+    height: 3rem;
+    border-radius: 0.85rem;
+    border: 1px solid #dbe3ee;
+    padding-inline: 1rem;
+  }
+
+  .login-form .form-control:focus {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 0.2rem rgba(37, 99, 235, 0.16);
+  }
+
+  .login-actions {
+    display: grid;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+  }
+
+  .btn-login {
+    height: 3rem;
+    border-radius: 0.85rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%);
+    border: none;
+  }
+
   .btn-google {
-    background-color: #db4437;
-    border-color: #db4437;
+    height: 3rem;
+    border-radius: 0.85rem;
+    font-weight: 700;
+    background: #ffffff;
+    border: 1px solid #dbe3ee;
+    color: #0f172a;
   }
-  .btn-google:hover {
-    background-color: #c33d2e;
-    border-color: #c33d2e;
+
+  .login-feedback {
+    display: none;
+    margin-top: 1rem;
+    border-radius: 0.85rem;
+  }
+
+  .login-feedback.show {
+    display: block;
+  }
+
+  .login-footer {
+    margin-top: 1.5rem;
+    color: #94a3b8;
+    font-size: 0.9rem;
+  }
+
+  @media (max-width: 991.98px) {
+    .login-shell {
+      grid-template-columns: 1fr;
+    }
+
+    .login-hero {
+      min-height: auto;
+      padding: 2.5rem;
+    }
+
+    .login-panel {
+      padding: 2rem;
+    }
   }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="login-card">
-  <div class="login-logo">
-    <img src="/static/img/logo.png" alt="Logo" />
-    <h1>Nisti Print</h1>
-  </div>
-  <form class="needs-validation" novalidate onsubmit="_login(event)">
-    <div class="form-group">
-      <label for="email">Email</label>
-      <input type="email" name="email" id="email" class="form-control" placeholder="Email" required />
-      <div class="invalid-feedback">Por favor, insira um email válido.</div>
+<div class="login-shell">
+  <section class="login-hero">
+    <div>
+      <span class="login-badge"><i class="fas fa-shield-alt"></i>Acesso protegido</span>
+      <h1>Entre para acessar a operacao da Nisti Print.</h1>
     </div>
-    <div class="form-group">
-      <label for="password">Senha</label>
-      <input type="password" name="password" id="password" class="form-control" placeholder="Senha" required />
-      <div class="invalid-feedback">Por favor, insira sua senha.</div>
+  </section>
+
+  <section class="login-panel">
+    <div class="login-brand">
+      <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Logo da Nisti Print" />
+      <div>
+        <strong>Nisti Print</strong>
+        <span>Painel operacional</span>
+      </div>
     </div>
-    <button type="submit" class="btn btn-primary btn-block mb-3">Login</button>
-    <button type="button" class="btn btn-google btn-block" onclick="googleSignIn()">Entrar com Google</button>
-  </form>
+
+    <h2 class="login-title">Fazer login</h2>
+    <p class="login-subtitle">Use seu acesso por email e senha ou autentique com sua conta Google.</p>
+
+    <div id="loginFeedback" class="alert alert-danger login-feedback" role="alert"></div>
+
+    <form class="needs-validation login-form" novalidate onsubmit="window._login(event)">
+      <input type="hidden" id="nextUrl" value="{{ next_url }}" />
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" name="email" id="email" class="form-control" placeholder="voce@empresa.com" required />
+        <div class="invalid-feedback">Por favor, insira um email valido.</div>
+      </div>
+      <div class="form-group">
+        <label for="password">Senha</label>
+        <input type="password" name="password" id="password" class="form-control" placeholder="Sua senha" required />
+        <div class="invalid-feedback">Por favor, insira sua senha.</div>
+      </div>
+      <div class="login-actions">
+        <button type="submit" class="btn btn-primary btn-login" id="emailLoginButton">Entrar com email</button>
+        <button type="button" class="btn btn-google" id="googleLoginButton" onclick="window.googleSignIn()">
+          <i class="fab fa-google"></i>Entrar com Google
+        </button>
+      </div>
+    </form>
+
+    <p class="login-footer">A sessao permanece ativa por ate 12 horas de inatividade.</p>
+  </section>
 </div>
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" src="https://www.gstatic.com/firebasejs/11.2.0/firebase-app.js"></script>
-<script type="module" src="https://www.gstatic.com/firebasejs/11.2.0/firebase-auth.js"></script>
 <script type="module">
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.2.0/firebase-app.js'
-  import { getAuth, signInWithEmailAndPassword, GoogleAuthProvider, signInWithPopup } from 'https://www.gstatic.com/firebasejs/11.2.0/firebase-auth.js'
+  import { getAuth, GoogleAuthProvider, signInWithEmailAndPassword, signInWithPopup } from 'https://www.gstatic.com/firebasejs/11.2.0/firebase-auth.js'
 
   const firebaseConfig = {
     apiKey: 'AIzaSyCpIhjEVWuRDSXQY1TdBeQksY5DU6GiwKk',
@@ -81,94 +245,106 @@
 
   const app = initializeApp(firebaseConfig)
   const auth = getAuth(app)
+  const feedback = document.getElementById('loginFeedback')
+  const nextUrl = document.getElementById('nextUrl').value
+  const buttons = [document.getElementById('emailLoginButton'), document.getElementById('googleLoginButton')]
 
-  window._login = (event) => {
-    event.preventDefault()
-    const email = document.getElementsByName('email')[0].value
-    const password = document.getElementsByName('password')[0].value
-
-    signInWithEmailAndPassword(auth, email, password)
-      .then((userCredential) => {
-        const user = userCredential.user
-        const { uid, displayName, email, emailVerified, phoneNumber, photoURL, providerId } = user
-        const data = {
-          uid: uid,
-          displayName: displayName,
-          email: email,
-          emailVerified: emailVerified,
-          phoneNumber: phoneNumber,
-          photoURL: photoURL,
-          providerId: providerId
-        }
-        fetch('/login', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(data)
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            window.location.href = data.redirect
-          })
-          .catch((error) => {
-            console.error('Error:', error)
-          })
-      })
-      .catch((error) => {
-        alert(`Erro: ${error.message}`)
-      })
+  function setLoadingState(isLoading) {
+    buttons.forEach((button) => {
+      button.disabled = isLoading
+    })
   }
 
-  window.googleSignIn = () => {
-    const provider = new GoogleAuthProvider()
-    signInWithPopup(auth, provider)
-      .then((userCredential) => {
-        const user = userCredential.user
-        const { uid, displayName, email, emailVerified, phoneNumber, photoURL, providerId } = user
-        const data = {
-          uid: uid,
-          displayName: displayName,
-          email: email,
-          emailVerified: emailVerified,
-          phoneNumber: phoneNumber,
-          photoURL: photoURL,
-          providerId: providerId
-        }
-        fetch('/login', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(data)
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            window.location.href = data.redirect
-          })
-          .catch((error) => {
-            console.error('Error:', error)
-          })
+  function showError(message) {
+    feedback.textContent = message
+    feedback.classList.add('show')
+  }
+
+  function clearError() {
+    feedback.textContent = ''
+    feedback.classList.remove('show')
+  }
+
+  async function finishLogin(user) {
+    const { uid, displayName, email, emailVerified, phoneNumber, photoURL, providerId } = user
+    const response = await fetch('/login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        uid,
+        displayName,
+        email,
+        emailVerified,
+        phoneNumber,
+        photoURL,
+        providerId,
+        next: nextUrl
       })
-      .catch((error) => {
-        alert(`Erro: ${error.message}`)
-      })
+    })
+
+    const data = await response.json()
+    if (!response.ok) {
+      throw new Error(data.message || 'Nao foi possivel concluir o login.')
+    }
+
+    window.location.href = data.redirect
+  }
+
+  window._login = async (event) => {
+    event.preventDefault()
+
+    const form = event.currentTarget
+    if (!form.checkValidity()) {
+      event.stopPropagation()
+      form.classList.add('was-validated')
+      return
+    }
+
+    clearError()
+    setLoadingState(true)
+
+    try {
+      const email = document.getElementById('email').value
+      const password = document.getElementById('password').value
+      const userCredential = await signInWithEmailAndPassword(auth, email, password)
+      await finishLogin(userCredential.user)
+    } catch (error) {
+      showError(error.message || 'Erro ao autenticar usuario.')
+    } finally {
+      setLoadingState(false)
+    }
+  }
+
+  window.googleSignIn = async () => {
+    clearError()
+    setLoadingState(true)
+
+    try {
+      const provider = new GoogleAuthProvider()
+      const userCredential = await signInWithPopup(auth, provider)
+      await finishLogin(userCredential.user)
+    } catch (error) {
+      showError(error.message || 'Erro ao autenticar com Google.')
+    } finally {
+      setLoadingState(false)
+    }
   }
 </script>
 <script>
-// Bootstrap form validation
-(() => {
-  'use strict'
-  const forms = document.querySelectorAll('.needs-validation')
-  Array.from(forms).forEach(form => {
-    form.addEventListener('submit', event => {
-      if (!form.checkValidity()) {
-        event.preventDefault()
-        event.stopPropagation()
-      }
-      form.classList.add('was-validated')
-    }, false)
-  })
-})()
+  (() => {
+    'use strict'
+    const forms = document.querySelectorAll('.needs-validation')
+    Array.from(forms).forEach((form) => {
+      form.addEventListener('submit', (event) => {
+        if (!form.checkValidity()) {
+          event.preventDefault()
+          event.stopPropagation()
+        }
+        form.classList.add('was-validated')
+      }, false)
+    })
+  })()
 </script>
 {% endblock %}

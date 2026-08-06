@@ -233,16 +233,42 @@ Sao dois momentos com papeis distintos, e confundi-los custa lote:
 
 | | O que e | Papel |
 | --- | --- | --- |
-| Corte | ate quando o lote precisa estar pronto | define **quem entra** na coleta |
-| Coleta | quando a transportadora passa | e o **processo fisico** |
+| Corte | horario que fecha o lote | regra de **pertencimento** |
+| Coleta | quando a transportadora passa | **prazo de producao** e processo fisico |
 
-A torre ordena e destaca a **coleta**, porque e assim que a operacao pensa no
-lote ("o caminhao das 17h"). O corte aparece como "pronto ate". Ordenar pelo
-corte colocaria na frente um lote que fecha antes mas sai depois.
+O corte **nao e prazo de producao**. Ele responde "quais pedidos entram nesta
+coleta":
 
-O corte tambem e o saneamento que o operador nao deveria ter que fazer na mao:
-corte que ja passou nao aceita mais pedido, e quem chega depois ja entra na
-proxima janela.
+> Mercado Livre Comum, corte 13h, coleta 17h. Todos os pedidos feitos ate as
+> 13h precisam ser produzidos e enviados ate as 17h. Os feitos depois das 13h
+> saem na proxima coleta.
+
+Quem chega 13h05 nao esta atrasado — esta no proximo lote. Por isso o card diz
+"lote fecha as 13h", nunca "pronto ate as 13h".
+
+O pertencimento e resolvido por `coleta_do_pedido`, a partir de
+`data_pagamento_marketplace`. Pedido cujo lote ja saiu inteiro (ultima janela
+vencida) cai no proximo — continua atrasado perante o marketplace, o que os
+buckets de prazo mostram, mas o caminhao dele agora e outro.
+
+### Duas saidas para o mesmo lote
+
+Um corte pode ter mais de uma janela de despacho:
+
+> Shopee Comum, corte 13h, coleta local 17h **e** entrega em ponto de coleta 19h.
+
+Sao duas chances para o MESMO lote, nao dois lotes. Cadastro: duas linhas em
+`regras_logisticas_integracao` com o mesmo `horario_corte` e `tipo_envio`
+diferente.
+
+O **prazo final e a ultima saida**. Uma demanda com coleta 17h e envio 19h que
+teve coleta parcial as 17h continua no prazo ate as 19h: ainda ha caminhao.
+Marca-la como atrasada as 17h01 diria ao operador que ele falhou quando ele
+ainda tem duas horas para levar o resto.
+
+A demanda congela as proprias janelas em `escopo_despacho.janelas` no
+fechamento. Um lote fechado hoje nao pode ser julgado atrasado por um horario
+que alguem editou na aba Logistica amanha.
 
 ### Janela calculada na leitura
 

@@ -74,6 +74,7 @@ def request_json(
     resource_id: str | None = None,
     success_statuses: Iterable[int] = (200,),
     timeout: tuple[float, float] = DEFAULT_TIMEOUT,
+    list_key: str | None = None,
     **kwargs,
 ) -> ProviderCallResult[dict]:
     try:
@@ -122,6 +123,11 @@ def request_json(
             message=str(exc) or f"Resposta JSON invalida da API {provider}",
             retryable=True,
         )
+    if isinstance(data, list) and list_key:
+        # Alguns recursos do provider respondem com array no root
+        # (ex.: GET /shipments/{id}/items). Envelopamos para manter o
+        # contrato de dict deste helper sem perder os elementos.
+        data = {list_key: data}
     if not isinstance(data, dict):
         return ProviderCallResult(
             False, provider=provider, resource_type=resource_type,

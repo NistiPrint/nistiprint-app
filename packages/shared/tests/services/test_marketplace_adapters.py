@@ -104,19 +104,103 @@ class TestMercadoLivreAdapter(unittest.TestCase):
             result = self.adapter.resolve_order_ids(ref, self.integration)
         self.assertEqual(result.resolved_order_ids, ("2000017477489446",))
 
+    def test_new_format_shipment_resolves_order_via_items(self):
+        """x-format-new nao traz order_id/pack_id: cai em /shipments/{id}/items."""
+        ref = self.adapter.parse_webhook({
+            "topic": "shipments",
+            "resource": "/shipments/5555555555",
+            "user_id": 1,
+        }).primary_resource
+        with (
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment",
+                return_value={
+                    "id": 5555555555,
+                    "status": "shipped",
+                    "substatus": "",
+                    "external_reference": None,
+                    "logistic": {"mode": "me2", "type": "xd_drop_off"},
+                },
+            ),
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment_items",
+                return_value={"items": [
+                    {"item_id": "MLB1", "order_id": "2000017477489446", "quantity": 1},
+                    {"item_id": "MLB2", "order_id": "2000017477489446", "quantity": 2},
+                ]},
+            ),
+        ):
+            result = self.adapter.resolve_order_ids(ref, self.integration)
+        self.assertEqual(result.resolved_order_ids, ("2000017477489446",))
+
+    def test_new_format_shipment_items_resolves_pack_orders(self):
+        ref = self.adapter.parse_webhook({
+            "topic": "shipments",
+            "resource": "/shipments/5555555555",
+            "user_id": 1,
+        }).primary_resource
+        with (
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment",
+                return_value={"id": 5555555555, "status": "ready_to_ship"},
+            ),
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment_items",
+                return_value={"items": [
+                    {"item_id": "MLB1", "order_id": "2000017477489446"},
+                    {"item_id": "MLB2", "order_id": "2000017477489555"},
+                ]},
+            ),
+        ):
+            result = self.adapter.resolve_order_ids(ref, self.integration)
+        self.assertEqual(
+            result.resolved_order_ids,
+            ("2000017477489446", "2000017477489555"),
+        )
+
     def test_shipment_without_relation_is_terminal(self):
         ref = self.adapter.parse_webhook({
             "topic": "shipments",
             "resource": "/shipments/5555555555",
             "user_id": 1,
         }).primary_resource
-        with patch(
-            "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment",
-            return_value={"id": 5555555555, "status": "handling"},
+        with (
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment",
+                return_value={"id": 5555555555, "status": "handling"},
+            ),
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment_items",
+                return_value={"items": []},
+            ),
         ):
             result = self.adapter.resolve_order_ids(ref, self.integration)
         self.assertEqual(result.error_type, "shipment_without_order_reference")
         self.assertFalse(result.retryable)
+
+    def test_shipment_items_provider_failure_is_surfaced(self):
+        ref = self.adapter.parse_webhook({
+            "topic": "shipments",
+            "resource": "/shipments/5555555555",
+            "user_id": 1,
+        }).primary_resource
+        with (
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment",
+                return_value={"id": 5555555555, "status": "handling"},
+            ),
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment_items",
+                return_value={
+                    "error": "Erro na API Mercado Livre: 429",
+                    "error_type": "provider_rate_limited",
+                    "retryable": True,
+                },
+            ),
+        ):
+            result = self.adapter.resolve_order_ids(ref, self.integration)
+        self.assertEqual(result.error_type, "provider_rate_limited")
+        self.assertTrue(result.retryable)
 
     def test_topic_resource_mismatch_is_terminal_without_call(self):
         result = self.adapter.parse_webhook({
