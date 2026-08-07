@@ -343,6 +343,9 @@ class MarketplaceWebhookIngestService:
             payment_lookup=lambda payment_id: self._lookup_meli_order_by_payment_id(
                 marketplace_inst.get("id"), payment_id
             ),
+            shipment_lookup=lambda shipment_id: self._lookup_meli_order_by_shipment_id(
+                marketplace_inst.get("id"), shipment_id
+            ),
         )
         if resolved.error_type == "credential_action_required":
             refreshed = self._renew_marketplace_integration_once(marketplace_inst)
@@ -354,6 +357,9 @@ class MarketplaceWebhookIngestService:
                     integration,
                     payment_lookup=lambda payment_id: self._lookup_meli_order_by_payment_id(
                         marketplace_inst.get("id"), payment_id
+                    ),
+                    shipment_lookup=lambda shipment_id: self._lookup_meli_order_by_shipment_id(
+                        marketplace_inst.get("id"), shipment_id
                     ),
                 )
         metadata["resolution_status"] = resolved.status
@@ -884,6 +890,45 @@ class MarketplaceWebhookIngestService:
             "codigo_pedido": row.get("codigo_pedido"),
             "payment_status": payment.get("status"),
         }
+
+    def _lookup_meli_order_by_shipment_id(
+        self,
+        marketplace_integration_id: int | None,
+        shipment_id: str,
+    ) -> dict | None:
+        """Resolve shipment -> pedido pelo espelho local.
+
+        O formato novo de /shipments/{id} nao devolve order_id nem pack_id,
+        entao o espelho (que grava shipment_id na ingestao via orders_v2) evita
+        uma chamada extra na API para descobrir o pedido do evento.
+        """
+        if not marketplace_integration_id or not shipment_id:
+            return None
+        numeric_shipment_id = _as_int(shipment_id)
+        if numeric_shipment_id is None:
+            return None
+        try:
+            rows = (
+                supabase_db.table("pedidos_mercadolivre")
+                .select("codigo_pedido")
+                .eq("marketplace_integration_id", marketplace_integration_id)
+                .eq("shipment_id", numeric_shipment_id)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+        except Exception as exc:
+            logger.warning(
+                "[marketplace-webhook] failed shipment mirror lookup integration_id=%s shipment_id=%s error=%s",
+                marketplace_integration_id,
+                shipment_id,
+                exc,
+            )
+            return None
+        if not rows:
+            return None
+        return {"codigo_pedido": rows[0].get("codigo_pedido")}
 
     def _fetch_meli_detail(self, marketplace_inst: dict, order_id: str) -> dict:
         integration = self._meli_integration(marketplace_inst)

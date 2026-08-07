@@ -104,6 +104,53 @@ class TestMercadoLivreAdapter(unittest.TestCase):
             result = self.adapter.resolve_order_ids(ref, self.integration)
         self.assertEqual(result.resolved_order_ids, ("2000017477489446",))
 
+    def test_new_format_shipment_resolves_via_local_mirror_without_extra_call(self):
+        """Espelho local resolve o pedido sem gastar chamada em /items."""
+        ref = self.adapter.parse_webhook({
+            "topic": "shipments",
+            "resource": "/shipments/47662370713",
+            "user_id": 1,
+        }).primary_resource
+        with (
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment",
+                return_value={"id": 47662370713, "status": "shipped"},
+            ),
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment_items"
+            ) as get_items,
+        ):
+            result = self.adapter.resolve_order_ids(
+                ref,
+                self.integration,
+                shipment_lookup=lambda _sid: {"codigo_pedido": "2000017477489446"},
+            )
+        self.assertEqual(result.resolved_order_ids, ("2000017477489446",))
+        get_items.assert_not_called()
+
+    def test_shipment_falls_back_to_items_when_mirror_misses(self):
+        ref = self.adapter.parse_webhook({
+            "topic": "shipments",
+            "resource": "/shipments/5555555555",
+            "user_id": 1,
+        }).primary_resource
+        with (
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment",
+                return_value={"id": 5555555555, "status": "shipped"},
+            ),
+            patch(
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment_items",
+                return_value={"items": [{"order_id": "2000017477489446"}]},
+            ),
+        ):
+            result = self.adapter.resolve_order_ids(
+                ref,
+                self.integration,
+                shipment_lookup=lambda _sid: None,
+            )
+        self.assertEqual(result.resolved_order_ids, ("2000017477489446",))
+
     def test_new_format_shipment_resolves_order_via_items(self):
         """x-format-new nao traz order_id/pack_id: cai em /shipments/{id}/items."""
         ref = self.adapter.parse_webhook({

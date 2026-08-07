@@ -161,6 +161,7 @@ class MercadoLivreAdapter:
         integration: dict,
         *,
         payment_lookup: Callable[[str], dict | None] | None = None,
+        shipment_lookup: Callable[[str], dict | None] | None = None,
     ) -> WebhookResolution:
         base = WebhookResolution(
             self.provider,
@@ -250,8 +251,23 @@ class MercadoLivreAdapter:
                         trace=[{"step": "shipment_pack", "pack_id": pack_id}],
                     )
             # O formato novo de /shipments/{id} (x-format-new) nao expoe
-            # order_id nem pack_id no root. /shipments/{id}/items continua
-            # carregando o order_id de cada item, inclusive em packs.
+            # order_id nem pack_id no root. Antes de gastar uma chamada extra
+            # na API, tentamos o espelho local, que guarda shipment_id ->
+            # codigo_pedido para todo pedido ja ingerido pelo orders_v2.
+            if shipment_lookup:
+                mirrored = shipment_lookup(resource.resource_id)
+                mirrored_order = _numeric_id((mirrored or {}).get("codigo_pedido"))
+                if mirrored_order:
+                    return base.with_orders(
+                        [mirrored_order],
+                        trace=[{
+                            "step": "shipment_mirror",
+                            "shipment_id": resource.resource_id,
+                        }],
+                    )
+
+            # Ultimo recurso: /shipments/{id}/items ainda carrega o order_id de
+            # cada item, inclusive em packs.
             items_result = meli_driver.get_shipment_items(
                 integration, resource.resource_id
             )

@@ -31,13 +31,72 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# Quando o pacote nao esta instalado (`pip install -e packages/shared`),
+# apontamos o sys.path direto para os fontes.
+for _candidate in (_PROJECT_ROOT, os.path.join(_PROJECT_ROOT, 'packages', 'shared')):
+    if _candidate not in sys.path:
+        sys.path.insert(0, _candidate)
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
 )
 logger = logging.getLogger('backfill-shipments-meli')
+
+
+def _localizar_env() -> str | None:
+    for candidato in (os.path.join(os.getcwd(), '.env'), os.path.join(_PROJECT_ROOT, '.env')):
+        if os.path.exists(candidato):
+            return candidato
+    return None
+
+
+def _parse_env_manual(caminho: str) -> int:
+    """Parser minimo de .env, usado quando python-dotenv nao esta disponivel.
+
+    Cobre `CHAVE=valor`, comentarios, `export ` e aspas simples/duplas.
+    Nao expande variaveis nem trata valores multilinha - se o .env usar isso,
+    rode com o interpretador do .venv, que tem o python-dotenv.
+    """
+    carregadas = 0
+    with open(caminho, 'r', encoding='utf-8') as arquivo:
+        for linha in arquivo:
+            linha = linha.strip()
+            if not linha or linha.startswith('#') or '=' not in linha:
+                continue
+            if linha.startswith('export '):
+                linha = linha[len('export '):]
+            chave, _, valor = linha.partition('=')
+            chave = chave.strip()
+            valor = valor.strip()
+            if len(valor) >= 2 and valor[0] == valor[-1] and valor[0] in ('"', "'"):
+                valor = valor[1:-1]
+            if chave and chave not in os.environ:
+                os.environ[chave] = valor
+                carregadas += 1
+    return carregadas
+
+
+def _carregar_env() -> None:
+    """Carrega o .env antes de qualquer import que instancie o cliente Supabase."""
+    caminho = _localizar_env()
+    if not caminho:
+        logger.warning('Arquivo .env nao localizado a partir de %s', os.getcwd())
+        return
+
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError:
+        # Interpretador sem as dependencias do projeto (ex.: python3 do sistema
+        # em vez do .venv). Fazemos o parse na mao para pelo menos conseguir
+        # reportar o proximo problema com clareza.
+        total = _parse_env_manual(caminho)
+        logger.info('Ambiente carregado de %s (%s variaveis, parser interno)', caminho, total)
+        return
+
+    load_dotenv(dotenv_path=caminho)
+    logger.info('Ambiente carregado de %s', caminho)
 
 
 def _parse_args():
@@ -68,12 +127,58 @@ def _parse_args():
     return parser.parse_args()
 
 
+def _mascarar(valor: str | None) -> str:
+    if not valor:
+        return '<vazio>'
+    if len(valor) <= 12:
+        return f'<{len(valor)} chars>'
+    return f'{valor[:8]}...{valor[-4:]} ({len(valor)} chars)'
+
+
 def main():
     args = _parse_args()
 
-    from nistiprint_shared.services.marketplace_payment_reprocess_service import (
-        marketplace_shipment_reprocess_service,
-    )
+    logger.info('python=%s cwd=%s', sys.executable, os.getcwd())
+
+    _carregar_env()
+
+    for nome in ('SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'INGEST_REDIS_URL'):
+        logger.info('env %s = %s', nome, _mascarar(os.environ.get(nome)))
+
+    faltando = [
+        nome for nome in ('SUPABASE_URL', 'SUPABASE_SERVICE_KEY')
+        if not os.environ.get(nome)
+    ]
+    if faltando:
+        logger.error(
+            'Variaveis de ambiente ausentes: %s. Rode a partir da raiz do projeto '
+            '(onde esta o .env) ou exporte-as antes.',
+            ', '.join(faltando),
+        )
+        return 2
+
+    if not args.dry_run and not os.environ.get('INGEST_REDIS_URL'):
+        # O default da fila de ingestao confiavel e `redis://redis:6379/0`,
+        # hostname que so existia no docker-compose. Rodando como servico,
+        # o publish falha se a variavel nao estiver no .env.
+        logger.warning(
+            'INGEST_REDIS_URL nao definida; a fila usara o default '
+            'redis://redis:6379/0. Se o Redis nao atende nesse host, defina '
+            'INGEST_REDIS_URL no .env (ex.: redis://localhost:6379/0).'
+        )
+
+    try:
+        from nistiprint_shared.services.marketplace_payment_reprocess_service import (
+            marketplace_shipment_reprocess_service,
+        )
+    except ModuleNotFoundError as exc:
+        logger.error(
+            'Nao foi possivel importar as dependencias (%s). Use o interpretador '
+            'do projeto, que tem os pacotes instalados: '
+            '.venv/bin/python scripts/%s',
+            exc, os.path.basename(__file__),
+        )
+        return 2
 
     total_enfileirados, total_falhas = 0, 0
 
