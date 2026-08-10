@@ -61,7 +61,20 @@ PY
 # backend de chegar em producao por dias. Se ele falhar agora, o backend ja
 # esta atualizado e o frontend continua servindo o build anterior.
 echo "→ restart services (backend)"
-for svc in nistiprint-api nistiprint-worker nistiprint-beat; do
+# Descoberto dinamicamente, e nao por lista fixa: o worker de ingest confiavel
+# ficou de fora da lista antiga e seguiu servindo codigo velho da memoria por
+# dias, enquanto api/worker/beat reiniciavam e o deploy parecia bem-sucedido.
+# Qualquer nistiprint-*.service novo entra aqui sozinho.
+mapfile -t SERVICOS < <(
+    systemctl list-unit-files --type=service --plain --no-legend 'nistiprint-*' 2>/dev/null \
+        | awk '$2 == "enabled" { print $1 }'
+)
+if [ "${#SERVICOS[@]}" -eq 0 ]; then
+    echo "  AVISO: nenhum nistiprint-*.service habilitado encontrado; usando lista fixa" >&2
+    SERVICOS=(nistiprint-api.service nistiprint-worker.service nistiprint-beat.service)
+fi
+for svc in "${SERVICOS[@]}"; do
+    echo "  reiniciando $svc"
     sudo /bin/systemctl restart "$svc"
 done
 
@@ -81,4 +94,7 @@ else
 fi
 
 echo "✓ deploy $(git rev-parse --short HEAD) ok"
-echo "  shared: $(git log -1 --format=%h -- packages/shared) | api: $(systemctl is-active nistiprint-api) | worker: $(systemctl is-active nistiprint-worker)"
+echo "  shared: $(git log -1 --format=%h -- packages/shared)"
+for svc in "${SERVICOS[@]}"; do
+    echo "  $svc: $(systemctl is-active "$svc")"
+done
