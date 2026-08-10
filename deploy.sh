@@ -22,6 +22,18 @@ else
     echo "  nenhum residuo em $SITE_PACKAGES"
 fi
 
+echo "→ verificando permissoes do venv"
+# Rodar pip/git como root no servidor deixa artefatos root-owned no venv, e o
+# deploy seguinte (que roda como o usuario da action) morre com um OSError
+# cru no meio da instalacao. Detectar antes torna a causa obvia.
+ALHEIOS="$(find "$SITE_PACKAGES" ! -user "$(id -un)" 2>/dev/null | head -5)"
+if [ -n "$ALHEIOS" ]; then
+    echo "ERRO: arquivos do venv nao pertencem a $(id -un):" >&2
+    echo "$ALHEIOS" | sed 's/^/  /' >&2
+    echo "Corrija com: sudo chown -R $(id -un):$(id -gn) $(pwd)" >&2
+    exit 1
+fi
+
 echo "→ pip install"
 .venv/bin/pip install -q -r apps/api/requirements.txt
 .venv/bin/pip install -q -r apps/worker/requirements.txt
