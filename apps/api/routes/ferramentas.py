@@ -84,6 +84,46 @@ def api_ressincronizar():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@ferramentas_api_bp.route('/ressincronizar-pendentes', methods=['POST'])
+@login_required
+def api_ressincronizar_pendentes():
+    """Relê na origem todo pedido que ainda está numa situação não-final.
+
+    Body: {"origens": [str]|null, "situacoes": [int]|null,
+           "limite": int, "dry_run": bool}
+
+    Complementa `/ressincronizar`, que parte da origem e filtra por data de
+    criação — e por isso não alcança o pedido que ficou defasado fora da
+    janela de dias. Aqui a varredura parte da nossa base, então a idade do
+    pedido não importa.
+    """
+    try:
+        from nistiprint_shared.services.ressincronizacao_service import (
+            ressincronizar_pendentes,
+        )
+
+        data = request.get_json() or {}
+        resultado = ressincronizar_pendentes(
+            origens=data.get('origens') or None,
+            situacoes=data.get('situacoes') or None,
+            limite=int(data.get('limite') or 200),
+            dry_run=bool(data.get('dry_run')),
+        )
+
+        if resultado.get('dry_run'):
+            mensagem = f"{resultado.get('listados', 0)} pedidos seriam ressincronizados."
+        else:
+            mensagem = (f"{resultado.get('processados', 0)} de "
+                        f"{resultado.get('listados', 0)} pedidos ressincronizados.")
+
+        return jsonify({'success': True, 'message': mensagem, 'data': resultado})
+    except Exception as e:
+        logging.getLogger(__name__).error(
+            'Erro na ressincronização de pendentes: %s', e, exc_info=True
+        )
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @ferramentas_api_bp.route('/marcar-entregues-ate', methods=['POST'])
 @login_required
 def api_marcar_entregues_ate():

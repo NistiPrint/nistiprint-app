@@ -204,6 +204,7 @@ celery_app = Celery(
         'nistiprint_shared.services.order_erp_reference_service',
         'nistiprint_shared.services.marketplace_lifecycle_tasks',
         'nistiprint_shared.services.marketplace_payment_reprocess_service',
+        'nistiprint_shared.services.ressincronizacao_service',
         'nistiprint_shared.services.despacho_janela_service',
     ]
 )

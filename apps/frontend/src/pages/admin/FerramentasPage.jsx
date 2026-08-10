@@ -209,6 +209,41 @@ function FerramentasPage() {
     }
   };
 
+  // Rota inversa: parte dos pedidos travados na nossa base, não da origem.
+  // Alcança o pedido defasado há semanas, que a busca por data de criação
+  // deixa passar.
+  const [pendentesOrigem, setPendentesOrigem] = useState('TODAS');
+  const [pendentesLimite, setPendentesLimite] = useState('200');
+  const [pendentesLoading, setPendentesLoading] = useState(false);
+  const [pendentesResultado, setPendentesResultado] = useState(null);
+
+  const handleRessincronizarPendentes = async (dryRun) => {
+    setPendentesLoading(true);
+    setPendentesResultado(null);
+    try {
+      const response = await fetch('/api/v2/ferramentas/ressincronizar-pendentes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          origens: pendentesOrigem === 'TODAS' ? null : [pendentesOrigem],
+          limite: parseInt(pendentesLimite, 10) || 200,
+          dry_run: dryRun,
+        }),
+      });
+      const data = await response.json();
+      if (data.success) {
+        toast.success(data.message);
+        setPendentesResultado({ dryRun, ...data.data });
+      } else {
+        toast.error(data.message || 'Erro na ressincronização.');
+      }
+    } catch (error) {
+      toast.error(`Erro: ${error.message}`);
+    } finally {
+      setPendentesLoading(false);
+    }
+  };
+
   const handleReprocessOrder = async (e) => {
     e.preventDefault();
     if (!pedidoId) {
@@ -461,7 +496,114 @@ function FerramentasPage() {
           </div>
         </TabsContent>
 
-        <TabsContent value="ressync">
+        <TabsContent value="ressync" className="space-y-4">
+            <Card>
+                <CardHeader>
+                    <CardTitle>Atualizar pedidos não finalizados</CardTitle>
+                    <CardDescription>
+                        Parte dos pedidos que ainda estão em situação não-final aqui
+                        (Em Aberto, Em Andamento, Produzido, Pronto para Envio, Enviado)
+                        e relê cada um na origem. Diferente da ressincronização por conta,
+                        não filtra por data — alcança o pedido defasado há semanas.
+                        Mais antigos primeiro.
+                    </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="flex flex-wrap gap-4">
+                        <div className="space-y-2 w-48">
+                            <Label htmlFor="pendentesOrigem">Origem</Label>
+                            <select
+                                id="pendentesOrigem"
+                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                value={pendentesOrigem}
+                                onChange={(e) => setPendentesOrigem(e.target.value)}
+                            >
+                                <option value="TODAS">Todas</option>
+                                <option value="MERCADOLIVRE">Mercado Livre</option>
+                                <option value="SHOPEE">Shopee</option>
+                            </select>
+                        </div>
+                        <div className="space-y-2 w-40">
+                            <Label htmlFor="pendentesLimite">Limite</Label>
+                            <Input
+                                id="pendentesLimite"
+                                type="number"
+                                min="1"
+                                max="2000"
+                                value={pendentesLimite}
+                                onChange={(e) => setPendentesLimite(e.target.value)}
+                            />
+                        </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                        <Button
+                            variant="outline"
+                            disabled={pendentesLoading}
+                            onClick={() => handleRessincronizarPendentes(true)}
+                        >
+                            {pendentesLoading ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                                <RefreshCw className="mr-2 h-4 w-4" />
+                            )}
+                            Simular
+                        </Button>
+                        <Button
+                            disabled={pendentesLoading}
+                            onClick={() => handleRessincronizarPendentes(false)}
+                        >
+                            {pendentesLoading ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                                <RefreshCw className="mr-2 h-4 w-4" />
+                            )}
+                            Atualizar agora
+                        </Button>
+                    </div>
+
+                    {pendentesResultado && (
+                        <div className="rounded-md border p-3 text-sm space-y-1">
+                            <p className="font-medium">
+                                {pendentesResultado.dryRun ? 'Simulação' : 'Execução'}
+                            </p>
+                            <p className="text-muted-foreground">
+                                {pendentesResultado.listados} pedidos não finalizados
+                                {!pendentesResultado.dryRun && (
+                                    <>
+                                        {' '}· {pendentesResultado.processados} reprocessados ·{' '}
+                                        {pendentesResultado.total_erros || 0} erros
+                                    </>
+                                )}
+                            </p>
+                            {pendentesResultado.por_origem && (
+                                <p className="text-xs text-muted-foreground">
+                                    {Object.entries(pendentesResultado.por_origem)
+                                        .map(([origem, qtd]) => `${origem}: ${qtd}`)
+                                        .join(' · ')}
+                                </p>
+                            )}
+                            {pendentesResultado.sem_rota_por_pedido &&
+                             Object.keys(pendentesResultado.sem_rota_por_pedido).length > 0 && (
+                                <p className="text-xs text-amber-600">
+                                    Sem leitura por pedido (use a ressincronização por conta):{' '}
+                                    {Object.entries(pendentesResultado.sem_rota_por_pedido)
+                                        .map(([origem, qtd]) => `${origem}: ${qtd}`)
+                                        .join(' · ')}
+                                </p>
+                            )}
+                            {pendentesResultado.erros?.length > 0 && (
+                                <ul className="text-xs text-destructive mt-2 space-y-0.5">
+                                    {pendentesResultado.erros.map((err) => (
+                                        <li key={err.pedido_id}>{err.externo}: {err.erro}</li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    )}
+                </CardContent>
+            </Card>
+
             <Card>
                 <CardHeader>
                     <CardTitle>Ressincronizar a partir da origem</CardTitle>

@@ -35,6 +35,8 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
+from celery import shared_task
+
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.correlation_service import generate_correlation_id
 from nistiprint_shared.services.marketplace_webhook_ingest_service import (
@@ -61,6 +63,14 @@ MELI_STATUS_PENDENTES = ["confirmed", "payment_required", "payment_in_process", 
 
 #: Codigo de push de pedido da Shopee (marketplace_adapters.ShopeeAdapter).
 _SHOPEE_ORDER_CODE = 3
+
+#: Situacoes internas que ainda podem mudar. Cancelado (7), Entregue (6) e
+#: Devolvido (8) sao finais e reprocessa-las so gastaria quota de API.
+SITUACOES_NAO_FINALIZADAS = [1, 2, 3, 4, 5]
+
+#: Origens com API propria: da para reler pedido a pedido. As demais chegam
+#: pelo Bling, que so expoe busca por loja/periodo.
+ORIGENS_COM_API_PROPRIA = {"mercadolivre": "mercadolivre", "shopee": "shopee"}
 
 
 def _iso(dt: datetime) -> str:
@@ -317,3 +327,225 @@ def ressincronizar_conta(
         "rota": "direta",
         **resultado,
     }
+
+
+# ---------------------------------------------------------------------------
+# Rota inversa: parte dos pedidos travados na NOSSA base
+# ---------------------------------------------------------------------------
+#
+# `ressincronizar_conta` pergunta a origem "o que existe?" e filtra por data de
+# criacao. Isso deixa escapar exatamente o caso que mais dói: o pedido que
+# ficou defasado ha semanas, fora da janela de dias.
+#
+# `ressincronizar_pendentes` inverte a pergunta: parte de cada pedido que ainda
+# esta numa situacao nao-final aqui e vai reler a verdade na origem. A garantia
+# de consistencia e a mesma — nada e escrito direto em `pedidos`, tudo volta
+# pela pipeline do webhook.
+
+
+def _pedidos_nao_finalizados(
+    *,
+    origens: list[str] | None,
+    situacoes: list[int] | None,
+    limite: int,
+) -> list[dict]:
+    query = (
+        supabase_db.table("pedidos")
+        .select(
+            "id,marketplace_order_id,origem,situacao_pedido_id,"
+            "marketplace_integration_id,data_venda"
+        )
+        .in_("situacao_pedido_id", situacoes or SITUACOES_NAO_FINALIZADAS)
+    )
+    if origens:
+        query = query.in_("origem", [o.strip().upper() for o in origens])
+
+    # Mais antigos primeiro: sao os com maior chance de estarem defasados.
+    return (
+        query.order("data_venda", desc=False)
+        .limit(max(1, min(int(limite), 2000)))
+        .execute()
+        .data
+        or []
+    )
+
+
+def _integracoes_por_id(ids: set[int]) -> dict[int, dict]:
+    if not ids:
+        return {}
+    rows = (
+        supabase_db.table("installed_integrations")
+        .select("id,module_id,instance_name,config")
+        .in_("id", list(ids))
+        .execute()
+        .data
+        or []
+    )
+    return {row["id"]: row for row in rows}
+
+
+def _payload_reingest(origem: str, pedido: dict, integracao: dict) -> dict | None:
+    """Sintetiza o payload de webhook que a pipeline ja sabe processar."""
+    externo = pedido.get("marketplace_order_id")
+    if not externo:
+        return None
+    config = integracao.get("config") or {}
+
+    if origem == "mercadolivre":
+        seller_id = config.get("seller_id") or config.get("user_id")
+        return {
+            "topic": "orders_v2",
+            "resource": f"/orders/{externo}",
+            "user_id": seller_id,
+        }
+    if origem == "shopee":
+        return {
+            "code": _SHOPEE_ORDER_CODE,
+            "shop_id": config.get("shop_id"),
+            "timestamp": int(time.time()),
+            "data": {"ordersn": externo},
+        }
+    return None
+
+
+def ressincronizar_pendentes(
+    *,
+    origens: list[str] | None = None,
+    situacoes: list[int] | None = None,
+    limite: int = 200,
+    dry_run: bool = False,
+    pausa_segundos: float = 0.0,
+) -> dict:
+    """Rele na origem todo pedido que ainda esta numa situacao nao-final.
+
+    origens: filtra por `pedidos.origem` (ex.: ["MERCADOLIVRE"]). None = todas.
+    situacoes: ids de `situacoes_pedido`. None = todas as nao-finais.
+    limite: teto de pedidos por execucao, para nao estourar quota de API.
+    dry_run: apenas conta e agrupa, sem chamar a origem.
+    """
+    pedidos = _pedidos_nao_finalizados(
+        origens=origens, situacoes=situacoes, limite=limite
+    )
+    if not pedidos:
+        return {
+            "status": "OK",
+            "listados": 0,
+            "processados": 0,
+            "total_erros": 0,
+            "erros": [],
+            "por_origem": {},
+        }
+
+    por_origem: dict[str, int] = {}
+    for pedido in pedidos:
+        chave = (pedido.get("origem") or "DESCONHECIDA").upper()
+        por_origem[chave] = por_origem.get(chave, 0) + 1
+
+    if dry_run:
+        return {
+            "status": "OK",
+            "dry_run": True,
+            "listados": len(pedidos),
+            "processados": 0,
+            "total_erros": 0,
+            "erros": [],
+            "por_origem": por_origem,
+        }
+
+    integracoes = _integracoes_por_id({
+        pedido["marketplace_integration_id"]
+        for pedido in pedidos
+        if pedido.get("marketplace_integration_id")
+    })
+
+    correlation_id = generate_correlation_id()
+    processados = 0
+    erros: list[dict] = []
+    sem_rota: dict[str, int] = {}
+
+    for pedido in pedidos:
+        origem = (pedido.get("origem") or "").strip().lower()
+        source = ORIGENS_COM_API_PROPRIA.get(origem)
+        integracao = integracoes.get(pedido.get("marketplace_integration_id"))
+
+        if not source or not integracao:
+            # Amazon, LojaIntegrada e afins nao tem leitura por pedido: a
+            # origem e o Bling, que so busca por loja/periodo. Contabilizamos
+            # para o operador saber que sobrou trabalho para a outra rota.
+            chave = (pedido.get("origem") or "DESCONHECIDA").upper()
+            sem_rota[chave] = sem_rota.get(chave, 0) + 1
+            continue
+
+        payload = _payload_reingest(source, pedido, integracao)
+        if not payload:
+            erros.append({
+                "pedido_id": pedido.get("id"),
+                "externo": pedido.get("marketplace_order_id"),
+                "erro": "pedido sem identificador do marketplace",
+            })
+            continue
+
+        try:
+            resultado = marketplace_webhook_ingest_service.process(
+                source, payload, correlation_id=correlation_id
+            )
+            if resultado.get("status") in ("error", "failed"):
+                erros.append({
+                    "pedido_id": pedido.get("id"),
+                    "externo": pedido.get("marketplace_order_id"),
+                    "erro": resultado.get("message"),
+                })
+            else:
+                processados += 1
+        except Exception as exc:
+            erros.append({
+                "pedido_id": pedido.get("id"),
+                "externo": pedido.get("marketplace_order_id"),
+                "erro": str(exc),
+            })
+
+        if pausa_segundos > 0:
+            time.sleep(pausa_segundos)
+
+    return {
+        "status": "OK",
+        "listados": len(pedidos),
+        "processados": processados,
+        "erros": erros[:20],
+        "total_erros": len(erros),
+        "por_origem": por_origem,
+        "sem_rota_por_pedido": sem_rota,
+        "correlation_id": correlation_id,
+    }
+
+
+@shared_task(
+    name="nistiprint_shared.services.ressincronizacao_service.ressincronizar_pendentes"
+)
+def ressincronizar_pendentes_task(
+    origens: list[str] | None = None,
+    situacoes: list[int] | None = None,
+    limite: int = 200,
+    dry_run: bool = False,
+    pausa_segundos: float = 0.2,
+):
+    """Varredura periodica dos pedidos nao-finalizados.
+
+    O default tem pausa entre chamadas porque, ao contrario do disparo manual,
+    esta task compete com o trafego normal de webhooks pela quota de API.
+    """
+    resultado = ressincronizar_pendentes(
+        origens=origens,
+        situacoes=situacoes,
+        limite=limite,
+        dry_run=dry_run,
+        pausa_segundos=pausa_segundos,
+    )
+    logger.info(
+        "[ressync-pendentes] listados=%s processados=%s erros=%s por_origem=%s",
+        resultado.get("listados"),
+        resultado.get("processados"),
+        resultado.get("total_erros"),
+        resultado.get("por_origem"),
+    )
+    return resultado
