@@ -89,5 +89,93 @@ class TestReconcileMarketplaceLifecycleQuery(unittest.TestCase):
         self.assertFalse(resultado['has_more'])
 
 
+class TestTravaDaCadeiaDeBackfill(unittest.TestCase):
+    """A task se auto-encadeia E esta no beat: sem trava, as cadeias empilham."""
+
+    def _sem_trabalho(self):
+        return {
+            'status': 'success', 'dry_run': True, 'days': 90, 'compared': 0,
+            'failed': [], 'next_offset': 0, 'has_more': False,
+            'projection_enabled': False,
+        }
+
+    def test_novo_disparo_e_ignorado_com_cadeia_viva(self):
+        with (
+            patch.object(tasks, '_adquirir_trava_da_cadeia', return_value=None),
+            patch.object(tasks, 'reconcile_marketplace_lifecycle') as backfill,
+        ):
+            resultado = tasks.reconcile_marketplace_lifecycle_task.run()
+
+        backfill.assert_not_called()
+        self.assertEqual(resultado['status'], 'skipped')
+        self.assertEqual(resultado['reason'], 'chain_already_running')
+
+    def test_lote_encadeado_nao_readquire_a_trava(self):
+        """Os lotes seguintes carregam o token: readquirir seria auto-bloqueio."""
+        with (
+            patch.object(tasks, '_adquirir_trava_da_cadeia') as adquirir,
+            patch.object(tasks, '_liberar_trava_da_cadeia') as liberar,
+            patch.object(
+                tasks, 'reconcile_marketplace_lifecycle',
+                return_value=self._sem_trabalho(),
+            ),
+        ):
+            tasks.reconcile_marketplace_lifecycle_task.run(chain_token='tok-1')
+
+        adquirir.assert_not_called()
+        liberar.assert_called_once_with('tok-1')
+
+    def test_fim_da_cadeia_libera_a_trava(self):
+        with (
+            patch.object(tasks, '_adquirir_trava_da_cadeia', return_value='tok-2'),
+            patch.object(tasks, '_liberar_trava_da_cadeia') as liberar,
+            patch.object(
+                tasks, 'reconcile_marketplace_lifecycle',
+                return_value=self._sem_trabalho(),
+            ),
+        ):
+            tasks.reconcile_marketplace_lifecycle_task.run()
+
+        liberar.assert_called_once_with('tok-2')
+
+    def test_proximo_lote_herda_o_token_e_renova_a_trava(self):
+        resultado_parcial = {**self._sem_trabalho(), 'has_more': True,
+                             'next_offset': 4001}
+        with (
+            patch.object(tasks, '_adquirir_trava_da_cadeia', return_value='tok-3'),
+            patch.object(tasks, '_renovar_trava_da_cadeia') as renovar,
+            patch.object(tasks, '_liberar_trava_da_cadeia') as liberar,
+            patch.object(
+                tasks, 'reconcile_marketplace_lifecycle',
+                return_value=resultado_parcial,
+            ),
+            patch.object(
+                tasks.reconcile_marketplace_lifecycle_task, 'apply_async',
+            ) as apply_async,
+        ):
+            tasks.reconcile_marketplace_lifecycle_task.run()
+
+        renovar.assert_called_once_with('tok-3')
+        liberar.assert_not_called()
+        kwargs = apply_async.call_args.kwargs['kwargs']
+        self.assertEqual(kwargs['chain_token'], 'tok-3')
+        self.assertEqual(kwargs['offset'], 4001)
+
+    def test_falha_no_lote_libera_a_trava(self):
+        """Cadeia morta sem liberar travaria o backfill ate o TTL expirar."""
+        with (
+            patch.object(tasks, '_adquirir_trava_da_cadeia', return_value='tok-4'),
+            patch.object(tasks, '_liberar_trava_da_cadeia') as liberar,
+            patch.object(
+                tasks, 'reconcile_marketplace_lifecycle',
+                side_effect=RuntimeError('boom'),
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                tasks.reconcile_marketplace_lifecycle_task.run()
+
+        liberar.assert_called_once_with('tok-4')
+
+
 if __name__ == '__main__':
     unittest.main()

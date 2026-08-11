@@ -117,8 +117,11 @@ WantedBy=multi-user.target
 Após qualquer edição:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl restart nistiprint-api nistiprint-worker nistiprint-beat
+/opt/nistiprint/deploy.sh          # reinicia todos os nistiprint-*, sem lista fixa
 ```
+
+Unit nova exige liberar o restart no sudoers do usuário de deploy — ver
+[deploy.md, seção 4](./deploy.md#4-permissões-de-restart-sudoers).
 
 ---
 
@@ -228,16 +231,21 @@ docker exec nistiprint-redis redis-cli ping     # PONG
 sudo -u nistiprint /opt/nistiprint/.venv/bin/celery \
     -A worker_entrypoint -b redis://127.0.0.1:6379/0 inspect ping
 
-# Status systemd
-systemctl status nistiprint-api nistiprint-worker nistiprint-beat caddy --no-pager
+# Status systemd (inclui as instancias nistiprint-ingest@)
+systemctl list-units 'nistiprint-*' --type=service --all --no-pager
+systemctl status caddy --no-pager
 ```
 
 ### Reinício de serviços
 ```bash
-# Aplicação
-sudo systemctl restart nistiprint-api
-sudo systemctl restart nistiprint-worker
-sudo systemctl restart nistiprint-beat
+# Aplicação inteira
+/opt/nistiprint/deploy.sh
+
+# Um service por vez — o sudoers casa um argumento por comando,
+# entao `restart a b c` e negado para o usuario nistiprint
+sudo systemctl restart nistiprint-api.service
+sudo systemctl restart nistiprint-worker.service
+sudo systemctl restart nistiprint-ingest@orders.service
 
 # Frontend (Caddy)
 sudo systemctl reload caddy
@@ -281,4 +289,5 @@ docker volume inspect nistiprint-infra_n8n_data
 
 Lista completa: [variaveis-ambiente.md](./variaveis-ambiente.md).
 
-Arquivo único: `/opt/nistiprint/.env` (compartilhado entre os 3 services).
+Arquivo único: `/opt/nistiprint/.env` (compartilhado por todos os services
+`nistiprint-*`, via `EnvironmentFile`).

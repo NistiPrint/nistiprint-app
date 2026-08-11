@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from celery import shared_task
@@ -23,6 +24,76 @@ BACKFILL_ACTIVE_STATUS_IDS = (
     STATUS_EM_ABERTO,
     STATUS_EM_ANDAMENTO,
 )
+
+#: Trava que impede duas cadeias de backfill vivas ao mesmo tempo.
+#:
+#: A task se auto-encadeia (`continue_batches`) E esta agendada no beat. Sao
+#: dois relogios independentes disparando a mesma varredura: quando a cadeia
+#: demora mais que o intervalo do beat — e demora, porque cada pedido custa
+#: chamadas de detalhe, envio e SLA no marketplace — o beat inicia a proxima
+#: antes da anterior terminar, e a partir dai o numero de cadeias vivas so
+#: cresce. O sintoma e log repetindo os mesmos `resource_id` intercalados,
+#: releitura infinita e quota de API consumida sem nenhum status novo.
+#:
+#: O TTL e a rede de seguranca: cadeia que morre no meio (worker reiniciado,
+#: excecao nao tratada) libera a trava sozinha em vez de travar o backfill para
+#: sempre.
+BACKFILL_LOCK_KEY = "nistiprint:backfill:marketplace-lifecycle:chain"
+BACKFILL_LOCK_TTL_SECONDS = int(
+    os.getenv("MARKETPLACE_LIFECYCLE_BACKFILL_LOCK_TTL", "3600")
+)
+
+
+def _adquirir_trava_da_cadeia() -> str | None:
+    from nistiprint_shared.services.redis_queue_tasks import get_redis_client
+
+    token = str(uuid.uuid4())
+    try:
+        adquirida = get_redis_client().set(
+            BACKFILL_LOCK_KEY, token, nx=True, ex=BACKFILL_LOCK_TTL_SECONDS
+        )
+    except Exception as exc:
+        # Redis fora do ar nao pode impedir o backfill de rodar; ele so perde a
+        # protecao contra sobreposicao, que e o comportamento anterior.
+        logger.warning("Backfill sem trava (Redis indisponivel): %s", exc)
+        return str(uuid.uuid4())
+    return token if adquirida else None
+
+
+def _renovar_trava_da_cadeia(token: str | None) -> None:
+    """Mantem a trava viva enquanto a cadeia avanca de lote."""
+    if not token:
+        return
+    from nistiprint_shared.services.redis_queue_tasks import get_redis_client
+
+    try:
+        get_redis_client().eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] "
+            "then return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end",
+            1,
+            BACKFILL_LOCK_KEY,
+            token,
+            BACKFILL_LOCK_TTL_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning("Erro ao renovar trava do backfill: %s", exc)
+
+
+def _liberar_trava_da_cadeia(token: str | None) -> None:
+    if not token:
+        return
+    from nistiprint_shared.services.redis_queue_tasks import get_redis_client
+
+    try:
+        get_redis_client().eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] "
+            "then return redis.call('del', KEYS[1]) else return 0 end",
+            1,
+            BACKFILL_LOCK_KEY,
+            token,
+        )
+    except Exception as exc:
+        logger.warning("Erro ao liberar trava do backfill: %s", exc)
 
 
 def process_pending_effects(limit: int = 100) -> dict:
@@ -194,15 +265,38 @@ def reconcile_marketplace_lifecycle_task(
     offset: int = 0,
     projection_enabled: bool | None = None,
     continue_batches: bool = True,
+    chain_token: str | None = None,
 ):
-    result = reconcile_marketplace_lifecycle(
-        dry_run=dry_run,
-        days=days,
-        limit=limit,
-        offset=offset,
-        projection_enabled=projection_enabled,
-    )
+    """Um lote do backfill; se houver mais, encadeia o proximo.
+
+    `chain_token` identifica a cadeia e nao deve ser passado na chamada inicial:
+    quem inicia adquire a trava, e os lotes seguintes carregam o token adiante.
+    Enquanto uma cadeia estiver viva, um novo disparo do beat vira no-op — ver
+    `BACKFILL_LOCK_KEY`.
+    """
+    inicio_de_cadeia = chain_token is None
+    if inicio_de_cadeia:
+        chain_token = _adquirir_trava_da_cadeia()
+        if chain_token is None:
+            logger.info(
+                "Backfill de lifecycle ignorado: ja existe uma cadeia em andamento."
+            )
+            return {"status": "skipped", "reason": "chain_already_running"}
+
+    try:
+        result = reconcile_marketplace_lifecycle(
+            dry_run=dry_run,
+            days=days,
+            limit=limit,
+            offset=offset,
+            projection_enabled=projection_enabled,
+        )
+    except Exception:
+        _liberar_trava_da_cadeia(chain_token)
+        raise
+
     if continue_batches and result.get("has_more"):
+        _renovar_trava_da_cadeia(chain_token)
         next_task = reconcile_marketplace_lifecycle_task.apply_async(
             kwargs={
                 "dry_run": dry_run,
@@ -211,9 +305,15 @@ def reconcile_marketplace_lifecycle_task(
                 "offset": result["next_offset"],
                 "projection_enabled": projection_enabled,
                 "continue_batches": True,
+                "chain_token": chain_token,
             },
             countdown=10,
         )
         result["next_task_id"] = next_task.id
+    else:
+        # Fim da cadeia (ou lote unico): a trava sai junto, senao o proximo
+        # disparo do beat esperaria o TTL inteiro sem motivo.
+        _liberar_trava_da_cadeia(chain_token)
+
     return result
 
