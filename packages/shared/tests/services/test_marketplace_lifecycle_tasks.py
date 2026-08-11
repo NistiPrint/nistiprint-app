@@ -31,5 +31,63 @@ class TestMarketplaceLifecycleTasks(unittest.TestCase):
         )
 
 
+class TestReconcileMarketplaceLifecycleQuery(unittest.TestCase):
+    """A consulta do backfill: `days` precisa filtrar e `offset` precisa ser keyset."""
+
+    def _query_mock(self, rows):
+        query = MagicMock()
+        for metodo in ('select', 'in_', 'gte', 'gt', 'order', 'limit'):
+            getattr(query, metodo).return_value = query
+        query.execute.return_value.data = rows
+        return query
+
+    def test_days_filtra_por_data_de_venda(self):
+        query = self._query_mock([])
+        with patch.object(tasks.supabase_db, 'table', return_value=query):
+            tasks.reconcile_marketplace_lifecycle(days=90, limit=100)
+
+        query.gte.assert_called_once()
+        self.assertEqual(query.gte.call_args.args[0], 'data_venda')
+
+    def test_days_zero_nao_filtra(self):
+        query = self._query_mock([])
+        with patch.object(tasks.supabase_db, 'table', return_value=query):
+            tasks.reconcile_marketplace_lifecycle(days=0, limit=100)
+
+        query.gte.assert_not_called()
+
+    def test_offset_e_keyset_por_id_nao_deslocamento(self):
+        query = self._query_mock([])
+        with patch.object(tasks.supabase_db, 'table', return_value=query):
+            tasks.reconcile_marketplace_lifecycle(offset=5000, limit=100)
+
+        query.gt.assert_called_once_with('id', 5000)
+        query.limit.assert_called_once_with(100)
+
+    def test_next_offset_e_o_ultimo_id_do_lote(self):
+        """Deslocamento pularia linhas: o conjunto encolhe a cada correcao."""
+        rows = [
+            {
+                'id': 4001,
+                'numero_pedido': '1',
+                'marketplace_module_id': 'mercadolivre',
+                'marketplace_order_id': '2000',
+                'marketplace_integration_id': 7091,
+                'situacao_pedido_id': 2,
+            },
+        ]
+        query = self._query_mock(rows)
+        with (
+            patch.object(tasks.supabase_db, 'table', return_value=query),
+            patch.object(
+                tasks, 'MarketplaceWebhookIngestService', create=True,
+            ),
+        ):
+            resultado = tasks.reconcile_marketplace_lifecycle(limit=100)
+
+        self.assertEqual(resultado['next_offset'], 4001)
+        self.assertFalse(resultado['has_more'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -66,11 +66,20 @@ echo "→ restart services (backend)"
 # dias, enquanto api/worker/beat reiniciavam e o deploy parecia bem-sucedido.
 # Qualquer nistiprint-*.service novo entra aqui sozinho.
 mapfile -t SERVICOS < <(
-    systemctl list-unit-files --type=service --plain --no-legend 'nistiprint-*' 2>/dev/null \
-        | awk '$2 == "enabled" { print $1 }'
+    {
+        # list-units traz as INSTANCIAS de template (nistiprint-ingest@orders),
+        # que sao o que de fato roda. --all para incluir as paradas no momento.
+        systemctl list-units --type=service --all --plain --no-legend 'nistiprint-*' 2>/dev/null \
+            | awk '{ print $1 }'
+        # list-unit-files pega as habilitadas que nem foram carregadas ainda.
+        systemctl list-unit-files --type=service --plain --no-legend 'nistiprint-*' 2>/dev/null \
+            | awk '$2 == "enabled" { print $1 }'
+    } | awk '!/@\.service$/ && NF' | sort -u
+    # O template puro (`nistiprint-ingest@.service`) e descartado de proposito:
+    # nao e uma unidade executavel, so o molde das instancias.
 )
 if [ "${#SERVICOS[@]}" -eq 0 ]; then
-    echo "  AVISO: nenhum nistiprint-*.service habilitado encontrado; usando lista fixa" >&2
+    echo "  AVISO: nenhum nistiprint-*.service encontrado; usando lista fixa" >&2
     SERVICOS=(nistiprint-api.service nistiprint-worker.service nistiprint-beat.service)
 fi
 for svc in "${SERVICOS[@]}"; do

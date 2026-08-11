@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from celery import shared_task
 
@@ -68,17 +68,31 @@ def reconcile_marketplace_lifecycle(
     offset: int = 0,
     projection_enabled: bool | None = None,
 ) -> dict:
-    rows = (
+    """Backfill de ciclo de vida a partir do estado atual no marketplace.
+
+    `days` limita a varredura por `data_venda`. O parametro existia na
+    assinatura e era ignorado no filtro: quem configurava `days: 90` acreditava
+    ter delimitado o escopo e varria a base inteira.
+
+    `offset` e keyset, nao deslocamento: o conjunto encolhe conforme os pedidos
+    saem de situacao ativa, e paginacao por deslocamento sobre conjunto que muda
+    pula justamente as linhas que entraram no lugar das corrigidas. Aqui o valor
+    e o ultimo `id` visto, o que torna o lote seguinte independente do que
+    aconteceu com os anteriores.
+    """
+    query = (
         supabase_db.table("pedidos")
         .select("id,numero_pedido,marketplace_module_id,marketplace_order_id,marketplace_integration_id,situacao_pedido_id,erp_order_number,updated_at")
         .in_("marketplace_module_id", ["shopee", "mercadolivre"])
         .in_("situacao_pedido_id", list(BACKFILL_ACTIVE_STATUS_IDS))
-        .order("id")
-        .range(offset, offset + limit - 1)
-        .execute()
-        .data
-        or []
     )
+    if days and int(days) > 0:
+        desde = datetime.now(timezone.utc) - timedelta(days=int(days))
+        query = query.gte("data_venda", desde.isoformat())
+    if offset:
+        query = query.gt("id", int(offset))
+
+    rows = query.order("id").limit(limit).execute().data or []
     from nistiprint_shared.services.marketplace_webhook_ingest_service import (
         MarketplaceWebhookIngestService,
     )
@@ -156,9 +170,10 @@ def reconcile_marketplace_lifecycle(
     return {
         "status": "success",
         "dry_run": dry_run,
+        "days": days,
         "compared": compared,
         "failed": failed,
-        "next_offset": offset + len(rows),
+        "next_offset": int(rows[-1]["id"]) if rows else offset,
         "has_more": len(rows) == limit,
         "projection_enabled": effective_projection_enabled,
     }

@@ -90,12 +90,16 @@ def api_ressincronizar_pendentes():
     """Relê na origem todo pedido que ainda está numa situação não-final.
 
     Body: {"origens": [str]|null, "situacoes": [int]|null,
-           "limite": int, "dry_run": bool}
+           "pedido_ids": [int]|null, "limite": int, "dry_run": bool}
 
     Complementa `/ressincronizar`, que parte da origem e filtra por data de
     criação — e por isso não alcança o pedido que ficou defasado fora da
     janela de dias. Aqui a varredura parte da nossa base, então a idade do
     pedido não importa.
+
+    `pedido_ids` restringe a um conjunto específico: o operador que já
+    identificou os pedidos defasados desafoga exatamente aqueles, sem gastar
+    quota de API relendo os que estão em dia.
     """
     try:
         from nistiprint_shared.services.ressincronizacao_service import (
@@ -103,9 +107,14 @@ def api_ressincronizar_pendentes():
         )
 
         data = request.get_json() or {}
+        pedido_ids = data.get('pedido_ids') or None
+        if pedido_ids is not None:
+            pedido_ids = [int(i) for i in pedido_ids]
+
         resultado = ressincronizar_pendentes(
             origens=data.get('origens') or None,
             situacoes=data.get('situacoes') or None,
+            pedido_ids=pedido_ids,
             limite=int(data.get('limite') or 200),
             dry_run=bool(data.get('dry_run')),
         )

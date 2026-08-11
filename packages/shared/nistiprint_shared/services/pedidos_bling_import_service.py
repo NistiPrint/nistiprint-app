@@ -1,13 +1,25 @@
 """
 Importação de pedidos 'Em Andamento' via API Bling.
-Fluxo: lista pedidos -> enfileira no Redis -> worker processa via pipeline única.
+Fluxo: lista pedidos -> processa via pipeline única (bling_order_processing).
 
 DEPRECATED: As funções _sync_bling_order_phase1 e _enrich_from_marketplace
 foram substituídas pelo pipeline unificado em bling_order_processing_service.
+
+NOTA sobre o fluxo: este módulo enfileirava em `bling:webhooks:pendentes`, fila
+consumida por `redis_queue_tasks.consumir_fila_bling`. Essa task foi aposentada
+— `celery_config` a filtra explicitamente do beat como obsoleta — quando o
+ingest migrou para as filas `np:ingest:*` do `reliable_ingest_worker`. O
+enfileiramento continuava "funcionando" no sentido de não levantar erro, e por
+isso a importação parecia bem-sucedida enquanto nada era processado.
+
+A correção não foi apontar para a fila nova. O envelope do ingest é deduplicado
+por `provider_event_id`, que para o Bling é o id do pedido: reimportar o mesmo
+pedido seria descartado como duplicata, que é exatamente o oposto do que uma
+reimportação quer. Como o pedido completo já foi buscado aqui, chama-se
+`process_webhook` direto — a mesma função que o worker de ingest chama.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -17,24 +29,6 @@ from nistiprint_shared.services.bling_client_resolver_service import bling_clien
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
 
 logger = logging.getLogger(__name__)
-
-# Configuração do Redis
-REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
-REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
-REDIS_DB = int(os.environ.get('REDIS_DB', 0))
-BLING_WEBHOOK_QUEUE = 'bling:webhooks:pendentes'
-
-
-def _get_redis_client():
-    import redis
-    return redis.Redis(
-        host=REDIS_HOST,
-        port=REDIS_PORT,
-        db=REDIS_DB,
-        decode_responses=True,
-        socket_connect_timeout=5,
-        socket_timeout=5
-    )
 
 
 def _iso_date(d: datetime) -> str:
@@ -51,46 +45,50 @@ def _enrich_from_marketplace(full_order: Dict[str, Any], cfg: Dict[str, Any]) ->
     return {"enriched": False, "platform": None, "error": None, "deprecated": True}
 
 
-def _enqueue_bling_order_to_redis(full_order: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _processar_pedido_bling(full_order: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Enfileira pedido no Redis para processamento pelo pipeline unificado.
+    Processa o pedido pela pipeline unificada de webhook do Bling.
 
     Args:
         full_order: Dados completos do pedido no Bling
         cfg: Configuração do vínculo com bling_integration_id
 
     Returns:
-        Resultado do enfileiramento
+        Resultado do processamento
     """
+    from nistiprint_shared.services.bling_order_processing_service import process_webhook
+
     bling_id = full_order.get("id")
     order_sn = full_order.get("numeroLoja")
     bling_company_id = cfg.get("bling_company_id")
     bling_integration_id = cfg.get("bling_integration_id")
 
     logger.info(
-        "Enfileirando pedido Bling %s (numeroLoja=%s) no Redis",
+        "Processando pedido Bling %s (numeroLoja=%s)",
         bling_id,
         order_sn or "N/A"
     )
 
     try:
-        # Montar payload no mesmo formato do webhook preservando o pedido completo.
-        # O campo loja.id identifica a origem/marketplace e nao pode ser descartado.
-        payload = {
-            'data': full_order,
-            'companyId': bling_company_id,
-            'bling_integration_id': bling_integration_id,
-        }
+        # O pedido completo ja veio da API; o payload nao e reduzido em nenhum
+        # ponto porque `loja.id` identifica a origem/marketplace.
+        resultado = process_webhook(
+            full_order,
+            bling_integration_hint=bling_integration_id,
+            company_id=bling_company_id,
+        )
+        status = (resultado or {}).get("status")
 
-        # Enfileirar no Redis
-        redis_client = _get_redis_client()
-        redis_client.rpush(BLING_WEBHOOK_QUEUE, json.dumps(payload))
+        if status in ("success", "skipped"):
+            logger.info("✓ Pedido %s processado (%s)", bling_id, status)
+            return {"success": True, "bling_id": bling_id, "resultado": resultado}
 
-        logger.info("✓ Pedido %s enfileirado com sucesso", bling_id)
-        return {"success": True, "bling_id": bling_id, "enqueued": True}
+        erro = (resultado or {}).get("message") or (resultado or {}).get("reason") or status
+        logger.warning("✗ Pedido %s nao processado: %s", bling_id, erro)
+        return {"success": False, "error": str(erro), "bling_id": bling_id}
 
     except Exception as e:
-        logger.error("✗ Falha ao enfileirar pedido %s: %s", bling_id, e)
+        logger.error("✗ Falha ao processar pedido %s: %s", bling_id, e)
         return {"success": False, "error": str(e), "bling_id": bling_id}
 
 
@@ -237,16 +235,16 @@ def run_fetch_pedidos_em_andamento(
                     if not full:
                         continue
 
-                    # Enfileirar no Redis para processamento pelo pipeline unificado
-                    enqueue_result = _enqueue_bling_order_to_redis(full, cfg)
+                    # Devolve para o pipeline unificado de webhook do Bling
+                    process_result = _processar_pedido_bling(full, cfg)
 
-                    if enqueue_result.get("success"):
+                    if process_result.get("success"):
                         loja_stat["synced"] += 1
                         stats["totals"]["orders_synced"] += 1
-                        logger.info("  → Pedido %s enfileirado ✓", order_id)
+                        logger.info("  → Pedido %s processado ✓", order_id)
                     else:
                         raise RuntimeError(
-                            enqueue_result.get("error", "Falha ao enfileirar")
+                            process_result.get("error", "Falha ao processar")
                         )
 
                 except Exception as e:

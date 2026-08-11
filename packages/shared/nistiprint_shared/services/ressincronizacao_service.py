@@ -28,6 +28,11 @@ Demais marketplaces (Amazon, TikTok, Magalu, Kwai, LojaIntegrada...) entram via
 Bling. Para esses a origem e o Bling, consultado por `bling_loja_id`, que e o
 `shop_id` da loja no marketplace — por isso o vinculo por loja e o que permite
 ressincronizar um marketplace especifico sem varrer a conta Bling inteira.
+
+Na rota inversa (`ressincronizar_pendentes`) o Bling e consultado pedido a
+pedido, por `erp_order_id`, e nao por loja/periodo: partindo da nossa base ja
+sabemos exatamente qual pedido esta defasado, e uma leitura por id custa uma
+chamada em vez de varrer a loja inteira.
 """
 from __future__ import annotations
 
@@ -38,12 +43,16 @@ from datetime import datetime, timedelta, timezone
 from celery import shared_task
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.bling_client_resolver_service import (
+    bling_client_resolver_service,
+)
 from nistiprint_shared.services.correlation_service import generate_correlation_id
 from nistiprint_shared.services.marketplace_webhook_ingest_service import (
     marketplace_webhook_ingest_service,
 )
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
+from nistiprint_shared.utils.task_logging import log_task_execution
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +77,14 @@ _SHOPEE_ORDER_CODE = 3
 #: Devolvido (8) sao finais e reprocessa-las so gastaria quota de API.
 SITUACOES_NAO_FINALIZADAS = [1, 2, 3, 4, 5]
 
-#: Origens com API propria: da para reler pedido a pedido. As demais chegam
-#: pelo Bling, que so expoe busca por loja/periodo.
+#: Origens com API propria: da para reler pedido a pedido direto no marketplace.
+#: As demais sao lidas no Bling, que e quem mantem a integracao com elas.
 ORIGENS_COM_API_PROPRIA = {"mercadolivre": "mercadolivre", "shopee": "shopee"}
+
+#: Chave em `configuracoes_aplicacao` onde a varredura periodica guarda ate onde
+#: chegou. Sem isso a task reprocessa eternamente a mesma janela — ver
+#: `_pedidos_nao_finalizados`.
+CURSOR_CONFIG_KEY = "ressync_pendentes_cursor"
 
 
 def _iso(dt: datetime) -> str:
@@ -348,26 +362,69 @@ def _pedidos_nao_finalizados(
     origens: list[str] | None,
     situacoes: list[int] | None,
     limite: int,
+    depois_do_id: int | None = None,
+    pedido_ids: list[int] | None = None,
 ) -> list[dict]:
+    """Lote de pedidos ainda em situacao nao-final.
+
+    Ordena por `id` — e nao por `data_venda` — de proposito. Ordenar pelos mais
+    antigos parece certo e e a armadilha: a janela so anda quando o pedido mais
+    antigo sai da situacao nao-final, e pedido velho travado por definicao nao
+    sai. Na pratica a varredura reprocessava sempre o mesmo topo da lista e
+    nunca chegava no resto da base.
+
+    Com `depois_do_id` a leitura vira keyset: cada execucao continua de onde a
+    anterior parou e a base inteira e coberta em algumas rodadas.
+    """
     query = (
         supabase_db.table("pedidos")
         .select(
             "id,marketplace_order_id,origem,situacao_pedido_id,"
-            "marketplace_integration_id,data_venda"
+            "marketplace_integration_id,data_venda,"
+            "erp_order_id,erp_order_number,erp_integration_id"
         )
         .in_("situacao_pedido_id", situacoes or SITUACOES_NAO_FINALIZADAS)
     )
     if origens:
         query = query.in_("origem", [o.strip().upper() for o in origens])
+    if pedido_ids:
+        query = query.in_("id", [int(i) for i in pedido_ids])
+    if depois_do_id:
+        query = query.gt("id", int(depois_do_id))
 
-    # Mais antigos primeiro: sao os com maior chance de estarem defasados.
     return (
-        query.order("data_venda", desc=False)
+        query.order("id", desc=False)
         .limit(max(1, min(int(limite), 2000)))
         .execute()
         .data
         or []
     )
+
+
+def _ler_cursor() -> int:
+    # Import tardio de proposito: `app_config_service` resolve a tabela no
+    # import e derruba quem apenas importa este modulo sem Supabase configurado.
+    from nistiprint_shared.services.app_config_service import app_config_service
+
+    try:
+        return int(app_config_service.get_config(CURSOR_CONFIG_KEY) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _gravar_cursor(valor: int) -> None:
+    """Persiste o avanco da varredura.
+
+    Falha de cursor nao pode derrubar a ressincronizacao: no pior caso a proxima
+    execucao repete o lote, o que e inofensivo porque todo o processamento e
+    idempotente.
+    """
+    from nistiprint_shared.services.app_config_service import app_config_service
+
+    try:
+        app_config_service.set_config(CURSOR_CONFIG_KEY, int(valor))
+    except Exception as exc:
+        logger.warning("[ressync-pendentes] falha ao gravar cursor=%s: %s", valor, exc)
 
 
 def _integracoes_por_id(ids: set[int]) -> dict[int, dict]:
@@ -408,6 +465,46 @@ def _payload_reingest(origem: str, pedido: dict, integracao: dict) -> dict | Non
     return None
 
 
+def _reler_no_bling(pedido: dict, correlation_id: str) -> dict:
+    """Rele um pedido na API do Bling e devolve para a pipeline do webhook.
+
+    Amazon, Magalu, TikTok e afins nao tem API propria aqui, mas o Bling e
+    integrado com eles: o status desses pedidos evolui la. Tratar essas origens
+    como "sem rota" era desistir de informacao que existe — e justamente nas
+    origens em que o webhook e o unico canal, portanto as que mais sofrem quando
+    uma notificacao se perde.
+
+    A leitura e por `erp_order_id` (o id do pedido no Bling), nao por loja e
+    periodo: partindo da nossa base ja sabemos qual pedido esta defasado.
+
+    Como em toda esta ferramenta, nada e escrito direto em `pedidos`: o detalhe
+    lido vai para `process_webhook`, a mesma funcao que o worker de ingest chama
+    ao consumir um webhook do Bling.
+    """
+    from nistiprint_shared.services.bling_order_processing_service import process_webhook
+
+    erp_order_id = pedido.get("erp_order_id")
+    if not erp_order_id:
+        raise ValueError("pedido sem erp_order_id para leitura no Bling")
+
+    cliente = bling_client_resolver_service.resolve_client(
+        bling_integration_id=pedido.get("erp_integration_id"),
+        marketplace_integration_id=pedido.get("marketplace_integration_id"),
+        platform_name=(pedido.get("origem") or "").strip().lower() or None,
+        function_name="ORDER_IMPORT",
+    )[0]
+
+    detalhe = cliente.get_order(erp_order_id)
+    if not detalhe:
+        raise RuntimeError(f"pedido {erp_order_id} nao encontrado no Bling")
+
+    return process_webhook(
+        detalhe,
+        bling_integration_hint=pedido.get("erp_integration_id"),
+        correlation_id=correlation_id,
+    )
+
+
 def ressincronizar_pendentes(
     *,
     origens: list[str] | None = None,
@@ -415,6 +512,8 @@ def ressincronizar_pendentes(
     limite: int = 200,
     dry_run: bool = False,
     pausa_segundos: float = 0.0,
+    usar_cursor: bool = False,
+    pedido_ids: list[int] | None = None,
 ) -> dict:
     """Rele na origem todo pedido que ainda esta numa situacao nao-final.
 
@@ -422,11 +521,40 @@ def ressincronizar_pendentes(
     situacoes: ids de `situacoes_pedido`. None = todas as nao-finais.
     limite: teto de pedidos por execucao, para nao estourar quota de API.
     dry_run: apenas conta e agrupa, sem chamar a origem.
+    usar_cursor: continua de onde a execucao anterior parou e da a volta ao
+        chegar no fim. E o modo da varredura periodica. O disparo manual usa
+        False para operar exatamente sobre o filtro que o operador pediu.
+    pedido_ids: restringe a um conjunto especifico. Existe para o caso que
+        motivou esta ferramenta — o operador identifica os pedidos defasados por
+        consulta e quer desafogar exatamente aqueles, sem varrer a base inteira
+        e gastar quota de API com pedidos que estao em dia.
+
+    Cada pedido segue por uma de duas rotas, nunca por escrita direta em
+    `pedidos`: marketplace com API propria (Shopee/ML) volta pela pipeline do
+    webhook do marketplace; os demais sao relidos no Bling por `erp_order_id` e
+    voltam pela pipeline do webhook do Bling.
     """
+    cursor_inicial = _ler_cursor() if usar_cursor else 0
     pedidos = _pedidos_nao_finalizados(
-        origens=origens, situacoes=situacoes, limite=limite
+        origens=origens,
+        situacoes=situacoes,
+        limite=limite,
+        depois_do_id=cursor_inicial or None,
+        pedido_ids=pedido_ids,
     )
+
+    # Fim da base: da a volta na hora, em vez de gastar a execucao a toa.
+    if usar_cursor and not pedidos and cursor_inicial:
+        pedidos = _pedidos_nao_finalizados(
+            origens=origens,
+            situacoes=situacoes,
+            limite=limite,
+            pedido_ids=pedido_ids,
+        )
+
     if not pedidos:
+        if usar_cursor:
+            _gravar_cursor(0)
         return {
             "status": "OK",
             "listados": 0,
@@ -434,12 +562,19 @@ def ressincronizar_pendentes(
             "total_erros": 0,
             "erros": [],
             "por_origem": {},
+            "por_rota": {},
+            "cursor_inicial": cursor_inicial,
+            "cursor_final": 0,
         }
 
     por_origem: dict[str, int] = {}
     for pedido in pedidos:
         chave = (pedido.get("origem") or "DESCONHECIDA").upper()
         por_origem[chave] = por_origem.get(chave, 0) + 1
+
+    # Lote menor que o teto significa que a base acabou: a proxima execucao
+    # recomeca do inicio em vez de ficar presa na cauda.
+    cursor_final = 0 if len(pedidos) < limite else int(pedidos[-1]["id"])
 
     if dry_run:
         return {
@@ -450,6 +585,9 @@ def ressincronizar_pendentes(
             "total_erros": 0,
             "erros": [],
             "por_origem": por_origem,
+            "por_rota": {},
+            "cursor_inicial": cursor_inicial,
+            "cursor_final": cursor_inicial,
         }
 
     integracoes = _integracoes_por_id({
@@ -461,51 +599,49 @@ def ressincronizar_pendentes(
     correlation_id = generate_correlation_id()
     processados = 0
     erros: list[dict] = []
-    sem_rota: dict[str, int] = {}
+    por_rota: dict[str, int] = {"direta": 0, "bling": 0}
 
     for pedido in pedidos:
         origem = (pedido.get("origem") or "").strip().lower()
         source = ORIGENS_COM_API_PROPRIA.get(origem)
         integracao = integracoes.get(pedido.get("marketplace_integration_id"))
-
-        if not source or not integracao:
-            # Amazon, LojaIntegrada e afins nao tem leitura por pedido: a
-            # origem e o Bling, que so busca por loja/periodo. Contabilizamos
-            # para o operador saber que sobrou trabalho para a outra rota.
-            chave = (pedido.get("origem") or "DESCONHECIDA").upper()
-            sem_rota[chave] = sem_rota.get(chave, 0) + 1
-            continue
-
-        payload = _payload_reingest(source, pedido, integracao)
-        if not payload:
-            erros.append({
-                "pedido_id": pedido.get("id"),
-                "externo": pedido.get("marketplace_order_id"),
-                "erro": "pedido sem identificador do marketplace",
-            })
-            continue
+        rota = "direta" if (source and integracao) else "bling"
 
         try:
-            resultado = marketplace_webhook_ingest_service.process(
-                source, payload, correlation_id=correlation_id
-            )
-            if resultado.get("status") in ("error", "failed"):
+            if rota == "direta":
+                payload = _payload_reingest(source, pedido, integracao)
+                if not payload:
+                    raise ValueError("pedido sem identificador do marketplace")
+                resultado = marketplace_webhook_ingest_service.process(
+                    source, payload, correlation_id=correlation_id
+                )
+            else:
+                resultado = _reler_no_bling(pedido, correlation_id)
+
+            if (resultado or {}).get("status") in ("error", "failed"):
                 erros.append({
                     "pedido_id": pedido.get("id"),
                     "externo": pedido.get("marketplace_order_id"),
-                    "erro": resultado.get("message"),
+                    "rota": rota,
+                    "erro": (resultado or {}).get("message")
+                    or (resultado or {}).get("reason"),
                 })
             else:
                 processados += 1
+                por_rota[rota] += 1
         except Exception as exc:
             erros.append({
                 "pedido_id": pedido.get("id"),
                 "externo": pedido.get("marketplace_order_id"),
+                "rota": rota,
                 "erro": str(exc),
             })
 
         if pausa_segundos > 0:
             time.sleep(pausa_segundos)
+
+    if usar_cursor:
+        _gravar_cursor(cursor_final)
 
     return {
         "status": "OK",
@@ -514,7 +650,9 @@ def ressincronizar_pendentes(
         "erros": erros[:20],
         "total_erros": len(erros),
         "por_origem": por_origem,
-        "sem_rota_por_pedido": sem_rota,
+        "por_rota": por_rota,
+        "cursor_inicial": cursor_inicial,
+        "cursor_final": cursor_final if usar_cursor else cursor_inicial,
         "correlation_id": correlation_id,
     }
 
@@ -522,17 +660,28 @@ def ressincronizar_pendentes(
 @shared_task(
     name="nistiprint_shared.services.ressincronizacao_service.ressincronizar_pendentes"
 )
+@log_task_execution(task_type="PEDIDO", task_name="ressincronizar_pendentes")
 def ressincronizar_pendentes_task(
     origens: list[str] | None = None,
     situacoes: list[int] | None = None,
     limite: int = 200,
     dry_run: bool = False,
     pausa_segundos: float = 0.2,
+    usar_cursor: bool = True,
 ):
     """Varredura periodica dos pedidos nao-finalizados.
 
     O default tem pausa entre chamadas porque, ao contrario do disparo manual,
     esta task compete com o trafego normal de webhooks pela quota de API.
+
+    `usar_cursor=True` por padrao: a varredura periodica so cumpre o proposito
+    se percorrer a base inteira ao longo das execucoes. Sem cursor ela reprocessa
+    a mesma janela para sempre e os pedidos fora dela nunca sao verificados.
+
+    O `@log_task_execution` nao e decorativo. Esta task ficou habilitada em
+    `configuracoes_aplicacao` sem nunca ter rodado — o beat le o schedule no
+    start e nao havia sido reiniciado — e a ausencia foi indistinguivel de
+    sucesso porque nada era registrado.
     """
     resultado = ressincronizar_pendentes(
         origens=origens,
@@ -540,12 +689,17 @@ def ressincronizar_pendentes_task(
         limite=limite,
         dry_run=dry_run,
         pausa_segundos=pausa_segundos,
+        usar_cursor=usar_cursor,
     )
     logger.info(
-        "[ressync-pendentes] listados=%s processados=%s erros=%s por_origem=%s",
+        "[ressync-pendentes] listados=%s processados=%s erros=%s "
+        "por_origem=%s por_rota=%s cursor=%s->%s",
         resultado.get("listados"),
         resultado.get("processados"),
         resultado.get("total_erros"),
         resultado.get("por_origem"),
+        resultado.get("por_rota"),
+        resultado.get("cursor_inicial"),
+        resultado.get("cursor_final"),
     )
     return resultado
