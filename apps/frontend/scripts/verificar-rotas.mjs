@@ -22,7 +22,6 @@ const ROTAS_SEM_MENU = new Set([
   '/login',
   '/perfil',
   '/consolidar/revisao',
-  '/consolidar/rascunhos',
   '/despacho/escopo',
   '/producao/foco',
   '/producao/resumo',

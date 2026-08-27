@@ -162,7 +162,9 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
                 return None
 
         # 3. Buscar itens do pedido com tag_impressao_pdf do produto
-        itens_result = supabase_db.table('itens_pedido').select('*, produtos(tag_impressao_pdf)').eq('pedido_id', pedido_id).execute()
+        itens_result = supabase_db.table('itens_pedido').select(
+            '*, produtos(tag_impressao_pdf)'
+        ).eq('pedido_id', pedido_id).execute()
         itens_raw = itens_result.data or []
 
         # 4. Buscar personalizações
@@ -193,25 +195,78 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
                         'status': p.get('status'),
                     })
 
-            # Calcular custom_tag
-            custom_tag = tag_do_produto or ''
+            # A variacao do anuncio ("CAPA 1", "Cabelo 6") vem do snapshot do
+            # marketplace e ja esta gravada no item. Ela e o nome que o modelo
+            # tem na origem — e, na pratica, o unico identificador de modelo que
+            # existe para todo item personalizado.
+            variacao = (item.get('variacao_externa') or '').strip()
+
+            # A tag do modelo, na ordem de quem sabe mais sobre o produto:
+            #   1. o cadastro interno, quando o SKU esta vinculado;
+            #   2. a tabela do legado (`process_string`), que so conhece a
+            #      geracao de SKUs da epoca em que foi escrita;
+            #   3. a variacao do anuncio.
+            #
+            # Sem o terceiro degrau a folha do personalizado sai com o rodape em
+            # branco: hoje nenhum SKU pendente tem `tag_impressao_pdf` e nenhum
+            # e reconhecido por `process_string`, enquanto todos os 45 itens
+            # personalizados pendentes tem variacao. Sem tag no papel, quem
+            # monta o pedido nao sabe qual capa pegar.
+            custom_tag = (tag_do_produto or '').strip()
             if not custom_tag and item.get('personalizado'):
-                custom_tag = process_string({
+                custom_tag = (process_string({
                     'codigo': item.get('sku_externo', ''),
                     'descricao': item.get('descricao', '')
-                })
+                }) or '').strip() or variacao
 
             item_formatted = {
-                'descricao': item.get('descricao', ''),
+                # O titulo do anuncio e como o produto se chama na origem; e o
+                # que o operador reconhece ao conferir contra o marketplace.
+                'descricao': (item.get('titulo_anuncio') or item.get('descricao') or ''),
                 'codigo': item.get('sku_externo', ''),
                 'quantidade': item.get('quantidade', 0),
                 'valor': item.get('preco_unitario', 0),
-                'variacao': None,  # TODO: adicionar coluna se necessário
+                'variacao': variacao or None,
                 'personalizado': item.get('personalizado', False),
                 'personalizations': item_pers,
                 'custom_tag': custom_tag,
             }
             itens_formatted.append(item_formatted)
+
+        # 5b. Mensagem do comprador.
+        #
+        # O nome a ser gravado nao chega estruturado: na Shopee ele vem no
+        # `message_to_seller` ("Nome na capa sera: Melissa Pereira"), e o legado
+        # tinha uma ferramenta de IA so para extrair o nome dali para
+        # `personalizacoes_pedido` — tabela que hoje tem uma linha no banco
+        # inteiro. Enquanto essa extracao nao existir de novo, imprimir a
+        # mensagem crua e melhor que imprimir nada: sem ela o operador teria que
+        # abrir o painel da Shopee pedido a pedido para saber o que gravar.
+        #
+        # No Mercado Livre a personalizacao chega pela thread de mensagens do
+        # pacote, que e outra chamada de API — nao esta no pedido e por isso nao
+        # aparece aqui.
+        mensagem_comprador = ''
+        tem_personalizado = any(i.get('personalizado') for i in itens_formatted)
+        tem_nome_estruturado = any(
+            p.get('customization_name')
+            for i in itens_formatted
+            for p in (i.get('personalizations') or [])
+        )
+        if tem_personalizado and not tem_nome_estruturado:
+            try:
+                snap = (
+                    supabase_db.table('pedido_snapshots')
+                    .select('platform_fields')
+                    .eq('pedido_id', pedido_id)
+                    .limit(1)
+                    .execute()
+                )
+                campos = ((snap.data or [{}])[0] or {}).get('platform_fields') or {}
+                bruto = ((campos.get('shopee') or {}).get('raw') or {})
+                mensagem_comprador = (bruto.get('message_to_seller') or bruto.get('note') or '').strip()
+            except Exception:
+                logger.warning('Falha ao ler a mensagem do comprador do pedido %s', pedido_id)
 
         # 6. Montar dados do contato
         contato = pedido.get('informacoes_cliente', {}) or {}
@@ -252,6 +307,7 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             'totalProdutos': total_produtos,
             'total_items': total_items,
             'hasCustomItem': has_custom_item,
+            'mensagem_comprador': mensagem_comprador,
             'plataforma': plataforma_nome,
             'is_flex': is_flex,
             'servico_logistico': servico_logistico,

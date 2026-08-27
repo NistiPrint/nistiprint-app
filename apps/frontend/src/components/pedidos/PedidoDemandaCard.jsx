@@ -45,7 +45,9 @@ export default function PedidoDemandaCard({ pedidoId, demandas = [], onRefresh }
   };
 
   const handleCriarDemanda = () => {
-    navigate(`/producao/demanda?tab=planning`);
+    // A demanda nasce na Torre de Despacho, nunca aqui: e la que o lote e
+    // conferido contra o painel do marketplace antes de ir para o galpao.
+    navigate('/despacho');
   };
 
   if (!demandas || demandas.length === 0) {

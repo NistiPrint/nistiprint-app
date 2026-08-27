@@ -28,10 +28,22 @@ function buildSuggestionKey(order) {
   return `mp=${order.marketplace_integration_id}|mod=${normalizeModalidade(order)}|rule=${order.regra_logistica_integracao_id}|collect=${order.data_coleta}`
 }
 
+// O destino e o no da Torre de Despacho a que o pedido pertence — nao um lote
+// pre-sugerido. As sugestoes automaticas foram encerradas em 27/08/2026: elas
+// ofereciam um lote pronto cujo total nunca tinha sido conferido contra o
+// painel de nenhum marketplace.
 function getSuggestionHref(order) {
-  const key = buildSuggestionKey(order)
-  if (!key) return null
-  return `/producao/demanda?tab=planning&suggestion=${encodeURIComponent(key)}`
+  if (!buildSuggestionKey(order)) return null
+  const params = new URLSearchParams()
+  if (order.marketplace_integration_id != null) {
+    params.set('integration_id', order.marketplace_integration_id)
+  }
+  if (order.modalidade_logistica_id != null) {
+    params.append('modalidade_ids', order.modalidade_logistica_id)
+    params.set('modalidade_id', order.modalidade_logistica_id)
+  }
+  params.set('aba', 'hoje')
+  return `/despacho/escopo?${params.toString()}`
 }
 
 function formatarDataHora(dataStr) {

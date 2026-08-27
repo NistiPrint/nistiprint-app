@@ -15,7 +15,6 @@ const rotulosExtras = {
   nova: 'Nova',
   editar: 'Editar',
   revisao: 'Revisão',
-  rascunhos: 'Rascunhos',
   prioridade: 'Prioridade',
   calendario: 'Calendário',
   dashboard: 'Dashboard',

@@ -7,6 +7,7 @@
 import os
 import logging
 from celery import Celery
+from celery.schedules import crontab
 
 # Configuração de Logs Silenciosos para bibliotecas barulhentas
 for _noisy_logger in ("httpx", "httpcore", "hpack", "urllib3", "postgrest", "supabase"):
@@ -60,7 +61,94 @@ def get_default_schedules():
             'task': 'tasks.token_renewal_tasks.renew_app_managed_credentials',
             'schedule': 7200,
         },
+        'processar-personalizados-diario': {
+            'task': 'services.ai_personalization.processar_pendentes',
+            'schedule': crontab(hour=12, minute=0),
+            'options': {'queue': 'ai_personalization'},
+        },
+        'recolher-lotes-ia-parados': {
+            'task': 'services.ai_personalization.recolher_lotes_parados',
+            'schedule': 300,
+            'options': {'queue': 'ai_personalization'},
+        },
     }
+
+CRON_FIELDS = ("minute", "hour", "day_of_week", "day_of_month", "month_of_year")
+
+
+def build_schedule(task_name, task_config):
+    """Traduz a configuracao do banco no schedule que o beat entende.
+
+    Duas formas convivem de proposito. `schedule_seconds` continua sendo a
+    forma certa para tarefas que so precisam rodar "de tempos em tempos" — a
+    reconciliacao de ERP nao se importa se roda 09:00:03 ou 09:00:47. Ja uma
+    rotina que existe para acontecer num horario — o lote diario de
+    personalizados ao meio-dia — nao pode ser expressa como intervalo: um
+    `86400` deriva a cada reinicio do beat e, depois de algumas semanas,
+    "meio-dia" virou madrugada sem ninguem mexer em nada.
+
+    Aceita `cron` como dict ({"hour": 12, "minute": 0}) ou como string de
+    cinco campos ("0 12 * * *"), porque a tela grava dict e quem edita o JSON
+    na mao tende a escrever a forma classica.
+
+    Retorna None quando a configuracao de cron e invalida: cair no intervalo
+    default seria pior que nao agendar, porque uma task diaria passaria a
+    rodar de minuto em minuto sem aviso.
+    """
+    cron = task_config.get("cron", task_config.get("crontab"))
+
+    if isinstance(cron, str) and cron.strip():
+        partes = cron.split()
+        if len(partes) != 5:
+            logger.error(
+                "Cron invalido em '%s': %r nao tem os cinco campos. Task nao agendada.",
+                task_name, cron,
+            )
+            return None
+        minuto, hora, dia_mes, mes, dia_semana = partes
+        cron = {
+            "minute": minuto,
+            "hour": hora,
+            "day_of_month": dia_mes,
+            "month_of_year": mes,
+            "day_of_week": dia_semana,
+        }
+
+    if isinstance(cron, dict) and cron:
+        campos = {campo: cron[campo] for campo in CRON_FIELDS if cron.get(campo) is not None}
+        # "as 12h" quer dizer 12:00, nao sessenta disparos ao longo da hora.
+        # O default do Celery para `minute` e `*`, entao omitir o minuto num
+        # cron com hora produziria exatamente o oposto do que se configurou.
+        if "hour" in campos and "minute" not in campos:
+            campos["minute"] = 0
+        if not campos:
+            logger.error(
+                "Cron de '%s' nao tem nenhum campo reconhecido (%s). Task nao agendada.",
+                task_name, ", ".join(CRON_FIELDS),
+            )
+            return None
+        try:
+            return crontab(**campos)
+        except (ValueError, TypeError) as exc:
+            logger.error("Cron invalido em '%s': %s. Task nao agendada.", task_name, exc)
+            return None
+
+    segundos = task_config.get("schedule_seconds", 60)
+    try:
+        return max(1, int(segundos))
+    except (TypeError, ValueError):
+        logger.error(
+            "schedule_seconds invalido em '%s': %r. Task nao agendada.", task_name, segundos,
+        )
+        return None
+
+
+def describe_schedule(schedule):
+    """Rotulo curto para o log de startup — 'as 12:00' diz mais que um objeto."""
+    if isinstance(schedule, crontab):
+        return f"cron {schedule._orig_minute} {schedule._orig_hour} {schedule._orig_day_of_month} {schedule._orig_month_of_year} {schedule._orig_day_of_week}"
+    return f"{schedule}s"
+
 
 def load_dynamic_schedules():
     """Carrega agendamentos do banco de dados (tabela configuracoes_aplicacao)."""
@@ -97,9 +185,15 @@ def load_dynamic_schedules():
                 )
                 continue
             if task_config.get('enabled', True):
+                schedule = build_schedule(task_name, task_config)
+                if schedule is None:
+                    # build_schedule ja explicou o motivo no log. Pular e
+                    # deliberado: agendar com um default inventado faria a task
+                    # rodar numa cadencia que ninguem configurou.
+                    continue
                 entry = {
                     'task': task_config.get('task_name', task_name),
-                    'schedule': task_config.get('schedule_seconds', 60),
+                    'schedule': schedule,
                 }
                 # `kwargs`/`args` eram descartados silenciosamente: uma task
                 # configurada como `dry_run: true` no banco rodava com os
@@ -111,11 +205,14 @@ def load_dynamic_schedules():
                 args = task_config.get('args')
                 if isinstance(args, (list, tuple)) and args:
                     entry['args'] = list(args)
+                queue = task_config.get('queue')
+                if isinstance(queue, str) and queue.strip():
+                    entry['options'] = {'queue': queue.strip()}
                 schedules[task_name] = entry
                 logger.info(
-                    "Task periódica ativa: %s (%ss)%s",
+                    "Task periódica ativa: %s (%s)%s",
                     task_name,
-                    task_config.get('schedule_seconds'),
+                    describe_schedule(schedule),
                     f" kwargs={sorted(kwargs)}" if entry.get('kwargs') else "",
                 )
             else:
@@ -144,7 +241,6 @@ def load_janela_despacho_schedules():
     Entradas duplicadas são deduplicadas pela chave: dois marketplaces com corte
     às 13:00 geram um disparo só, e a task fecha as duas janelas.
     """
-    from celery.schedules import crontab
     from nistiprint_shared.database.supabase_db_service import supabase_db
 
     entradas = {}
@@ -223,6 +319,8 @@ celery_app.conf.task_queues = {
 celery_app.conf.task_routes = {
     'services.ai_personalization.processar_batch': {'queue': 'ai_personalization'},
     'services.ai_personalization.processar_pedido': {'queue': 'ai_personalization'},
+    'services.ai_personalization.processar_pendentes': {'queue': 'ai_personalization'},
+    'services.ai_personalization.recolher_lotes_parados': {'queue': 'ai_personalization'},
     'services.bling_status_sync.sync_batch': {'queue': 'bling_status_sync'},
 }
 

@@ -27,6 +27,36 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 /**
+ * Converte o cron gravado no banco para o valor de um <input type="time">.
+ *
+ * A tela edita apenas o caso diario ("todo dia as HH:MM"), que e o unico que
+ * alguem configura pela interface. Cron com dia da semana ou intervalo dentro
+ * da hora continua valido no backend, mas aparece aqui como somente leitura —
+ * degradar para um campo de horario perderia a configuracao ao salvar.
+ */
+function cronParaHorario(cron) {
+  if (!cron || typeof cron !== 'object') return '';
+  const { hour, minute, day_of_week, day_of_month, month_of_year } = cron;
+  const restritivo = [day_of_week, day_of_month, month_of_year].some(
+    (campo) => campo != null && String(campo) !== '*',
+  );
+  if (restritivo) return '';
+  if (hour == null || String(hour).includes('*') || String(hour).includes('/')) return '';
+  const h = String(hour).padStart(2, '0');
+  const m = String(minute ?? 0).padStart(2, '0');
+  if (Number.isNaN(Number(h)) || Number.isNaN(Number(m))) return '';
+  return `${h}:${m}`;
+}
+
+function descreverCron(cron) {
+  const horario = cronParaHorario(cron);
+  if (horario) return `todo dia as ${horario}`;
+  if (!cron) return '-';
+  const campos = ['minute', 'hour', 'day_of_month', 'month_of_year', 'day_of_week'];
+  return `cron ${campos.map((campo) => cron[campo] ?? '*').join(' ')}`;
+}
+
+/**
  * Task Control Center
  * 
  * Centralized dashboard for Celery task management.
@@ -43,6 +73,7 @@ function TaskControlCenter() {
   // Schedules State
   const [scheduledTasks, setScheduledTasks] = useState({});
   const [localFrequencies, setLocalFrequencies] = useState({});
+  const [localCrons, setLocalCrons] = useState({});
   const [showReloadWarning, setShowReloadWarning] = useState(false);
   
   // Execution Logs State
@@ -79,10 +110,13 @@ function TaskControlCenter() {
         setScheduledTasks(data.data || {});
         // Inicializa frequências locais para edição fluida
         const freqs = {};
+        const crons = {};
         Object.entries(data.data || {}).forEach(([name, config]) => {
           freqs[name] = config.schedule_seconds;
+          crons[name] = cronParaHorario(config.cron);
         });
         setLocalFrequencies(freqs);
+        setLocalCrons(crons);
       }
     } catch (e) {
       console.error('Erro ao carregar agendamentos:', e);
@@ -140,6 +174,49 @@ function TaskControlCenter() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const saveCron = async (taskName, horario) => {
+    // Campo vazio devolve a task ao modo intervalo: o backend interpreta
+    // cron: null como "remover o horario" e volta a usar schedule_seconds.
+    const cron = horario
+      ? { hour: Number(horario.split(':')[0]), minute: Number(horario.split(':')[1]) }
+      : null;
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/v2/admin/task-schedules/${taskName}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cron })
+      });
+      const data = await response.json();
+      if (!data.success) {
+        toast.error(data.error || 'Erro ao salvar horario');
+        return;
+      }
+      toast.success(
+        cron
+          ? `${getTaskFriendlyName(taskName)} agendada para ${horario}`
+          : `${getTaskFriendlyName(taskName)} voltou ao modo intervalo`,
+      );
+      if (data.warning) setShowReloadWarning(true);
+      setScheduledTasks(prev => ({
+        ...prev,
+        [taskName]: { ...prev[taskName], cron: cron || undefined }
+      }));
+    } catch (e) {
+      toast.error('Erro ao salvar horario');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCronChange = (taskName, value) => {
+    setLocalCrons(prev => ({ ...prev, [taskName]: value }));
+
+    const chave = `cron:${taskName}`;
+    if (debounceTimers.current[chave]) clearTimeout(debounceTimers.current[chave]);
+    debounceTimers.current[chave] = setTimeout(() => saveCron(taskName, value), 1000);
   };
 
   const handleFrequencyChange = (taskName, value) => {
@@ -283,7 +360,9 @@ function TaskControlCenter() {
       'consumir-fila-mercadolivre': 'Consumir Fila Mercado Livre (Webhooks)',
       'processar-eventos-producao-periodic': 'Motor de Produção e Estoque',
       'renew-shopee-tokens': 'Renovação de Tokens Shopee',
-      'drain-bling-webhook-failures': 'Recuperação de Falhas Bling'
+      'drain-bling-webhook-failures': 'Recuperação de Falhas Bling',
+      'processar-personalizados-diario': 'Extração de Personalizados (lote diário)',
+      'recolher-lotes-ia-parados': 'Recuperação de Lotes de IA Parados'
     };
     return names[name] || name;
   };
@@ -366,7 +445,7 @@ function TaskControlCenter() {
                   <TableRow>
                     <TableHead className="w-[90px]">Ativa</TableHead>
                     <TableHead>Tarefa</TableHead>
-                    <TableHead className="w-[180px]">Frequencia</TableHead>
+                    <TableHead className="w-[200px]">Frequencia / Horario</TableHead>
                     <TableHead className="hidden lg:table-cell">Task Celery</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -397,18 +476,41 @@ function TaskControlCenter() {
                         <div className="text-xs text-muted-foreground">{config.description || config.taskName}</div>
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Input
-                            type="number"
-                            min="1"
-                            value={localFrequencies[config.taskName] || ''}
-                            onChange={(e) => handleFrequencyChange(config.taskName, e.target.value)}
-                            disabled={saving || !config.enabled}
-                            className="h-8 w-20"
-                          />
-                          <span className="w-14 text-xs text-muted-foreground">
-                            {formatFrequency(localFrequencies[config.taskName])}
-                          </span>
+                        {/* Intervalo e horario sao mutuamente excludentes no
+                            beat. Os dois campos ficam visiveis para deixar a
+                            troca obvia, mas o inativo fica desabilitado: e o
+                            proprio controle que informa qual regra vale. */}
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              min="1"
+                              value={localFrequencies[config.taskName] || ''}
+                              onChange={(e) => handleFrequencyChange(config.taskName, e.target.value)}
+                              disabled={saving || !config.enabled || Boolean(config.cron)}
+                              className="h-8 w-20"
+                              title="Intervalo em segundos"
+                            />
+                            <span className="w-14 text-xs text-muted-foreground">
+                              {config.cron ? '—' : formatFrequency(localFrequencies[config.taskName])}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Clock className="h-3 w-3 text-muted-foreground" />
+                            <Input
+                              type="time"
+                              value={localCrons[config.taskName] || ''}
+                              onChange={(e) => handleCronChange(config.taskName, e.target.value)}
+                              disabled={saving || !config.enabled || (Boolean(config.cron) && !cronParaHorario(config.cron))}
+                              className="h-8 w-24"
+                              title="Horario fixo diario (vazio = usar intervalo)"
+                            />
+                          </div>
+                          {config.cron && !cronParaHorario(config.cron) && (
+                            <div className="text-xs text-muted-foreground">
+                              {descreverCron(config.cron)}
+                            </div>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell className="hidden lg:table-cell">

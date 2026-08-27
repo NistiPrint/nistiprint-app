@@ -56,7 +56,6 @@ import TorreDespachoPage from './pages/despacho/TorreDespachoPage'
 import EscopoDespachoPage from './pages/despacho/EscopoDespachoPage'
 import ConsolidarPage from './pages/consolidar/ConsolidarPage'
 import ConsolidarReviewPage from './pages/consolidar/ConsolidarReviewPage'
-import RascunhosListPage from './pages/consolidar/RascunhosListPage'
 import EstoqueAjustePage from './pages/estoque/EstoqueAjustePage'
 import EstoqueDashboardPage from './pages/estoque/EstoqueDashboardPage'
 import EstoqueHistoricoPage from './pages/estoque/EstoqueHistoricoPage'
@@ -125,8 +124,8 @@ function App() {
           <Route path='despacho/escopo' element={<EscopoDespachoPage />} />
 
           <Route path='consolidar' element={<ConsolidarPage />} />
+          <Route path='consolidar/rascunhos' element={<Navigate to='/despacho' replace />} />
           <Route path='consolidar/revisao' element={<ConsolidarReviewPage />} />
-          <Route path='consolidar/rascunhos' element={<RascunhosListPage />} />
 
           {/* 3. Industrial (Produção) */}
           <Route path='producao' element={<ProducaoPage />}>
@@ -134,7 +133,12 @@ function App() {
             <Route path='foco' element={<FocoProducaoPage />} />
             <Route path='resumo' element={<ResumoProducaoPage />} />
             <Route path='demanda' element={<DemandaListPage />} />
-            <Route path='demanda/rascunhos' element={<Navigate to='/producao/demanda?tab=planning' replace />} />
+            {/* Rotas dos rascunhos automaticos (aposentados em 27/08/2026).
+                Redirecionam em vez de sumir: um link salvo ou uma aba aberta
+                nao pode terminar em 404, que parece indisponibilidade
+                temporaria e convida a recarregar. A demanda agora nasce so na
+                Torre de Despacho. */}
+            <Route path='demanda/rascunhos' element={<Navigate to='/despacho' replace />} />
             <Route path='demanda/nova' element={<NovaDemandaPage />} />
             <Route path='demanda/:id/editar' element={<NovaDemandaPage />} />
             <Route

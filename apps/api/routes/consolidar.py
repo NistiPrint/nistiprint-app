@@ -542,6 +542,109 @@ def get_consolidacao_result(consolidacao_id):
         return jsonify({'error': str(e)}), 500
 
 
+
+
+# ============================================================================
+# Conferencia do arquivo contra a base
+# ============================================================================
+#
+# A tela Consolidar recebe uma planilha exportada do painel do marketplace.
+# Ela NAO cria demanda: a demanda nasce em um lugar so, a Torre de Despacho.
+# O que ela faz e casar cada linha do arquivo com um pedido canonico pelo ID de
+# origem e dizer, por no da torre, onde aqueles pedidos caem.
+#
+# A pergunta que o operador traz para esta tela e sempre a mesma: "o que esta
+# no painel do marketplace ja chegou aqui?". Antes ela era respondida gerando
+# uma demanda a partir do arquivo — o que dava uma resposta parecida e um lote
+# que a torre nao reconhecia.
+
+
+@consolidar_bp.route('/consolidar/casar', methods=['POST'])
+@login_required
+def casar_refs_com_base():
+    """Casa IDs de origem de uma planilha com os pedidos canonicos.
+
+    Body JSON: {"refs": ["2000018149273500", "260828G5DFPHPM", ...]}
+
+    Devolve o casamento linha a linha e um agrupamento por no da torre
+    (marketplace + modalidade), que e a chave que a Torre de Despacho usa para
+    abrir um escopo.
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+        refs = body.get('refs') or []
+        if not isinstance(refs, list):
+            return jsonify({'success': False, 'error': 'refs deve ser uma lista'}), 400
+
+        # Normaliza aqui tambem: a planilha costuma trazer o ID como numero, e
+        # um float do pandas ("2000018149273500.0") nao casa com nada.
+        limpos = []
+        for ref in refs:
+            texto = str(ref if ref is not None else '').strip()
+            if texto.endswith('.0'):
+                texto = texto[:-2]
+            if texto:
+                limpos.append(texto)
+
+        if not limpos:
+            return jsonify({'success': True, 'data': {
+                'total_refs': 0, 'encontrados': 0, 'nao_encontrados': [],
+                'fora_da_torre': [], 'nos': [],
+            }})
+
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        resultado = supabase_db.rpc('consolidar_casar_refs', {'p_refs': limpos}).execute()
+        linhas = resultado.data or []
+
+        nao_encontrados = [l['ref'] for l in linhas if not l.get('pedido_id')]
+        # Casado mas fora da torre: ja despachado, cancelado, ou preso a uma
+        # demanda publicada. E um resultado distinto de "nao encontrado" e
+        # precisa aparecer como tal — os dois somados viram "faltando", e o
+        # operador reimporta o que ja produziu.
+        fora_da_torre = [
+            {
+                'ref': l['ref'],
+                'pedido_id': l['pedido_id'],
+                'numero_pedido': l.get('numero_pedido'),
+                'despachado_em': l.get('despachado_em'),
+            }
+            for l in linhas
+            if l.get('pedido_id') and not l.get('na_torre')
+        ]
+
+        nos = {}
+        for linha in linhas:
+            if not linha.get('pedido_id') or not linha.get('na_torre'):
+                continue
+            chave = (linha.get('marketplace_integration_id'), linha.get('modalidade_logistica_id'))
+            no = nos.setdefault(chave, {
+                'integration_id': linha.get('marketplace_integration_id'),
+                'marketplace_nome': linha.get('marketplace_nome'),
+                'modalidade_id': linha.get('modalidade_logistica_id'),
+                'modalidade_nome': linha.get('modalidade_nome'),
+                'qtd_pedidos': 0,
+                'pedido_ids': [],
+            })
+            no['qtd_pedidos'] += 1
+            no['pedido_ids'].append(linha['pedido_id'])
+
+        ordenados = sorted(
+            nos.values(),
+            key=lambda n: (-n['qtd_pedidos'], n['marketplace_nome'] or '', n['modalidade_nome'] or ''),
+        )
+
+        return jsonify({'success': True, 'data': {
+            'total_refs': len(limpos),
+            'encontrados': len(limpos) - len(nao_encontrados),
+            'nao_encontrados': nao_encontrados,
+            'fora_da_torre': fora_da_torre,
+            'nos': ordenados,
+            'linhas': linhas,
+        }})
+    except Exception as exc:
+        logger.error('Erro ao casar refs da planilha com a base: %s', exc, exc_info=True)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
 # ============================================================================
 # APOSENTADO — geracao automatica de rascunho (26/08/2026)
 # ============================================================================

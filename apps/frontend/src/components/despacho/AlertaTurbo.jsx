@@ -106,7 +106,7 @@ export default function AlertaTurbo() {
         </span>
         {urgente.em_rascunho && (
           <span className="rounded bg-white/20 px-1.5 py-0.5 text-xs">
-            em rascunho — ainda não publicado
+            consolidado — ainda não publicado
           </span>
         )}
         <span className="ml-auto flex items-center gap-3">

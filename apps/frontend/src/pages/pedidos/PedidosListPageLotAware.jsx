@@ -300,14 +300,14 @@ export default function PedidosListPageLotAware() {
         <div>
           <h1 className='text-2xl font-bold tracking-tight'>Pedidos</h1>
           <p className='text-muted-foreground'>
-            Use os pedidos para acompanhar a operacao e cair direto no lote sugerido.
+            Acompanhe a operacao e caia direto no no da torre a que o pedido pertence.
           </p>
         </div>
 
         <div className='flex gap-3'>
-          <Button variant='outline' onClick={() => navigate('/producao/demanda?tab=planning')} className='gap-2'>
+          <Button variant='outline' onClick={() => navigate('/despacho')} className='gap-2'>
             <LayoutTemplate className='h-4 w-4' />
-            Ver planejamento
+            Torre de Despacho
           </Button>
         </div>
       </div>
@@ -334,9 +334,9 @@ export default function PedidosListPageLotAware() {
               <Button
                 variant='outline'
                 size='sm'
-                onClick={() => navigate('/producao/demanda?tab=planning')}
+                onClick={() => navigate('/despacho')}
               >
-                Ver lotes sugeridos
+                Consolidar na torre
               </Button>
               <DropdownMenu
                 onOpenChange={(open) => {

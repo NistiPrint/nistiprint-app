@@ -923,12 +923,39 @@ def create_processing_batch(pedido_ids: List[int], skipped=None):
         raise RuntimeError("Falha ao criar batch de IA")
 
     batch_id = batch_res.data[0]["id"]
-    processar_batch_ia.delay(batch_id)
+
+    # O insert acima E o enfileiramento: a partir daqui o trabalho existe e
+    # esta registrado, e o Postgres e a unica fonte da verdade sobre ele.
+    # A mensagem no broker e so a campainha que avisa o worker mais cedo.
+    # Por isso ela e best-effort: se o Redis nao atender, o lote continua
+    # PENDENTE e `recolher_lotes_ia_parados` o retoma na proxima varredura.
+    # Falha de fila passa a atrasar o trabalho, nunca a perde-lo.
+    enfileirado = _tocar_campainha_do_batch(batch_id)
+
     return {
         "batch_id": batch_id,
         "total": len(pedido_ids),
         "skipped": skipped or [],
+        "enfileirado": enfileirado,
     }
+
+
+def _tocar_campainha_do_batch(batch_id: str) -> bool:
+    """Publica o aviso do lote no broker. Retorna False se o broker nao atender.
+
+    Nunca levanta: um broker fora do ar nao invalida o lote, so adia o inicio.
+    Quem precisa saber a diferenca le o retorno.
+    """
+    try:
+        processar_batch_ia.delay(batch_id)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Broker nao aceitou o aviso do batch %s (%s). O lote fica PENDENTE "
+            "e sera retomado pela varredura periodica.",
+            batch_id, exc,
+        )
+        return False
 
 
 @shared_task(name="services.ai_personalization.processar_batch", bind=True)
@@ -981,6 +1008,144 @@ def processar_pedido_ia(self, batch_id: str, pedido_id: int):
         }).execute()
 
 
+#: Um lote que nasceu ha menos que isso ainda pode estar a caminho do worker;
+#: varrer antes disso e correr contra a propria fila.
+LOTE_PENDENTE_TOLERANCIA_SEGUNDOS = 120
+
+#: Um lote em RODANDO com progresso parado por mais tempo que isso perdeu
+#: mensagens (worker morto no meio do fan-out). Generoso de proposito: cada
+#: pedido e uma chamada de IA, e um lote grande demora.
+LOTE_RODANDO_TOLERANCIA_SEGUNDOS = 7200
+
+
+@shared_task(name="services.ai_personalization.recolher_lotes_parados", bind=True)
+def recolher_lotes_ia_parados(self):
+    """Retoma lotes que ficaram sem campainha e encerra os que se perderam.
+
+    Existe porque o registro do lote e o aviso ao worker sao duas escritas em
+    sistemas diferentes, sem transacao entre elas. Sempre que isso acontece
+    alguem tem que reconciliar depois — esta task e esse alguem.
+
+    Dois casos, tratados de formas diferentes de proposito:
+
+    PENDENTE parado
+        A campainha nao tocou (broker fora do ar, processo morto entre o insert
+        e o publish). O trabalho nao comecou, entao e seguro tocar de novo. A
+        reivindicacao e um UPDATE condicional: quem conseguir mudar PENDENTE
+        para RODANDO ganha o lote, e duas varreduras simultaneas nao disparam o
+        mesmo fan-out duas vezes.
+
+    RODANDO parado
+        Aqui parte do fan-out pode ter rodado. Reenfileirar duplicaria itens em
+        `execucoes_ai_item` e contaria o mesmo pedido duas vezes nos totais, o
+        que corromperia o historico para consertar um travamento. Entao so
+        marcamos ERRO: a tabela volta a dizer a verdade, e o proximo ciclo
+        normal reprocessa o que ficou faltando — `should_process_order` ja
+        garante que so o pendente de verdade volta para a IA.
+    """
+    agora = datetime.now(timezone.utc)
+    retomados, encerrados = [], []
+
+    limite_pendente = (agora - timedelta(seconds=LOTE_PENDENTE_TOLERANCIA_SEGUNDOS)).isoformat()
+    pendentes = (
+        supabase_db.table("execucoes_ai_batch")
+        .select("id,total,criado_em")
+        .eq("status", "PENDENTE")
+        .lt("criado_em", limite_pendente)
+        .execute()
+        .data
+        or []
+    )
+
+    for lote in pendentes:
+        batch_id = lote["id"]
+        reivindicado = (
+            supabase_db.table("execucoes_ai_batch")
+            .update({"status": "RODANDO"})
+            .eq("id", batch_id)
+            .eq("status", "PENDENTE")
+            .execute()
+            .data
+        )
+        if not reivindicado:
+            # Outra varredura (ou o proprio worker) chegou primeiro.
+            continue
+
+        if _tocar_campainha_do_batch(batch_id):
+            retomados.append(batch_id)
+        else:
+            # Devolve para PENDENTE: sem isso o lote ficaria preso em RODANDO
+            # sem ninguem processando, que e justamente o estado que esta task
+            # existe para evitar.
+            supabase_db.table("execucoes_ai_batch").update(
+                {"status": "PENDENTE"}
+            ).eq("id", batch_id).execute()
+
+    limite_rodando = (agora - timedelta(seconds=LOTE_RODANDO_TOLERANCIA_SEGUNDOS)).isoformat()
+    travados = (
+        supabase_db.table("execucoes_ai_batch")
+        .select("id,total,processados,criado_em")
+        .eq("status", "RODANDO")
+        .lt("criado_em", limite_rodando)
+        .execute()
+        .data
+        or []
+    )
+
+    for lote in travados:
+        if (lote.get("processados") or 0) >= (lote.get("total") or 0):
+            # Terminou mas nao foi finalizado: o incremento do ultimo item
+            # falhou depois de processar. Fechar como CONCLUIDO e mais fiel ao
+            # que de fato aconteceu do que marcar erro.
+            supabase_db.table("execucoes_ai_batch").update({
+                "status": "CONCLUIDO",
+                "finalizado_em": agora.isoformat(),
+            }).eq("id", lote["id"]).eq("status", "RODANDO").execute()
+            continue
+
+        supabase_db.table("execucoes_ai_batch").update({
+            "status": "ERRO",
+            "finalizado_em": agora.isoformat(),
+        }).eq("id", lote["id"]).eq("status", "RODANDO").execute()
+        encerrados.append(lote["id"])
+
+    if retomados or encerrados:
+        logger.info(
+            "Varredura de lotes de IA: %s retomado(s), %s encerrado(s) por inatividade.",
+            len(retomados), len(encerrados),
+        )
+
+    return {"retomados": retomados, "encerrados": encerrados}
+
+
+@shared_task(name="services.ai_personalization.processar_pendentes", bind=True)
+def processar_pendentes_agendado(self, limit=None):
+    """Lote periodico de extracao de personalizacao.
+
+    Existe para que a tela de personalizados chegue de manha ja processada, em
+    vez de depender de alguem lembrar de clicar em "Extrair nomes pendentes".
+
+    Roda exatamente a mesma selecao do botao manual — `process_orders` sem
+    `force`, que filtra por `should_process_order`. Isso e o ponto: pedido ja
+    processado e sem mensagem nova do comprador nao volta para a IA, entao a
+    execucao diaria nao gera custo repetido nem sobrescreve nome ja extraido.
+    Duplicar a regra aqui seria a maneira mais facil de as duas divergirem.
+
+    `limit=None` processa todos os pendentes. A execucao e barata quando nao ha
+    nada: `select_orders_for_processing` devolve lista vazia e nenhum batch e
+    criado.
+    """
+    try:
+        success, message, payload = process_orders(limit=limit)
+    except Exception as exc:
+        logger.error("Lote agendado de personalizados falhou: %s", exc, exc_info=True)
+        raise
+
+    total = (payload or {}).get("total", 0) if isinstance(payload, dict) else 0
+    logger.info("Lote agendado de personalizados: %s (agendados=%s)", message, total)
+    return {"success": success, "message": message, "total": total}
+
+
 def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False):
     effective_limit = limit
     if limit in (0, "0", ""):
@@ -1010,6 +1175,15 @@ def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False):
         }
 
     batch = create_processing_batch([row["id"] for row in candidates], skipped=skipped)
+    if not batch.get("enfileirado"):
+        # Sucesso, e nao erro: o lote esta registrado e sera processado. O que
+        # muda e o "quando", e a mensagem precisa dizer isso — prometer inicio
+        # imediato aqui faria a tela ficar esperando um progresso que ainda
+        # nao comecou.
+        return True, (
+            f"Lote de {batch['total']} pedido(s) registrado. A fila nao respondeu agora; "
+            "o processamento sera retomado automaticamente na proxima varredura."
+        ), batch
     return True, f"Lote de {batch['total']} pedido(s) agendado.", batch
 
 

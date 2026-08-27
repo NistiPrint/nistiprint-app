@@ -16,6 +16,9 @@ from zoneinfo import ZoneInfo
 
 from flask import Blueprint, jsonify, request
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.order_erp_reference_service import (
+    order_erp_reference_service,
+)
 from routes.auth import get_current_user
 
 import logging
@@ -347,7 +350,12 @@ def get_escopo():
             .select(
                 "id,numero_pedido,codigo_pedido_externo,cliente_nome,total_pedido,"
                 "data_venda,data_limite_envio,compromisso_logistico_em,"
-                "metodo_envio_chave,metodo_envio_rotulo,modalidade_logistica_id,pack_id"
+                "metodo_envio_chave,metodo_envio_rotulo,modalidade_logistica_id,pack_id,"
+                # O numero do ERP e util para o galpao, mas o numero que o
+                # operador confere contra o painel do marketplace e este.
+                # Sem ele a lista da torre nao casa com a tela de origem.
+                "marketplace_order_id,marketplace_module_id,"
+                "erp_integration_id,erp_order_id,erp_order_number"
             )
             .in_("id", pedido_ids)
             .order("compromisso_logistico_em", desc=False)
@@ -679,4 +687,350 @@ def get_modalidades():
         return jsonify({"success": True, "data": result.data or []})
     except Exception as exc:
         logger.error("Erro ao listar modalidades logisticas: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Acoes sobre o lote: papeis, notas e IDs de origem
+# ---------------------------------------------------------------------------
+#
+# O lote e o mesmo objeto em dois momentos da vida dele:
+#
+#   antes de publicar  -> (integration_id, modalidade_ids, horizonte, data)
+#   depois de publicar -> demanda_id
+#
+# As quatro acoes do fluxo de fabrica (gerar demanda, emitir nota, copiar IDs,
+# imprimir papeis) valem nos dois momentos, entao as rotas abaixo aceitam
+# qualquer uma das duas chaves e resolvem para a mesma lista de pedidos. A
+# alternativa seria o frontend mandar a lista de ids na URL: ela diverge do que
+# a tela mostra assim que qualquer coisa muda no banco, e estoura o limite de
+# URL num lote grande. Aqui quem resolve o conjunto e sempre o servidor.
+
+#: O legado copia os codigos de origem em blocos porque a busca do Bling nao
+#: aceita mais que isso de uma vez (`generate_ids_chunks`, chunk_size=100).
+TAMANHO_BLOCO_IDS = 100
+
+
+def _pedido_ids_do_lote(origem) -> tuple[list[int], str]:
+    """Resolve o conjunto de pedidos a partir de demanda_id ou do escopo.
+
+    `origem` e o request.args (GET) ou o dict do corpo (POST). Retorna
+    (pedido_ids, chave) onde chave descreve de onde vieram, para log.
+    """
+    demanda_id = _parse_int(origem.get("demanda_id"))
+    if demanda_id is not None:
+        pivot = (
+            supabase_db.table("demandas_pedidos")
+            .select("pedido_id, created_at")
+            .eq("demanda_id", demanda_id)
+            .order("created_at")
+            .execute()
+        )
+        ids = [row.get("pedido_id") for row in (pivot.data or []) if row.get("pedido_id")]
+        return ids, f"demanda:{demanda_id}"
+
+    integration_id = _parse_int(origem.get("integration_id"))
+    if hasattr(origem, "getlist"):
+        horizonte = origem.getlist("horizonte") or ["atrasado", "hoje"]
+        modalidade_ids = [_parse_int(v) for v in origem.getlist("modalidade_ids")]
+    else:
+        horizonte = origem.get("horizonte") or ["atrasado", "hoje"]
+        modalidade_ids = [_parse_int(v) for v in (origem.get("modalidade_ids") or [])]
+    modalidade_ids = [m for m in modalidade_ids if m is not None]
+    if not modalidade_ids:
+        unico = _parse_int(origem.get("modalidade_id"))
+        modalidade_ids = [unico] if unico is not None else None
+
+    p_data = _parse_data(origem.get("data"))
+    result = supabase_db.rpc("despacho_escopo_lote", {
+        "p_integration_id": integration_id,
+        "p_modalidade_ids": modalidade_ids,
+        "p_horizonte": horizonte,
+        "p_data": p_data,
+    }).execute()
+    ids = [row if isinstance(row, int) else row.get("despacho_escopo_lote")
+           for row in (result.data or [])]
+    ids = [pid for pid in ids if pid is not None]
+    return ids, f"escopo:{integration_id}/{modalidade_ids}"
+
+
+def _pedidos_para_acoes(pedido_ids: list[int]) -> list[dict]:
+    """Le de uma vez tudo que as tres acoes precisam saber de cada pedido.
+
+    `order_erp_reference_service.resolve_many` faz uma consulta por pedido; num
+    lote de 150 sao 150 idas ao banco antes de a tela desenhar. A referencia de
+    ERP ja esta no proprio pedido na esmagadora maioria dos casos, entao aqui a
+    leitura e uma so e o servico remoto fica reservado para quem realmente
+    ainda nao tem referencia.
+    """
+    if not pedido_ids:
+        return []
+    pedidos: list[dict] = []
+    # PostgREST monta a lista de ids na URL: em lote grande isso estoura.
+    for inicio in range(0, len(pedido_ids), 200):
+        fatia = pedido_ids[inicio:inicio + 200]
+        resultado = (
+            supabase_db.table("pedidos")
+            .select(
+                "id,numero_pedido,codigo_pedido_externo,marketplace_order_id,"
+                "marketplace_module_id,marketplace_integration_id,cliente_nome,"
+                "erp_integration_id,erp_store_id,erp_order_id,erp_order_number"
+            )
+            .in_("id", fatia)
+            .execute()
+        )
+        pedidos.extend(resultado.data or [])
+
+    por_id = {p["id"]: p for p in pedidos}
+    # Preserva a ordem que o escopo devolveu — ela ja vem por prazo.
+    return [por_id[pid] for pid in pedido_ids if pid in por_id]
+
+
+def _id_de_origem(pedido: dict) -> str:
+    """O identificador do pedido no marketplace.
+
+    `codigo_pedido_externo` e o fallback historico; `marketplace_order_id` e o
+    campo canonico. Hoje coincidem, mas o que o operador cola na busca do
+    marketplace e o segundo.
+    """
+    valor = pedido.get("marketplace_order_id") or pedido.get("codigo_pedido_externo")
+    return str(valor).strip() if valor else ""
+
+
+def _rotulos_de_contas(integration_ids: list) -> dict:
+    ids = sorted({int(i) for i in integration_ids if i is not None})
+    if not ids:
+        return {}
+    try:
+        resultado = (
+            supabase_db.table("installed_integrations")
+            .select("id, instance_name")
+            .in_("id", ids)
+            .execute()
+        )
+        return {
+            int(row["id"]): row.get("instance_name") or f"Conta {row['id']}"
+            for row in (resultado.data or [])
+            if row.get("id") is not None
+        }
+    except Exception:
+        logger.warning("Falha ao ler rotulos das contas de ERP", exc_info=True)
+        return {}
+
+
+@despacho_bp.route("/acoes", methods=["GET"])
+def get_acoes():
+    """Insumos das acoes de um lote: IDs de origem em blocos e contas de ERP.
+
+    Aceita `demanda_id` OU o seletor do escopo (integration_id, modalidade_ids,
+    horizonte, data).
+    """
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Nao autorizado"}), 401
+
+        pedido_ids, chave = _pedido_ids_do_lote(request.args)
+        pedidos = _pedidos_para_acoes(pedido_ids)
+
+        codigos = [c for c in (_id_de_origem(p) for p in pedidos) if c]
+        blocos = [
+            {
+                "indice": indice + 1,
+                "quantidade": len(codigos[i:i + TAMANHO_BLOCO_IDS]),
+                "texto": ";".join(codigos[i:i + TAMANHO_BLOCO_IDS]),
+            }
+            for indice, i in enumerate(range(0, len(codigos), TAMANHO_BLOCO_IDS))
+        ]
+
+        rotulos = _rotulos_de_contas([p.get("erp_integration_id") for p in pedidos])
+
+        grupos: dict = {}
+        sem_erp: list[dict] = []
+        for pedido in pedidos:
+            integracao = pedido.get("erp_integration_id")
+            pronto = bool(integracao and pedido.get("erp_order_id") and pedido.get("erp_order_number"))
+            if not pronto:
+                sem_erp.append({
+                    "pedido_id": pedido["id"],
+                    "id_origem": _id_de_origem(pedido),
+                    "numero_pedido": pedido.get("numero_pedido"),
+                    "motivo": "Pedido ainda sem numero no ERP - a nota nao pode ser emitida por aqui.",
+                })
+                continue
+            chave_grupo = int(integracao)
+            grupo = grupos.setdefault(chave_grupo, {
+                "erp_integration_id": chave_grupo,
+                "conta": rotulos.get(chave_grupo) or f"Conta {chave_grupo}",
+                "total": 0,
+                "pedido_ids": [],
+            })
+            grupo["total"] += 1
+            grupo["pedido_ids"].append(pedido["id"])
+
+        logger.info("Acoes do lote %s: %s pedidos, %s blocos", chave, len(pedidos), len(blocos))
+
+        return jsonify({"success": True, "data": {
+            "total": len(pedidos),
+            "pedido_ids": [p["id"] for p in pedidos],
+            "blocos_ids": blocos,
+            "tamanho_bloco": TAMANHO_BLOCO_IDS,
+            "contas_erp": sorted(grupos.values(), key=lambda g: -g["total"]),
+            "sem_erp": sem_erp,
+        }})
+    except Exception as exc:
+        logger.error("Erro ao montar acoes do lote: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@despacho_bp.route("/nfe", methods=["GET"])
+def get_nfe_do_lote():
+    """Emite as notas do lote, transmitindo o resultado pedido a pedido (SSE).
+
+    Sem `erp_integration_id` cada pedido vai pela conta da propria origem; com
+    ele, o lote inteiro vai pela conta escolhida a mao - que e o escape para
+    quando a origem esta mal vinculada.
+
+    O contrato de eventos e o mesmo de /demanda_producao/<id>/nfe, de proposito:
+    a tela de despacho e a de demanda leem o mesmo componente.
+    """
+    from flask import Response, stream_with_context
+    import json as _json
+
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Nao autorizado"}), 401
+
+        conta_escolhida = _parse_int(request.args.get("erp_integration_id"))
+        pedido_ids, chave = _pedido_ids_do_lote(request.args)
+        pedidos = _pedidos_para_acoes(pedido_ids)
+        if not pedidos:
+            return jsonify({"success": False, "error": "Nenhum pedido neste lote."}), 400
+
+        rotulos = _rotulos_de_contas([p.get("erp_integration_id") for p in pedidos])
+
+        grupos: dict = {}
+        bloqueados: list[dict] = []
+        fora_da_conta: list[dict] = []
+        for pedido in pedidos:
+            integracao = pedido.get("erp_integration_id")
+            ordem_erp = pedido.get("erp_order_id")
+            numero_erp = pedido.get("erp_order_number")
+
+            if not (integracao and ordem_erp and numero_erp):
+                # So aqui vale pagar a resolucao remota: e o unico caso em que
+                # o pedido pode ganhar referencia agora.
+                resolucao = order_erp_reference_service.resolve_order(
+                    pedido["id"], allow_remote=True
+                )
+                if resolucao.get("status") != "ready":
+                    bloqueados.append({
+                        "pedido_id": pedido["id"],
+                        "numeroLoja": _id_de_origem(pedido),
+                        "error": resolucao.get("message") or resolucao.get("status"),
+                    })
+                    continue
+                integracao = resolucao.get("erp_integration_id")
+                ordem_erp = resolucao.get("erp_order_id")
+                numero_erp = resolucao.get("erp_order_number")
+
+            if conta_escolhida is not None and int(integracao) != conta_escolhida:
+                # Escolha manual = recorte, nao reatribuicao. `erp_order_id` so
+                # existe dentro da conta que criou o pedido; mandar esse id para
+                # outra conta emitiria nota do pedido errado, ou de nenhum. Quem
+                # nao e da conta escolhida fica de fora, e a tela diz quantos.
+                fora_da_conta.append({
+                    "pedido_id": pedido["id"],
+                    "numeroLoja": _id_de_origem(pedido),
+                    "erp_integration_id": int(integracao),
+                })
+                continue
+
+            grupos.setdefault(int(integracao), []).append({
+                "pedido_id": pedido["id"],
+                "id": ordem_erp,
+                "numero": str(numero_erp),
+                "numeroLoja": _id_de_origem(pedido),
+                "contato": {"nome": pedido.get("cliente_nome")},
+            })
+
+        logger.info(
+            "NF do lote %s: %s pedidos em %s conta(s), %s bloqueados, %s fora da conta escolhida",
+            chave, len(pedidos), len(grupos), len(bloqueados), len(fora_da_conta),
+        )
+
+        if not grupos and not bloqueados:
+            return jsonify({
+                "success": False,
+                "error": "Nenhum pedido deste lote pertence a conta de ERP escolhida.",
+            }), 400
+
+        def stream():
+            from nistiprint_shared.services.bling.bling_client_updated import BlingClient
+            from nistiprint_shared.services.installed_integration_service import (
+                installed_integration_service,
+            )
+
+            for bloqueado in bloqueados:
+                yield "data: " + _json.dumps({
+                    "status": "error", "success": False,
+                    "order": bloqueado, "error": bloqueado["error"],
+                }) + "\n\n"
+
+            for integracao_id, ordens in grupos.items():
+                rotulo = rotulos.get(integracao_id) or f"Conta {integracao_id}"
+                integracao = installed_integration_service.get_installed_by_id(str(integracao_id))
+                if not integracao:
+                    for ordem in ordens:
+                        yield "data: " + _json.dumps({
+                            "status": "error", "success": False, "order": ordem,
+                            "erp_integration_id": integracao_id, "account_label": rotulo,
+                            "error": f"Conta de ERP {integracao_id} nao encontrada.",
+                        }) + "\n\n"
+                    continue
+
+                dados_conta = integracao.to_dict()
+                dados_conta["id"] = integracao.id
+                if getattr(integracao, "access_token", None):
+                    dados_conta["access_token"] = integracao.access_token
+                if getattr(integracao, "refresh_token", None):
+                    dados_conta["refresh_token"] = integracao.refresh_token
+                cliente = BlingClient(dados_conta)
+
+                for ordem in ordens:
+                    try:
+                        resultado = cliente.generate_nfe(ordem)
+                        evento = {
+                            "status": "processing",
+                            "order": {
+                                "id": ordem["id"],
+                                "numero": ordem["numero"],
+                                "numeroLoja": ordem["numeroLoja"],
+                                "nfe_id": resultado.get("nfe_id"),
+                            },
+                            "erp_integration_id": integracao_id,
+                            "account_label": rotulo,
+                            "success": not resultado.get("error"),
+                        }
+                        if resultado.get("error"):
+                            evento["error"] = resultado.get("error_message") or "Erro desconhecido ao gerar NFe"
+                            if resultado.get("error_details"):
+                                evento["error_details"] = resultado.get("error_details")
+                        yield "data: " + _json.dumps(evento) + "\n\n"
+                    except Exception as erro:
+                        yield "data: " + _json.dumps({
+                            "status": "error", "success": False, "order": ordem,
+                            "erp_integration_id": integracao_id, "account_label": rotulo,
+                            "error": str(erro),
+                        }) + "\n\n"
+
+            yield "data: " + _json.dumps({
+                "status": "complete",
+                "fora_da_conta": len(fora_da_conta),
+            }) + "\n\n"
+
+        return Response(stream_with_context(stream()), mimetype="text/event-stream")
+    except Exception as exc:
+        logger.error("Erro ao emitir notas do lote: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500

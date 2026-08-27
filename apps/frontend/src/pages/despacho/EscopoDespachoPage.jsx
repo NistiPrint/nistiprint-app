@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import PacoteBadge from '@/components/pedidos/PacoteBadge';
+import AcoesDoLote from '@/components/despacho/AcoesDoLote';
 import { dataOperacionalHoje } from '@/lib/dataOperacional';
 import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
 import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronRight, FileText, Package } from 'lucide-react';
@@ -16,10 +17,17 @@ import { toast } from 'sonner';
 // O escopo e (no, horizonte). Nao ha checkbox por pedido no fluxo normal: a
 // lista e para conferencia contra o painel do marketplace, nao para selecao.
 //
-// O fluxo tem dois passos e eles nao sao cerimonia:
-//   montar rascunho -> conferir a lista de producao -> publicar
-// Publicar e o unico momento em que despachado_em e carimbado, ou seja, o
-// momento em que o galpao assume o lote e os pedidos saem da torre.
+// O fluxo tem quatro passos, na ordem em que a fabrica os executa:
+//   consolidar -> emitir notas -> imprimir papeis -> publicar demanda
+// Os tres primeiros acontecem com o lote ja fechado e ainda na torre; publicar
+// e o unico momento em que despachado_em e carimbado, ou seja, o momento em
+// que o galpao assume o lote e os pedidos saem da torre.
+//
+// O passo intermediario chama-se CONSOLIDACAO, nunca "rascunho". No banco o
+// status continua sendo RASCUNHO — mudar isso arrastaria RPCs, historico e
+// nome de coluna sem ganhar nada — mas "rascunho" na tela dizia ao operador
+// que aquilo era um esboco descartavel, quando na verdade e o lote fechado
+// sobre o qual ele vai emitir nota fiscal.
 
 // A escada de prazo. `sem_prazo` NAO entra aqui: ele e um toggle proprio.
 // Como escada, incluir um pedido sem prazo obrigaria a arrastar ate o ultimo
@@ -43,7 +51,7 @@ function parseIntOrNull(value) {
   return Number.isNaN(n) ? null : n;
 }
 
-function LinhasProducao({ demandaId, onPublicar, publicando }) {
+function LinhasProducao({ demandaId }) {
   const [dados, setDados] = useState(null);
   const [erro, setErro] = useState(null);
 
@@ -86,34 +94,22 @@ function LinhasProducao({ demandaId, onPublicar, publicando }) {
 
   return (
     <>
-      <Card className="mb-4 border-slate-900">
-        <CardContent className="flex flex-wrap items-center justify-between gap-4 py-5">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <FileText className="h-4 w-4" />
-              Rascunho {dados.demanda?.demanda_id}
-            </div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              {itens.length} linhas de produção · {Math.round(dados.total_pecas)} peças ·{' '}
-              {grupos.length} {grupos.length === 1 ? 'miolo' : 'miolos'}
-            </div>
-            {dados.sem_estoque > 0 && (
-              <div className="mt-1 text-xs text-muted-foreground">
-                {dados.sem_estoque} {dados.sem_estoque === 1 ? 'linha produz' : 'linhas produzem'} sem
-                movimentar estoque (SKU sem produto interno vinculado)
-              </div>
-            )}
-          </div>
-          <Button size="lg" onClick={onPublicar} disabled={publicando}>
-            {publicando ? 'Publicando…' : 'Publicar demanda'}
-          </Button>
-        </CardContent>
-      </Card>
-
-      <div className="mb-2 flex items-baseline gap-2">
+      <div className="mb-2 flex flex-wrap items-baseline gap-2">
         <span className="text-sm font-medium">Ordem de produção</span>
         <span className="text-xs text-muted-foreground">miolo com mais carga primeiro</span>
+        <span className="ml-auto text-xs text-muted-foreground">
+          <FileText className="mr-1 inline h-3.5 w-3.5" />
+          {dados.demanda?.demanda_id} · {itens.length} linhas ·{' '}
+          {Math.round(dados.total_pecas)} peças · {grupos.length}{' '}
+          {grupos.length === 1 ? 'miolo' : 'miolos'}
+        </span>
       </div>
+      {dados.sem_estoque > 0 && (
+        <div className="mb-2 text-xs text-muted-foreground">
+          {dados.sem_estoque} {dados.sem_estoque === 1 ? 'linha produz' : 'linhas produzem'} sem
+          movimentar estoque (SKU sem produto interno vinculado)
+        </div>
+      )}
 
       <div className="mb-6 overflow-hidden rounded-md border">
         <table className="w-full text-sm">
@@ -207,6 +203,24 @@ export default function EscopoDespachoPage() {
     return incluirSemPrazo ? [...passos, 'sem_prazo'] : passos;
   }, [horizonteAte, incluirSemPrazo]);
 
+  // A chave do lote — nao a lista de pedidos. As acoes (papeis, notas, IDs)
+  // pedem ao servidor o mesmo conjunto que desenhou esta tela; mandar ids pela
+  // URL faria a acao agir sobre um conjunto diferente do exibido assim que
+  // qualquer coisa mudasse no banco, e estouraria o limite de URL num lote
+  // grande.
+  const chaveDoEscopo = useMemo(() => ({
+    integration_id: integrationId ?? undefined,
+    modalidade_ids: modalidadeIds,
+    modalidade_id: modalidadeIds[0] ?? undefined,
+    horizonte,
+    data: dataOperacionalHoje(),
+  }), [integrationId, modalidadeIds, horizonte]);
+
+  const chaveDoRascunho = useMemo(
+    () => (rascunho ? { demanda_id: rascunho.id } : null),
+    [rascunho]
+  );
+
   const carregar = useCallback(async () => {
     setLoading(true);
     setErro(null);
@@ -236,7 +250,7 @@ export default function EscopoDespachoPage() {
     if (!rascunho) carregar();
   }, [carregar, rascunho]);
 
-  const montarRascunho = async () => {
+  const consolidar = async () => {
     setLancando(true);
     try {
       const hoje = dataOperacionalHoje();
@@ -252,17 +266,17 @@ export default function EscopoDespachoPage() {
         }),
       });
       const json = await res.json();
-      if (!json.success) throw new Error(json.error || 'Não foi possível montar o rascunho');
+      if (!json.success) throw new Error(json.error || 'Não foi possível consolidar os pedidos');
 
       const { demanda_id, demanda_codigo, total_pedidos, somou_em_rascunho } = json.data;
       setRascunho({ id: demanda_id, codigo: demanda_codigo, totalPedidos: total_pedidos });
       toast.success(
         somou_em_rascunho
-          ? `Pedidos somados ao rascunho ${demanda_codigo} — agora com ${total_pedidos}`
-          : `Rascunho ${demanda_codigo} montado com ${total_pedidos} pedidos`
+          ? `Pedidos somados à consolidação ${demanda_codigo} — agora com ${total_pedidos}`
+          : `Consolidação ${demanda_codigo} fechada com ${total_pedidos} pedidos`
       );
     } catch (err) {
-      toast.error(err.message || 'Não foi possível montar o rascunho');
+      toast.error(err.message || 'Não foi possível consolidar os pedidos');
     } finally {
       setLancando(false);
     }
@@ -318,21 +332,51 @@ export default function EscopoDespachoPage() {
               <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
               <div>
                 <div className="font-medium text-emerald-900">
-                  Rascunho montado com {rascunho.totalPedidos} pedidos.
+                  Consolidação {rascunho.codigo} fechada com {rascunho.totalPedidos} pedidos.
                 </div>
                 <div className="text-emerald-800">
-                  Os pedidos continuam na torre até você publicar. Confira a ordem de produção abaixo.
+                  Os pedidos continuam na torre até você publicar.
                 </div>
               </div>
             </CardContent>
           </Card>
-          <LinhasProducao demandaId={rascunho.id} onPublicar={publicar} publicando={publicando} />
+
+          {/* A ordem dos blocos é a ordem da fábrica: emitir as notas, imprimir
+              os papéis, conferir a produção e só então publicar. Enquanto o
+              botão de publicar ficava no topo, ele era a primeira coisa
+              clicável da tela — e publicar antes de emitir a nota entrega ao
+              galpão um lote que a expedição ainda não pode despachar. */}
+          {chaveDoRascunho && (
+            <AcoesDoLote
+              className="mb-6"
+              params={chaveDoRascunho}
+              titulo="1. Notas fiscais e papéis desta consolidação"
+            />
+          )}
+
+          <div className="mb-2 text-sm font-medium">2. Confira a produção</div>
+          <LinhasProducao demandaId={rascunho.id} />
+
+          <Card className="mb-6 border-slate-900">
+            <CardContent className="flex flex-wrap items-center justify-between gap-4 py-5">
+              <div>
+                <div className="text-sm font-medium">3. Publicar a demanda de produção</div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  A partir daqui o galpão assume o lote e os {rascunho.totalPedidos} pedidos saem da torre.
+                </div>
+              </div>
+              <Button size="lg" onClick={publicar} disabled={publicando}>
+                {publicando ? 'Publicando…' : 'Publicar demanda'}
+              </Button>
+            </CardContent>
+          </Card>
+
           <button
             type="button"
             onClick={() => setRascunho(null)}
             className="text-sm text-muted-foreground underline-offset-4 hover:underline"
           >
-            Voltar e ajustar o horizonte
+            Desfazer e ajustar o horizonte
           </button>
         </>
       ) : (
@@ -417,11 +461,24 @@ export default function EscopoDespachoPage() {
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">pedidos no escopo selecionado</div>
               </div>
-              <Button size="lg" disabled={loading || lancando || total === 0} onClick={montarRascunho}>
-                {lancando ? 'Montando…' : `Montar rascunho (${total})`}
+              <Button size="lg" disabled={loading || lancando || total === 0} onClick={consolidar}>
+                {lancando ? 'Consolidando…' : `Consolidar ${total} pedidos`}
               </Button>
             </CardContent>
           </Card>
+
+          {/* As mesmas acoes ficam disponiveis antes de consolidar, mas sobre o
+              escopo — que e uma consulta viva, nao um lote fechado. O titulo
+              diz isso: quem emite nota daqui esta emitindo sobre o que a torre
+              enxerga agora, e um pedido pago um minuto depois entra no lote e
+              nao na leva de notas. */}
+          {!loading && total > 0 && (
+            <AcoesDoLote
+              className="mb-6"
+              params={chaveDoEscopo}
+              titulo="Ações sobre o escopo (o lote ainda não foi fechado)"
+            />
+          )}
 
           <div className="mb-2 text-sm font-medium">Pedidos no escopo</div>
           {loading && (
@@ -446,6 +503,9 @@ export default function EscopoDespachoPage() {
                   <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
                     <tr>
                       <th className="px-3 py-2 font-medium">Pedido</th>
+                      {/* O numero do ERP serve ao galpao; este e o numero que o
+                          operador confere contra o painel do marketplace. */}
+                      <th className="px-3 py-2 font-medium">ID no marketplace</th>
                       <th className="px-3 py-2 font-medium">Cliente</th>
                       <th className="px-3 py-2 font-medium">Total</th>
                       <th className="px-3 py-2 font-medium">Prazo</th>
@@ -468,11 +528,9 @@ export default function EscopoDespachoPage() {
                               irmaosIds={pedido.pack_irmaos_ids}
                             />
                           </div>
-                          {pedido.pack_irmaos > 0 && pedido.codigo_pedido_externo && (
-                            <div className="font-mono text-[11px] text-muted-foreground">
-                              {pedido.codigo_pedido_externo}
-                            </div>
-                          )}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-xs">
+                          {pedido.marketplace_order_id || pedido.codigo_pedido_externo || '—'}
                         </td>
                         <td className="px-3 py-2">{pedido.cliente_nome || '—'}</td>
                         <td className="px-3 py-2">

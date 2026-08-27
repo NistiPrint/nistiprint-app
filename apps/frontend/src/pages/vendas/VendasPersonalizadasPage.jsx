@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import OrderCard from '@/components/vendas/OrderCard';
 import OrderFilters from '@/components/vendas/OrderFilters';
 import { personalizadosService } from '@/services/personalizadosService';
-import { ArrowLeft, Brain, ChevronDown, ChevronRight, Database, FileText, Loader2, RefreshCw, Settings, Terminal, ThumbsDown } from 'lucide-react';
+import { ArrowLeft, Brain, ChevronDown, ChevronRight, Database, FileText, Flag, Loader2, RefreshCw, Settings, Terminal } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -56,9 +56,11 @@ function VendasPersonalizadasPage() {
   const [aiLogs, setAiLogs] = useState([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
 
-  // Feedback Modal
+  // Relatar problema
+  // O par joinha/joinha-para-baixo virou um caminho so: o feedback positivo
+  // nunca foi lido por ninguem e ocupava dois botoes fixos em cada card. O que
+  // importa registrar e o erro, e esse sempre veio acompanhado de texto.
   const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
-  const [feedbackType, setFeedbackType] = useState(null);
   const [feedbackNotes, setFeedbackNotes] = useState('');
   const [selectedOrderForFeedback, setSelectedOrderForFeedback] = useState(null);
   
@@ -243,7 +245,8 @@ function VendasPersonalizadasPage() {
 
   const handleProcessarLote = async () => {
     const confirm = window.confirm(
-      'Processar todos os pedidos Shopee personalizados em andamento que estejam pendentes pela regra da IA? Isso pode demorar alguns minutos.',
+      'Processar agora os pedidos pendentes (nunca processados ou com mensagem nova do comprador)? '
+      + 'Esse mesmo lote roda sozinho todo dia as 12h; use isto para antecipar. Pode demorar alguns minutos.',
     );
     if (!confirm) return;
 
@@ -255,6 +258,16 @@ function VendasPersonalizadasPage() {
       const data = await personalizadosService.processar({ limit: 0 });
       if (!data.success) {
         toast.error(data.message || 'Erro ao processar lote', { id: toastId });
+        setIsProcessingLote(false);
+        setLoteProgress('');
+        return;
+      }
+
+      if (data.data?.enfileirado === false) {
+        // O lote esta registrado, mas a fila ainda nao o pegou. Entrar no
+        // polling aqui prenderia a tela por 30s esperando logs que so vao
+        // aparecer quando a varredura periodica retomar o lote.
+        toast.warning(data.message, { id: toastId, duration: 8000 });
         setIsProcessingLote(false);
         setLoteProgress('');
         return;
@@ -375,33 +388,28 @@ function VendasPersonalizadasPage() {
     }
   };
 
-  const handleFeedback = (orderId, feedbackType) => {
-    setSelectedOrderForFeedback(orderId);
-    setFeedbackType(feedbackType);
+  const handleReportProblem = (orderSn) => {
+    setSelectedOrderForFeedback(orderSn);
     setFeedbackNotes('');
-    if (feedbackType === 0) { // Negative feedback requires notes
-      setIsFeedbackModalOpen(true);
-    } else {
-      submitFeedback(orderId, feedbackType);
-    }
+    setIsFeedbackModalOpen(true);
   };
 
-  const submitFeedback = async (orderId, feedbackType, notes = '') => {
-    const toastId = toast.loading('Enviando feedback...');
+  const submitProblemReport = async (orderSn, notes) => {
+    const toastId = toast.loading('Enviando relato...');
     try {
       const data = await personalizadosService.salvarFeedback({
-        order_sn: orderId,
-        avaliacao: feedbackType === 1 ? 5 : 1,
+        order_sn: orderSn,
+        avaliacao: 1,
         texto_feedback: notes
       });
       if (data.success) {
-        toast.success(feedbackType === 1 ? 'Obrigado pelo feedback positivo!' : 'Obrigado pelo feedback. Vamos analisar o ocorrido.', { id: toastId });
+        toast.success('Obrigado pelo relato. Vamos analisar o ocorrido.', { id: toastId });
         setIsFeedbackModalOpen(false);
       } else {
-        toast.error(data.message || 'Erro ao enviar feedback', { id: toastId });
+        toast.error(data.message || 'Erro ao enviar relato', { id: toastId });
       }
     } catch (e) {
-      toast.error('Erro ao enviar feedback', { id: toastId });
+      toast.error('Erro ao enviar relato', { id: toastId });
     }
   };
 
@@ -439,7 +447,11 @@ function VendasPersonalizadasPage() {
         <Button variant="outline" onClick={() => navigate('/')}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Voltar
         </Button>
-        <Button variant="outline" onClick={handleProcessarLote} disabled={isProcessingLote}>
+        <Button
+          variant="outline"
+          onClick={handleProcessarLote}
+          disabled={isProcessingLote}
+          title="Processa apenas pedidos pendentes: nunca processados ou com mensagem nova apos a ultima execucao. O mesmo lote roda automaticamente todo dia as 12h.">
           {isProcessingLote ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Brain className="mr-2 h-4 w-4" />}
           {isProcessingLote ? (loteProgress || 'Processando...') : 'Extrair nomes pendentes'}
         </Button>
@@ -508,7 +520,7 @@ function VendasPersonalizadasPage() {
                   onOpenChat={handleOpenChat}
                   onOpenAiLogs={handleOpenAiLogs}
                   onProcessAI={handleProcessAI}
-                  onFeedback={handleFeedback}
+                  onReportProblem={handleReportProblem}
                 />
               ))}
               
@@ -653,8 +665,8 @@ function VendasPersonalizadasPage() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <ThumbsDown className="h-5 w-5 text-red-500" />
-              Reportar um Problema
+              <Flag className="h-5 w-5 text-red-500" />
+              Relatar problema — pedido {selectedOrderForFeedback}
             </DialogTitle>
           </DialogHeader>
           <div className="mt-4">
@@ -683,10 +695,10 @@ function VendasPersonalizadasPage() {
             </Button>
             <Button
               variant="destructive"
-              onClick={() => submitFeedback(selectedOrderForFeedback, feedbackType, feedbackNotes)}
+              onClick={() => submitProblemReport(selectedOrderForFeedback, feedbackNotes)}
               disabled={!feedbackNotes.trim()}
             >
-              Enviar Feedback
+              Enviar relato
             </Button>
           </div>
         </DialogContent>

@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useAuth } from '@/contexts/AuthContext';
 import ProductionService from '@/services/ProductionService';
-import { AlertTriangle, BarChart3, Clock, Package, Truck } from 'lucide-react';
+import { AlertTriangle, BarChart3, Clock, Package, Truck, Zap } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -184,6 +184,16 @@ const PainelProducaoPage = () => {
           </p>
         </div>
         <div className="flex flex-wrap gap-4 items-center">
+          {/* Modo Foco saiu da barra lateral: e o MESMO trabalho deste painel
+              visto em tela cheia pelo setor, nao um destino irmao. Como item de
+              menu ele competia com o painel de onde o operador acabou de sair;
+              como botao daqui, a relacao entre os dois fica dita. */}
+          <Link to="/producao/foco">
+            <Button variant="outline" className="flex items-center gap-2">
+              <Zap className="h-4 w-4" />
+              Modo Foco
+            </Button>
+          </Link>
           <Link to="/producao/resumo">
             <Button variant="outline" className="flex items-center gap-2">
               <BarChart3 className="h-4 w-4" />

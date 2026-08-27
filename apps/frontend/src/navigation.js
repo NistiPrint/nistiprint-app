@@ -17,7 +17,7 @@ import {
   Activity, BarChart3, Boxes, Building, CalendarClock, ClipboardList, Cog, Database, Factory,
   HardDrive, Home, Layers, MapPin, Monitor, Package, Printer, Scale, ScrollText,
   Settings, Share2, ShieldCheck, ShoppingCart, Sparkles, Store, Tag, TowerControl,
-  Trello, Truck, Users, Warehouse, Waypoints, Wrench, Zap,
+  Trello, Truck, Users, Warehouse, Waypoints, Wrench,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -30,9 +30,10 @@ export const TOP_NAV = [
     icon: ShoppingCart,
     type: 'collapsible',
     children: [
-      { name: 'Consolidar Arquivos', href: '/consolidar', type: 'link', permission: { a: 'vendas', I: 'ler' } },
       { name: 'Pedidos', href: '/vendas/pedidos', type: 'link', permission: { a: 'vendas', I: 'ler' } },
+      { name: 'Torre de Despacho', href: '/despacho', type: 'link', permission: { a: 'vendas', I: 'ler' } },
       { name: 'Personalizados', href: '/vendas/personalizadas', type: 'link', permission: { a: 'vendas', I: 'ler' } },
+      { name: 'Consolidar', href: '/consolidar', type: 'link', permission: { a: 'vendas', I: 'ler' } },
     ],
   },
   {
@@ -40,7 +41,6 @@ export const TOP_NAV = [
     icon: Cog,
     type: 'collapsible',
     children: [
-      { name: 'Torre de Despacho', href: '/despacho', type: 'link', permission: { a: 'producao', I: 'ler' } },
       { name: 'Produção', href: '/producao', type: 'link', permission: { a: 'producao', I: 'ler' } },
       { name: 'Fila de Impressão', href: '/producao/impressao', type: 'link', permission: { a: 'producao', I: 'ler' } },
       { name: 'Expedição', href: '/producao/expedicao', type: 'link', permission: { a: 'producao', I: 'ler' } },
@@ -114,15 +114,21 @@ export const TOP_NAV = [
 // ---------------------------------------------------------------------------
 export const SECOES = [
   {
+    // A Torre de Despacho mora aqui, e nao em Producao: ela e o passo em que o
+    // operador AGRUPA PEDIDOS. A demanda de producao e o que sai dela, nao o
+    // que entra. Enquanto ficou sob Producao, o unico caminho ate o
+    // agrupamento passava por um menu que descreve o galpao — e quem trabalha
+    // com pedidos nao procurava ali.
     id: 'pedidos',
     titulo: 'Operação: Pedidos',
-    prefixos: ['/vendas', '/consolidar'],
+    prefixos: ['/vendas', '/despacho', '/consolidar'],
     grupos: [
       {
         itens: [
           { name: 'Pedidos', href: '/vendas/pedidos', icon: ClipboardList, description: 'Gestão unificada de pedidos' },
-          { name: 'Consolidar Arquivos', href: '/consolidar', icon: Layers, description: 'Importar e consolidar pedidos' },
-          { name: 'Personalizadas', href: '/vendas/personalizadas', icon: Users, description: 'Vendas de produtos personalizados' },
+          { name: 'Torre de Despacho', href: '/despacho', icon: TowerControl, description: 'Agrupar pedidos e publicar a demanda', exato: true },
+          { name: 'Personalizados', href: '/vendas/personalizadas', icon: Users, description: 'Vendas de produtos personalizados' },
+          { name: 'Consolidar', href: '/consolidar', icon: Layers, description: 'Conferir uma planilha do marketplace contra a base' },
         ],
       },
     ],
@@ -130,15 +136,16 @@ export const SECOES = [
   {
     id: 'producao',
     titulo: 'Operação: Produção',
-    prefixos: ['/producao', '/despacho'],
+    prefixos: ['/producao'],
     grupos: [
       {
         itens: [
-          { name: 'Modo Foco (KDS)', href: '/producao/foco', icon: Zap, description: 'Tela operacional para setores', adminOnly: true },
+          // Modo Foco saiu da lateral e virou botao dentro do Painel Geral: e um
+          // modo de VER o mesmo trabalho, nao um destino irmao. Como item de
+          // menu, competia com o painel de onde o operador acabou de sair.
           { name: 'Painel Geral', href: '/producao', icon: Trello, description: 'Kanban de produção por setor', adminOnly: true, exato: true },
           { name: 'Resumo Diário', href: '/producao/resumo', icon: BarChart3, description: 'Visão geral da produção do dia', adminOnly: true },
-          { name: 'Torre de Despacho', href: '/despacho', icon: TowerControl, description: 'Lançar demandas por regra logística', exato: true },
-          { name: 'Demandas', href: '/producao/demanda', icon: ClipboardList, description: 'Gerenciar ordens e demandas' },
+          { name: 'Demandas', href: '/producao/demanda', icon: ClipboardList, description: 'Acompanhar as demandas publicadas' },
           { name: 'Miolos', href: '/producao/miolos', icon: Layers, description: 'Controle de produção de miolos' },
           { name: 'Capas', href: '/producao/capas', icon: Layers, description: 'Controle de produção de capas' },
           { name: 'Expedição', href: '/producao/expedicao', icon: Package, description: 'Sincronia e retirada de itens' },

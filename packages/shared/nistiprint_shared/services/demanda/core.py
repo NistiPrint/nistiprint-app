@@ -604,6 +604,7 @@ class DemandaCoreService:
                 id,
                 numero_pedido,
                 codigo_pedido_externo,
+                marketplace_order_id,
                 origem,
                 cliente_nome,
                 canal_venda_id,
@@ -675,6 +676,7 @@ class DemandaCoreService:
                     'pedido_id': pedido.get('id'),
                     'numero_pedido': pedido.get('numero_pedido'),
                     'codigo_pedido_externo': pedido.get('codigo_pedido_externo'),
+                    'marketplace_order_id': pedido.get('marketplace_order_id'),
                     'origem': pedido.get('origem'),
                     'cliente_nome': pedido.get('cliente_nome'),
                     'canal_venda_id': pedido.get('canal_venda_id'),
@@ -689,10 +691,12 @@ class DemandaCoreService:
                     'pedido_bling_id': pedido.get('pedido_bling_id')
                 })
 
+            # O que o operador cola na busca do marketplace e o id de origem;
+            # `codigo_pedido_externo` fica como fallback historico.
             codigos_externos = [
-                str(pedido.get('codigo_pedido_externo')).strip()
+                str(pedido.get('marketplace_order_id') or pedido.get('codigo_pedido_externo')).strip()
                 for pedido in pedidos_origem
-                if pedido.get('codigo_pedido_externo')
+                if pedido.get('marketplace_order_id') or pedido.get('codigo_pedido_externo')
             ]
             chunks = [
                 ';'.join(codigos_externos[index:index + 100])

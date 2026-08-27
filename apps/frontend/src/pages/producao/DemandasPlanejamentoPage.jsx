@@ -1,15 +1,12 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import DemandaCard from '@/components/producao/DemandaCard'
 import CollectedDemandsModal from '@/components/producao/CollectedDemandsModal'
 import DailyProductionModal from '@/components/producao/DailyProductionModal'
-import LotSuggestionCard from '@/components/producao/LotSuggestionCard'
-import LotSuggestionReviewDialog from '@/components/producao/LotSuggestionReviewDialog'
 import PartialCollectionModal from '@/components/producao/PartialCollectionModal'
 import SummaryCards from '@/components/producao/SummaryCards'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -19,20 +16,23 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useLayout } from '@/contexts/LayoutContext'
 import { useRealtimeDemandas } from '@/lib/hooks/useRealtimeDemandas'
 import { deriveDemandFlow, DEMANDA_FLOW_OPTIONS } from '@/lib/demandaFlow'
-import { listLotSuggestions } from '@/services/productionLotSuggestionsService'
 import {
   CheckSquare,
-  ClipboardList,
   Factory,
-  Layers3,
-  PackageSearch,
   RefreshCw,
   Truck,
   X,
 } from 'lucide-react'
 
 const TERMINAL_DEMAND_STATUSES = ['FINALIZADO', 'CONCLUIDO', 'COLETADO', 'CANCELADO']
-const DRAFT_DEMAND_STATUSES = ['AGUARDANDO', 'RASCUNHO']
+
+// RASCUNHO nao aparece aqui de proposito. Um rascunho e uma consolidacao ainda
+// aberta na Torre de Despacho: ela pertence a tela onde o operador a montou e
+// pode somar pedidos nela, nao a esta, que existe para acompanhar o que ja foi
+// entregue ao galpao. Enquanto os dois moravam juntos, publicar virava uma
+// acao possivel em duas telas — e a segunda nao sabia dizer contra qual painel
+// de marketplace aquele total tinha sido conferido.
+const DRAFT_DEMAND_STATUSES = ['RASCUNHO']
 
 function normalizeDemandStatus(status) {
   return String(status || '').trim().toUpperCase()
@@ -45,7 +45,6 @@ function normalizeModalidade(value) {
 }
 
 export default function DemandasPlanejamentoPage() {
-  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const { user } = useAuth()
   const { setIsLeftSidebarOpen } = useLayout()
@@ -58,8 +57,10 @@ export default function DemandasPlanejamentoPage() {
     normalizedUserSetor === 'expediÃ§Ã£o' ||
     normalizedUserSetor === 'expedicao'
 
-  const defaultTab = canUseAdminDemandActions ? 'planning' : 'active'
-  const currentTab = searchParams.get('tab') || defaultTab
+  // 'planning' era a aba de sugestoes automaticas de lote. Um link antigo com
+  // ?tab=planning cai em 'active' em vez de numa aba que nao existe mais.
+  const rawTab = searchParams.get('tab')
+  const currentTab = rawTab === 'active' || rawTab === 'history' ? rawTab : 'active'
 
   const [searchTerm, setSearchTerm] = useState('')
   const [channelFilter, setChannelFilter] = useState('all')
@@ -77,15 +78,6 @@ export default function DemandasPlanejamentoPage() {
   const [isCollectedDemandsModalOpen, setIsCollectedDemandsModalOpen] = useState(false)
   const [isPartialCollectionModalOpen, setIsPartialCollectionModalOpen] = useState(false)
   const [selectedDemandIdForCollection, setSelectedDemandIdForCollection] = useState(null)
-
-  const [suggestionsPayload, setSuggestionsPayload] = useState({
-    updated_at: null,
-    suggestions: [],
-    exceptions: [],
-    legacy_drafts_count: 0,
-  })
-  const [loadingSuggestions, setLoadingSuggestions] = useState(true)
-  const [reviewSuggestion, setReviewSuggestion] = useState(null)
 
   const { demandas, setDemandas, loading, error, refresh } = useRealtimeDemandas(pendingChanges)
 
@@ -114,58 +106,21 @@ export default function DemandasPlanejamentoPage() {
     }
   }, [])
 
-  const fetchSuggestions = useCallback(async (silent = false) => {
-    if (!silent) setLoadingSuggestions(true)
-    try {
-      const response = await listLotSuggestions(searchTerm)
-      setSuggestionsPayload({
-        updated_at: response.updated_at,
-        suggestions: response.suggestions || [],
-        exceptions: response.exceptions || [],
-        legacy_drafts_count: response.legacy_drafts_count || 0,
-      })
-    } catch (fetchError) {
-      toast.error(fetchError?.response?.data?.message || 'Nao foi possivel carregar os lotes sugeridos.')
-    } finally {
-      if (!silent) setLoadingSuggestions(false)
-    }
-  }, [searchTerm])
-
   useEffect(() => {
     fetchTotals()
     fetchDashboardSummary()
-    fetchSuggestions()
-    const interval = setInterval(() => fetchSuggestions(true), 30000)
-    return () => clearInterval(interval)
-  }, [fetchTotals, fetchDashboardSummary, fetchSuggestions])
-
-  useEffect(() => {
-    const highlightedSuggestion = searchParams.get('suggestion')
-    if (!highlightedSuggestion) return
-    const suggestion = (suggestionsPayload.suggestions || []).find(
-      (item) => item.suggestion_key === highlightedSuggestion
-    )
-    if (suggestion) {
-      setReviewSuggestion(suggestion)
-      setSearchParams((current) => {
-        const next = new URLSearchParams(current)
-        next.delete('suggestion')
-        return next
-      })
-    }
-  }, [searchParams, setSearchParams, suggestionsPayload.suggestions])
+  }, [fetchTotals, fetchDashboardSummary])
 
   const filteredDemandas = useMemo(() => {
     const search = searchTerm.trim().toLowerCase()
     return demandas.filter((demanda) => {
       const status = normalizeDemandStatus(demanda.status)
+      // Ativas = tudo que ja foi entregue ao galpao e ainda nao terminou.
+      // Consolidacao aberta (RASCUNHO) fica de fora: ela vive na Torre.
       if (currentTab === 'active' && (TERMINAL_DEMAND_STATUSES.includes(status) || DRAFT_DEMAND_STATUSES.includes(status))) {
         return false
       }
       if (currentTab === 'history' && !TERMINAL_DEMAND_STATUSES.includes(status)) {
-        return false
-      }
-      if (currentTab === 'planning' && !DRAFT_DEMAND_STATUSES.includes(status)) {
         return false
       }
 
@@ -200,28 +155,13 @@ export default function DemandasPlanejamentoPage() {
   }, [channelFilter, currentTab, demandas, flowFilter, modalidadeFilter, searchTerm])
 
   const uniqueChannels = useMemo(() => {
-    const channels = new Set([
-      ...demandas
+    const channels = new Set(
+      demandas
         .map((demanda) => demanda.canal_venda_nome || demanda.canal_venda_id)
-        .filter(Boolean),
-      ...(suggestionsPayload.suggestions || [])
-        .map((suggestion) => suggestion.marketplace_nome)
-        .filter(Boolean),
-    ])
+        .filter(Boolean)
+    )
     return Array.from(channels).sort()
-  }, [demandas, suggestionsPayload.suggestions])
-
-  const filteredSuggestions = useMemo(() => {
-    return (suggestionsPayload.suggestions || []).filter((suggestion) => {
-      if (channelFilter !== 'all' && suggestion.marketplace_nome !== channelFilter) return false
-      if (modalidadeFilter !== 'all' && normalizeModalidade(suggestion.modalidade) !== modalidadeFilter) return false
-      return true
-    })
-  }, [channelFilter, modalidadeFilter, suggestionsPayload.suggestions])
-
-  const draftDemandas = useMemo(() => {
-    return filteredDemandas.filter((demanda) => DRAFT_DEMAND_STATUSES.includes(normalizeDemandStatus(demanda.status)))
-  }, [filteredDemandas])
+  }, [demandas])
 
   const demandasColetadas = useMemo(() => {
     return demandas.filter((demanda) => normalizeDemandStatus(demanda.status) === 'COLETADO')
@@ -386,7 +326,7 @@ export default function DemandasPlanejamentoPage() {
     setFlowFilter('all')
   }
 
-  if (loading && demandas.length === 0 && currentTab !== 'planning') {
+  if (loading && demandas.length === 0) {
     return <div className='py-10 text-center text-slate-500'>Carregando demandas...</div>
   }
 
@@ -401,7 +341,7 @@ export default function DemandasPlanejamentoPage() {
           <div>
             <h1 className='text-3xl font-bold text-slate-900'>Demandas</h1>
             <p className='text-sm text-slate-500'>
-              Planeje por janelas logisticas e trate pedido avulso como excecao.
+              Acompanhe o que ja foi entregue ao galpao. Demanda nova nasce na Torre de Despacho.
             </p>
           </div>
 
@@ -418,7 +358,6 @@ export default function DemandasPlanejamentoPage() {
               Producao diaria
             </Button>
             <Button variant='outline' onClick={() => {
-              fetchSuggestions()
               fetchTotals()
               fetchDashboardSummary()
               refresh()
@@ -437,7 +376,6 @@ export default function DemandasPlanejamentoPage() {
           <div className='flex flex-col gap-4 border-b p-4 lg:flex-row lg:items-center lg:justify-between'>
             <Tabs value={currentTab} onValueChange={changeTab}>
               <TabsList>
-                <TabsTrigger value='planning'>Sugestoes e rascunhos</TabsTrigger>
                 <TabsTrigger value='active'>Ativas</TabsTrigger>
                 <TabsTrigger value='history'>Historico</TabsTrigger>
               </TabsList>
@@ -491,13 +429,6 @@ export default function DemandasPlanejamentoPage() {
           </div>
 
           <div className='flex flex-wrap items-center gap-2 p-4 text-sm text-slate-500'>
-            {currentTab === 'planning' && (
-              <>
-                <Badge variant='secondary'>{filteredSuggestions.length} lotes sugeridos</Badge>
-                <Badge variant='outline'>{suggestionsPayload.exceptions.length} excecoes</Badge>
-                {suggestionsPayload.updated_at && <span>Atualizado em tempo quase real.</span>}
-              </>
-            )}
             {(searchTerm || channelFilter !== 'all' || modalidadeFilter !== 'all' || flowFilter !== 'all') && (
               <Button variant='ghost' size='sm' onClick={clearFilters}>
                 Limpar filtros
@@ -539,86 +470,7 @@ export default function DemandasPlanejamentoPage() {
           </div>
         )}
 
-        {currentTab === 'planning' ? (
-          <div className='space-y-6'>
-            {loadingSuggestions ? (
-              <div className='rounded-2xl border bg-white p-10 text-center text-slate-500'>
-                Carregando sugestoes de lote...
-              </div>
-            ) : filteredSuggestions.length === 0 ? (
-              <div className='rounded-2xl border bg-white p-10 text-center text-slate-500'>
-                <PackageSearch className='mx-auto mb-3 h-10 w-10 text-slate-300' />
-                Nenhum lote compativel apareceu com os filtros atuais.
-              </div>
-            ) : (
-              <div className='space-y-4'>
-                {filteredSuggestions.map((suggestion) => (
-                  <LotSuggestionCard
-                    key={suggestion.suggestion_key}
-                    suggestion={suggestion}
-                    onReview={setReviewSuggestion}
-                    highlighted={searchParams.get('suggestion') === suggestion.suggestion_key}
-                  />
-                ))}
-              </div>
-            )}
-
-            <div className='grid gap-4 lg:grid-cols-[1.3fr_0.7fr]'>
-              <div className='rounded-2xl border bg-white p-5'>
-                <div className='mb-3 flex items-center gap-2'>
-                  <ClipboardList className='h-4 w-4 text-slate-400' />
-                  <h2 className='font-semibold text-slate-900'>Rascunhos legados</h2>
-                </div>
-                {draftDemandas.length === 0 ? (
-                  <p className='text-sm text-slate-500'>Nenhum rascunho persistido aguardando publicacao.</p>
-                ) : (
-                  <div className='space-y-4'>
-                    {draftDemandas.map((demanda) => (
-                      <DemandaCard
-                        key={demanda.id}
-                        demanda={demanda}
-                        userSetor={userSetor}
-                        viewMode='done'
-                        handleFieldUpdate={handleFieldUpdate}
-                        handleFinalizeDemand={handleFinalizeDemand}
-                        handleCollectDemand={handleCollectDemand}
-                        handleDeleteDemand={handleDeleteDemand}
-                        handlePublishDemand={handlePublishDemand}
-                        handlePrintDemand={handlePrintDemand}
-                        isAdmin={user?.is_admin === true}
-                        isSelected={selectedDemandIds.includes(demanda.id)}
-                        onSelect={(id) =>
-                          setSelectedDemandIds((current) =>
-                            current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
-                          )
-                        }
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className='rounded-2xl border bg-white p-5'>
-                <div className='mb-3 flex items-center gap-2'>
-                  <Layers3 className='h-4 w-4 text-slate-400' />
-                  <h2 className='font-semibold text-slate-900'>Fila de excecoes</h2>
-                </div>
-                {suggestionsPayload.exceptions.length === 0 ? (
-                  <p className='text-sm text-slate-500'>Nenhuma excecao pendente.</p>
-                ) : (
-                  <div className='space-y-3'>
-                    {suggestionsPayload.exceptions.slice(0, 8).map((exception) => (
-                      <div key={`${exception.pedido_id}-${exception.motivo}`} className='rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900'>
-                        <div className='font-medium'>{exception.numero_pedido || `Pedido ${exception.pedido_id}`}</div>
-                        <div className='text-xs'>{exception.motivo}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        ) : filteredDemandas.length === 0 ? (
+        {filteredDemandas.length === 0 ? (
           <div className='rounded-2xl border bg-white p-10 text-center text-slate-500'>
             Nenhuma demanda encontrada nesta aba.
           </div>
@@ -647,21 +499,6 @@ export default function DemandasPlanejamentoPage() {
             ))}
           </div>
         )}
-
-        <LotSuggestionReviewDialog
-          open={Boolean(reviewSuggestion)}
-          onOpenChange={(nextOpen) => {
-            if (!nextOpen) setReviewSuggestion(null)
-          }}
-          suggestion={reviewSuggestion}
-          onConfirmed={(result) => {
-            fetchSuggestions()
-            refresh()
-            if (result?.demanda_id) {
-              navigate(`/producao/demanda/${result.demanda_id}/dashboard`)
-            }
-          }}
-        />
 
         <DailyProductionModal
           isOpen={isDailyTotalsModalOpen}

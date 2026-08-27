@@ -55,6 +55,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
+import { imprimirPapeisDePedido } from '@/lib/papeisDePedido'
 
 function DemandaDashboardPage() {
   const { id } = useParams()
@@ -472,14 +473,6 @@ function DemandaDashboardPage() {
     }
   }
 
-  const escapeHtml = value =>
-    String(value ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;')
-
   const handleCopyOrderChunk = async chunk => {
     try {
       await navigator.clipboard.writeText(chunk)
@@ -489,6 +482,10 @@ function DemandaDashboardPage() {
     }
   }
 
+  // O papel do pedido e o mesmo documento em qualquer tela que o produza — o
+  // template vive em `lib/papeisDePedido`. A copia que existia aqui tinha
+  // perdido o rodape com a tag do modelo, que e justamente o que o operador
+  // procura primeiro numa folha de personalizado.
   const handlePrintOrderPapers = async () => {
     const pedidos = demanda?.pedidos_origem || []
     const orderIds = pedidos.map(p => p.pedido_id).filter(Boolean)
@@ -499,109 +496,19 @@ function DemandaDashboardPage() {
     }
 
     try {
-      const response = await fetch(
-        `/api/v2/pedidos/impressao?order_ids=${orderIds.join(',')}`,
-      )
-      const payload = await response.json()
-      if (!response.ok || !payload.success) {
-        throw new Error(payload.message || 'Erro ao carregar pedidos.')
-      }
-
-      const orders = payload.data?.orders || []
-      if (orders.length === 0) {
+      const { total, blocked } = await imprimirPapeisDePedido(orderIds)
+      if (total === 0) {
         toast.warning('Nenhum papel de pedido encontrado para impressao.')
-        return
+      } else if (blocked.length > 0) {
+        toast.warning(`${total} papeis enviados para impressao. ${blocked.length} ficaram de fora por falta de dados.`)
+      } else {
+        toast.success(`${total} papeis enviados para impressao.`)
       }
-
-      const cardsHtml = orders
-        .map(
-          order => `
-          <section class="stamp-card">
-            <header class="stamp-header">
-              <div>
-                <div><strong>Nome:</strong> ${escapeHtml(order.contato?.nome || 'N/A')}</div>
-                <div><strong>CPF:</strong> ${escapeHtml(order.contato?.numeroDocumento || 'N/A')}</div>
-                ${order.contato?.endereco ? `<div>${escapeHtml(order.contato.endereco)}</div>` : ''}
-              </div>
-              <div class="order-platform">
-                <div>${escapeHtml(order.plataforma || 'Pedido')}</div>
-                <div>${escapeHtml(order.numeroLoja || 'N/A')}</div>
-              </div>
-            </header>
-            <main class="stamp-content">
-              <div class="order-title">Pedido ${escapeHtml(order.numero || order.id || 'N/A')}</div>
-              ${(order.itens || [])
-                .map(
-                  item => `
-                    <div class="item">
-                      <div class="item-details">
-                        <div>${escapeHtml(item.descricao || 'N/A')}</div>
-                        ${item.variacao ? `<div class="muted">${escapeHtml(item.variacao)}</div>` : ''}
-                        <strong>${escapeHtml(item.codigo || '')}</strong>
-                        ${(item.personalizations || [])
-                          .map(p =>
-                            p.customization_name
-                              ? `<div class="custom-name">${escapeHtml(p.customization_name)}${p.customization_initial ? ` (${escapeHtml(p.customization_initial)})` : ''}${p.quantity_to_personalize > 1 ? ` x${escapeHtml(p.quantity_to_personalize)}` : ''}</div>`
-                              : '',
-                          )
-                          .join('')}
-                      </div>
-                      <div class="item-qty">${escapeHtml(item.quantidade || 1)}</div>
-                      <div class="item-price">R$ ${Number(item.valor || 0).toFixed(2)}</div>
-                    </div>
-                  `,
-                )
-                .join('')}
-              <div class="total-items">${escapeHtml(order.total_items || 0)} ${(order.total_items || 0) > 1 ? 'itens' : 'item'}</div>
-            </main>
-          </section>
-        `,
-        )
-        .join('')
-
-      const iframe = document.createElement('iframe')
-      iframe.style.position = 'absolute'
-      iframe.style.top = '-9999px'
-      iframe.style.left = '-9999px'
-      document.body.appendChild(iframe)
-
-      iframe.onload = () => {
-        iframe.contentWindow.print()
-        setTimeout(() => iframe.remove(), 1000)
-      }
-
-      iframe.contentDocument.open()
-      iframe.contentDocument.write(`
-        <html>
-          <head>
-            <meta charset="utf-8" />
-            <title>Papeis dos Pedidos</title>
-            <style>
-              * { box-sizing: border-box; }
-              body { margin: 0; font-family: Arial, sans-serif; color: #111; }
-              .stamp-card { width: 210mm; min-height: 297mm; padding: 20mm; page-break-after: always; display: flex; flex-direction: column; }
-              .stamp-header { display: flex; justify-content: space-between; gap: 24px; font-size: 20px; margin-bottom: 32px; }
-              .stamp-header div div { padding: 8px 0; }
-              .order-platform { text-align: right; font-weight: 700; }
-              .stamp-content { flex: 1; display: flex; flex-direction: column; }
-              .order-title { text-align: center; font-size: 36px; font-weight: 700; margin-bottom: 32px; }
-              .item { display: flex; align-items: center; border-top: 1px solid #ddd; padding: 14px 0; }
-              .item-details { flex: 1; font-size: 18px; }
-              .muted { font-size: 13px; color: #666; }
-              .item-qty { width: 12%; text-align: center; font-size: 24px; font-weight: 700; }
-              .item-price { width: 14%; text-align: right; font-size: 13px; }
-              .custom-name { display: inline-block; margin-top: 8px; padding: 4px 8px; border: 2px solid #111; font-weight: 700; text-transform: uppercase; }
-              .total-items { margin-top: auto; text-align: center; font-size: 36px; font-weight: 700; }
-            </style>
-          </head>
-          <body>${cardsHtml}</body>
-        </html>
-      `)
-      iframe.contentDocument.close()
     } catch (error) {
       toast.error(error.message || 'Erro ao imprimir papeis dos pedidos.')
     }
   }
+
 
   const handleGenerateDemandNfe = blingIntegrationId => {
     const pedidos = demanda?.pedidos_origem || []

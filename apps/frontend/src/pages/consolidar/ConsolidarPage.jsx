@@ -6,9 +6,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { CheckCircle2, ClipboardList, Copy, Database, Filter, Loader2, Printer, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CheckCircle2, Copy, Database, Filter, Loader2, Printer, TowerControl, Upload, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
+import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
 
 const PLATFORM_OPTIONS = [
   { label: 'Shopee', moduleId: 'shopee' },
@@ -17,12 +19,132 @@ const PLATFORM_OPTIONS = [
   { label: 'Shein', moduleId: 'shein' }
 ];
 
+// O resultado do casamento, na ordem em que ele decide o proximo clique:
+// primeiro o que a base ainda nao tem (unico problema que exige acao fora
+// daqui), depois o que ja saiu, e por ultimo os nos da torre — o caminho.
+//
+// "Nao encontrado" e "ja despachado" aparecem separados de proposito. Somados
+// num unico contador de "faltando", eles fazem o operador reimportar pedidos
+// que ele mesmo produziu ontem.
+function ConferenciaCard({ conferencia, onAbrirNaTorre }) {
+  const { total_refs, encontrados, nao_encontrados = [], fora_da_torre = [], nos = [] } = conferencia;
+  const naTorre = nos.reduce((soma, no) => soma + no.qtd_pedidos, 0);
+
+  return (
+    <Card className="border-slate-900">
+      <CardHeader className="border-b bg-muted/20 py-3">
+        <CardTitle className="text-lg">Conferência contra a base</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 pt-5">
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          <div>
+            <div className="text-2xl font-semibold tabular-nums">{total_refs}</div>
+            <div className="text-xs text-muted-foreground">pedidos no arquivo</div>
+          </div>
+          <div>
+            <div className="text-2xl font-semibold tabular-nums">{encontrados}</div>
+            <div className="text-xs text-muted-foreground">encontrados na base</div>
+          </div>
+          <div>
+            <div className="text-2xl font-semibold tabular-nums text-emerald-700">{naTorre}</div>
+            <div className="text-xs text-muted-foreground">pendentes na torre</div>
+          </div>
+          <div>
+            <div className={'text-2xl font-semibold tabular-nums ' + (nao_encontrados.length ? 'text-amber-700' : '')}>
+              {nao_encontrados.length}
+            </div>
+            <div className="text-xs text-muted-foreground">a base ainda não tem</div>
+          </div>
+        </div>
+
+        {nao_encontrados.length > 0 && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <div>
+              {nao_encontrados.length} pedido{nao_encontrados.length > 1 ? 's do arquivo não chegaram' : ' do arquivo não chegou'}{' '}
+              na base pelo ID de origem. Verifique a integração do marketplace antes de consolidar o lote.
+              <div className="mt-1 font-mono">
+                {nao_encontrados.slice(0, 10).join(', ')}
+                {nao_encontrados.length > 10 && ` e mais ${nao_encontrados.length - 10}`}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {fora_da_torre.length > 0 && (
+          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            {fora_da_torre.length} pedido{fora_da_torre.length > 1 ? 's já saíram' : ' já saiu'} da torre
+            (despachado, cancelado ou em demanda já publicada). Estão na base — só não entram em lote novo.
+            <div className="mt-1 font-mono">
+              {fora_da_torre.slice(0, 10).map((p) => p.numero_pedido || p.ref).join(', ')}
+              {fora_da_torre.length > 10 && ` e mais ${fora_da_torre.length - 10}`}
+            </div>
+          </div>
+        )}
+
+        {nos.length > 0 ? (
+          <div>
+            <div className="mb-2 text-sm font-medium">Onde estes pedidos caem na torre</div>
+            <div className="space-y-2">
+              {nos.map((no) => (
+                <button
+                  key={`${no.integration_id}-${no.modalidade_id}`}
+                  type="button"
+                  onClick={() => onAbrirNaTorre(no)}
+                  className="flex w-full items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors hover:border-primary/60"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">
+                      {no.marketplace_nome} · {no.modalidade_nome}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {no.qtd_pedidos} {no.qtd_pedidos === 1 ? 'pedido do arquivo' : 'pedidos do arquivo'} neste nó
+                    </div>
+                  </div>
+                  <span className="flex shrink-0 items-center gap-1 text-sm text-primary">
+                    Consolidar na torre
+                    <ArrowRight className="h-4 w-4" />
+                  </span>
+                </button>
+              ))}
+            </div>
+            {/* A torre consolida o no inteiro, nao o recorte do arquivo. Dizer
+                isso aqui evita a leitura de que o botao "leva estes pedidos":
+                ele leva ao no, que pode ter mais pedidos — os que entraram
+                depois da exportacao e saem na mesma coleta. */}
+            <p className="mt-2 text-xs text-muted-foreground">
+              A torre consolida o nó inteiro: pode incluir pedidos que entraram depois desta exportação
+              e saem na mesma coleta.
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
+            Nenhum pedido deste arquivo está pendente na torre.
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// Conferencia de arquivo — nao geracao de demanda.
+//
+// Esta tela recebe uma planilha exportada do painel do marketplace e responde
+// a uma unica pergunta: o que esta no painel ja chegou na base? Antes ela
+// respondia gerando a demanda direto do arquivo, e esse era o problema: o
+// arquivo nao sabe a modalidade logistica nem a janela de coleta do pedido,
+// entao o lote que saia daqui nao correspondia a nenhum no da Torre de
+// Despacho — e o mesmo pedido podia acabar em duas demandas.
+//
+// A demanda agora nasce em um lugar so. O que esta tela entrega e o casamento
+// pelo ID de origem do marketplace e o caminho ate o no da torre onde aqueles
+// pedidos caem.
 function ConsolidarPage() {
+  const navigate = useNavigate();
   const [file, setFile] = useState(null);
   const [selectedPlatform, setSelectedPlatform] = useState('');
   const [selectedMarketplaceIntegrationId, setSelectedMarketplaceIntegrationId] = useState('');
   const [marketplaceIntegrations, setMarketplaceIntegrations] = useState([]);
-  const [channels, setChannels] = useState([]);
   const [products, setProducts] = useState([]);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -36,13 +158,12 @@ function ConsolidarPage() {
   const [opMode, setOpMode] = useState('v2');
   const [updatingMode, setUpdatingMode] = useState(false);
 
-  // Demand Generation State
-  const [demandName, setDemandName] = useState('');
-  const [demandDate, setDemandDate] = useState('');
-  const [demandHorarioColeta, setDemandHorarioColeta] = useState('');
-  const [demandObservacoes, setDemandObservacoes] = useState('');
-  const [creatingDemand, setCreatingDemand] = useState(false);
-  const [modalOpen, setModalOpen] = useState(null);
+  // Conferencia contra a base (casamento pelo ID de origem)
+  const [conferencia, setConferencia] = useState(null);
+  const [conferindo, setConferindo] = useState(false);
+
+  // A barra lateral vem do registro unico de navegacao (secao "Pedidos").
+  useSecaoSidebar();
 
   // Async Processing State
   const [asyncProcessing, setAsyncProcessing] = useState(null); // { consolidacaoId, status }
@@ -59,16 +180,6 @@ function ConsolidarPage() {
   const eventSourceRef = useRef(null);
 
   useEffect(() => {
-    const fetchChannels = async () => {
-      try {
-        const response = await fetch('/api/v2/cadastros/canal-venda?active_only=true');
-        const data = await response.json();
-        if (data.canais) setChannels(data.canais);
-      } catch (error) {
-        toast.error("Erro ao carregar canais.");
-      }
-    };
-
     const fetchProducts = async () => {
       try {
         const response = await fetch('/api/v2/produtos?page=1&per_page=10000&material_type=produto_acabado&only_marketable=true');
@@ -97,7 +208,6 @@ function ConsolidarPage() {
       }
     };
 
-    fetchChannels();
     fetchProducts();
     fetchMode();
     fetchBlingAccounts();
@@ -191,7 +301,7 @@ function ConsolidarPage() {
       if (!response.ok) throw new Error('Erro ao processar arquivo.');
       const data = await response.json();
       setResults(data);
-      setDemandName(`Demanda ${selectedPlatform} - ${new Date().toLocaleDateString('pt-BR')}`);
+      setConferencia(null);
       const firstPlatformKey = Object.keys(data)[0];
       const resolvedBlingId = data[firstPlatformKey]?.options?.bling_integration_id;
       if (resolvedBlingId) setSelectedBlingAccountId(String(resolvedBlingId));
@@ -203,58 +313,72 @@ function ConsolidarPage() {
     }
   };
 
-  const handleGenerateDemand = async (platformKey) => {
-    if (!demandName || !demandDate) {
-        toast.error("Preencha o Nome e a Data.");
-        return;
+  // Junta os IDs de origem que o arquivo trouxe. `pedidos_origem` vem do
+  // processamento com os dois campos possiveis; `order_refs` e a forma crua
+  // que o caminho assincrono devolve. Reunir os dois aqui evita que metade do
+  // arquivo pareca "pedido que a base nao tem" so porque veio pelo outro
+  // caminho.
+  const refsDoResultado = (platformKey) => {
+    const data = results?.[platformKey];
+    if (!data) return [];
+    const refs = new Set();
+    for (const item of data.capas_miolos_data || []) {
+      for (const pedido of item.pedidos_origem || []) {
+        const ref = pedido?.codigo_pedido_externo || pedido?.marketplace_order_id || pedido;
+        if (ref) refs.add(String(ref).trim());
+      }
+      for (const ref of item.order_refs || []) {
+        if (ref) refs.add(String(ref).trim());
+      }
     }
-    setCreatingDemand(true);
+    for (const order of data.bling_orders_data || []) {
+      const ref = order?.numeroLoja;
+      if (ref) refs.add(String(ref).trim());
+    }
+    return [...refs].filter(Boolean);
+  };
+
+  const conferirContraBase = async (platformKey) => {
+    const refs = refsDoResultado(platformKey);
+    if (refs.length === 0) {
+      toast.error('O arquivo não trouxe nenhum ID de pedido para conferir.');
+      return;
+    }
+    setConferindo(true);
     try {
-        const itemsToProcess = results[platformKey].capas_miolos_data;
-        const demandItems = itemsToProcess.map(item => ({
-            produto_id: item.internal_product_id,
-            sku: item.internal_product_sku || item['SKU'] || item['Código'],
-            descricao: item.internal_product_name || item['Nome do Produto'] || item['Título'],
-            quantidade: item.Total || 1,
-            miolo_name: item.miolo_name || item.Miolo || '',
-            variacao: item['Variação'] || '',
-            pedidos_origem: item.pedidos_origem || []
-        }));
-
-        const firstResult = results[platformKey] || {};
-        const channelId = firstResult.options?.channel_id || null;
-        let channelObj = channelId ? channels.find((c) => String(c.id) === String(channelId)) : null;
-        if (!channelObj && channels.length === 1) channelObj = channels[0];
-
-        const payload = {
-            nome: demandName,
-            canal_venda_id: channelObj?.id || null,
-            marketplace_integration_id: firstResult.options?.marketplace_integration_id || null,
-            data_entrega: demandDate,
-            horario_coleta_especifico: demandHorarioColeta || null,
-            observacoes: demandObservacoes || null,
-            tipo_demanda: 'Standard',
-            itens: demandItems
-        };
-
-        const response = await fetch('/api/v2/demanda_producao/', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-
-        if (response.ok) {
-            toast.success("Demanda gerada!");
-            setModalOpen(null); // Fecha o modal
-            setTimeout(() => { window.location.href = '/producao/demanda'; }, 1000);
-        } else {
-            throw new Error("Erro ao salvar demanda.");
-        }
+      const response = await fetch('/api/v2/consolidar/casar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refs }),
+      });
+      const data = await response.json();
+      if (!data.success) throw new Error(data.error || 'Não foi possível conferir o arquivo.');
+      setConferencia(data.data);
     } catch (error) {
-        toast.error(error.message);
+      toast.error(error.message);
     } finally {
-        setCreatingDemand(false);
+      setConferindo(false);
     }
+  };
+
+  // Abre o no na Torre de Despacho. A tela nao manda a lista de pedidos: manda
+  // a CHAVE do no (marketplace + modalidade), que e o que a torre entende. O
+  // escopo que ela vai montar e o do no inteiro, nao o recorte do arquivo — e
+  // isso e proposital: consolidar so o que estava na planilha deixaria de fora
+  // os pedidos que entraram depois da exportacao e sairiam na mesma coleta.
+  const abrirNaTorre = (no) => {
+    const params = new URLSearchParams();
+    if (no.integration_id !== null && no.integration_id !== undefined) {
+      params.set('integration_id', no.integration_id);
+    }
+    if (no.modalidade_id !== null && no.modalidade_id !== undefined) {
+      params.append('modalidade_ids', no.modalidade_id);
+      params.set('modalidade_id', no.modalidade_id);
+    }
+    params.set('marketplace_nome', no.marketplace_nome || '');
+    params.set('modalidade_nome', no.modalidade_nome || '');
+    params.set('aba', 'hoje');
+    navigate(`/despacho/escopo?${params.toString()}`);
   };
 
   // Async processing functions
@@ -329,8 +453,8 @@ function ConsolidarPage() {
           // Processa os dados para adicionar pedidos_origem a partir de order_refs
           const processedResult = processarResultData(data.result);
           setResults(processedResult);
+          setConferencia(null);
           setAsyncProcessing(null);
-          setDemandName(`Demanda - ${new Date().toLocaleDateString('pt-BR')}`);
           const firstPlatformKey = Object.keys(processedResult)[0];
           const resolvedBlingId = processedResult[firstPlatformKey]?.options?.bling_integration_id;
           if (resolvedBlingId) setSelectedBlingAccountId(String(resolvedBlingId));
@@ -607,13 +731,17 @@ function ConsolidarPage() {
     <div className="flex flex-col w-full max-w-7xl mx-auto pb-20">
       <div className="flex justify-between items-center mb-8 bg-white p-4 rounded-lg border shadow-sm">
         <div>
-            <h1 className="text-2xl font-bold tracking-tight">Consolidar Produção</h1>
-            <p className="text-muted-foreground">Agrupe pedidos e gere demandas de fabricação.</p>
+            <h1 className="text-2xl font-bold tracking-tight">Consolidar arquivo</h1>
+            <p className="text-muted-foreground">
+              Confira uma planilha do marketplace contra a base. O lote é consolidado na Torre de Despacho.
+            </p>
         </div>
         <div className="flex gap-2">
-            <Button variant="outline" onClick={() => window.location.href = '/producao/demanda/rascunhos'} className="gap-2">
-                <ClipboardList className="h-4 w-4" /> Rascunhos Automáticos
-            </Button>
+            <Link to="/despacho">
+              <Button variant="outline" className="gap-2">
+                <TowerControl className="h-4 w-4" /> Torre de Despacho
+              </Button>
+            </Link>
             <Button variant={opMode === 'legacy' ? 'destructive' : 'outline'} onClick={toggleOpMode} disabled={updatingMode} className="gap-2">
                 <Database className="h-4 w-4" /> Base: {opMode.toUpperCase()}
             </Button>
@@ -743,18 +871,21 @@ function ConsolidarPage() {
           <div className="flex flex-wrap justify-between items-center gap-4 bg-white p-4 rounded-lg border shadow-sm sticky top-0 z-20">
             <h2 className="text-xl font-bold flex items-center gap-2"><CheckCircle2 className="h-6 w-6 text-green-600" /> Itens Consolidados</h2>
             <div className="flex gap-3">
-              <Button variant="outline" onClick={() => setResults(null)}>Voltar / Novo</Button>
-              <Button className="bg-green-600 hover:bg-green-700" onClick={() => {
-                const currentResult = results[Object.keys(results)[0]];
-                const resultChannelId = currentResult?.options?.channel_id;
-                const canal = resultChannelId ? channels.find((c) => String(c.id) === String(resultChannelId)) : null;
-                if (canal && canal.horario_coleta) {
-                  setDemandHorarioColeta(canal.horario_coleta);
-                }
-                setModalOpen('demand');
-              }}>Gerar Demanda</Button>
+              <Button variant="outline" onClick={() => { setResults(null); setConferencia(null); }}>Voltar / Novo</Button>
+              <Button
+                className="bg-green-600 hover:bg-green-700"
+                disabled={conferindo}
+                onClick={() => conferirContraBase(Object.keys(results)[0])}
+              >
+                {conferindo ? <Loader2 className="animate-spin mr-2 h-4 w-4" /> : null}
+                Conferir contra a base
+              </Button>
             </div>
           </div>
+
+          {conferencia && (
+            <ConferenciaCard conferencia={conferencia} onAbrirNaTorre={abrirNaTorre} />
+          )}
 
           {Object.entries(results).map(([key, data]) => (
             <Card key={key}>
@@ -853,24 +984,6 @@ function ConsolidarPage() {
                       Esta janela será atualizada automaticamente quando o processamento for concluído.
                     </p>
                   </div>
-                </CardContent>
-              </Card>
-            </div>
-          )}
-
-          {modalOpen === 'demand' && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-              <Card className="max-w-md w-full shadow-2xl animate-in slide-in-from-bottom-4">
-                <CardHeader className="border-b"><CardTitle>Gerar Nova Demanda</CardTitle></CardHeader>
-                <CardContent className="space-y-4 pt-6">
-                  <div className="space-y-2"><Label>Nome da Demanda</Label><Input value={demandName} onChange={(e) => setDemandName(e.target.value)} placeholder="Ex: Demanda Shopee - Março" /></div>
-                  <div className="space-y-2"><Label>Data de Entrega</Label><Input type="date" value={demandDate} onChange={(e) => setDemandDate(e.target.value)} /></div>
-                  <div className="space-y-2"><Label>Horário de Coleta (Opcional)</Label><Input type="time" value={demandHorarioColeta} onChange={(e) => setDemandHorarioColeta(e.target.value)} /></div>
-                  <div className="space-y-2"><Label>Observações (Opcional)</Label><Input value={demandObservacoes} onChange={(e) => setDemandObservacoes(e.target.value)} placeholder="Ex: Urgente, entregar na portaria..." /></div>
-                  <Button onClick={() => handleGenerateDemand(Object.keys(results)[0])} disabled={creatingDemand} className="w-full bg-primary h-12 text-lg">
-                    {creatingDemand ? <Loader2 className="animate-spin mr-2" /> : null} Gerar Demanda
-                  </Button>
-                  <Button variant="ghost" onClick={() => setModalOpen(null)} className="w-full">Cancelar</Button>
                 </CardContent>
               </Card>
             </div>

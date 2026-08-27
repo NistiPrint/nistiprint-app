@@ -30,8 +30,10 @@ import { useNavigate } from 'react-router-dom';
 // Duas invariantes que a interface nao pode quebrar:
 //  - Nenhuma contagem e propria. Tudo e derivado dos buckets que a arvore ja
 //    devolve, entao nao existe um segundo numero para a mesma pergunta.
-//  - Rascunho aberto e marcador, nunca subtracao: o total do card continua
-//    sendo todos os pedidos pendentes daquele no.
+//  - Consolidacao aberta e marcador, nunca subtracao: o total do card continua
+//    sendo todos os pedidos pendentes daquele no. (No banco o status ainda se
+//    chama RASCUNHO; na tela, nunca — "rascunho" sugere esboco descartavel,
+//    quando e o lote fechado sobre o qual o operador ja emitiu nota.)
 
 const ABAS = [
   { id: 'hoje', rotulo: 'Hoje', ajuda: 'inclui atrasados e pedidos sem prazo informado' },
@@ -177,7 +179,7 @@ function ModalidadeCard({ marketplace, modalidade, aba, onAbrir }) {
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t pt-3 text-xs">
             <span className="inline-flex items-center gap-1 rounded-full bg-slate-900 px-2 py-0.5 text-white">
               <FileText className="h-3 w-3" />
-              rascunho aberto: {rascunho.qtd_pedidos} pedidos
+              consolidação aberta: {rascunho.qtd_pedidos} pedidos
             </span>
             {rascunho.pedidos_ja_fora > 0 && (
               <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-orange-800">
@@ -343,7 +345,7 @@ export default function TorreDespachoPage() {
         <div>
           <h1 className="text-xl font-semibold">Torre de despacho</h1>
           <p className="text-sm text-muted-foreground">
-            Escolha o marketplace, confira o total contra o painel dele e monte o lote.
+            Escolha o marketplace, confira o total contra o painel dele e consolide o lote.
           </p>
         </div>
         <button
