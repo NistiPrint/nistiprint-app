@@ -65,8 +65,14 @@ def _rows(response: Any) -> list[dict]:
 @shared_task(name="nistiprint_shared.services.despacho_janela_service.fechar_janelas")
 @log_task_execution(task_type="DESPACHO", task_name="fechar_janelas_despacho")
 def fechar_janelas_despacho(catch_up: str = CATCH_UP) -> dict:
-    """Fecha os cortes vencidos e recalcula os compromissos apos as coletas."""
-    resultado = {"cortes_fechados": 0, "rascunhos": [], "compromissos_recalculados": 0}
+    """Registra os cortes vencidos e recalcula os compromissos apos as coletas.
+
+    Nao cria demanda. O corte e regra de PERTENCIMENTO — ele responde quais
+    pedidos entram nesta coleta — e essa resposta continua sendo calculada na
+    leitura por `coleta_do_pedido`. Materializar um lote a cada janela so
+    enchia a lista de demandas com rascunho que ninguem abria.
+    """
+    resultado = {"cortes_registrados": 0, "cortes": [], "compromissos_recalculados": 0}
 
     try:
         vencidas = _rows(
@@ -122,27 +128,39 @@ def fechar_janelas_despacho(catch_up: str = CATCH_UP) -> dict:
 
         if not res:
             logger.info(
-                "[despacho-janela] corte sem pedido pendente: integration=%s modalidade=%s",
+                "[despacho-janela] corte ja registrado: integration=%s modalidade=%s janela=%s",
                 janela.get("integration_id"), janela.get("modalidade_id"),
+                janela.get("janela_em"),
             )
             continue
 
-        criado = res[0]
-        resultado["cortes_fechados"] += 1
-        resultado["rascunhos"].append({
-            "demanda_id": criado.get("out_demanda_id"),
-            "codigo": criado.get("out_demanda_codigo"),
-            "qtd_pedidos": criado.get("out_qtd_pedidos"),
+        # O corte NAO cria mais demanda. Ele registra que a janela venceu e
+        # quantos pedidos havia no lote naquele instante — o numero que permite
+        # responder depois "quantos pedidos havia no corte das 13h" sem ter
+        # materializado um lote que ninguem pediu.
+        #
+        # Entre 04/08 e 26/08 o fechamento automatico criou 81 rascunhos e
+        # nenhum foi publicado: ele produzia e ninguem consumia, e cada lote
+        # aberto prendia pedidos que o proprio job depois ignorava. O rascunho
+        # passou a nascer do clique do operador na Torre.
+        registrado = res[0]
+        resultado["cortes_registrados"] += 1
+        resultado["cortes"].append({
+            "integration_id": janela.get("integration_id"),
+            "modalidade_id": janela.get("modalidade_id"),
+            "janela_em": janela.get("janela_em"),
+            "qtd_pedidos": registrado.get("out_qtd_pedidos"),
         })
         logger.info(
-            "[despacho-janela] rascunho criado %s com %s pedidos",
-            criado.get("out_demanda_codigo"), criado.get("out_qtd_pedidos"),
+            "[despacho-janela] corte registrado integration=%s modalidade=%s com %s pedidos no lote",
+            janela.get("integration_id"), janela.get("modalidade_id"),
+            registrado.get("out_qtd_pedidos"),
         )
 
     # Recalcula uma vez por execucao, e nao por janela: a funcao varre todos os
     # pedidos FIXO pendentes de uma vez, entao chamar N vezes so repetiria o
     # mesmo trabalho.
-    if houve_coleta or resultado["cortes_fechados"]:
+    if houve_coleta or resultado["cortes_registrados"]:
         try:
             res = supabase_db.rpc("despacho_recalcular_compromissos", {}).execute()
             resultado["compromissos_recalculados"] = getattr(res, "data", 0) or 0

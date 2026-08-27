@@ -366,7 +366,7 @@ const DemandaCard = React.memo(({
                     <Printer className="mr-2 h-4 w-4" /> Imprimir Tudo
                   </DropdownMenuItem>
                 )}
-                {canUseAdminDemandActions && demanda.status === 'Rascunho' && (
+                {canUseAdminDemandActions && String(demanda.status || '').toUpperCase() === 'RASCUNHO' && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handlePublishDemand(demanda.id); }} className="text-green-600">
                     <PlayCircle className="mr-2 h-4 w-4" /> Publicar
                   </DropdownMenuItem>

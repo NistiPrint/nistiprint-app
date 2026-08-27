@@ -15,9 +15,6 @@ class DemandaAlocacaoQueueService:
     def agendar_reserva_inteligente(self, *args, **kwargs):
         return self._service.agendar_reserva_inteligente(*args, **kwargs)
 
-    def processar_fila_estoque(self, limit=10):
-        return self._service.processar_fila_estoque(limit=limit)
-
     # Métodos internos delegados se necessário por outros módulos
     def _registrar_alocacao_estoque(self, *args, **kwargs):
         return self._service._registrar_alocacao_estoque(*args, **kwargs)

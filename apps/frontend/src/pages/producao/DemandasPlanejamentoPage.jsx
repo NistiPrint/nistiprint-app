@@ -324,17 +324,27 @@ export default function DemandasPlanejamentoPage() {
     toast.error(data.message || 'Nao foi possivel coletar em lote.')
   }
 
+  // Publicar e o momento em que o galpao assume o lote: e aqui que despachado_em
+  // e carimbado e os pedidos saem da torre de despacho. Por isso a rota e a do
+  // despacho, e nao a antiga /demanda_producao/:id/publicar, que so mudava o
+  // status e deixava os pedidos aparecendo na torre como se ninguem os tivesse
+  // assumido.
   const handlePublishDemand = useCallback(async (id) => {
     if (!canUseAdminDemandActions) return toast.error('Sem permissao.')
-    if (!window.confirm('Publicar demanda?')) return
-    const response = await fetch(`/api/v2/demanda_producao/${id}/publicar`, { method: 'POST' })
-    if (response.ok) {
-      toast.success('Demanda publicada.')
+    if (!window.confirm('Publicar a demanda? Os pedidos saem da torre de despacho e vao para producao.')) return
+    const response = await fetch('/api/v2/despacho/publicar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ demanda_id: id }),
+    })
+    const data = await response.json().catch(() => ({}))
+    if (response.ok && data.success) {
+      const d = data.data || {}
+      toast.success(`${d.demanda_codigo || 'Demanda'} publicada — ${d.total_pedidos ?? 0} pedidos foram para producao.`)
       refresh()
       return
     }
-    const data = await response.json()
-    toast.error(data.message || 'Nao foi possivel publicar.')
+    toast.error(data.error || data.message || 'Nao foi possivel publicar.')
   }, [canUseAdminDemandActions, refresh])
 
   const handleDeleteDemand = useCallback(async (id) => {

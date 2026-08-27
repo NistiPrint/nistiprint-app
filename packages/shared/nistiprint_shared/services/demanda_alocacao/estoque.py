@@ -223,33 +223,22 @@ class DemandaAlocacaoEstoqueService:
 
     def agendar_processamento_estoque(self, demanda_id, item_id, campo, incremento, user_id='System',
                                       correlation_id=None, created_at=None, produto_id=None, forcar_sincrono=False):
-        """
-        Agenda o processamento de estoque na fila legada.
-        Mantido para compatibilidade com OPs e fluxos que ainda não usam eventos_v2.
-        """
-        if not correlation_id:
-            correlation_id = str(uuid.uuid4())
-            
-        tarefa = {
-            'demanda_id': demanda_id,
-            'item_id': item_id,
-            'produto_id': produto_id,
-            'quantidade': float(incremento),
-            'tipo_operacao': 'CONSUMO_BOM' if incremento > 0 else 'ESTORNO_BOM',
-            'correlation_id': correlation_id,
-            'user_id': str(user_id),
-            'status': 'PENDENTE',
-            'created_at': created_at or get_now_iso()
-        }
-        
-        return supabase_db.table('fila_processamento_estoque').insert(tarefa).execute()
+        """Compatibilidade: antes gravava na fila legada do motor v1.
 
-    def processar_fila_estoque(self, limit=10):
+        A fila foi aposentada; a chamada agora registra o evento no caminho unico
+        (eventos_producao_v2 -> ConsolidadorDeEstoque). A assinatura foi preservada
+        para nao quebrar os chamadores; correlation_id, created_at, produto_id e
+        forcar_sincrono deixaram de ter efeito.
         """
-        Processa a fila legada usando o novo motor unificado.
-        """
-        from nistiprint_shared.services.motor_reconciliacao_estoque import motor_reconciliacao_estoque
-        return motor_reconciliacao_estoque.processar_fila_unificada(limit=limit)
+        tipo_evento = 'LIQUIDACAO' if campo == 'finalizados_qtd' else 'SINAL'
+        return self.registrar_evento_producao(
+            item_id=item_id,
+            demanda_id=demanda_id,
+            estagio=campo,
+            quantidade=float(incremento),
+            tipo_evento=tipo_evento,
+            user_id=user_id
+        )
 
     def processar_alocacao_de_demanda(self, item_id, campo, incremento, user_id, skip_visual_update=False, 
                                       origem_tipo=None, retroactive_date=None, correlation_id=None):
@@ -274,9 +263,10 @@ class DemandaAlocacaoEstoqueService:
         - Normaliza alias de campo (capas_acabadas_qtd -> capas_produzidas_qtd)
         - Seleciona itens por produto (capa) ou miolo conforme o campo
         - Considera apenas demandas ativas
-        - Atualiza via motor_estoque_v2 (reconciliação síncrona)
+        - Atualiza via o caminho unico de estoque (eventos_producao_v2 + Consolidador)
         """
-        from nistiprint_shared.services.motor_estoque_v2 import motor_estoque_v2
+        # Import tardio: items.py importa este modulo, entao o import no topo seria circular.
+        from nistiprint_shared.services.demanda.items import demanda_items_service
 
         campo_map = {
             'capas_acabadas_qtd': 'capas_produzidas_qtd',
@@ -396,12 +386,12 @@ class DemandaAlocacaoEstoqueService:
 
             delta = min(restante, pendente)
             lote_id = str(uuid.uuid4())
-            recon_result = motor_estoque_v2.reconciliar(
-                item_demanda_id=int(item['id']),
-                deltas={campo_normalizado: delta},
-                origem='AlocacaoAvulsa',
+            recon_result = demanda_items_service.registrar_producao_incremental(
+                item.get('demanda_id'),
+                int(item['id']),
+                {campo_normalizado: delta},
                 user_id=user_id,
-                lote_id=lote_id
+                correlation_id=lote_id
             )
 
             alocacoes.append({

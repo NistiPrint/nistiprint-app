@@ -2,60 +2,30 @@ import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ChevronRight, Home } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { rotulosDeRota } from '@/navigation';
 
-const routeLabels = {
-  vendas: 'Comercial',
-  pedidos: 'Pedidos',
-  personalizadas: 'Personalizados',
-  consolidar: 'Consolidação',
-  revisao: 'Revisão',
-  rascunhos: 'Rascunhos',
-  producao: 'Industrial',
-  impressao: 'Fila de Impressão',
-  expedicao: 'Expedição',
-  demanda: 'Demandas',
+// Rotulos derivados do registro de navegacao. Antes havia uma lista
+// paralela mantida a mao, que ficou desatualizada (mostrava
+// "Comercial", "Industrial" e "Logistica" muito depois da renomeacao).
+const rotulosDerivados = rotulosDeRota();
+
+// Segmentos que nao aparecem em nenhum menu e precisam de nome proprio.
+const rotulosExtras = {
+  novo: 'Novo',
   nova: 'Nova',
   editar: 'Editar',
-  dashboard: 'Dashboard',
+  revisao: 'Revisão',
+  rascunhos: 'Rascunhos',
   prioridade: 'Prioridade',
   calendario: 'Calendário',
-  miolos: 'Miolos',
-  capas: 'Capas',
-  estoque: 'Logística',
-  movimentar: 'Movimentar',
-  posicao: 'Posição',
-  historico: 'Histórico',
-  reservas: 'Reservas',
-  ajuste: 'Ajuste',
-  relatorios: 'Relatórios',
-  produtos: 'Produtos',
-  novo: 'Novo',
-  cadastros: 'Dados Mestres',
-  categoria: 'Categorias',
-  tag: 'Tags',
-  'unidade-medida': 'Unidades de Medida',
-  'uom-conversions': 'Conversão de Unidades',
-  fornecedor: 'Fornecedores',
-  deposito: 'Depósitos',
-  'canal-venda': 'Canais de Venda',
-  plataforma: 'Plataformas',
-  'ponto-coleta': 'Pontos de Coleta',
-  sistema: 'Administração',
-  usuarios: 'Usuários',
-  setores: 'Setores',
+  dashboard: 'Dashboard',
   permissoes: 'Permissões',
-  configuracoes: 'Configurações',
-  ia: 'Inteligência Artificial',
-  integracoes: 'Integrações',
-  roteamento: 'Roteamento',
-  bling: 'Bling',
-  auditoria: 'Auditoria',
-  'gerencial-historico': 'Histórico Gerencial',
-  'ai': 'IA',
-  logs: 'Logs',
-  ferramentas: 'Ferramentas',
+  escopo: 'Escopo',
   perfil: 'Meu Perfil',
+  install: 'Instalação',
 };
+
+const routeLabels = { ...rotulosExtras, ...rotulosDerivados };
 
 function Breadcrumbs() {
   const location = useLocation();

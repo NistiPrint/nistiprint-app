@@ -3,17 +3,15 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Activity,
   CheckCircle2,
   Clock,
   Database,
   Eye,
-  FileText,
-  PlayCircle,
   RefreshCw,
-  Search
+  Search,
+  Zap
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -22,30 +20,22 @@ import { toast } from 'sonner';
 /**
  * Página de Monitoramento de Estoque - Arquitetura Event Sourcing
  * 
- * Unifica visualização de:
- * 1. Eventos de Produção (eventos_producao_v2)
- * 2. Fila de Processamento (fila_processamento_estoque) - legado
- * 3. Consolidações de Estoque
+ * Fonte unica: eventos_producao_v2. A fila do motor legado foi aposentada
+ * no Sprint 5 e a aba correspondente saiu junto.
  */
 function MonitoramentoEstoquePage() {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState('eventos');
   const [loading, setLoading] = useState(false);
-  const [processing, setProcessing] = useState(false);
   const [reprocessing, setReprocessing] = useState(false);
 
   // Estados para Eventos
   const [eventos, setEventos] = useState([]);
   const [eventosFilters, setEventosFilters] = useState({ tipo: 'all', status: 'all' });
 
-  // Estados para Fila (legado)
-  const [filaEstoque, setFilaEstoque] = useState([]);
-
   // Stats
   const [stats, setStats] = useState({
     eventos_pendentes: 0,
     eventos_processados: 0,
-    fila_pendentes: 0,
     erros_24h: 0,
     sinais_pendentes: 0, // Sinais intermediários (sem movimentação)
     liquidacoes_pendentes: 0, // Liquidações (disparam reconciliação)
@@ -83,40 +73,6 @@ function MonitoramentoEstoquePage() {
     }
   };
 
-  const fetchFilaEstoque = async () => {
-    try {
-      const response = await fetch('/api/v2/demanda_producao/fila-estoque');
-      const data = await response.json();
-      if (data.success) {
-        setFilaEstoque(data.queue || []);
-        setStats(prev => ({
-          ...prev,
-          fila_pendentes: data.queue?.filter(q => q.status === 'PENDENTE').length || 0
-        }));
-      }
-    } catch (e) {
-      console.error('Erro ao carregar fila:', e);
-    }
-  };
-
-  const handleProcessarFila = async () => {
-    setProcessing(true);
-    try {
-      const response = await fetch('/api/v2/demanda_producao/processar-fila-estoque?limit=50', {
-        method: 'POST'
-      });
-      const data = await response.json();
-      if (data.success) {
-        toast.success(`${data.processed_count} tarefas processadas!`);
-        fetchFilaEstoque();
-      }
-    } catch (e) {
-      toast.error('Erro no processamento: ' + e.message);
-    } finally {
-      setProcessing(false);
-    }
-  };
-
   const handleReprocessEvents = async () => {
     setReprocessing(true);
     try {
@@ -128,7 +84,6 @@ function MonitoramentoEstoquePage() {
       if (data.success) {
         toast.success(`Eventos reprocessados com sucesso: ${JSON.stringify(data.stats)}`);
         fetchEventos();
-        fetchFilaEstoque();
       } else {
         toast.error(data.error || 'Erro ao reprocessar eventos');
       }
@@ -140,41 +95,14 @@ function MonitoramentoEstoquePage() {
     }
   };
 
-  const handleReprocessFila = async () => {
-    setReprocessing(true);
-    try {
-      const response = await fetch('/api/v2/tasks/stock/reprocess-fila', {
-        method: 'POST'
-      });
-      const data = await response.json();
-      
-      if (data.success) {
-        toast.success(`Fila reprocessada com sucesso: ${JSON.stringify(data.stats)}`);
-        fetchEventos();
-        fetchFilaEstoque();
-      } else {
-        toast.error(data.error || 'Erro ao reprocessar fila');
-      }
-    } catch (e) {
-      console.error('Erro ao reprocessar fila:', e);
-      toast.error('Erro ao reprocessar fila');
-    } finally {
-      setReprocessing(false);
-    }
-  };
-
   useEffect(() => {
     fetchEventos();
-    fetchFilaEstoque();
 
     // Auto-refresh a cada 15s
-    const interval = setInterval(() => {
-      fetchEventos();
-      fetchFilaEstoque();
-    }, 15000);
+    const interval = setInterval(fetchEventos, 15000);
 
     return () => clearInterval(interval);
-  }, [activeTab]);
+  }, []);
 
   const getStatusBadge = (evento) => {
     // eventos_producao_v2 tem apenas: processado (boolean)
@@ -213,27 +141,9 @@ function MonitoramentoEstoquePage() {
             <Zap className={`h-4 w-4 mr-2 ${reprocessing ? 'animate-pulse' : ''}`} />
             Reprocessar Eventos
           </Button>
-          <Button
-            variant="outline"
-            onClick={handleReprocessFila}
-            disabled={reprocessing}
-          >
-            <AlertTriangle className={`h-4 w-4 mr-2 ${reprocessing ? 'animate-pulse' : ''}`} />
-            Reprocessar Fila
-          </Button>
-          <Button variant="outline" onClick={() => { fetchEventos(); fetchFilaEstoque(); }}>
+          <Button variant="outline" onClick={fetchEventos}>
             <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} /> Atualizar
           </Button>
-          {activeTab === 'fila' && (
-            <Button
-              onClick={handleProcessFila}
-              disabled={processing || reprocessing}
-              variant="default"
-            >
-              <PlayCircle className={`h-4 w-4 mr-2 ${processing ? 'animate-pulse' : ''}`} />
-              {processing ? 'Processando...' : 'Processar Fila'}
-            </Button>
-          )}
         </div>
       </div>
 
@@ -280,19 +190,7 @@ function MonitoramentoEstoquePage() {
         </Card>
       </div>
 
-      {/* Tabs */}
-      <Tabs defaultValue="eventos" value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full max-w-md grid-cols-2 mb-6">
-          <TabsTrigger value="eventos" className="flex items-center gap-2">
-            <FileText className="h-4 w-4" /> Eventos de Produção
-          </TabsTrigger>
-          <TabsTrigger value="fila" className="flex items-center gap-2">
-            <Database className="h-4 w-4" /> Fila (Legado)
-          </TabsTrigger>
-        </TabsList>
-
-        {/* Tab: Eventos de Produção */}
-        <TabsContent value="eventos" className="space-y-4">
+      <div className="space-y-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
               <div>
@@ -388,78 +286,7 @@ function MonitoramentoEstoquePage() {
               </div>
             </CardContent>
           </Card>
-        </TabsContent>
-
-        {/* Tab: Fila de Estoque (Legado) */}
-        <TabsContent value="fila" className="space-y-4">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-              <div>
-                <CardTitle>Fila de Processamento (Legado)</CardTitle>
-                <CardDescription>
-                  Tarefas de processamento de estoque do sistema legado.
-                </CardDescription>
-              </div>
-              <Button 
-                onClick={handleProcessarFila} 
-                disabled={processing || filaEstoque.filter(q => q.status === 'PENDENTE').length === 0}
-              >
-                {processing ? <RefreshCw className="h-4 w-4 mr-2 animate-spin" /> : <PlayCircle className="h-4 w-4 mr-2" />}
-                Processar Fila
-              </Button>
-            </CardHeader>
-            <CardContent>
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Item / SKU</TableHead>
-                      <TableHead>Operação</TableHead>
-                      <TableHead className="text-right">Qtd</TableHead>
-                      <TableHead className="text-center">Tentativas</TableHead>
-                      <TableHead>Data</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filaEstoque.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={6} className="text-center py-10 text-muted-foreground italic">
-                          Fila vazia.
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      filaEstoque.map((task) => (
-                        <TableRow key={task.id}>
-                          <TableCell>{getStatusBadge(task.status, task.status === 'CONCLUIDO')}</TableCell>
-                          <TableCell>
-                            <div className="flex flex-col">
-                              <span className="font-medium">{task.item?.sku || 'N/A'}</span>
-                              <span className="text-[10px] text-muted-foreground">ID: {task.item_id}</span>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant="outline" className="text-[10px] font-mono">{task.tipo_operacao}</Badge>
-                          </TableCell>
-                          <TableCell className="text-right font-bold">
-                            {parseFloat(task.quantidade || 0).toLocaleString('pt-BR')}
-                          </TableCell>
-                          <TableCell className="text-center text-xs">
-                            {task.tentativas || 0} / 5
-                          </TableCell>
-                          <TableCell className="text-[10px] text-muted-foreground">
-                            {new Date(task.created_at).toLocaleString('pt-BR')}
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+      </div>
 
       {/* Info Box */}
       <Card className="mt-6 bg-blue-50 border-blue-200">
@@ -472,7 +299,6 @@ function MonitoramentoEstoquePage() {
                 <li><strong>Eventos SINAL:</strong> Registrados quando etapas intermediárias são atualizadas (E1-E6)</li>
                 <li><strong>Eventos LIQUIDACAO:</strong> Disparam reconciliação completa do estoque (E7 - Finalização)</li>
                 <li><strong>Processamento:</strong> Ocorre automaticamente a cada 10 segundos via Celery</li>
-                <li><strong>Fila Legado:</strong> Será descontinuada gradualmente</li>
               </ul>
             </div>
           </div>

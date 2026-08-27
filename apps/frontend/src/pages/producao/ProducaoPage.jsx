@@ -1,10 +1,9 @@
-import { useProducaoSidebar } from '@/lib/hooks/useProducaoSidebar';
+import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
 import { Outlet } from 'react-router-dom';
 
+// A barra lateral vem do registro unico em src/navigation.js.
 function ProducaoPage() {
-  // Menu lateral da operacao Industrial. Compartilhado com as telas de
-  // despacho, que ficam fora da rota /producao mas pertencem a mesma operacao.
-  useProducaoSidebar();
+  useSecaoSidebar();
 
   return (
     <div className="h-full">

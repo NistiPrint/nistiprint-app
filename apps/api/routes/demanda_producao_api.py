@@ -57,28 +57,6 @@ def get_stock_history_for_item(item_id):
         traceback.print_exc()
         return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
 
-@demanda_producao_api_bp.route('/retry-fila-estoque/<string:task_id>', methods=['POST'])
-@login_required
-def api_retry_fila_estoque(task_id):
-    try:
-        from nistiprint_shared.database.supabase_db_service import supabase_db
-        from nistiprint_shared.utils.date_utils import get_now_iso
-        
-        res = supabase_db.table('fila_processamento_estoque').update({
-            'status': 'PENDENTE',
-            'tentativas': 0,
-            'proxima_execucao_at': get_now_iso(),
-            'mensagem_erro': None
-        }).eq('id', task_id).execute()
-        
-        if not res.data:
-            return jsonify({'success': False, 'message': 'Tarefa não encontrada'}), 404
-            
-        return jsonify({'success': True})
-    except Exception as e:
-        print(f"ERROR in api_retry_fila_estoque: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
-
 @demanda_producao_api_bp.route('/', methods=['GET'])
 def api_list_demandas():
     try:
@@ -995,34 +973,6 @@ def update_demand_schedule(demanda_id):
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
-@demanda_producao_api_bp.route('/fila-estoque', methods=['GET'])
-def api_get_fila_estoque():
-    try:
-        from nistiprint_shared.database.supabase_db_service import supabase_db
-        res = supabase_db.table('fila_processamento_estoque')\
-            .select("*, itens_demanda(sku, descricao)")\
-            .order('created_at', desc=True)\
-            .limit(100)\
-            .execute()
-        queue_data = []
-        if res.data:
-            for row in res.data:
-                item_info = row.pop('itens_demanda', None)
-                row['item'] = item_info
-                queue_data.append(row)
-        return jsonify({'success': True, 'queue': queue_data})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-@demanda_producao_api_bp.route('/processar-fila-estoque', methods=['POST'])
-def api_processar_fila_estoque():
-    try:
-        limit = request.args.get('limit', default=20, type=int)
-        count = demanda_producao_service.processar_fila_estoque(limit=limit)
-        return jsonify({'success': True, 'processed_count': count})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
 @demanda_producao_api_bp.route('/dashboard-totals', methods=['GET'])
 def get_dashboard_totals():
     try:
@@ -1211,11 +1161,16 @@ def registrar_saida_distribuida():
 def get_monitoring_overview():
     try:
         from nistiprint_shared.database.supabase_db_service import supabase_db
-        stock_queue_res = supabase_db.table('fila_processamento_estoque').select('status').execute()
+        # A fila legada foi aposentada: o estado do estoque agora e o
+        # status_processamento dos itens no caminho unico de reconciliacao.
+        stock_res = supabase_db.table('itens_demanda').select('status_processamento').execute()
         stock_stats = {'PENDENTE': 0, 'PROCESSANDO': 0, 'ERRO': 0, 'CONCLUIDO': 0}
-        for item in stock_queue_res.data:
-            status = item.get('status')
-            if status in stock_stats: stock_stats[status] += 1
+        for item in stock_res.data:
+            status = item.get('status_processamento')
+            if status == 'PROCESSADO':
+                stock_stats['CONCLUIDO'] += 1
+            elif status in stock_stats:
+                stock_stats[status] += 1
         yesterday = (datetime.now() - timedelta(days=1)).isoformat()
         consolidations_res = supabase_db.table('consolidacoes_pedido').select('status').gte('created_at', yesterday).execute()
         consolidation_stats = {'PRONTO': 0, 'PROCESSANDO': 0, 'ERRO': 0, 'PENDENTE': 0}
@@ -1367,7 +1322,7 @@ def registrar_producao_sincrona(demanda_id, item_id):
     Registra produção de forma SÍNCRONA e SIMPLIFICADA.
     
     Diferenças do endpoint normal:
-    - NÃO usa fila de processamento de estoque (fila_processamento_estoque)
+    - Grava direto, sem passar pelo consolidador assincrono
     - NÃO cria eventos imutáveis (eventos_producao_v2)
     - Atualiza diretamente os campos de progresso
     - Registra apenas movimentação básica de estoque

@@ -12,6 +12,7 @@ si por caminhos diferentes de codigo.
 """
 
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from flask import Blueprint, jsonify, request
 from nistiprint_shared.database.supabase_db_service import supabase_db
@@ -24,13 +25,23 @@ logger = logging.getLogger("DespachoAPI")
 despacho_bp = Blueprint("despacho", __name__)
 
 
+#: O dia operacional e o do galpao. `date.today()` num container em UTC vira o
+#: dia seguinte a partir das 21h de Sao Paulo — e foi assim que a torre passou a
+#: tratar amanha como hoje e jogar os pedidos do dia no balde de atrasados.
+FUSO_OPERACIONAL = ZoneInfo("America/Sao_Paulo")
+
+
+def _hoje_operacional() -> str:
+    return datetime.now(FUSO_OPERACIONAL).date().isoformat()
+
+
 def _parse_data(raw: str | None) -> str:
     if not raw:
-        return date.today().isoformat()
+        return _hoje_operacional()
     try:
         return datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
     except ValueError:
-        return date.today().isoformat()
+        return _hoje_operacional()
 
 
 def _parse_int(raw: str | None) -> int | None:
@@ -40,6 +51,22 @@ def _parse_int(raw: str | None) -> int | None:
         return int(raw)
     except (TypeError, ValueError):
         return None
+
+
+# Espelha public.despacho_aba_do_bucket. A aba nunca tem contagem propria: ela
+# agrupa os MESMOS buckets que a arvore ja devolve. Um segundo contador seria um
+# segundo numero para a mesma pergunta, e mais cedo ou mais tarde os dois
+# discordariam — que e o problema que a torre existe para eliminar.
+#
+# sem_prazo cai em "hoje" de proposito: prazo desconhecido e a hipotese mais
+# urgente, nao a menos.
+ABA_DO_BUCKET = {
+    "atrasado": "hoje",
+    "hoje": "hoje",
+    "sem_prazo": "hoje",
+    "amanha": "amanha",
+    "depois": "proximos",
+}
 
 
 @despacho_bp.route("/arvore", methods=["GET"])
@@ -126,6 +153,58 @@ def get_arvore():
                 "qtd_itens": row["qtd_itens"],
             }
 
+        # Entrega rapida e flag de cadastro (Shopee Flex/Turbo, ML Flex, Amazon
+        # Same Day). Nao se deriva de tipo_prazo: Flex e FIXO e Turbo e
+        # RELATIVO, e os dois sao rapidos.
+        rapidas = {}
+        try:
+            cat = supabase_db.table("modalidades_logisticas").select("id,entrega_rapida").execute()
+            rapidas = {m["id"]: bool(m.get("entrega_rapida")) for m in (cat.data or [])}
+        except Exception:
+            logger.warning("Falha ao carregar flag de entrega rapida", exc_info=True)
+
+        # De que situacoes o total e feito. A tela de Pedidos filtrada por "Em
+        # Andamento" mostra menos que a torre porque a torre tambem conta
+        # Produzido e Pronto para Envio — ainda sao trabalho do galpao. Um
+        # numero que precisa ser explicado toda vez e um numero que sera
+        # desconfiado toda vez, entao a composicao vai junto.
+        composicao = {}
+        try:
+            res_c = supabase_db.rpc("despacho_composicao_situacao", {"p_data": p_data}).execute()
+            for c in (res_c.data or []):
+                composicao.setdefault(c["integration_id"], []).append({
+                    "situacao_id": c["situacao_id"],
+                    "situacao": c["situacao_nome"],
+                    "qtd_pedidos": c["qtd_pedidos"],
+                })
+        except Exception:
+            logger.warning("Falha ao carregar composicao por situacao", exc_info=True)
+
+        # Canais que compartilham a janela sao UM lote: saem no mesmo caminhao,
+        # entao viram um card so e um lancamento so. Dois escopos para a mesma
+        # coleta seriam dois lotes de producao para um caminhao.
+        lote_por_modalidade = {}
+        for mkt_id in {row["integration_id"] for row in rows}:
+            if mkt_id is None:
+                continue
+            try:
+                res_l = supabase_db.rpc("despacho_lotes", {"p_integration_id": mkt_id}).execute()
+                for l in (res_l.data or []):
+                    lote_por_modalidade[(mkt_id, l["modalidade_id"])] = l
+            except Exception:
+                logger.warning("Falha ao carregar lotes da integracao %s", mkt_id, exc_info=True)
+
+        # Rascunho aberto por no. Nao subtrai da contagem — e marcador. A
+        # invariante e que a soma dos filhos e igual ao pai e que nenhum pedido
+        # e omitido.
+        rascunhos = {}
+        try:
+            res_r = supabase_db.rpc("despacho_rascunhos_abertos", {"p_data": p_data}).execute()
+            for r in (res_r.data or []):
+                rascunhos[(r.get("integration_id"), r.get("modalidade_id"))] = r
+        except Exception:
+            logger.warning("Falha ao carregar rascunhos abertos", exc_info=True)
+
         # Saídas de despacho de cada lote: um mesmo corte pode ter coleta local
         # às 17h e entrega em ponto de coleta às 19h. É o que permite registrar
         # coleta parcial sem a demanda ficar atrasada — ainda há uma saída.
@@ -145,18 +224,79 @@ def get_arvore():
                     logger.warning("Falha ao obter janelas da modalidade %s", mod.get("modalidade_id"), exc_info=True)
 
         payload = []
+        abas_totais = {"hoje": 0, "amanha": 0, "proximos": 0}
         for mkt in marketplaces.values():
+            lotes = {}
+            for mod in mkt["modalidades"].values():
+                mod_id = mod.get("modalidade_id")
+                info = lote_por_modalidade.get((mkt["integration_id"], mod_id))
+                # Modalidade sem janela cadastrada e lote de si mesma: ela
+                # precisa continuar visivel e lancavel, e o card sinaliza.
+                chave = info["lote_chave"] if info else ("nc" if mod_id is None else str(mod_id))
+                ids = info["modalidade_ids"] if info else ([] if mod_id is None else [mod_id])
+                nome = info["lote_nome"] if info else mod.get("nome")
+                rapida = info["entrega_rapida"] if info else rapidas.get(mod_id, False)
+
+                lote = lotes.setdefault(chave, {
+                    "lote_chave": chave,
+                    "modalidade_ids": ids,
+                    "modalidade_id": mod_id,
+                    "nome": nome,
+                    "codigo": mod.get("codigo"),
+                    "tipo_prazo": mod.get("tipo_prazo"),
+                    "entrega_rapida": bool(rapida),
+                    "qtd_pedidos": 0,
+                    "qtd_itens": 0,
+                    "corte_em": mod.get("corte_em"),
+                    "coleta_em": mod.get("coleta_em"),
+                    "prazo_final_em": mod.get("prazo_final_em"),
+                    "compromisso_mais_proximo": mod.get("compromisso_mais_proximo"),
+                    "janelas": mod.get("janelas") or [],
+                    "coletas": {},
+                    "buckets": {},
+                    "por_aba": {"hoje": 0, "amanha": 0, "proximos": 0},
+                    "rascunho": None,
+                })
+
+                lote["qtd_pedidos"] += mod.get("qtd_pedidos") or 0
+                lote["qtd_itens"] += mod.get("qtd_itens") or 0
+                if not lote["janelas"] and mod.get("janelas"):
+                    lote["janelas"] = mod["janelas"]
+
+                for bucket in mod["buckets"].values():
+                    aba = ABA_DO_BUCKET.get(bucket["bucket"], "proximos")
+                    alvo = lote["buckets"].setdefault(bucket["bucket"], {
+                        "bucket": bucket["bucket"], "aba": aba, "qtd_pedidos": 0, "qtd_itens": 0,
+                    })
+                    alvo["qtd_pedidos"] += bucket["qtd_pedidos"] or 0
+                    alvo["qtd_itens"] += bucket["qtd_itens"] or 0
+                    lote["por_aba"][aba] += bucket["qtd_pedidos"] or 0
+                    abas_totais[aba] += bucket["qtd_pedidos"] or 0
+
+                for coleta in mod["coletas"].values():
+                    alvo = lote["coletas"].setdefault(coleta["coleta_em"], {
+                        "coleta_em": coleta["coleta_em"], "qtd_pedidos": 0, "qtd_itens": 0,
+                    })
+                    alvo["qtd_pedidos"] += coleta["qtd_pedidos"] or 0
+                    alvo["qtd_itens"] += coleta["qtd_itens"] or 0
+
+                r = rascunhos.get((mkt["integration_id"], mod_id))
+                if r and not lote["rascunho"]:
+                    lote["rascunho"] = r
+
             mkt["modalidades"] = [
-                {
-                    **mod,
-                    "buckets": list(mod["buckets"].values()),
-                    "coletas": sorted(mod["coletas"].values(), key=lambda c: c["coleta_em"] or ""),
-                }
-                for mod in mkt["modalidades"].values()
+                {**l, "buckets": list(l["buckets"].values()),
+                 "coletas": sorted(l["coletas"].values(), key=lambda c: c["coleta_em"] or "")}
+                for l in lotes.values()
             ]
+            mkt["composicao"] = composicao.get(mkt["integration_id"], [])
             payload.append(mkt)
 
-        return jsonify({"success": True, "data": {"data": p_data, "marketplaces": payload}})
+        return jsonify({"success": True, "data": {
+            "data": p_data,
+            "marketplaces": payload,
+            "abas": abas_totais,
+        }})
     except Exception as exc:
         logger.error("Erro ao montar arvore de despacho: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
@@ -178,17 +318,24 @@ def get_escopo():
             return jsonify({"success": False, "error": "Nao autorizado"}), 401
 
         integration_id = _parse_int(request.args.get("integration_id"))
-        modalidade_id = _parse_int(request.args.get("modalidade_id"))
         horizonte = request.args.getlist("horizonte") or ["atrasado", "hoje"]
         p_data = _parse_data(request.args.get("data"))
 
-        ids_result = supabase_db.rpc("despacho_escopo_pedidos", {
+        # O no da torre e o LOTE: um ou mais canais que compartilham a janela.
+        # `modalidade_id` continua aceito para quem chama a rota antiga.
+        modalidade_ids = [_parse_int(v) for v in request.args.getlist("modalidade_ids")]
+        modalidade_ids = [m for m in modalidade_ids if m is not None]
+        if not modalidade_ids:
+            unico = _parse_int(request.args.get("modalidade_id"))
+            modalidade_ids = [unico] if unico is not None else None
+
+        ids_result = supabase_db.rpc("despacho_escopo_lote", {
             "p_integration_id": integration_id,
-            "p_modalidade_id": modalidade_id,
+            "p_modalidade_ids": modalidade_ids,
             "p_horizonte": horizonte,
             "p_data": p_data,
         }).execute()
-        pedido_ids = [row if isinstance(row, int) else row.get("despacho_escopo_pedidos")
+        pedido_ids = [row if isinstance(row, int) else row.get("despacho_escopo_lote")
                       for row in (ids_result.data or [])]
         pedido_ids = [pid for pid in pedido_ids if pid is not None]
 
@@ -236,11 +383,13 @@ def get_escopo():
         buckets = {}
         try:
             arvore = supabase_db.rpc("despacho_arvore", {"p_data": p_data}).execute()
+            alvo = set(modalidade_ids) if modalidade_ids else {None}
             for row in (arvore.data or []):
                 if (row.get("nivel") == 2
                         and row.get("integration_id") == integration_id
-                        and row.get("modalidade_id") == modalidade_id):
-                    buckets[row.get("bucket_prazo")] = row.get("qtd_pedidos") or 0
+                        and row.get("modalidade_id") in alvo):
+                    b = row.get("bucket_prazo")
+                    buckets[b] = (buckets.get(b) or 0) + (row.get("qtd_pedidos") or 0)
         except Exception:
             logger.warning("Falha ao obter buckets do no", exc_info=True)
 
@@ -260,7 +409,12 @@ def get_escopo():
 
 @despacho_bp.route("/lancar", methods=["POST"])
 def post_lancar():
-    """Cria (ou complementa) uma demanda a partir de um escopo.
+    """Monta um RASCUNHO de demanda a partir de um escopo da torre.
+
+    Nao publica e nao carimba despachado_em: o pedido continua na torre ate a
+    publicacao. Lancar de novo no mesmo escopo SOMA no rascunho aberto em vez
+    de criar um segundo lote para a mesma coleta — e a regra de retardatario da
+    spec, e e o que impede o mesmo pedido de existir em duas demandas.
 
     Body JSON:
     {
@@ -279,16 +433,19 @@ def post_lancar():
 
         body = request.get_json(silent=True) or {}
         integration_id = body.get("integration_id")
-        modalidade_id = body.get("modalidade_id")
+        modalidade_ids = body.get("modalidade_ids")
+        if not modalidade_ids:
+            unico = body.get("modalidade_id")
+            modalidade_ids = [unico] if unico is not None else None
         horizonte = body.get("horizonte") or ["atrasado", "hoje"]
         p_data = _parse_data(body.get("data"))
         nome = body.get("nome")
         observacoes = body.get("observacoes")
         user_id = str((user or {}).get("id") or (user or {}).get("nome") or "System")
 
-        result = supabase_db.rpc("despacho_lancar_escopo", {
+        result = supabase_db.rpc("despacho_lancar_lote", {
             "p_integration_id": integration_id,
-            "p_modalidade_id": modalidade_id,
+            "p_modalidade_ids": modalidade_ids,
             "p_horizonte": horizonte,
             "p_data": p_data,
             "p_nome": nome,
@@ -308,7 +465,9 @@ def post_lancar():
                 "demanda_codigo": row.get("out_demanda_codigo"),
                 "total_pedidos": row.get("out_total_pedidos"),
                 "total_itens": row.get("out_total_itens"),
-                "complementar": row.get("out_complementar"),
+                # somou num rascunho que ja existia em vez de criar outro
+                "somou_em_rascunho": row.get("out_complementar"),
+                "status": "RASCUNHO",
             },
         })
     except Exception as exc:
@@ -317,6 +476,119 @@ def post_lancar():
             return jsonify({"success": False, "error": "Escopo vazio: nenhum pedido em aberto para esse no e horizonte."}), 409
         logger.error("Erro ao lancar escopo de despacho: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": message}), 500
+
+
+@despacho_bp.route("/publicar", methods=["POST"])
+def post_publicar():
+    """Publica um rascunho: RASCUNHO -> AGUARDANDO.
+
+    E aqui, e so aqui, que despachado_em e carimbado — o momento em que o
+    galpao assume o lote e os pedidos saem da torre. Publicar duas vezes e
+    recusado pela propria funcao de banco.
+
+    Body JSON: {"demanda_id": int}
+    """
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Nao autorizado"}), 401
+
+        body = request.get_json(silent=True) or {}
+        demanda_id = _parse_int(body.get("demanda_id"))
+        if demanda_id is None:
+            return jsonify({"success": False, "error": "demanda_id e obrigatorio"}), 400
+
+        user_id = str((user or {}).get("id") or (user or {}).get("nome") or "System")
+        result = supabase_db.rpc("despacho_publicar_demanda", {
+            "p_demanda_id": demanda_id,
+            "p_user_id": user_id,
+        }).execute()
+
+        rows = result.data or []
+        if not rows:
+            return jsonify({"success": False, "error": "Demanda nao encontrada"}), 404
+
+        row = rows[0]
+        return jsonify({"success": True, "data": {
+            "demanda_codigo": row.get("out_demanda_codigo"),
+            "total_pedidos": row.get("out_total_pedidos"),
+            "total_itens": row.get("out_total_itens"),
+            "status": "AGUARDANDO",
+        }})
+    except Exception as exc:
+        message = str(exc)
+        # A funcao recusa republicacao com invalid_parameter_value. Isso e
+        # conflito de estado, nao erro de servidor: 409 diz ao cliente que
+        # repetir nao vai adiantar.
+        if "so rascunho pode ser publicado" in message:
+            return jsonify({"success": False, "error": "Esta demanda ja foi publicada."}), 409
+        if "nao tem pedidos" in message:
+            return jsonify({"success": False, "error": "Rascunho sem pedidos."}), 409
+        logger.error("Erro ao publicar demanda: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": message}), 500
+
+
+@despacho_bp.route("/rascunhos", methods=["GET"])
+def get_rascunhos():
+    """Rascunhos abertos do dia, por no da torre.
+
+    `pedidos_ja_fora` conta os que sairam da pendencia DEPOIS de entrarem no
+    lote — cancelados, devolvidos ou enviados por fora. E a checagem que o
+    operador precisa ver antes de publicar um lote que promete produzir o que
+    nao existe mais.
+    """
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Nao autorizado"}), 401
+
+        p_data = _parse_data(request.args.get("data"))
+        result = supabase_db.rpc("despacho_rascunhos_abertos", {"p_data": p_data}).execute()
+        return jsonify({"success": True, "data": result.data or []})
+    except Exception as exc:
+        logger.error("Erro ao listar rascunhos abertos: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@despacho_bp.route("/demanda/<int:demanda_id>/itens", methods=["GET"])
+def get_itens_demanda(demanda_id):
+    """Linhas de producao de uma demanda, na ordem de producao.
+
+    Ordenadas por carga de miolo decrescente e, dentro do miolo, por quantidade
+    decrescente — a mesma ordem da planilha do legado. `contabiliza_estoque`
+    falso nao e pendencia: significa que a linha produz sem movimentar estoque,
+    porque o SKU nao tem produto interno vinculado.
+    """
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "Nao autorizado"}), 401
+
+        itens = (
+            supabase_db.table("itens_demanda")
+            .select("id,ordem,sku_externo,descricao,variacao,quantidade,"
+                    "miolo_nome,miolo_chave,miolo_origem,produto_id,"
+                    "id_produto_miolo,contabiliza_estoque,dados_adicionais")
+            .eq("demanda_id", demanda_id)
+            .order("ordem")
+            .execute()
+        ).data or []
+
+        demanda = (
+            supabase_db.table("demandas_producao")
+            .select("id,demanda_id,descricao,status,data_entrega,escopo_despacho,publicado_em")
+            .eq("id", demanda_id).limit(1).execute()
+        ).data or []
+
+        return jsonify({"success": True, "data": {
+            "demanda": demanda[0] if demanda else None,
+            "itens": itens,
+            "total_pecas": sum(float(i.get("quantidade") or 0) for i in itens),
+            "sem_estoque": sum(1 for i in itens if not i.get("contabiliza_estoque")),
+        }})
+    except Exception as exc:
+        logger.error("Erro ao obter itens da demanda %s: %s", demanda_id, exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @despacho_bp.route("/esteira", methods=["GET"])

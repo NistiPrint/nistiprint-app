@@ -6,7 +6,7 @@ class PontoColeta(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     nome = db.Column(db.String(255), nullable=False)
-    horario_corte_padrao = db.Column(db.Time, nullable=False)
+    horario_fechamento = db.Column(db.Time, nullable=False)
     endereco = db.Column(db.Text)
     ativo = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
@@ -24,7 +24,7 @@ class PontoColeta(db.Model):
         return {
             'id': self.id,
             'nome': self.nome,
-            'horario_corte_padrao': self.horario_corte_padrao.isoformat() if self.horario_corte_padrao else None,
+            'horario_fechamento': self.horario_fechamento.isoformat() if self.horario_fechamento else None,
             'endereco': self.endereco,
             'ativo': self.ativo,
             'created_at': format_datetime(self.created_at),

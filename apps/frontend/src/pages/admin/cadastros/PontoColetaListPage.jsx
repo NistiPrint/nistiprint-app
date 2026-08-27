@@ -83,7 +83,7 @@ function PontoColetaListPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Nome</TableHead>
-                    <TableHead>Horário Corte Padrão</TableHead>
+                    <TableHead>Fecha às</TableHead>
                     <TableHead>Endereço</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Ações</TableHead>
@@ -93,7 +93,7 @@ function PontoColetaListPage() {
                   {pontos.map((ponto) => (
                     <TableRow key={ponto.id}>
                       <TableCell className="font-medium">{ponto.nome}</TableCell>
-                      <TableCell>{ponto.horario_corte_padrao || '-'}</TableCell>
+                      <TableCell>{ponto.horario_fechamento || '-'}</TableCell>
                       <TableCell className="max-w-xs truncate">{ponto.endereco || '-'}</TableCell>
                       <TableCell>
                         <Badge variant={ponto.ativo ? 'default' : 'secondary'}>

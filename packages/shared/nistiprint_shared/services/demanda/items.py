@@ -24,7 +24,6 @@ from ..demanda_alocacao.estoque import demanda_alocacao_estoque_service
 from ..demanda_alocacao.queue import demanda_alocacao_queue_service
 
 
-from nistiprint_shared.services.motor_estoque_v2 import motor_estoque_v2
 
 class DemandaItemsService:
     def __init__(self):
@@ -38,35 +37,52 @@ class DemandaItemsService:
 
     def registrar_producao_incremental(self, demanda_id, item_id, producao_incremental, user_id='System',
                                       origem_tipo=1, retroactive_date=None, correlation_id=None):
-        """Registra produção incremental (capas impressas, produzidas, miolos) usando Motor v2."""
-        return motor_estoque_v2.reconciliar(
-            item_demanda_id=int(item_id),
-            deltas=producao_incremental,
-            origem='Incremental',
-            user_id=user_id,
-            lote_id=correlation_id
-        )
+        """Registra producao incremental pelo caminho unico de estoque.
+
+        O contrato com o frontend continua sendo em deltas. A conversao para valor
+        absoluto acontece aqui, contra o valor vigente no banco (e nao contra o que
+        a tela tinha em memoria), e a gravacao segue por atualizar_progresso_item ->
+        eventos_producao_v2 -> ConsolidadorDeEstoque, que e o unico motor que
+        alimenta o ledger demanda_estoque_processado.
+        """
+        item = self.get_item_by_id(item_id)
+
+        absolutos = {}
+        for campo, delta in (producao_incremental or {}).items():
+            if campo not in item:
+                continue
+            try:
+                valor_delta = float(delta or 0)
+            except (TypeError, ValueError):
+                raise ValueError(f"Delta invalido para o campo {campo}: {delta}")
+            if valor_delta == 0:
+                continue
+            absolutos[campo] = self._calcular_progresso_visual(item.get(campo), valor_delta)
+
+        if not absolutos:
+            return self._process_item_dict(item)
+
+        return self.atualizar_progresso_item(demanda_id, item_id, absolutos, user_id)
 
     def registrar_producao_lote(self, demanda_id: str, updates: List[Dict[str, Any]], user_id: str = 'System',
-                                origem_tipo: int = 1, retroactive_date: str = None, 
+                                origem_tipo: int = 1, retroactive_date: str = None,
                                 correlation_id: str = None) -> Dict[str, Any]:
-        """Registra produção para múltiplos itens em lote usando Motor v2."""
+        """Registra producao para multiplos itens, um a um, pelo mesmo caminho unico."""
         results = []
         for update in updates:
             item_id = update.get('item_id')
             # O frontend envia 'producao_incremental' como um dict de deltas
             deltas = update.get('producao_incremental', {})
-            if not item_id or not deltas: continue
-            
-            res = motor_estoque_v2.reconciliar(
-                item_demanda_id=int(item_id),
-                deltas=deltas,
-                origem='Lote',
-                user_id=user_id,
-                lote_id=correlation_id # Mesma correlation para o lote todo se fornecida
-            )
-            results.append(res)
-            
+            if not item_id or not deltas:
+                continue
+
+            results.append(self.registrar_producao_incremental(
+                demanda_id, item_id, deltas, user_id,
+                origem_tipo=origem_tipo,
+                retroactive_date=retroactive_date,
+                correlation_id=correlation_id
+            ))
+
         return {"success": True, "results": results}
 
     def _process_item_dict(self, item: Dict[str, Any]) -> Dict[str, Any]:

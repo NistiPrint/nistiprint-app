@@ -131,6 +131,69 @@ def process_pending_effects(limit: int = 100) -> dict:
     return {"status": "success", "processed": processed, "failed": failed}
 
 
+def _integracoes_do_lote(rows: list[dict]) -> dict:
+    """Carrega de uma vez as integracoes citadas no lote.
+
+    Antes era um SELECT por pedido — cem consultas para, no maximo, um punhado
+    de contas distintas.
+    """
+    ids = {row.get("marketplace_integration_id") for row in rows}
+    ids.discard(None)
+    if not ids:
+        return {}
+    linhas = (
+        supabase_db.table("installed_integrations")
+        .select("*")
+        .in_("id", list(ids))
+        .execute()
+        .data
+        or []
+    )
+    return {linha["id"]: linha for linha in linhas}
+
+
+def _prefetch_detalhes_shopee(rows: list[dict], integracoes: dict, ingest) -> dict:
+    """Busca o detalhe dos pedidos Shopee do lote em chamadas de ate 50.
+
+    A API da Shopee aceita 50 `order_sn` por chamada de `get_order_detail`, e a
+    varredura pedia um por vez — cem pedidos viravam cem chamadas. Com o
+    backfill rodando de hora em hora isso sozinho gerava milhares de chamadas
+    diarias e disparou o alerta de anormalidade da Shopee.
+
+    O Mercado Livre fica de fora de proposito: o detalhe la exige tambem envio e
+    SLA, que sao endpoints por recurso e nao tem equivalente em lote.
+    """
+    from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
+
+    por_integracao: dict[int, list[str]] = {}
+    for row in rows:
+        if row.get("marketplace_module_id") != "shopee":
+            continue
+        integration_id = row.get("marketplace_integration_id")
+        order_id = row.get("marketplace_order_id")
+        if not integration_id or not order_id:
+            continue
+        por_integracao.setdefault(integration_id, []).append(str(order_id))
+
+    detalhes: dict[str, dict] = {}
+    for integration_id, order_sns in por_integracao.items():
+        integration = integracoes.get(integration_id)
+        if not integration:
+            continue
+        try:
+            hidratada = ingest._hydrate_shopee_integration(integration)
+            detalhes.update(shopee_driver.get_order_details_batch(hidratada, order_sns))
+        except Exception as exc:
+            logger.exception(
+                "Prefetch Shopee falhou integration_id=%s pedidos=%s",
+                integration_id, len(order_sns),
+            )
+            erro = {"error": str(exc), "error_type": "batch_request_failed"}
+            for order_sn in order_sns:
+                detalhes.setdefault(order_sn, dict(erro))
+    return detalhes
+
+
 def reconcile_marketplace_lifecycle(
     *,
     dry_run: bool = True,
@@ -179,26 +242,25 @@ def reconcile_marketplace_lifecycle(
             str(os.getenv("MARKETPLACE_LIFECYCLE_PROJECTION_ENABLED", "false")).lower()
             in ("1", "true", "yes", "on")
         )
+
+    integracoes = _integracoes_do_lote(rows)
+    detalhes_shopee = _prefetch_detalhes_shopee(rows, integracoes, ingest)
+
     for row in rows:
         try:
-            integration_rows = (
-                supabase_db.table("installed_integrations")
-                .select("*")
-                .eq("id", row["marketplace_integration_id"])
-                .limit(1)
-                .execute()
-                .data
-                or []
-            )
-            if not integration_rows:
+            integration = integracoes.get(row.get("marketplace_integration_id"))
+            if not integration:
                 raise RuntimeError("marketplace integration not found")
             source = row["marketplace_module_id"]
             order_id = str(row["marketplace_order_id"])
             if source == "shopee":
-                detail = ingest._fetch_shopee_detail(integration_rows[0], order_id)
+                detail = detalhes_shopee.get(order_id) or {
+                    "error": "detalhe Shopee ausente no lote",
+                    "error_type": "provider_resource_not_found",
+                }
                 lifecycle = resolve_shopee(detail, {"event_type": "backfill"})
             else:
-                detail = ingest._fetch_meli_detail(integration_rows[0], order_id)
+                detail = ingest._fetch_meli_detail(integration, order_id)
                 lifecycle = resolve_mercadolivre(detail, {"topic": "backfill"})
             if detail.get("error"):
                 raise RuntimeError(detail["error"])

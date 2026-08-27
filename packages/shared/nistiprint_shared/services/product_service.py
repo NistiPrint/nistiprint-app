@@ -335,12 +335,15 @@ class ProductService:
 
         update_data['precificacao'] = current_pricing
 
-        # Check for external_product_links update
-        if 'external_product_links' in product_data:
-            current_attributes['external_product_links'] = product_data['external_product_links']
-            update_data['atributos'] = current_attributes
+        # Identificadores externos tem destino unico: produtos_externos.
+        # Ate a fase B4 isto era gravado tambem em atributos.external_product_links,
+        # criando dois destinos concorrentes para o mesmo dado — e nenhum leitor.
+        links_externos = product_data.pop('external_product_links', None)
 
         response = self.table.update(update_data).eq('id', product_id).execute()
+
+        if links_externos is not None:
+            self.sync_external_product_links(product_id, links_externos)
 
         # Clear cache since we've updated a product
         self.clear_cache()
@@ -973,6 +976,77 @@ class ProductService:
 
     # --- External Product Links Methods ---
 
+    def get_external_links_agrupados(self, product_id: str) -> Dict[str, List[str]]:
+        """
+        Identificadores externos no formato que o formulario de produto usa.
+        Le de produtos_externos, o destino unico definido na fase B4.
+        """
+        agrupado = {'skus': [], 'names': [], 'ids': []}
+        balde = {'SKU': 'skus', 'NOME': 'names', 'ID': 'ids'}
+        for link in self.get_external_product_links(product_id):
+            chave = balde.get((link.get('tipo') or 'SKU').upper())
+            if chave and link.get('codigo_externo'):
+                agrupado[chave].append(link['codigo_externo'])
+        return agrupado
+
+    def resolver_identificacao_completa(self, codigo: str, plataforma: str = None) -> Dict[str, Any]:
+        """
+        Identifica produto acabado, variacao e miolo a partir de um codigo de
+        marketplace — a mesma tripla que o consolidador legado entregava.
+
+        Devolve tambem 'origem', que diz COMO resolveu:
+          sku_interno              SKU principal da empresa
+          apelido                  apelido cadastrado em produtos_externos
+          miolo_por_cadastro       miolo pelo codigo, conferido no cadastro
+          miolo_por_fallback_legado  heuristica de prefixo herdada do legado
+          nao_resolvido            nada casou
+
+        As duas ultimas marcam lacuna de cadastro. A view
+        v_itens_demanda_mapeamento expoe essa fila de trabalho.
+        """
+        vazio = {'produto_id': None, 'produto_sku': None, 'produto_nome': None,
+                 'variacao': None, 'miolo_id': None, 'miolo_sku': None,
+                 'miolo_nome': None, 'origem': 'nao_resolvido'}
+        if not codigo or not str(codigo).strip():
+            return vazio
+        try:
+            resposta = supabase_db.rpc('resolver_produto_completo', {
+                'p_codigo': str(codigo),
+                'p_plataforma': plataforma,
+            }).execute()
+            linhas = resposta.data or []
+            return linhas[0] if linhas else vazio
+        except Exception as e:
+            logging.error(f"Falha ao identificar produto para {codigo!r} ({plataforma}): {e}")
+            return vazio
+
+    def resolver_por_codigo_externo(self, codigo: str, plataforma: str = None):
+        """
+        Resolve um codigo vindo do marketplace para o id do produto interno.
+
+        Precedencia (implementada na funcao Postgres resolver_produto_por_codigo):
+        SKU interno > apelido SKU > apelido ID > apelido NOME. O SKU interno da
+        empresa e sempre o identificador principal; produtos_externos guarda
+        apenas os apelidos pelos quais o mesmo produto aparece em cada canal.
+
+        Saber QUAL campo do payload do marketplace e o SKU e responsabilidade do
+        modulo de integracao; aqui chega apenas o codigo ja extraido.
+
+        Retorna None quando nao resolve — o chamador decide se bloqueia ou
+        segue com o item nao mapeado.
+        """
+        if not codigo or not str(codigo).strip():
+            return None
+        try:
+            resposta = supabase_db.rpc('resolver_produto_por_codigo', {
+                'p_codigo': str(codigo),
+                'p_plataforma': plataforma,
+            }).execute()
+            return resposta.data or None
+        except Exception as e:
+            logging.error(f"Falha ao resolver produto para o codigo {codigo!r} ({plataforma}): {e}")
+            return None
+
     def get_external_product_links(self, product_id: str, plataforma: str = None) -> List[Dict[str, Any]]:
         """Get external product links."""
         try:
@@ -985,12 +1059,13 @@ class ProductService:
             print(f"Error fetching external product links: {e}")
             return []
 
-    def add_external_product_link(self, product_id: str, codigo_externo: str, plataforma: str, metadados: Dict[str, Any] = None):
-        """Add a link to an external product."""
+    def add_external_product_link(self, product_id: str, codigo_externo: str, plataforma: str, metadados: Dict[str, Any] = None, tipo: str = 'SKU'):
+        """Add a link to an external product. tipo: SKU, ID ou NOME."""
         data = {
             'produto_id': product_id,
             'codigo_externo': codigo_externo,
             'plataforma': plataforma,
+            'tipo': (tipo or 'SKU').upper(),
             'metadados': metadados or {},
             'created_at': datetime.utcnow().isoformat(),
             'updated_at': datetime.utcnow().isoformat()
@@ -1033,68 +1108,47 @@ class ProductService:
 
     def sync_external_product_links(self, product_id: str, links_data: Dict[str, Any]):
         """
-        Synchronizes external product links for a product.
-        links_data format: {'skus': ['A', 'B'], 'names': ['Name A', 'Name B'], 'ids': ['1', '2']}
-        or list of dicts: [{'sku': 'A', 'name': 'Name A', ...}]
+        Reconcilia os apelidos externos de um produto.
+
+        Entrada no formato do formulario: {'skus': [...], 'names': [...], 'ids': [...]}.
+        Cada lista vira linhas em produtos_externos com o tipo correspondente
+        (SKU, NOME, ID) e plataforma NULL — apelido valido em qualquer origem,
+        que e o que a tela oferece. Apelidos especificos de uma plataforma sao
+        criados pelos modulos de integracao, com plataforma preenchida, e esta
+        funcao nao os toca.
+
+        Antes da fase B4 esta funcao ignorava 'ids', gravava todos os apelidos
+        como plataforma 'Bling' e escondia o nome alternativo dentro de
+        metadados, o que o tornava inutilizavel para resolucao.
         """
         try:
-            # 1. Get current links
-            current_links = self.get_external_product_links(product_id)
-            current_map = {(l['plataforma'], l['codigo_externo']): l for l in current_links}
+            desejados = set()
+            for chave, tipo in (('skus', 'SKU'), ('names', 'NOME'), ('ids', 'ID')):
+                for valor in (links_data or {}).get(chave, []) or []:
+                    if valor and str(valor).strip():
+                        desejados.add((tipo, str(valor).strip()))
 
-            # 2. Process incoming links
-            # The frontend sends a structured dict with lists (based on form implementation)
-            # We need to parse this into a list of link objects
-            incoming_links = []
-            
-            # Check if we received the 'structure of lists' format (common in existing forms)
-            if isinstance(links_data, dict) and 'skus' in links_data:
-                skus = links_data.get('skus', [])
-                names = links_data.get('names', [])
-                # We assume platform is 'Bling' for legacy compatibility if not specified
-                # ideally the form should provide platform. 
-                # For now, we'll try to deduce or default to Bling as per legacy behavior
-                for i, sku in enumerate(skus):
-                    if sku: # Ignore empty SKUs
-                        name = names[i] if i < len(names) else ''
-                        incoming_links.append({
-                            'codigo_externo': sku,
-                            'plataforma': 'Bling', # Defaulting to Bling for now as per legacy context
-                            'metadados': {'bling_name': name}
-                        })
-            
-            # 3. Identify Additions and Removals
-            incoming_keys = set()
-            
-            for link in incoming_links:
-                key = (link['plataforma'], link['codigo_externo'])
-                incoming_keys.add(key)
-                
-                if key not in current_map:
-                    # Add new link
-                    self.add_external_product_link(
-                        product_id=product_id,
-                        codigo_externo=link['codigo_externo'],
-                        plataforma=link['plataforma'],
-                        metadados=link.get('metadados')
-                    )
-            
-            # 4. Remove missing links
-            # We only remove links for the platforms we are syncing (e.g. Bling)
-            # to avoid accidentally deleting links from other platforms not present in this form
-            platforms_in_sync = {l['plataforma'] for l in incoming_links} if incoming_links else {'Bling'}
-            
-            for key, existing_link in current_map.items():
-                if key not in incoming_keys and existing_link['plataforma'] in platforms_in_sync:
-                    self.remove_external_product_link(
-                        product_id=product_id,
-                        codigo_externo=existing_link['codigo_externo'],
-                        plataforma=existing_link['plataforma']
-                    )
+            atuais = {
+                ((l.get('tipo') or 'SKU').upper(), l.get('codigo_externo')): l
+                for l in self.get_external_product_links(product_id)
+                if l.get('plataforma') is None
+            }
+
+            for tipo, codigo in desejados - set(atuais.keys()):
+                self.add_external_product_link(
+                    product_id=product_id,
+                    codigo_externo=codigo,
+                    plataforma=None,
+                    tipo=tipo,
+                )
+
+            for chave, link in atuais.items():
+                if chave not in desejados:
+                    self.produtos_externos_table.delete().eq('id', link['id']).execute()
 
         except Exception as e:
             logging.error(f"Error syncing external links for product {product_id}: {e}")
-            # Don't raise, just log, so we don't break the main product update flow
+            # Nao propaga: um apelido mal cadastrado nao pode derrubar o salvamento do produto.
 
     def get_artworks_for_product(self, product_id: str) -> List[Dict[str, Any]]:
         """Get all artworks associated with a product."""

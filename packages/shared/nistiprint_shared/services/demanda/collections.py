@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.auditoria_service import auditoria_service
@@ -81,8 +82,12 @@ class DemandaCollectionsService:
             'horario_coleta': current_time # Atualiza para a hora real do evento
         }, user_id)
 
-        # Agendar baixa final de estoque
-        self.agendar_processamento_estoque(demanda_id, None, 'DEMANDA_TOTAL', 1, user_id)
+        # QA-5: a saida do produto acabado acontece aqui, na coleta completa.
+        # Antes isto enfileirava 'DEMANDA_TOTAL' em fila_processamento_estoque,
+        # mas o processador so trata RECONCILIACAO_ITEM, ITEM_TOTAL_BOM_PROCESS,
+        # CONSUMO_BOM e ESTORNO_BOM — 'DEMANDA_TOTAL' caia num print de debug e
+        # era descartado. Nenhuma saida jamais foi registrada.
+        self._registrar_saida_por_coleta(demanda_id, user_id)
         return res
 
     def registrar_coleta_parcial(self, demanda_id: str, quantidade_coletar: int, user_id: str = 'System') -> Dict[str, Any]:
@@ -164,7 +169,37 @@ class DemandaCollectionsService:
                 'descricao': f"Status atualizado para {novo_status} após coleta consolidada."
             }, user_id)
 
+        # QA-5: coleta parcial nao movimenta nada. So quando a demanda fecha
+        # por completo o produto acabado sai do estoque — e o momento em que a
+        # mercadoria deixa fisicamente a empresa.
+        if novo_status == 'COLETADO':
+            self._registrar_saida_por_coleta(demanda_id, user_id)
+
         return self.get_demanda_with_itens(demanda_id)
+
+    def _registrar_saida_por_coleta(self, demanda_id, user_id='System'):
+        """
+        Baixa o produto acabado das demandas coletadas por completo.
+
+        A RPC e idempotente e recusa demanda que nao esteja em COLETADO, entao
+        chamar duas vezes — ou por um caminho que ainda nao fechou a coleta —
+        nao duplica baixa. Falha aqui nao derruba o registro da coleta: a
+        coleta e o fato operacional, a baixa e consequencia.
+        """
+        try:
+            resposta = supabase_db.rpc('registrar_saida_coleta_demanda', {
+                'p_demanda_id': int(demanda_id),
+                'p_user_id': str(user_id),
+            }).execute()
+            resultado = resposta.data or {}
+            if not resultado.get('ok'):
+                logging.warning(
+                    f"Saida por coleta nao registrada para a demanda {demanda_id}: {resultado}"
+                )
+            return resultado
+        except Exception as e:
+            logging.error(f"Falha ao registrar saida por coleta da demanda {demanda_id}: {e}")
+            return None
 
     def marcar_lote_como_coletado(self, demanda_ids, user_id='System'):
         results = []

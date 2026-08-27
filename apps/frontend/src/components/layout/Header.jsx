@@ -23,166 +23,17 @@ import {
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 import {
-  Boxes,
   ChevronDown,
-  Cog,
-  HardDrive,
-  Home,
-  LayoutDashboard,
   LogOut,
   Menu,
-  ScrollText,
-  Settings,
-  ShoppingCart,
   User,
-  Users,
-  Warehouse,
-  Wrench
 } from 'lucide-react';
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { TOP_NAV } from '@/navigation';
 
-const navigation = [
-// ... (rest of navigation array)
-  {
-    name: 'Home',
-    href: '/',
-    icon: Home,
-    type: 'link'
-  },
-  {
-    name: 'Comercial',
-    icon: ShoppingCart,
-    type: 'collapsible',
-    children: [
-      {
-        name: 'Consolidar Arquivos',
-        href: '/consolidar',
-        type: 'link',
-        permission: { a: 'vendas', I: 'ler' }
-      },
-      {
-        name: 'Pedidos',
-        href: '/vendas/pedidos',
-        type: 'link',
-        permission: { a: 'vendas', I: 'ler' }
-      },
-      {
-        name: 'Personalizados',
-        href: '/vendas/personalizadas',
-        type: 'link',
-        permission: { a: 'vendas', I: 'ler' }
-      },
-    ]
-  },
-  {
-    name: 'Industrial',
-    icon: Cog,
-    type: 'collapsible',
-    children: [
-      {
-        name: 'Torre de Despacho',
-        href: '/despacho',
-        type: 'link',
-        permission: { a: 'producao', I: 'ler' }
-      },
-      {
-        name: 'Produção',
-        href: '/producao',
-        type: 'link',
-        permission: { a: 'producao', I: 'ler' }
-      },
-      {
-        name: 'Fila de Impressão',
-        href: '/producao/impressao',
-        type: 'link',
-        permission: { a: 'producao', I: 'ler' }
-      },
-      {
-        name: 'Expedição',
-        href: '/producao/expedicao',
-        type: 'link',
-        permission: { a: 'producao', I: 'ler' }
-      },
-    ]
-  },
-  {
-    name: 'Logística',
-    icon: Warehouse,
-    type: 'collapsible',
-    permission: { a: 'estoque', I: 'ler' },
-    children: [
-      { name: 'Dashboard', href: '/estoque', icon: LayoutDashboard, type: 'link' },
-      { name: 'Movimentar', href: '/estoque/movimentar', type: 'link' },
-      { name: 'Posição', href: '/estoque/posicao', type: 'link' },
-      { name: 'Histórico', href: '/estoque/historico', type: 'link' },
-      { name: 'Reservas', href: '/estoque/reservas', type: 'link' },
-      { name: 'Ajuste', href: '/estoque/ajuste', type: 'link' },
-      { name: 'Relatórios', href: '/estoque/relatorios', type: 'link' },
-    ]
-  },
-  {
-    name: 'Dados Mestres',
-    icon: Boxes,
-    type: 'collapsible',
-    children: [
-      {
-        name: 'Produtos',
-        href: '/produtos',
-        type: 'link',
-        permission: { a: 'produtos', I: 'ler' }
-      },
-      {
-        name: 'Cadastros Base',
-        href: '/cadastros',
-        type: 'link',
-        permission: { a: 'cadastros', I: 'ler' }
-      },
-    ]
-  },
-  {
-    name: 'Relatórios & IA',
-    icon: ScrollText,
-    type: 'collapsible',
-    children: [
-      { name: 'Índice de Relatórios', href: '/relatorios', type: 'link', permission: { a: 'relatorios', I: 'ler' } },
-      { name: 'Auditoria', href: '/relatorios/auditoria', type: 'link', adminOnly: true },
-      { name: 'Histórico Gerencial', href: '/relatorios/gerencial-historico', type: 'link', adminOnly: true },
-      { name: 'Logs de IA', href: '/ai/logs', type: 'link', adminOnly: true },
-    ]
-  },
-  {
-    name: 'Configurações',
-    icon: Settings,
-    type: 'collapsible',
-    children: [
-      {
-        name: 'Controle de Acesso',
-        href: '/sistema',
-        icon: Users,
-        type: 'link',
-        adminOnly: true
-      },
-      {
-        name: 'Sistema',
-        href: '/configuracoes/producao',
-        icon: Settings,
-        type: 'link',
-        permission: { a: 'configuracoes', I: 'ler' }
-      },
-      {
-        name: 'Utilitários',
-        icon: Wrench,
-        type: 'sub-collapsible',
-        adminOnly: true,
-        children: [
-          { name: 'Central de Tarefas', href: '/admin/utilitarios/tasks', icon: HardDrive, type: 'link', adminOnly: true },
-          { name: 'Ferramentas', href: '/ferramentas', icon: Wrench, type: 'link', adminOnly: true },
-        ]
-      },
-    ]
-  },
-];
+// O menu vive em src/navigation.js (registro unico de navegacao).
+const navigation = TOP_NAV;
 
 function Header() {
   const { user, logout, isAdmin, hasPermission } = useAuth();

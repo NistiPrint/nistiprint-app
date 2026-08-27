@@ -82,7 +82,7 @@ class DemandaAutoFillService:
                 if regra_principal.get('ponto_coleta_id'):
                     ponto = self._get_ponto_coleta(regra_principal.get('ponto_coleta_id'))
                     if ponto:
-                        defaults['horario_corte_ponto'] = self._format_horario(ponto.get('horario_corte_padrao'))
+                        defaults['horario_corte_ponto'] = self._format_horario(ponto.get('horario_fechamento'))
 
             # 4. Inferir tipo de demanda baseado na plataforma
             defaults['tipo_demanda'] = self._infer_tipo_demanda(canal.get('plataforma_nome'))
@@ -132,7 +132,7 @@ class DemandaAutoFillService:
                 if ponto:
                     defaults['ponto_coleta_id'] = ponto.get('id')
                     defaults['ponto_coleta_nome'] = ponto.get('nome')
-                    defaults['horario_corte_ponto'] = self._format_horario(ponto.get('horario_corte_padrao'))
+                    defaults['horario_corte_ponto'] = self._format_horario(ponto.get('horario_fechamento'))
 
             # Inferir flags
             defaults['is_flex'] = modalidade == 'EXPRESS'
@@ -300,12 +300,12 @@ class DemandaAutoFillService:
             if ponto_coleta_id:
                 ponto = self._get_ponto_coleta(ponto_coleta_id)
                 if ponto:
-                    horario_corte = self._parse_time(ponto.get('horario_corte_padrao'))
+                    horario_corte = self._parse_time(ponto.get('horario_fechamento'))
                     
                     if horario_corte and horario > horario_corte:
                         resultado['erros'].append(
                             f'Horário de coleta ({horario_coleta_str}) é posterior ao '
-                            f'horário de corte do ponto ({ponto.get("horario_corte_padrao")})'
+                            f'horário de corte do ponto ({ponto.get("horario_fechamento")})'
                         )
                         resultado['valido'] = False
 

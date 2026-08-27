@@ -432,7 +432,7 @@ export interface RegraLogisticaCanal {
 export interface PontoColeta {
   id: number;
   nome: string;
-  horario_corte_padrao: string;  // HH:MM
+  horario_fechamento: string;  // HH:MM
   endereco?: string;
   ativo: boolean;
   created_at?: string;

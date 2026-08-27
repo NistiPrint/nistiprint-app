@@ -51,7 +51,10 @@ export default function PedidosListPageLotAware() {
     origem_pedido_key: null,
     has_demanda: null,
     is_flex: null,
-    is_fulfillment: null,
+    // Full fora por padrão: quem despacha é o marketplace e o pedido não passa
+    // por produção, então ele não pertence a nenhum fluxo que termina no galpão.
+    // Continua pesquisável — basta trocar o filtro para Full ou Todos.
+    is_fulfillment: false,
     is_personalizado: null,
     delivery_start: '',
     delivery_end: '',
@@ -160,7 +163,10 @@ export default function PedidosListPageLotAware() {
       origem_pedido_key: null,
       has_demanda: null,
       is_flex: null,
-      is_fulfillment: null,
+      // Full fora por padrão: quem despacha é o marketplace e o pedido não passa
+    // por produção, então ele não pertence a nenhum fluxo que termina no galpão.
+    // Continua pesquisável — basta trocar o filtro para Full ou Todos.
+    is_fulfillment: false,
       is_personalizado: null,
       delivery_start: '',
       delivery_end: '',

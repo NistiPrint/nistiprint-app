@@ -45,6 +45,21 @@ def get_unified_orders():
         return ApiResponse.error(message=str(e), status_code=500)
 
 
+def _fulfillment_do_pedido(args):
+    """Resolve o filtro de fulfillment com Full fora por padrao.
+
+    None  -> sem filtro (os dois)
+    False -> so o que passa por producao
+    True  -> so Full
+    """
+    explicito = parse_bool_strict(args.get('is_fulfillment'))
+    if explicito is not None:
+        return explicito
+    if parse_bool_strict(args.get('incluir_fulfillment')) is True:
+        return None
+    return False
+
+
 @unified_orders_bp.route('/list-advanced', methods=['GET'])
 @login_required
 def get_unified_orders_advanced():
@@ -58,7 +73,12 @@ def get_unified_orders_advanced():
             'p_origem_pedido_key': request.args.get('origem_pedido_key') or None,
             'p_has_demanda': parse_bool_strict(request.args.get('has_demanda')),
             'p_is_flex': parse_bool_strict(request.args.get('is_flex')),
-            'p_is_fulfillment': parse_bool_strict(request.args.get('is_fulfillment')),
+            # Full fora por padrao. Quem despacha e o marketplace e o pedido nao
+            # passa por producao, entao ele nao pertence a nenhum fluxo que
+            # termina no galpao — inclusive quando o chamador esquece de filtrar.
+            # `incluir_fulfillment=true` traz os dois; `is_fulfillment=true`
+            # traz so o Full, para quando o usuario for procura-lo.
+            'p_is_fulfillment': _fulfillment_do_pedido(request.args),
             'p_is_personalizado': parse_bool_strict(request.args.get('is_personalizado')),
             'p_delivery_start_date': normalize_date_start(request.args.get('delivery_start')),
             'p_delivery_end_date': normalize_date_end(request.args.get('delivery_end')),

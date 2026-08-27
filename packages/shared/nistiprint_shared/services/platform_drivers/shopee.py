@@ -233,7 +233,18 @@ def get_order_detail(integration: Dict, order_sn_list: List[str]) -> Dict:
             "retryable": False,
         }
 
-    normalized_order = {
+    normalized_order = _normalize_order(order, shop_id)
+
+    logger.info("[shopee] order_detail fetched order_sn=%s status=%s shipping_carrier=%s fulfillment_flag=%s",
+                order.get("order_sn"), order.get("order_status"),
+                normalized_order.get("shipping_carrier"), order.get("fulfillment_flag"))
+
+    return normalized_order
+
+
+def _normalize_order(order: Dict, shop_id: int) -> Dict:
+    """Converte um item de `order_list` da Shopee no DTO interno."""
+    return {
         "external_id":        order.get("order_sn", ""),
         "platform":           "shopee",
         "shop_id":            shop_id,
@@ -258,11 +269,126 @@ def get_order_detail(integration: Dict, order_sn_list: List[str]) -> Dict:
         "raw":                order,
     }
 
-    logger.info("[shopee] order_detail fetched order_sn=%s status=%s shipping_carrier=%s fulfillment_flag=%s",
-                order.get("order_sn"), order.get("order_status"),
-                normalized_order.get("shipping_carrier"), order.get("fulfillment_flag"))
 
-    return normalized_order
+#: Teto da Shopee para `order_sn_list` em get_order_detail.
+ORDER_DETAIL_BATCH_SIZE = 50
+
+
+def get_order_details_batch(integration: Dict, order_sn_list: List[str]) -> Dict[str, Dict]:
+    """Detalhe de varios pedidos, agrupando ate 50 por chamada.
+
+    `get_order_detail` aceita lista na assinatura, mas tem semantica de pedido
+    unico: le `order_list[0]` e confere a identidade contra o primeiro
+    `order_sn` pedido. Passar 50 ali devolveria so o primeiro, em silencio — por
+    isso esta funcao existe em vez de um parametro novo naquela.
+
+    A confirmacao de identidade continua valendo, agora por chave: cada pedido
+    devolvido e indexado pelo proprio `order_sn`, entao um pedido ausente na
+    resposta vira erro explicito e nunca herda o detalhe de outro.
+
+    Retorna `{order_sn: detalhe_ou_erro}` — o chamador trata cada pedido
+    individualmente, como se tivesse buscado um a um.
+    """
+    resultado: Dict[str, Dict] = {}
+    solicitados: List[str] = []
+    for value in order_sn_list:
+        if not value:
+            continue
+        try:
+            solicitados.append(_sanitize_order_sn(value))
+        except ValueError as exc:
+            # Um identificador corrompido no banco nao pode derrubar o lote
+            # inteiro: os outros 49 pedidos nao tem culpa.
+            resultado[str(value)] = {
+                "error": str(exc),
+                "error_type": "invalid_provider_resource_id",
+                "retryable": False,
+            }
+    if not solicitados:
+        return resultado
+
+    host = "https://partner.shopeemobile.com"
+    path = "/api/v2/order/get_order_detail"
+    optional_fields = (
+        "buyer_user_id,buyer_username,recipient_address,item_list,create_time,"
+        "update_time,pay_time,ship_time,total_amount,order_status,fulfillment_flag,"
+        "package_list,shipping_carrier,message_to_seller,ship_by_date"
+    )
+
+    for inicio in range(0, len(solicitados), ORDER_DETAIL_BATCH_SIZE):
+        lote = solicitados[inicio:inicio + ORDER_DETAIL_BATCH_SIZE]
+        try:
+            resolved = _resolve_credentials(integration)
+            partner_id_raw = resolved.get("partner_id")
+            partner_key = resolved.get("partner_key")
+            shop_id_raw = resolved.get("shop_id")
+            access_token = resolved.get("access_token")
+            if not all([partner_id_raw, partner_key, shop_id_raw, access_token]):
+                raise ValueError("Configuracao da Shopee incompleta")
+
+            partner_id = int(partner_id_raw)
+            shop_id = int(shop_id_raw)
+            timestamp = int(time.time())
+            sign = _generate_sign(
+                partner_id, partner_key, path, timestamp, access_token, shop_id
+            )
+
+            logger.info(
+                "[shopee] fetching resource_type=order count=%s shop_id=%s (lote)",
+                len(lote), shop_id,
+            )
+            result = request_json(
+                requests.get,
+                f"{host}{path}",
+                provider="Shopee",
+                resource_type="order",
+                resource_id=lote[0],
+                params={
+                    "partner_id": partner_id,
+                    "timestamp": timestamp,
+                    "sign": sign,
+                    "access_token": access_token,
+                    "shop_id": shop_id,
+                    "order_sn_list": ",".join(lote),
+                    "response_optional_fields": optional_fields,
+                },
+            )
+
+            if not result.ok:
+                falha = result.to_legacy()
+            elif (result.value or {}).get("error"):
+                falha = _shopee_api_error(
+                    result.value or {}, resource_type="order", resource_id=lote[0],
+                )
+            else:
+                falha = None
+        except Exception as exc:
+            falha = {"error": str(exc), "error_type": "batch_request_failed"}
+
+        if falha is not None:
+            # Falha de lote nao pode virar "pedido nao encontrado": sao coisas
+            # diferentes e so uma delas justifica parar de tentar.
+            for order_sn in lote:
+                resultado[order_sn] = dict(falha)
+            continue
+
+        encontrados = {
+            str(order.get("order_sn") or ""): order
+            for order in ((result.value or {}).get("response", {}) or {}).get("order_list", [])
+            or []
+        }
+        for order_sn in lote:
+            order = encontrados.get(order_sn)
+            if order is None:
+                resultado[order_sn] = {
+                    "error": "Pedido nao encontrado na Shopee.",
+                    "error_type": "provider_resource_not_found",
+                    "retryable": False,
+                }
+            else:
+                resultado[order_sn] = _normalize_order(order, shop_id)
+
+    return resultado
 
 def get_return_detail(integration: Dict, return_sn: str) -> Dict:
     """Fetch a Shopee return/refund resource and expose its order identity."""

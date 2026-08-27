@@ -10,6 +10,7 @@ import LoginPage from './pages/LoginPage'
 import CadastrosPage from './pages/admin/CadastrosPage'
 import ConfiguracoesPage from './pages/admin/ConfiguracoesPage'
 import FerramentasPage from './pages/admin/FerramentasPage'
+import LogisticaIntegracaoPage from '@/pages/admin/configuracoes/LogisticaIntegracaoPage';
 import IntegracoesPage from './pages/admin/IntegracoesPage'
 import RelatoriosPage from './pages/admin/RelatoriosPage'
 import SetorPermissoesPage from './pages/admin/SetorPermissoesPage'; // Import SetorPermissoesPage
@@ -279,6 +280,11 @@ function App() {
               element={<PermissoesDemandaPage />}
             />
             <Route path='ia' element={<ConfiguracoesIA />} />
+            {/* Janelas de despacho saiu de dentro do hub de integrações: é
+                cadastro operacional de rotina (corte, coleta, ponto), não
+                conexão de conta. Estava enterrada numa aba de um hub cujo nome
+                não sugere que o horário de corte mora ali. */}
+            <Route path='janelas-despacho' element={<LogisticaIntegracaoPage />} />
             <Route path='integracoes' element={<IntegracoesPage />}>
               <Route
                 path='install/:moduleId'
@@ -304,7 +310,8 @@ function App() {
               element={<HistoricoProducaoPage />}
             />
             <Route path='historico-coletas' element={<HistoricoColetasPage />} />
-            <Route path='fila-estoque' element={<MonitoramentoEstoquePage />} />
+            {/* Rota antiga da fila legada: mantida como redirecionamento p/ favoritos */}
+            <Route path='fila-estoque' element={<Navigate to='/relatorios/monitoramento-estoque' replace />} />
             <Route path='monitoramento-estoque' element={<MonitoramentoEstoquePage />} />
             <Route path='webhooks' element={<WebhooksPage />} />
             <Route path='auditoria' element={<AuditoriaPage />} />

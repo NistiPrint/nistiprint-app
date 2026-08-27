@@ -8,7 +8,6 @@ import { toast } from 'sonner';
 function RelatoriosIndexPage() {
   const [sulfiteReport, setSulfiteReport] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [processingQueue, setProcessingQueue] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -37,29 +36,6 @@ function RelatoriosIndexPage() {
 
     fetchSulfiteReport();
   }, []);
-
-  const handleProcessQueue = async () => {
-    setProcessingQueue(true);
-    try {
-      const response = await fetch('/api/v2/demanda_producao/processar-fila-estoque', {
-        method: 'POST'
-      });
-      const data = await response.json();
-      if (data.success) {
-        if (data.processed_count > 0) {
-          toast.success(`${data.processed_count} tarefas de estoque processadas com sucesso!`);
-        } else {
-          toast.info('Nenhuma tarefa pendente na fila de estoque.');
-        }
-      } else {
-        toast.error('Erro ao processar fila: ' + data.message);
-      }
-    } catch (e) {
-      toast.error('Erro na requisição: ' + e.message);
-    } finally {
-      setProcessingQueue(false);
-    }
-  };
 
   if (loading) return <div className="text-center py-10">Carregando Relatórios...</div>;
   if (error) return <div className="text-center py-10 text-red-500">Erro ao carregar relatórios: {error}</div>;

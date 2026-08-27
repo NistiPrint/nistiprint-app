@@ -274,10 +274,6 @@ class DemandaProducaoService:
         """
         return self._alocacao_estoque.processar_alocacao_de_demanda(demanda_id, itens_payload, user_id)
 
-    def processar_fila_estoque(self, limit=10):
-        """Processa a fila de tarefas de estoque."""
-        return self._alocacao_estoque.processar_fila_estoque(limit=limit)
-
     def processar_alocacao_avulsa_otimizado(self, product_id, campo, quantidade, user_id, sincrono=False):
         """
         Processa alocação avulsa (entrada de produção via ControleProducaoPage).

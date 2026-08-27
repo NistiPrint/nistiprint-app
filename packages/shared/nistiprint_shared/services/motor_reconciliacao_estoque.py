@@ -157,8 +157,10 @@ class MotorReconciliacaoEstoque:
     """
 
     def __init__(self):
+        # O ledger e escrito pela RPC reconciliar_item_estoque, que insere em
+        # demanda_estoque_processado uma linha por movimento (com ON CONFLICT
+        # de idempotencia). _ler_ledger_item le dessa mesma tabela.
         self.ledger_table = supabase_db.table('demanda_estoque_processado')
-        self.eventos_table = supabase_db.table('eventos_producao')
         self.produtos_table = supabase_db.table('produtos')
         self.depositos_table = supabase_db.table('depositos')
 
@@ -240,12 +242,9 @@ class MotorReconciliacaoEstoque:
                     item_id, demanda_id, deltas, efetivas, intencao, realizado, user_id, correlation_id
                 )
 
-                # 7. Registrar evento de produção como processado
-                await self._registrar_evento_processado(
-                    item_id, demanda_id, 'finalizados_qtd',
-                    intencao.finalizados, efetivas.finalizados, correlation_id
-                )
-
+                # O registro no ledger ja foi feito dentro da RPC
+                # reconciliar_item_estoque (uma linha por movimento em
+                # demanda_estoque_processado). Nao ha passo adicional aqui.
                 return resultado
 
             finally:
@@ -265,108 +264,6 @@ class MotorReconciliacaoEstoque:
                 correlation_id=correlation_id,
                 erros=[str(e)]
             )
-
-    def processar_fila_unificada(self, limit=50) -> int:
-        """
-        Método unificado para consumir tarefas da fila 'fila_processamento_estoque'
-        usando a lógica determinística do Motor de Reconciliação (MRE).
-        """
-        from nistiprint_shared.database.supabase_db_service import supabase_db
-        from nistiprint_shared.utils.date_utils import get_now_iso
-        import uuid
-        import socket
-        import asyncio
-
-        worker_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:6]}"
-        fila_table = supabase_db.table('fila_processamento_estoque')
-
-        # Busca tarefas PENDENTES/ERRO usando a RPC force_fetch_all_tasks
-        res = supabase_db.rpc('force_fetch_all_tasks', {
-            'p_worker_id': worker_id,
-            'p_limit': limit
-        }).execute()
-
-        if not res.data:
-            return 0
-
-        processed = 0
-        for tarefa in res.data:
-            t_id = tarefa['id']
-            try:
-                # Delega para a reconciliação (se for tarefa de reconciliação de item)
-                if tarefa.get('tipo_operacao') in ['RECONCILIACAO_ITEM', 'ITEM_TOTAL_BOM_PROCESS']:
-                    item_id = tarefa.get('item_id')
-                    demanda_id = tarefa.get('demanda_id')
-                    user_id = tarefa.get('user_id', 'Worker')
-
-                    resultado = asyncio.run(self.reconcile_item(
-                        item_id=int(item_id) if item_id else None,
-                        demanda_id=int(demanda_id) if demanda_id else None,
-                        user_id=str(user_id)
-                    ))
-
-                    if resultado.sucesso:
-                        fila_table.update({'status': 'CONCLUIDO', 'processed_at': get_now_iso()}).eq('id', t_id).execute()
-                        processed += 1
-                    else:
-                        raise Exception(f"Falha MRE: {resultado.erros}")
-                
-                elif tarefa.get('tipo_operacao') in ['CONSUMO_BOM', 'ESTORNO_BOM']:
-                    # Produção Avulsa ou OP: explode BOM e consome insumos
-                    produto_id = tarefa.get('produto_id')
-                    quantidade = Decimal(str(tarefa.get('quantidade', 0)))
-                    user_id = tarefa.get('user_id', 'Worker')
-                    correlation_id = tarefa.get('correlation_id')
-                    tipo_op = tarefa.get('tipo_operacao')
-                    
-                    if not produto_id or quantidade <= 0:
-                        fila_table.update({'status': 'SKIPPED', 'mensagem_erro': 'Dados inválidos'}).eq('id', t_id).execute()
-                        continue
-
-                    # Se for estorno, a quantidade deve ser negativa para a explosão de consumo
-                    multiplicador = Decimal('-1') if tipo_op == 'ESTORNO_BOM' else Decimal('1')
-                    
-                    # Explodir BOM recursivamente para gerar movimentos de insumos
-                    movimentos = asyncio.run(self._explodir_bom_consumo(
-                        produto_id=int(produto_id),
-                        quantidade=quantidade * multiplicador,
-                        demanda_id=None,
-                        user_id=user_id,
-                        deposito_padrao=self._get_deposito_padrao()
-                    ))
-                    
-                    # Persistir movimentos via RPC
-                    snapshot = {
-                        'tipo_operacao': tipo_op,
-                        'produto_principal_id': produto_id,
-                        'quantidade_principal': float(quantidade)
-                    }
-                    
-                    resultado = asyncio.run(self._persistir_via_rpc(
-                        movimentos=movimentos,
-                        item_id=None,
-                        demanda_id=None,
-                        correlation_id=correlation_id,
-                        user_id=user_id,
-                        snapshot=snapshot
-                    ))
-                    
-                    if resultado.sucesso:
-                        fila_table.update({'status': 'CONCLUIDO', 'processed_at': get_now_iso()}).eq('id', t_id).execute()
-                        processed += 1
-                    else:
-                        raise Exception(f"Falha MRE (Avulsa): {resultado.erros}")
-                
-                else:
-                    # Caso outros tipos existam, logar ou tratar conforme necessário
-                    print(f"DEBUG: Tipo de tarefa {tarefa.get('tipo_operacao')} ainda não migrado para o MRE")
-                    fila_table.update({'status': 'SKIPPED', 'mensagem_erro': 'Tipo não suportado pelo novo motor'}).eq('id', t_id).execute()
-
-            except Exception as e:
-                print(f"[MRE] Erro na tarefa {t_id}: {e}")
-                fila_table.update({'status': 'ERRO', 'mensagem_erro': str(e)}).eq('id', t_id).execute()
-
-        return processed
 
     async def _ler_intencao_item(self, item_id: int) -> Optional[IntencaoItem]:
         """Lê o estado visual atual do item (valores reportados)."""
@@ -521,9 +418,31 @@ class MotorReconciliacaoEstoque:
                     # Obter tipo do produto
                     tipo_produto = await self._get_tipo_produto(produto_id)
 
-                    # Regra: se tem BOM, prioriza estoque e faz produção compensatória (JIT)
+                    # Regra (B5): tudo que NAO e materia-prima debita em cascata.
+                    # Havendo saldo do proprio produto, consome; faltando, produz
+                    # JIT e explode a BOM — de modo que o consumo real recai sobre
+                    # as materias-primas, as unicas que podem ficar negativas.
+                    #
+                    # Antes o discriminador era "tem ficha tecnica", nao "e
+                    # materia-prima". Nos dados as duas coisas quase coincidem,
+                    # mas divergem em 9 intermediarios sem BOM e 1 servico: esses
+                    # eram consumidos como se fossem insumo e podiam negativar,
+                    # contra a regra. Agora viram erro de cadastro, visivel.
                     componentes_bom = await self._get_componentes_bom(produto_id)
                     tem_bom = len(componentes_bom) > 0
+                    eh_materia_prima = (tipo_produto or '').upper() == 'MATERIA_PRIMA'
+
+                    if (tipo_produto or '').upper() == 'SERVICO':
+                        # Servico nao movimenta estoque em nenhuma hipotese.
+                        continue
+
+                    if not eh_materia_prima and not tem_bom:
+                        erros.append(
+                            f"Produto {produto_id} e {tipo_produto} sem ficha tecnica: "
+                            f"nao ha o que debitar em cascata. Cadastre a BOM ou "
+                            f"reclassifique o produto."
+                        )
+                        continue
 
                     if tem_bom:
                         # Produto com BOM (Intermediário ou Acabado): NUNCA fica negativo
@@ -604,7 +523,8 @@ class MotorReconciliacaoEstoque:
                                 movimentos.extend(movimentos_bom)
 
                     else:
-                        # Produto sem BOM (Matéria-prima ou Base): consome direto (pode ir negativo)
+                        # Materia-prima sem BOM: consome direto e pode ir negativo.
+                        # E o unico caso em que o saldo negativo e esperado.
                         movimentos.append(Movimento(
                             produto_id=produto_id,
                             tipo='CONS_MP',
@@ -721,6 +641,17 @@ class MotorReconciliacaoEstoque:
             # Obter componentes da BOM do próprio componente (para recursão JIT)
             sub_componentes = await self._get_componentes_bom(comp_id)
             tem_bom = len(sub_componentes) > 0
+
+            # Regra (B5), agora tambem na recursao: intermediario sem ficha
+            # tecnica nao pode ser tratado como insumo. Levanta erro pelo mesmo
+            # motivo do bloco acima — e defeito de cadastro, nao de operacao.
+            if (tipo_componente or '').upper() not in ('MATERIA_PRIMA', 'SERVICO') and not tem_bom:
+                raise ValueError(
+                    f"BOM incompleta: componente {comp_id} e {tipo_componente} "
+                    f"sem ficha tecnica propria, dentro da BOM de {produto_id}."
+                )
+            if (tipo_componente or '').upper() == 'SERVICO':
+                continue
 
             if tem_bom:
                 # Produto tem BOM: prioriza estoque e produz recursivamente se faltar.
@@ -857,10 +788,16 @@ class MotorReconciliacaoEstoque:
         return matching_ids
 
     async def _get_tipo_produto(self, produto_id: int) -> str:
-        """Obtém o tipo de produto (MATERIA_PRIMA, INTERMEDIARIO, PRODUTO_ACABADO)."""
+        """
+        Tipo do produto: MATERIA_PRIMA, INTERMEDIARIO, PRODUTO_ACABADO ou SERVICO.
+
+        O default de produto desconhecido e DESCONHECIDO, nao MATERIA_PRIMA.
+        Sob a regra B5, assumir materia-prima faria um produto que nem existe
+        ser consumido direto e negativar em silencio.
+        """
         produto_id = _normalizar_produto_id(produto_id)
         if produto_id is None:
-            return 'MATERIA_PRIMA'
+            return 'DESCONHECIDO'
 
         response = self.produtos_table\
             .select('tipo_produto')\
@@ -868,9 +805,9 @@ class MotorReconciliacaoEstoque:
             .execute()
 
         if not response.data:
-            return 'MATERIA_PRIMA'
+            return 'DESCONHECIDO'
 
-        return response.data[0].get('tipo_produto', 'MATERIA_PRIMA')
+        return response.data[0].get('tipo_produto') or 'DESCONHECIDO'
 
     async def _get_componentes_bom(self, produto_id: int) -> List[Dict[str, Any]]:
         """Obtém componentes da BOM de um produto."""
@@ -988,24 +925,6 @@ class MotorReconciliacaoEstoque:
 
         except Exception as e:
             print(f"ERRO ao liberar reservas para demanda {demanda_id}: {e}")
-
-    async def _registrar_evento_processado(self, item_id: int, demanda_id: int,
-                                            estagio: str, quantidade_reportada: Decimal,
-                                            quantidade_efetiva: Decimal, correlation_id: str):
-        """Registra evento de produção como processado."""
-        evento = {
-            'item_demanda_id': item_id,
-            'demanda_id': demanda_id,
-            'estagio': estagio,
-            'quantidade_reportada': float(quantidade_reportada),
-            'quantidade_efetiva': float(quantidade_efetiva),
-            'tipo_evento': 'LIQUIDACAO',
-            'processado': True,
-            'correlation_id': correlation_id,
-            'processed_at': get_now_iso()
-        }
-
-        self.eventos_table.insert(evento).execute()
 
     async def _adquirir_lock_item(self, item_id: int) -> bool:
         """

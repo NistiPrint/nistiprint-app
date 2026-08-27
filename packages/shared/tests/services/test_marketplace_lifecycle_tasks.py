@@ -89,6 +89,85 @@ class TestReconcileMarketplaceLifecycleQuery(unittest.TestCase):
         self.assertFalse(resultado['has_more'])
 
 
+class TestPrefetchShopeeEmLote(unittest.TestCase):
+    """Cem pedidos Shopee viravam cem chamadas; a API aceita 50 por vez."""
+
+    def _rows(self, quantidade, integration_id=20):
+        return [
+            {
+                'id': 1000 + i,
+                'marketplace_module_id': 'shopee',
+                'marketplace_order_id': f'25080{i:04d}',
+                'marketplace_integration_id': integration_id,
+            }
+            for i in range(quantidade)
+        ]
+
+    def test_agrupa_por_integracao_em_uma_chamada(self):
+        rows = self._rows(40)
+        ingest = MagicMock()
+        ingest._hydrate_shopee_integration.side_effect = lambda i: i
+        integracoes = {20: {'id': 20, 'module_id': 'shopee'}}
+
+        with patch(
+            'nistiprint_shared.services.platform_drivers.shopee.get_order_details_batch',
+            return_value={r['marketplace_order_id']: {'external_id': r['marketplace_order_id']}
+                          for r in rows},
+        ) as batch:
+            detalhes = tasks._prefetch_detalhes_shopee(rows, integracoes, ingest)
+
+        batch.assert_called_once()
+        self.assertEqual(len(batch.call_args.args[1]), 40)
+        self.assertEqual(len(detalhes), 40)
+
+    def test_meli_fica_fora_do_prefetch(self):
+        """Detalhe do ML exige envio e SLA, que nao tem endpoint em lote."""
+        rows = self._rows(2) + [{
+            'id': 9, 'marketplace_module_id': 'mercadolivre',
+            'marketplace_order_id': '2000', 'marketplace_integration_id': 20,
+        }]
+        ingest = MagicMock()
+        ingest._hydrate_shopee_integration.side_effect = lambda i: i
+
+        with patch(
+            'nistiprint_shared.services.platform_drivers.shopee.get_order_details_batch',
+            return_value={},
+        ) as batch:
+            tasks._prefetch_detalhes_shopee(rows, {20: {'id': 20}}, ingest)
+
+        self.assertEqual(batch.call_args.args[1], ['250800000', '250800001'])
+
+    def test_falha_do_lote_vira_erro_por_pedido(self):
+        """Um lote que falha nao pode deixar pedido sem resposta nenhuma."""
+        rows = self._rows(3)
+        ingest = MagicMock()
+        ingest._hydrate_shopee_integration.side_effect = lambda i: i
+
+        with patch(
+            'nistiprint_shared.services.platform_drivers.shopee.get_order_details_batch',
+            side_effect=RuntimeError('429 rate limit'),
+        ):
+            detalhes = tasks._prefetch_detalhes_shopee(rows, {20: {'id': 20}}, ingest)
+
+        self.assertEqual(len(detalhes), 3)
+        for row in rows:
+            self.assertIn('429', detalhes[row['marketplace_order_id']]['error'])
+
+    def test_integracoes_carregadas_de_uma_vez(self):
+        rows = self._rows(5, integration_id=20) + self._rows(5, integration_id=21)
+        query = MagicMock()
+        query.select.return_value = query
+        query.in_.return_value = query
+        query.execute.return_value.data = [{'id': 20}, {'id': 21}]
+
+        with patch.object(tasks.supabase_db, 'table', return_value=query) as table:
+            integracoes = tasks._integracoes_do_lote(rows)
+
+        table.assert_called_once_with('installed_integrations')
+        self.assertEqual(sorted(integracoes), [20, 21])
+        self.assertEqual(sorted(query.in_.call_args.args[1]), [20, 21])
+
+
 class TestTravaDaCadeiaDeBackfill(unittest.TestCase):
     """A task se auto-encadeia E esta no beat: sem trava, as cadeias empilham."""
 

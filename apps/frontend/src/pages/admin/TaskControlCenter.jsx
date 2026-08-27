@@ -234,27 +234,9 @@ function TaskControlCenter() {
     }
   };
 
-  const handleReprocessFila = async () => {
-    setReprocessing(true);
-    try {
-      const response = await fetch('/api/v2/tasks/stock/reprocess-fila', { method: 'POST' });
-      const data = await response.json();
-      if (data.success) {
-        toast.success(`Fila reprocessada: ${JSON.stringify(data.stats)}`);
-        fetchLogs();
-        fetchStats();
-      }
-    } catch (e) {
-      toast.error('Erro ao reprocessar fila');
-    } finally {
-      setReprocessing(false);
-    }
-  };
-
   const confirmReprocess = (action) => {
     const messages = {
-      'events': 'Isso irá reprocessar até 50 eventos não processados. Deseja continuar?',
-      'fila': 'Isso irá reprocessar até 50 itens da fila de processamento de estoque. Deseja continuar?'
+      'events': 'Isso irá reprocessar até 50 eventos não processados. Deseja continuar?'
     };
     setConfirmDialog({
       open: true,
@@ -266,7 +248,6 @@ function TaskControlCenter() {
   const executeConfirmedAction = () => {
     setConfirmDialog({ ...confirmDialog, open: false });
     if (confirmDialog.action === 'events') handleReprocessEvents();
-    if (confirmDialog.action === 'fila') handleReprocessFila();
   };
 
   // --- Unified Refresh ---
@@ -501,9 +482,6 @@ function TaskControlCenter() {
             <div className="flex flex-col gap-2">
               <Button size="sm" variant="outline" onClick={() => confirmReprocess('events')} disabled={reprocessing}>
                 <Zap className={`h-4 w-4 mr-2 ${reprocessing ? 'animate-pulse' : ''}`} /> Eventos
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => confirmReprocess('fila')} disabled={reprocessing}>
-                <AlertTriangle className={`h-4 w-4 mr-2 ${reprocessing ? 'animate-pulse' : ''}`} /> Fila
               </Button>
             </div>
           </div>

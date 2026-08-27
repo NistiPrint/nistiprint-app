@@ -191,8 +191,14 @@ class DemandaStatusService:
         # Usando o método do core se disponível ou via update direto
         res = self._core.update_demanda_details(demanda_id, {'status': 'CONCLUIDO', 'data_conclusao': get_now_iso()}, user_id)
 
-        # 3. AGENDAR BAIXA FINAL: Enviar para a fila para baixar estoque do produto vendido em background
-        self._core.agendar_processamento_estoque(demanda_id, None, 'DEMANDA_TOTAL', 1, user_id)
+        # QA-5: concluir a producao NAO da saida no estoque. Enquanto a
+        # expedicao apenas retirou o item, ele ainda esta na empresa e pode
+        # voltar ao estoque; a saida real e a coleta, quando a mercadoria sai
+        # fisicamente. A baixa acontece em DemandaCollectionsService, ao fechar
+        # a coleta por completo.
+        #
+        # A chamada que existia aqui enfileirava 'DEMANDA_TOTAL', tipo que o
+        # processador da fila nunca tratou — era descartado em silencio.
 
         return res
 

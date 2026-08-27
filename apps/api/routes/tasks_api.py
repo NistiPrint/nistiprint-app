@@ -392,29 +392,6 @@ def reprocess_events():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@tasks_api_bp.route('/stock/reprocess-fila', methods=['POST'])
-@admin_required
-def reprocess_fila():
-    """
-    Reprocess fila_processamento_estoque.
-    
-    Triggers the stock reconciliation motor to process the legacy queue.
-    """
-    try:
-        from nistiprint_shared.services.motor_reconciliacao_estoque import motor_reconciliacao_estoque
-        
-        # Process a batch of items from the queue
-        stats = motor_reconciliacao_estoque.processar_fila_unificada(limit=50)
-        
-        return jsonify({
-            'success': True,
-            'message': 'Fila reprocessada com sucesso',
-            'stats': stats
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
 @tasks_api_bp.route('/stock/reconcile-item/<item_id>', methods=['POST'])
 @login_required
 def reconcile_item(item_id):

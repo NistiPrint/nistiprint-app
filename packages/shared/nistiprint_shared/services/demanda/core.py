@@ -721,9 +721,39 @@ class DemandaCoreService:
 
     def _resolve_miolo_for_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Resolve e associa o ID do produto miolo para um item da demanda.
-        Tenta primeiro via BOM do produto pai, depois por busca parcial na categoria Miolo.
+        Resolve produto, variacao e miolo de um item da demanda.
+
+        Ordem: identificacao pelo SKU (cadastro), BOM do produto pai, e por
+        ultimo busca parcial por nome na categoria Miolo.
         """
+        # 0 (B1). Item que chega sem produto mapeado: resolve pelo SKU contra o
+        # cadastro — SKU interno, apelidos em produtos_externos e, em ultimo
+        # caso, a heuristica de prefixo herdada do consolidador legado.
+        # Sem este passo, produto_id ficava nulo e o motor de estoque devolvia
+        # "item_sem_produto_mapeado" sem movimentar nada.
+        if not item.get('produto_id') or not item.get('id_produto_miolo'):
+            try:
+                from nistiprint_shared.services.product_service import product_service
+                ident = product_service.resolver_identificacao_completa(
+                    item.get('sku'),
+                    item.get('plataforma') or item.get('origem')
+                )
+                if not item.get('produto_id') and ident.get('produto_id'):
+                    item['produto_id'] = ident['produto_id']
+                if not item.get('id_produto_miolo') and ident.get('miolo_id'):
+                    item['id_produto_miolo'] = ident['miolo_id']
+                    if not item.get('miolo_nome') and not item.get('miolo_name'):
+                        item['miolo_nome'] = ident.get('miolo_nome')
+                if not item.get('variacao') and ident.get('variacao'):
+                    item['variacao'] = ident['variacao']
+                # Guardado so para log: diz se veio de cadastro ou de heuristica.
+                item['origem_identificacao'] = ident.get('origem')
+            except Exception as e:
+                import logging
+                logging.error(
+                    f"Falha ao identificar produto pelo SKU {item.get('sku')!r}: {e}"
+                )
+
         # 1. Se já tem ID do miolo, não faz nada
         if item.get('id_produto_miolo'):
             return item

@@ -15,7 +15,7 @@ import PontoColetaService from '@/services/PontoColetaService';
 
 const formSchema = z.object({
   nome: z.string().min(1, 'Nome é obrigatório'),
-  horario_corte_padrao: z.string().min(1, 'Horário de corte é obrigatório'),
+  horario_fechamento: z.string().min(1, 'Informe a hora em que o ponto fecha'),
   endereco: z.string().optional(),
   ativo: z.boolean().default(true),
 });
@@ -31,7 +31,7 @@ function PontoColetaFormPage() {
     resolver: zodResolver(formSchema),
     defaultValues: {
       nome: '',
-      horario_corte_padrao: '17:00',
+      horario_fechamento: '17:00',
       endereco: '',
       ativo: true,
     },
@@ -45,7 +45,7 @@ function PontoColetaFormPage() {
           if (data) {
             form.reset({
               nome: data.nome,
-              horario_corte_padrao: data.horario_corte_padrao,
+              horario_fechamento: data.horario_fechamento,
               endereco: data.endereco || '',
               ativo: data.ativo,
             });
@@ -115,13 +115,20 @@ function PontoColetaFormPage() {
 
               <FormField
                 control={form.control}
-                name="horario_corte_padrao"
+                name="horario_fechamento"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Horário de Corte Padrão</FormLabel>
+                    <FormLabel>Horário em que o ponto fecha</FormLabel>
                     <FormControl>
                       <Input type="time" {...field} />
                     </FormControl>
+                    {/* Ponto de coleta não tem hora de corte: corte é regra de
+                        pertencimento do lote, e quem tem corte é a janela. Aqui
+                        é a hora em que a porta fecha — e é ela que vira o prazo
+                        de entrega das janelas que usam este ponto. */}
+                    <p className="text-xs text-muted-foreground">
+                      É o prazo de entrega das janelas que entregam neste ponto.
+                    </p>
                     <FormMessage />
                   </FormItem>
                 )}

@@ -25,7 +25,10 @@ const defaultForm = {
   dias_semana: [1, 2, 3, 4, 5],
   ativo: true,
   prioridade_uso: 100,
-  descricao: ''
+  descricao: '',
+  // Canais extras que saem nesta mesma janela. A modalidade principal nao entra
+  // aqui: ela ja e o dono da janela e nunca pode ser desmarcada.
+  canais_extras: []
 };
 
 const diasLabel = { 1: 'Seg', 2: 'Ter', 3: 'Qua', 4: 'Qui', 5: 'Sex', 6: 'Sab', 7: 'Dom' };
@@ -67,6 +70,11 @@ export default function LogisticaIntegracaoPage() {
     () => modalidadesForm.find((m) => String(m.id) === String(form.modalidade_id)),
     [modalidadesForm, form.modalidade_id]
   );
+  const isPonto = form.tipo_envio === 'PONTO_COLETA';
+  // A hora vem do cadastro do ponto; a janela só guarda exceção.
+  const horaFechamentoDoPonto = (
+    pontos.find((pt) => String(pt.id) === String(form.ponto_coleta_id))?.horario_fechamento || ''
+  ).slice(0, 5);
   const isRelativo = modalidadeSelecionada?.tipo_prazo === 'RELATIVO';
 
   async function carregarDados() {
@@ -168,11 +176,11 @@ export default function LogisticaIntegracaoPage() {
         return;
       }
     } else {
-      if (!form.horario_corte || !form.horario_coleta) {
+      if (!form.horario_corte || (!form.horario_coleta && !isPonto)) {
         toast.error('Hora de corte e hora de coleta são obrigatórias');
         return;
       }
-      if (form.horario_coleta < form.horario_corte) {
+      if (form.horario_coleta && form.horario_coleta < form.horario_corte) {
         toast.error('Hora de coleta/entrega precisa ser maior ou igual à hora de corte');
         return;
       }
@@ -200,8 +208,9 @@ export default function LogisticaIntegracaoPage() {
               ...base,
               dias_semana: form.dias_semana,
               horario_corte: form.horario_corte,
-              horario_coleta: form.horario_coleta,
-              horario_limite: form.horario_coleta
+              horario_coleta: form.horario_coleta || null,
+              horario_limite: form.horario_coleta || null,
+              modalidade_ids: [Number(form.modalidade_id), ...form.canais_extras.map(Number)]
             }
       );
       toast.success('Janela de coleta criada');
@@ -393,7 +402,13 @@ export default function LogisticaIntegracaoPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div className="space-y-2">
-              <Label>{isRelativo ? 'Coleta (min após a venda)' : 'Hora de coleta/entrega'}</Label>
+              <Label>
+                {isRelativo
+                  ? 'Coleta (min após a venda)'
+                  : isPonto
+                    ? 'Hora de entrega no ponto'
+                    : 'Hora da coleta'}
+              </Label>
               {isRelativo ? (
                 <Input
                   type="number"
@@ -402,11 +417,26 @@ export default function LogisticaIntegracaoPage() {
                   onChange={(e) => setForm((p) => ({ ...p, offset_coleta_min: e.target.value }))}
                 />
               ) : (
-                <Input type="time" value={form.horario_coleta} onChange={(e) => setForm((p) => ({ ...p, horario_coleta: e.target.value }))} />
+                <Input
+                  type="time"
+                  value={form.horario_coleta}
+                  placeholder={isPonto ? horaFechamentoDoPonto || '' : ''}
+                  onChange={(e) => setForm((p) => ({ ...p, horario_coleta: e.target.value }))}
+                />
+              )}
+              {/* O ponto de coleta não tem hora de corte: tem uma hora em que
+                  fecha, e é ela que é o prazo de entrega. Repetir esse horário
+                  em cada janela é a forma mais comum de os dois divergirem. */}
+              {isPonto && !isRelativo && (
+                <p className="text-xs text-muted-foreground">
+                  {horaFechamentoDoPonto
+                    ? `Em branco usa o fechamento do ponto (${horaFechamentoDoPonto}). Preencha só como exceção.`
+                    : 'Escolha um ponto com hora de fechamento cadastrada, ou informe a hora aqui.'}
+                </p>
               )}
             </div>
             <div className="space-y-2">
-              <Label>Ponto de coleta</Label>
+              <Label>{isPonto ? 'Ponto de coleta (obrigatório)' : 'Ponto de coleta'}</Label>
               <Select value={form.ponto_coleta_id} onValueChange={(v) => setForm((p) => ({ ...p, ponto_coleta_id: v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -430,6 +460,55 @@ export default function LogisticaIntegracaoPage() {
               <Input value={form.descricao} onChange={(e) => setForm((p) => ({ ...p, descricao: e.target.value }))} />
             </div>
           </div>
+
+          {/* Canais que compartilham esta janela.
+              Shopee Xpress e Retirada pelo Comprador saem no mesmo caminhão. Sem
+              este campo, a única forma de juntá-los era classificar um como o
+              outro — foi o que aconteceu com o canal 90024, e a classificação
+              errada sobreviveu meses porque nada acusava. */}
+          {!isRelativo && (
+            <div className="space-y-2">
+              <Label>Outros canais que saem nesta mesma janela</Label>
+              <div className="flex flex-wrap gap-2">
+                {modalidadesForm
+                  .filter((m) => String(m.id) !== String(form.modalidade_id) && m.tipo_prazo !== 'RELATIVO')
+                  .map((m) => {
+                    const marcado = form.canais_extras.includes(m.id);
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() =>
+                          setForm((p) => ({
+                            ...p,
+                            canais_extras: marcado
+                              ? p.canais_extras.filter((id) => id !== m.id)
+                              : [...p.canais_extras, m.id],
+                          }))
+                        }
+                        className={
+                          'rounded-full border px-3 py-1 text-xs transition-colors ' +
+                          (marcado
+                            ? 'border-primary bg-primary/10 text-primary'
+                            : 'border-border text-muted-foreground hover:border-primary/40')
+                        }
+                      >
+                        {marcado ? '✓ ' : '+ '}{m.nome}
+                      </button>
+                    );
+                  })}
+                {modalidadesForm.filter((m) => String(m.id) !== String(form.modalidade_id) && m.tipo_prazo !== 'RELATIVO').length === 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    Nenhum outro canal de prazo fixo cadastrado neste marketplace.
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Os canais marcados entram no mesmo lote: mesmo corte, mesma coleta e
+                uma demanda só. Na torre eles aparecem como um card.
+              </p>
+            </div>
+          )}
 
           {!isRelativo && (
             <div className="space-y-2">

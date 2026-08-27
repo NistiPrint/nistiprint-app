@@ -836,15 +836,19 @@ class MarketplaceWebhookIngestService:
         )
         return rows[0] if rows else None
 
-    def _fetch_shopee_detail(self, marketplace_inst: dict, order_sn: str) -> dict:
+    def _hydrate_shopee_integration(self, marketplace_inst: dict) -> dict:
         credentials = marketplace_inst.get("credentials") or {}
-        integration = credential_resolver_service.hydrate_integration({
+        return credential_resolver_service.hydrate_integration({
             **dict(marketplace_inst),
             "config": marketplace_inst.get("config") or {},
             "credentials": credentials,
             "access_token": marketplace_inst.get("access_token") or credentials.get("access_token"),
         })
-        return shopee_driver.get_order_detail(integration, [order_sn])
+
+    def _fetch_shopee_detail(self, marketplace_inst: dict, order_sn: str) -> dict:
+        return shopee_driver.get_order_detail(
+            self._hydrate_shopee_integration(marketplace_inst), [order_sn]
+        )
 
     def _lookup_meli_order_by_payment_id(
         self,

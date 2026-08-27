@@ -543,142 +543,39 @@ def get_consolidacao_result(consolidacao_id):
 
 
 # ============================================================================
-# ENDPOINT SÍNCRONO PARA PROCESSAR PEDIDOS SEM DEMANDA (ÚLTIMOS 3 DIAS)
+# APOSENTADO — geracao automatica de rascunho (26/08/2026)
 # ============================================================================
+#
+# Esta rota chamava consolidation_service.consolidar_pedido() pedido a pedido.
+# Entre 27/06 e 16/07 ela produziu 39 rascunhos, 14 deles com zero ou um pedido:
+# e a origem do "uma demanda por pedido". A task do Celery ja estava
+# desabilitada, mas a rota continuava disparando a mesma logica sob demanda.
+#
+# O rascunho agora nasce do clique do operador na Torre de Despacho, que agrupa
+# por marketplace, modalidade e prazo e consolida por titulo/SKU/variacao/miolo
+# (despacho_lancar_escopo -> despacho_publicar_demanda).
+#
+# A rota permanece respondendo 410 em vez de sumir: um cliente antigo que ainda
+# a chame precisa receber a explicacao, nao um 404 que parece indisponibilidade
+# temporaria e convida a repetir a chamada.
+
 
 @consolidar_bp.route('/consolidar/rascunhos/processar', methods=['POST'])
 @login_required
 def processar_rascunhos():
-    """
-    Processa pedidos SEM demanda dos últimos 3 dias e cria rascunhos automaticamente.
-    USA A MESMA LÓGICA DO WEBHOOK: consolidation_service.consolidar_pedido()
-    
-    Fluxo:
-    1. Busca pedidos sem demanda (últimos 3 dias)
-    2. Para cada pedido, chama consolidation_service.consolidar_pedido()
-    3. Retorna quantidade processada
-    """
-    try:
-        from nistiprint_shared.database.supabase_db_service import supabase_db
-        from nistiprint_shared.services.consolidation_service import consolidation_service
-        import logging
-        
-        logger = logging.getLogger(__name__)
-        
-        # Buscar pedidos SEM demanda dos últimos 3 dias
-        print("")
-        print("=" * 80)
-        print("🔍 [CONSOLIDAÇÃO MANUAL] Buscando pedidos sem demanda dos últimos 3 dias...")
-        print("=" * 80)
-        
-        # Usar query direta na tabela pedidos com filter
-        from datetime import datetime, timedelta
-        tres_dias_atras = (datetime.now() - timedelta(days=3)).isoformat()
-        
-        # Buscar todos os pedidos e filtrar manualmente (mais simples)
-        response = supabase_db.table('pedidos').select('*').gte('data_venda', tres_dias_atras).execute()
-        
-        if not response.data:
-            print("ℹ️ [CONSOLIDAÇÃO MANUAL] Nenhum pedido encontrado nos últimos 3 dias.")
-            return jsonify({
-                'success': True,
-                'pedidos_processados': 0,
-                'rascunhos_criados': 0,
-                'message': 'Nenhum pedido pendente encontrado nos últimos 3 dias.'
-            })
-        
-        # Filtrar pedidos que:
-        # 1. situacao_pedido_id == 15 (Em Andamento)
-        # 2. NÃO têm vínculo em demandas_pedidos
-        pedidos = []
-        for pedido in response.data:
-            # Apenas situação 15 (Em Andamento) gera demanda
-            # Situação 6 (Em Aberto) ainda não foi confirmada/paga
-            if pedido.get('situacao_pedido_id') == 15:
-                # Verificar se já tem demanda
-                vinculo = supabase_db.table('demandas_pedidos').select('id').eq('pedido_id', pedido['id']).execute()
-                if not vinculo.data:
-                    pedidos.append(pedido)
-        
-        if not pedidos:
-            print("ℹ️ [CONSOLIDAÇÃO MANUAL] Nenhum pedido sem demanda encontrado.")
-            return jsonify({
-                'success': True,
-                'pedidos_processados': 0,
-                'rascunhos_criados': 0,
-                'message': 'Nenhum pedido pendente encontrado nos últimos 3 dias.'
-            })
-        
-        print(f"📦 [CONSOLIDAÇÃO MANUAL] {len(pedidos)} pedidos encontrados para processar.")
-        print("")
-        
-        # Processar CADA pedido com o MESMO service do webhook
-        rascunhos_criados = 0
-        rascunhos_atualizados = 0
-        erros = []
-        
-        for i, pedido in enumerate(pedidos, 1):
-            try:
-                print(f"{'=' * 80}")
-                print(f"📌 [{i}/{len(pedidos)}] Pedido {pedido['id']} - {pedido.get('numero_pedido', 'N/A')}")
-                print(f"{'=' * 80}")
-                print(f"   ├─ Canal: {pedido.get('canal_venda_id', 'N/A')}")
-                print(f"   ├─ Serviço logístico: {pedido.get('servico_logistico', 'N/A')}")
-                print(f"   ├─ Classificando modalidade...")
-                
-                resultado = consolidation_service.consolidar_pedido(pedido['id'])
-                
-                if resultado:
-                    status = resultado.get('status', 'DESCONHECIDO')
-                    demanda_id = resultado.get('id', '?')
-                    modalidade = resultado.get('modalidade_logistica', '?')
-                    
-                    if status == 'RASCUNHO':
-                        rascunhos_criados += 1
-                        print(f"   └─ ✅ {status} - Demanda {demanda_id} (Modalidade: {modalidade})")
-                    else:
-                        rascunhos_atualizados += 1
-                        print(f"   └─ ✅ {status} - Demanda {demanda_id}")
-                else:
-                    erros.append(f"Pedido {pedido['id']}: retorno None")
-                    print(f"   └─ ⚠️ Retorno None")
-                    
-            except Exception as e:
-                erro_msg = f"Pedido {pedido['id']}: {str(e)}"
-                erros.append(erro_msg)
-                logger.error(f"Erro ao processar pedido {pedido['id']}: {e}")
-                print(f"   └─ ❌ ERRO: {str(e)}")
-                traceback.print_exc()
-        
-        print("")
-        print("=" * 80)
-        print(f"✅ [CONSOLIDAÇÃO MANUAL] CONCLUSÃO")
-        print(f"   ├─ Pedidos processados: {len(pedidos)}")
-        print(f"   ├─ Rascunhos criados: {rascunhos_criados}")
-        print(f"   ├─ Rascunhos atualizados: {rascunhos_atualizados}")
-        if erros:
-            print(f"   └─ Erros: {len(erros)}")
-        print("=" * 80)
-        print("")
-        
-        return jsonify({
-            'success': True,
-            'pedidos_processados': len(pedidos),
-            'rascunhos_criados': rascunhos_criados,
-            'rascunhos_atualizados': rascunhos_atualizados,
-            'erros': erros if erros else None,
-            'message': f'{len(pedidos)} pedidos processados, {rascunhos_criados} rascunhos criados.'
-        })
-        
-    except Exception as e:
-        print(f"❌ [CONSOLIDAÇÃO MANUAL] Erro crítico: {e}")
-        traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-
-
-
+    """Aposentado. Rascunho e criado na Torre de Despacho."""
+    return jsonify({
+        'success': False,
+        'error': 'endpoint_aposentado',
+        'message': (
+            'A geracao automatica de rascunhos foi encerrada em 26/08/2026. '
+            'Monte o lote na Torre de Despacho: escolha o no (marketplace + '
+            'modalidade), confira o total contra o painel do marketplace e '
+            'publique.'
+        ),
+        'substituto': {
+            'tela': '/despacho',
+            'rpc_montar': 'despacho_lancar_escopo',
+            'rpc_publicar': 'despacho_publicar_demanda',
+        },
+    }), 410

@@ -647,16 +647,65 @@ def importar_pedidos_em_andamento():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _sincronizar_canais_da_regra(regra_id, modalidade_ids, modalidade_principal=None):
+    """Define quais canais saem nesta janela.
+
+    Canais diferentes podem seguir a mesma regra e sair no mesmo caminhao
+    (Shopee Xpress e Retirada pelo Comprador). Sem isso, compartilhar janela so
+    era possivel classificando um canal como o outro — foi o que aconteceu com o
+    canal 90024 e o que a torre passou a mostrar como um lote so.
+
+    A modalidade principal nunca sai da lista: ela e quem da o rotulo e o codigo
+    da demanda, e remove-la deixaria a janela sem dono.
+    """
+    if modalidade_ids is None:
+        return
+    desejados = {int(m) for m in modalidade_ids if m is not None}
+    if modalidade_principal is not None:
+        desejados.add(int(modalidade_principal))
+    if not desejados:
+        return
+
+    atuais = {
+        row['modalidade_id']
+        for row in (supabase_db.table('regra_logistica_modalidades')
+                    .select('modalidade_id').eq('regra_id', regra_id).execute().data or [])
+    }
+
+    novos = desejados - atuais
+    if novos:
+        supabase_db.table('regra_logistica_modalidades').upsert(
+            [{'regra_id': regra_id, 'modalidade_id': m} for m in sorted(novos)],
+            on_conflict='regra_id,modalidade_id'
+        ).execute()
+
+    removidos = atuais - desejados
+    for m in removidos:
+        supabase_db.table('regra_logistica_modalidades') \
+            .delete().eq('regra_id', regra_id).eq('modalidade_id', m).execute()
+
+
 @integracao_canais_bp.route('/logistica/regras', methods=['GET'])
 @login_required
 def listar_regras_logisticas_integracao():
     """Lista regras logísticas por integração instalada."""
     try:
         marketplace_integration_id = request.args.get('marketplace_integration_id')
+        # Existem DOIS caminhos entre regra e modalidade desde que uma janela
+        # passou a poder servir varios canais: a FK da modalidade principal e a
+        # tabela de membresia. O PostgREST recusa o embed ambiguo, entao cada
+        # lado e nomeado:
+        #   modalidades_logisticas -> a principal, que da o rotulo e o codigo
+        #   canais                 -> todos os canais que saem neste lote
         query = supabase_db.table('regras_logisticas_integracao').select(
-            "*, pontos_coleta(nome), installed_integrations(id, instance_name, module_id),"
-            " modalidades_logisticas(id, codigo, nome, cor, tipo_prazo, entra_na_torre)"
-        ).order('marketplace_integration_id').order('horario_coleta').order('prioridade_uso')
+            "*, pontos_coleta(nome, horario_fechamento),"
+            " installed_integrations(id, instance_name, module_id),"
+            " modalidades_logisticas:modalidades_logisticas"
+            "!regras_logisticas_integracao_modalidade_id_fkey"
+            "(id, codigo, nome, cor, tipo_prazo, entra_na_torre),"
+            " canais:modalidades_logisticas!regra_logistica_modalidades"
+            "(id, codigo, nome, cor, ordem_exibicao, entrega_rapida)"
+        ).order('marketplace_integration_id').order('prioridade_uso')
         if marketplace_integration_id:
             query = query.eq('marketplace_integration_id', int(marketplace_integration_id))
         result = query.execute()
@@ -720,16 +769,25 @@ def criar_regra_logistica_integracao():
             payload['offset_etiqueta_min'] = etiqueta
             payload['offset_coleta_min'] = coleta
         else:
-            for field in ('horario_corte', 'horario_coleta'):
-                if data.get(field) in (None, ''):
-                    return jsonify({'success': False, 'error': f'Campo obrigatório: {field}'}), 400
-            if str(data['horario_coleta']) < str(data['horario_corte']):
-                return jsonify({'success': False, 'error': 'horario_coleta deve ser maior ou igual a horario_corte'}), 400
+            if data.get('horario_corte') in (None, ''):
+                return jsonify({'success': False, 'error': 'Informe a hora de corte: e ela que decide quais pedidos entram neste lote'}), 400
+            # Ponto de coleta nao tem hora propria no caso normal: a hora e o
+            # fechamento do ponto, cadastrado uma vez em pontos_coleta.
+            e_ponto = payload.get('tipo_envio') == 'PONTO_COLETA'
+            coleta = data.get('horario_coleta') or None
+            if not coleta and not e_ponto:
+                return jsonify({'success': False, 'error': 'Campo obrigatório: horario_coleta'}), 400
+            if coleta and str(coleta) < str(data['horario_corte']):
+                return jsonify({'success': False, 'error': 'A hora de saída deve ser maior ou igual à hora de corte'}), 400
             payload['horario_corte'] = data['horario_corte']
-            payload['horario_coleta'] = data['horario_coleta']
-            payload['horario_limite'] = data.get('horario_limite') or data['horario_coleta']
+            payload['horario_coleta'] = coleta
+            payload['horario_limite'] = data.get('horario_limite') or coleta
+
         result = supabase_db.table('regras_logisticas_integracao').insert(payload).execute()
-        return jsonify({'success': True, 'data': (result.data or [None])[0]}), 201
+        criada = (result.data or [None])[0]
+        if criada:
+            _sincronizar_canais_da_regra(criada['id'], data.get('modalidade_ids'), criada.get('modalidade_id'))
+        return jsonify({'success': True, 'data': criada}), 201
     except Exception as e:
         logger.error(f"Erro ao criar regra logística por integração: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -762,8 +820,18 @@ def atualizar_regra_logistica_integracao(regra_id: int):
             updates['horario_limite'] = updates['horario_coleta']
         updates['updated_at'] = datetime.utcnow().isoformat()
 
+        # Hora de saida em branco numa janela de ponto de coleta e o caso NORMAL:
+        # a hora vem do fechamento do ponto. So nao pode ficar em branco quando a
+        # saida e coleta local, que nao tem de onde herdar.
+        if updates.get('horario_coleta') in (None, ''):
+            updates['horario_coleta'] = None
+            updates['horario_limite'] = None
+
         result = supabase_db.table('regras_logisticas_integracao').update(updates).eq('id', regra_id).execute()
-        return jsonify({'success': True, 'data': (result.data or [None])[0]})
+        atualizada = (result.data or [None])[0]
+        if atualizada:
+            _sincronizar_canais_da_regra(regra_id, data.get('modalidade_ids'), atualizada.get('modalidade_id'))
+        return jsonify({'success': True, 'data': atualizada})
     except Exception as e:
         logger.error(f"Erro ao atualizar regra logística por integração {regra_id}: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500

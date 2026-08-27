@@ -1,90 +1,9 @@
-import { useLayout } from '@/contexts/LayoutContext';
-import { cn } from '@/lib/utils';
-import { ClipboardList, Layers, TowerControl, Users } from 'lucide-react';
-import { useEffect } from 'react';
-import { Link, Outlet, useLocation } from 'react-router-dom';
+import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
+import { Outlet } from 'react-router-dom';
 
-const vendasMenu = [
-  {
-    name: 'Pedidos',
-    href: '/vendas/pedidos',
-    icon: ClipboardList,
-    description: 'Gestão unificada de pedidos e demandas'
-  },
-  {
-    name: 'Torre de Despacho',
-    href: '/despacho',
-    icon: TowerControl,
-    description: 'Lançar demandas por regra logística'
-  },
-  {
-    name: 'Demandas',
-    href: '/producao/demanda',
-    icon: Layers,
-    description: 'Gerenciar demandas de produção'
-  },
-  {
-    name: 'Personalizadas',
-    href: '/vendas/personalizadas',
-    icon: Users,
-    description: 'Vendas de produtos personalizados'
-  },
-];
-
+// A barra lateral vem do registro unico em src/navigation.js.
 function VendasPage() {
-  const location = useLocation();
-  const { setLeftSidebarContent, setLeftSidebarMenuItems, setIsLeftSidebarOpen } = useLayout();
-
-  useEffect(() => {
-    // Reset sidebar to open state when entering sales section
-    setIsLeftSidebarOpen(true);
-
-    const sidebarContent = (
-      <div className="flex flex-col gap-4">
-        <div className="px-3 py-2">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">
-            Operação: Vendas
-          </h2>
-        </div>
-        <nav className="space-y-1">
-          <ul className="space-y-1">
-            {vendasMenu.map((item) => {
-              const Icon = item.icon;
-              const isActive = location.pathname.startsWith(item.href);
-
-              return (
-                <li key={item.name}>
-                  <Link
-                    to={item.href}
-                    className={cn(
-                      "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-all hover:bg-muted",
-                      isActive && "bg-muted text-primary font-medium"
-                    )}
-                  >
-                    <Icon className="h-4 w-4 shrink-0" />
-                    <div>
-                      <div className="leading-tight">{item.name}</div>
-                      <div className="text-[10px] text-muted-foreground leading-tight">{item.description}</div>
-                    </div>
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
-        </nav>
-      </div>
-    );
-
-    setLeftSidebarContent(sidebarContent);
-    setLeftSidebarMenuItems(vendasMenu);
-
-    return () => {
-      if (!location.pathname.startsWith('/vendas')) {
-        setLeftSidebarContent(null);
-        setLeftSidebarMenuItems([]);
-      }
-    };
-  }, [location.pathname, setLeftSidebarContent, setLeftSidebarMenuItems]);
+  useSecaoSidebar();
 
   return (
     <div className="h-full">
