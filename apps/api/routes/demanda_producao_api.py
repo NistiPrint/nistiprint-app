@@ -1138,8 +1138,18 @@ def registrar_saida_distribuida():
         usuario = get_current_user()
         user_context = {'id': usuario['id'], 'setor_id': usuario['setor_id'], 'setor_nome': usuario['setor_nome'], 'is_admin': usuario['is_admin']}
         with UnitOfWork(user_id=user_id) as uow:
-            origem_tipo_saida = None if sincrono else 1
-            uow.execute_in_transaction(estoque_service.registrar_saida, product_id, deposito_id, total_quantity, f"Saída distribuída de miolos para demandas - {production_date_str}", user_id, user_context=user_context, documento_referencia=demanda_id, origem_tipo=origem_tipo_saida)
+            # [-] ALOCA, nao dá saída física.
+            # O fluxo real é: produção -> alocação na demanda -> saída física.
+            # Alocar reserva o item para a demanda (o disponível cai, o saldo
+            # físico não), e a saída acontece na reconciliação disparada pela
+            # finalização. Antes isto chamava estoque_service.registrar_saida e
+            # a explosão de BOM da finalização consumia o mesmo componente de
+            # novo — o ledger não registrava a baixa feita aqui, então nada
+            # impedia a repetição.
+            uow.execute_in_transaction(
+                demanda_producao_service.reservar_alocacao_para_demanda,
+                product_id, distributions, demanda_id, deposito_id, user_id
+            )
             if update_demand:
                 uow.execute_in_transaction(demanda_producao_service.registrar_saida_item_distribuida, distributions, product_id, user_id)
                 if not sincrono:
@@ -1148,10 +1158,12 @@ def registrar_saida_distribuida():
                         qty = dist.get('quantidade')
                         if item_id and qty:
                              uow.execute_in_transaction(demanda_producao_service.agendar_processamento_estoque, demanda_id, item_id, 'miolos_prontos_retirada_qtd', float(qty), user_id)
-            uow.execute_in_transaction(daily_production_log_service.create_log, production_date, product_id, f"Produto {product_id}", -abs(total_quantity), None, [], user_id, metadata={'demanda_id': demanda_id, 'sincrono': sincrono})
-            uow.log_audit_event('SAIDA_DISTRIBUIDA_DEMANDA', {'product_id': product_id, 'total_quantity': total_quantity, 'production_date': production_date_str, 'distributions': distributions})
+            # Contador operacional da tela ("retirado hoje"). Continua negativo:
+            # do ponto de vista do operador o item saiu da bancada para a demanda.
+            uow.execute_in_transaction(daily_production_log_service.create_log, production_date, product_id, f"Produto {product_id}", -abs(total_quantity), None, [], user_id, metadata={'demanda_id': demanda_id, 'sincrono': sincrono, 'tipo': 'ALOCACAO_RESERVA'})
+            uow.log_audit_event('ALOCACAO_RESERVA_DEMANDA', {'product_id': product_id, 'total_quantity': total_quantity, 'production_date': production_date_str, 'distributions': distributions})
         new_daily_removed = daily_production_log_service.get_total_removed_for_product_on_date(product_id, production_date)
-        return jsonify({'success': True, 'message': 'Saída distribuída registrada com sucesso!' if not sincrono else 'Saída distribuída processada em tempo real!', 'new_daily_removed': new_daily_removed}), 200
+        return jsonify({'success': True, 'message': 'Alocação registrada — o item foi reservado para a demanda. A saída física acontece na finalização.', 'new_daily_removed': new_daily_removed}), 200
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1294,17 +1306,79 @@ def get_default_miolo_for_product(product_id):
 @demanda_producao_api_bp.route('/<demanda_id>', methods=['DELETE'])
 @login_required
 def delete_demanda_api(demanda_id):
+    """Exclui a demanda e devolve os pedidos a torre de despacho.
+
+    A versao anterior ignorava o retorno do service e respondia 200/sucesso
+    mesmo quando a exclusao falhava — inclusive no caso mais comum, o da
+    demanda que ja movimentou estoque e e barrada pela FK. O operador via
+    "deletada com sucesso" e a demanda continuava na tela.
+
+    Demanda com rastro de estoque nao e excluida: a resposta 409 aponta o
+    cancelamento, que estorna a coleta e preserva o ledger.
+    """
     try:
         user_id = session.get('user_id')
         if not permissao_service.has_permission(user_id, 'demanda_producao', 'excluir'):
              return jsonify({'success': False, 'message': 'Acesso negado. Apenas usuários com permissão podem deletar demandas.'}), 403
-        user_id = session.get('user_email', 'System')
+        ator = session.get('user_email', 'System')
         demanda = demanda_producao_service.get_demanda_with_itens(demanda_id)
         if not demanda:
             return jsonify({'success': False, 'message': 'Demanda não encontrada.'}), 404
-        demanda_producao_service.deletar_demanda(demanda_id, user_id)
-        return jsonify({'success': True, 'message': f'Demanda "{demanda.get("nome", "")}" deletada com sucesso!'}), 200
+
+        resultado = demanda_producao_service.deletar_demanda(demanda_id, ator)
+        devolvidos = (resultado or {}).get('pedidos_devolvidos', 0)
+        codigo = (resultado or {}).get('demanda_codigo') or demanda.get('nome', '')
+        return jsonify({
+            'success': True,
+            'data': resultado,
+            'message': f'Demanda "{codigo}" excluída. {devolvidos} pedido(s) voltaram para a torre de despacho.',
+        }), 200
     except Exception as e:
+        mensagem = str(e)
+        if 'nao pode ser excluida' in mensagem or 'movimentou estoque' in mensagem:
+            return jsonify({
+                'success': False,
+                'message': 'Esta demanda já movimentou estoque e não pode ser excluída. Use "Cancelar demanda": os pedidos voltam para a torre e a coleta é estornada.',
+                'sugestao': 'cancelar',
+            }), 409
+        if 'nao encontrada' in mensagem:
+            return jsonify({'success': False, 'message': 'Demanda não encontrada.'}), 404
+        return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
+
+
+@demanda_producao_api_bp.route('/<demanda_id>/cancelar', methods=['POST'])
+@login_required
+def cancelar_demanda_api(demanda_id):
+    """Cancela a demanda e devolve os pedidos a torre de despacho.
+
+    Acao padrao para desfazer um lote que ja andou: o vinculo demanda<->pedido
+    fica como historico, as saidas de coleta sao estornadas por movimento
+    compensatorio e o carimbo despachado_em cai pelo trigger de sincronia.
+    """
+    try:
+        user_id = session.get('user_id')
+        if not permissao_service.has_permission(user_id, 'demanda_producao', 'excluir'):
+            return jsonify({'success': False, 'message': 'Acesso negado. Apenas usuários com permissão podem cancelar demandas.'}), 403
+
+        ator = session.get('user_email', 'System')
+        motivo = (request.get_json(silent=True) or {}).get('motivo')
+
+        resultado = demanda_producao_service.cancelar_demanda(demanda_id, motivo, ator)
+        devolvidos = (resultado or {}).get('pedidos_devolvidos', 0)
+        estornos = (resultado or {}).get('estornos_estoque', 0)
+        codigo = (resultado or {}).get('demanda_codigo') or demanda_id
+
+        mensagem = f'Demanda "{codigo}" cancelada. {devolvidos} pedido(s) voltaram para a torre de despacho.'
+        if estornos:
+            mensagem += f' {estornos} baixa(s) de coleta estornada(s).'
+
+        return jsonify({'success': True, 'data': resultado, 'message': mensagem}), 200
+    except Exception as e:
+        mensagem = str(e)
+        if 'ja esta cancelada' in mensagem:
+            return jsonify({'success': False, 'message': 'Esta demanda já está cancelada.'}), 409
+        if 'nao encontrada' in mensagem:
+            return jsonify({'success': False, 'message': 'Demanda não encontrada.'}), 404
         return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
 
 

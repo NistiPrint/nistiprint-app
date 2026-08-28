@@ -423,6 +423,130 @@ class DemandaAlocacaoEstoqueService:
             )
         }
 
+    # ------------------------------------------------------------------
+    # Alocacao por reserva (botao [-] da tela de Controle de Producao)
+    #
+    # O fluxo real e: producao -> alocacao na demanda -> saida fisica.
+    # Alocar NAO e sair. O item continua fisicamente na empresa; ele apenas
+    # deixa de estar disponivel para outra demanda. A saida fisica acontece na
+    # reconciliacao, disparada pela finalizacao do item.
+    #
+    # Antes o endpoint chamava estoque_service.registrar_saida direto, e depois
+    # a explosao de BOM da finalizacao consumia o mesmo componente de novo —
+    # o ledger demanda_estoque_processado nao registrava a baixa da tela, entao
+    # nada impedia a repeticao. Dupla baixa.
+    # ------------------------------------------------------------------
+
+    def reservar_alocacao_para_demanda(self, product_id, distributions: List[Dict[str, Any]],
+                                       demanda_id=None, deposito_id=None,
+                                       user_id: str = 'System') -> Dict[str, Any]:
+        """Reserva o produto para os itens de demanda informados.
+
+        Incrementa `estoque_atual.reservado` (o disponivel cai, o fisico nao) e
+        grava uma linha PENDENTE em `demanda_alocacoes_estoque` por item, para
+        que a reconciliacao saiba o que ja estava separado para aquele item.
+        """
+        correlation_id = str(uuid.uuid4())
+        produto_id_norm = int(product_id) if str(product_id).isdigit() else product_id
+        total = 0.0
+        linhas = []
+
+        for dist in distributions or []:
+            item_id = dist.get('item_id')
+            try:
+                qtd = float(dist.get('quantidade') or 0)
+            except (TypeError, ValueError):
+                continue
+            if not item_id or qtd <= 0:
+                continue
+
+            demanda_do_item = demanda_id
+            if demanda_do_item is None:
+                item_res = supabase_db.execute_with_retry(
+                    self.itens_table.select('demanda_id').eq('id', item_id)
+                )
+                if item_res.data:
+                    demanda_do_item = item_res.data[0].get('demanda_id')
+
+            linhas.append({
+                'demanda_id': str(demanda_do_item),
+                'item_id': str(item_id),
+                'produto_id': str(produto_id_norm),
+                'correlation_id': correlation_id,
+                'quantidade_alocada': qtd,
+                'tipo_alocacao': 'RESERVA_PRODUCAO',
+                'processo_origem': 'CONTROLE_PRODUCAO',
+                'status': 'PENDENTE',
+                'metadata': {'user_id': str(user_id)},
+                'created_at': get_now_iso(),
+            })
+            total += qtd
+
+        if not linhas:
+            return {'success': False, 'message': 'Nenhuma distribuicao valida para reservar.',
+                    'quantidade_reservada': 0.0}
+
+        estoque_service.reservar_estoque(produto_id_norm, total, deposito_id)
+        supabase_db.execute_with_retry(
+            supabase_db.table('demanda_alocacoes_estoque').insert(linhas)
+        )
+
+        return {
+            'success': True,
+            'correlation_id': correlation_id,
+            'quantidade_reservada': total,
+            'itens': len(linhas),
+        }
+
+    def consumir_alocacoes_do_item(self, item_id, deposito_id=None) -> float:
+        """Converte as reservas PENDENTES de um item em estoque disponivel.
+
+        Chamado pela reconciliacao ANTES de calcular saldo. Sem isso o motor
+        veria `disponivel = 0` para um produto que esta reservado justamente
+        para este item, e produziria JIT em vez de consumir o que ja foi
+        separado. Depois desta liberacao, a explosao de BOM encontra o saldo e
+        gera o CONS_INT — a saida fisica acontece uma unica vez, aqui.
+        """
+        try:
+            res = supabase_db.execute_with_retry(
+                supabase_db.table('demanda_alocacoes_estoque')
+                .select('*')
+                .eq('item_id', str(item_id))
+                .eq('status', 'PENDENTE')
+            )
+        except Exception as e:
+            import logging
+            logging.warning(f"consumir_alocacoes_do_item({item_id}): falha ao ler alocacoes: {e}")
+            return 0.0
+
+        alocacoes = res.data or []
+        if not alocacoes:
+            return 0.0
+
+        total_liberado = 0.0
+        for alocacao in alocacoes:
+            try:
+                qtd = float(alocacao.get('quantidade_alocada') or 0)
+                if qtd <= 0:
+                    continue
+                produto = alocacao.get('produto_id')
+                produto_norm = int(produto) if str(produto).isdigit() else produto
+                estoque_service.liberar_reserva(produto_norm, qtd, deposito_id)
+                supabase_db.execute_with_retry(
+                    supabase_db.table('demanda_alocacoes_estoque')
+                    .update({'status': 'CONSUMIDA', 'processed_at': get_now_iso()})
+                    .eq('id', alocacao['id'])
+                )
+                total_liberado += qtd
+            except Exception as e:
+                import logging
+                logging.error(
+                    f"consumir_alocacoes_do_item({item_id}): falha na alocacao "
+                    f"{alocacao.get('id')}: {e}"
+                )
+
+        return total_liberado
+
     def liberar_alocacao_por_demanda(self, demanda_id: int, quantidade: float, motivo: str = "Liberação Automática"):
         """
         Libera alocações de reserva de estoque para uma demanda específica.

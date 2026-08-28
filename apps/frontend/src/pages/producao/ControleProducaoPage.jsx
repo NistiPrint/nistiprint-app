@@ -12,7 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import ProductionService from '@/services/ProductionService';
 import { format } from 'date-fns';
-import { ChevronDown, ChevronRight, Eye, History, LayoutGrid, LayoutList, Loader2, Minus, Package, Plus, Search, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Eye, History, LayoutGrid, LayoutList, Loader2, Minus, Package, PackageMinus, Plus, Search, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -54,6 +54,10 @@ const ControleProducaoPage = ({tipo}) => {
   const [distributionLoading, setDistributionLoading] = useState(false);
 
   const [selectedDemandaId, setSelectedDemandaId] = useState(null);
+
+  // Saída avulsa: baixa imediata, sem demanda
+  const [standaloneRemovalOpen, setStandaloneRemovalOpen] = useState(false);
+  const [isRemovingStandalone, setIsRemovingStandalone] = useState(false);
 
   // Estados para Logs
   const [logModalOpen, setLogModalOpen] = useState(false);
@@ -141,20 +145,16 @@ const ControleProducaoPage = ({tipo}) => {
     }
 
     try {
-      // Determinar o campo de progresso baseado no contexto
-      let field = null;
-      if (tipo === 'miolo') field = 'miolos_prontos_retirada_qtd';
-      else if (tipo === 'capa') {
-        // Para capas, usar campo baseado na sub-tab
-        field = capaSubTab === 'impressas' ? 'capas_impressas_qtd' : 'capas_acabadas_qtd';
-      }
-
+      // [+] PRODUZ: dá entrada do produto no estoque e consome a BOM.
+      // NÃO enviar `field` aqui. O `field` é o caminho de ALOCAÇÃO em demanda:
+      // com ele a API desviava para processar_alocacao_avulsa_otimizado, que
+      // gerava PROD_INT + CONS_INT no mesmo lote (saldo líquido zero) e o miolo
+      // produzido nunca ficava disponível em estoque. A alocação é o [-].
       // Tela de Controle de Produção: processamento SÍNCRONO (tempo real)
       const result = await ProductionService.registerProduction({
         product_id: productId,
         quantity: quantity,
         date: selectedDate,
-        field: field,
         sincrono: true // Processamento imediato, sem fila
       });
 
@@ -245,18 +245,19 @@ const ControleProducaoPage = ({tipo}) => {
         setDistributionModalOpen(false);
         setInputs(prev => ({ ...prev, [selectedProductForDistribution.id]: '' }));
         
-        // Update product state with new daily removal
+        // Alocação reserva o item: o DISPONÍVEL cai, o saldo físico não.
+        // A baixa física só ocorre na reconciliação, após a finalização.
         setProducts(prevProducts => prevProducts.map(p => {
           if (p.id === selectedProductForDistribution.id) {
-            const oldStock = p.stock_details.quantidade || 0;
             const oldAvail = p.stock_details.quantidade_disponivel || 0;
+            const oldReserved = p.stock_details.quantidade_reservada || 0;
             return {
               ...p,
               quantity_removed_today: result.new_daily_removed,
               stock_details: {
                 ...p.stock_details,
-                quantidade: oldStock - totalDistributed,
-                quantidade_disponivel: oldAvail - totalDistributed
+                quantidade_disponivel: oldAvail - totalDistributed,
+                quantidade_reservada: oldReserved + totalDistributed
               }
             };
           }
@@ -270,6 +271,38 @@ const ControleProducaoPage = ({tipo}) => {
       toast.error(errorMessage);
     } finally {
       setIsDistributing(false);
+    }
+  };
+
+  // Saída AVULSA: o item sai do estoque agora e não volta.
+  // Não passa por demanda, não gera reserva e não tem reconciliação depois —
+  // é para perda, amostra, uso interno, venda fora do fluxo de demanda.
+  const handleStandaloneRemoval = async () => {
+    const product = selectedProductForDistribution;
+    if (!product) return;
+
+    setIsRemovingStandalone(true);
+    try {
+      const result = await ProductionService.registerStandaloneRemoval({
+        product_id: product.id,
+        quantity: product.totalToDistribute,
+        date: selectedDate
+      });
+
+      if (result.success) {
+        toast.success(result.message || 'Saída avulsa registrada.');
+        setStandaloneRemovalOpen(false);
+        setDistributionModalOpen(false);
+        setInputs(prev => ({ ...prev, [product.id]: '' }));
+        fetchData();
+      } else {
+        toast.error(result.error || 'Erro ao registrar saída avulsa.');
+      }
+    } catch (error) {
+      const errorMessage = error.response?.data?.error || error.message || 'Erro ao registrar saída avulsa.';
+      toast.error(errorMessage);
+    } finally {
+      setIsRemovingStandalone(false);
     }
   };
 
@@ -910,15 +943,37 @@ const ControleProducaoPage = ({tipo}) => {
 
           <div className="flex-1 overflow-hidden flex flex-col gap-4 py-4">
             <div className="bg-blue-50 p-3 rounded-lg border border-blue-100">
-              <p className="text-sm text-blue-900 font-medium">Selecione a demanda para a qual deseja destinar estas <strong>{selectedProductForDistribution?.totalToDistribute}</strong> unidades.</p>
-              <p className="text-[10px] text-blue-700 mt-1">A distribuição será feita automaticamente nos itens da demanda selecionada.</p>
+              <p className="text-sm text-blue-900 font-medium">Para onde vão estas <strong>{selectedProductForDistribution?.totalToDistribute}</strong> unidades?</p>
+              <p className="text-[10px] text-blue-700 mt-1">Escolha uma demanda abaixo — o item fica <strong>reservado</strong> para ela e a baixa física acontece na finalização — ou registre uma saída avulsa.</p>
             </div>
+
+            {/* Saída avulsa como destino de primeira classe, no mesmo lugar em que
+                o operador escolhe a demanda. É a alternativa natural quando o item
+                está saindo sem ser para um pedido — não faz sentido escondê-la. */}
+            <button
+              type="button"
+              onClick={() => setStandaloneRemovalOpen(true)}
+              disabled={isDistributing}
+              className="flex items-center justify-between gap-3 w-full text-left p-3 rounded-lg border border-destructive/30 bg-destructive/5 hover:bg-destructive/10 transition-colors disabled:opacity-50"
+            >
+              <div className="flex items-center gap-3">
+                <PackageMinus className="h-5 w-5 text-destructive shrink-0" />
+                <div>
+                  <div className="font-bold text-sm text-destructive">Saída avulsa — sem demanda</div>
+                  <div className="text-[10px] text-muted-foreground">Perda, amostra, uso interno. Baixa imediata e definitiva no estoque.</div>
+                </div>
+              </div>
+              <Badge variant="outline" className="border-destructive/40 text-destructive shrink-0">Selecionar</Badge>
+            </button>
 
             <ScrollArea className="flex-1 border rounded-md">
               {distributionLoading ? (
                 <div className="flex justify-center py-12"><Loader2 className="animate-spin h-8 w-8" /></div>
               ) : pendingDemandsForProduct.length === 0 ? (
-                <div className="text-center py-12 text-muted-foreground">Nenhuma demanda ativa encontrada para este item com saldo pendente.</div>
+                <div className="text-center py-12 px-6 text-muted-foreground">
+                  <p>Nenhuma demanda ativa encontrada para este item com saldo pendente.</p>
+                  <p className="text-xs mt-2">Use a saída avulsa acima se o item está saindo sem ser para um pedido.</p>
+                </div>
               ) : (
                 <Table>
                   <TableHeader>
@@ -1086,6 +1141,44 @@ const ControleProducaoPage = ({tipo}) => {
       </Dialog>
 
       {/* Confirmação de Reversão de Log */}
+      {/* Confirmação da saída avulsa. Diferente da alocação, isto não tem volta
+          pelo fluxo normal: o estoque é baixado na hora, sem reserva e sem
+          reconciliação posterior. */}
+      <AlertDialog open={standaloneRemovalOpen} onOpenChange={setStandaloneRemovalOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Registrar saída avulsa?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  <strong>{selectedProductForDistribution?.totalToDistribute}</strong> un de{' '}
+                  <strong>{selectedProductForDistribution?.name}</strong> ({selectedProductForDistribution?.sku})
+                  sairão do estoque imediatamente.
+                </p>
+                <p className="text-xs">
+                  A saída não fica vinculada a nenhuma demanda e não passa por reconciliação.
+                  Use para perda, amostra, uso interno ou venda fora do fluxo de demandas.
+                </p>
+                <p className="text-xs">
+                  Só o saldo <strong>disponível</strong> pode sair — o que está reservado para
+                  demandas permanece intocado.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isRemovingStandalone}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); handleStandaloneRemoval(); }}
+              disabled={isRemovingStandalone}
+            >
+              {isRemovingStandalone && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Confirmar saída
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog open={revertDialogOpen} onOpenChange={setRevertDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
