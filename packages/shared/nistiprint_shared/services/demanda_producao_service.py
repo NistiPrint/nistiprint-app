@@ -127,9 +127,14 @@ class DemandaProducaoService:
         """Atualiza demanda e seus itens em transação atômica."""
         return self._core.atualizar_demanda_completa(demanda_id, updates, itens, user_id)
 
-    def deletar_demanda(self, demanda_id: str, user_id='System') -> bool:
-        """Deleta uma demanda e seus itens."""
+    def deletar_demanda(self, demanda_id: str, user_id='System') -> Dict[str, Any]:
+        """Exclui a demanda e devolve os pedidos a torre. Levanta excecao se
+        a demanda ja movimentou estoque — nesse caso use cancelar_demanda."""
         return self._core.deletar_demanda(demanda_id, user_id)
+
+    def cancelar_demanda(self, demanda_id: str, motivo: str = None, user_id='System') -> Dict[str, Any]:
+        """Cancela a demanda, estorna as saidas de coleta e devolve os pedidos a torre."""
+        return self._core.cancelar_demanda(demanda_id, motivo, user_id)
 
     # ========================================================================
     # MÉTODOS ITEMS (demanda.items)
@@ -282,6 +287,21 @@ class DemandaProducaoService:
         return self._alocacao_estoque.processar_alocacao_avulsa_otimizado(
             product_id, campo, quantidade, user_id, sincrono
         )
+
+    def reservar_alocacao_para_demanda(self, product_id, distributions, demanda_id=None,
+                                       deposito_id=None, user_id='System'):
+        """Reserva estoque existente para itens de demanda (botao [-] da tela).
+
+        Alocar nao e sair: o disponivel cai, o saldo fisico permanece. A saida
+        fisica acontece na reconciliacao disparada pela finalizacao.
+        """
+        return self._alocacao_estoque.reservar_alocacao_para_demanda(
+            product_id, distributions, demanda_id, deposito_id, user_id
+        )
+
+    def consumir_alocacoes_do_item(self, item_id, deposito_id=None):
+        """Converte as reservas pendentes de um item em estoque disponivel."""
+        return self._alocacao_estoque.consumir_alocacoes_do_item(item_id, deposito_id)
 
     def agendar_processamento_estoque(self, demanda_id, item_id, campo, incremento,
                                       user_id='System', correlation_id=None,

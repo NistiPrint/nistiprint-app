@@ -1455,31 +1455,71 @@ class DemandaCoreService:
 
         return self.get_demanda_with_itens(internal_pk)
 
-    def deletar_demanda(self, demanda_id: str, user_id='System') -> bool:
-        """Deleta uma demanda e seus itens."""
-        try:
-            # 0. Resolver o ID interno (PK) se necessário
-            demanda_res = supabase_db.execute_with_retry(self.demandas_table.select("id").eq('id', demanda_id))
-            if not demanda_res.data:
-                demanda_res = supabase_db.execute_with_retry(self.demandas_table.select("id").eq('demanda_id', demanda_id))
-                if not demanda_res.data:
-                    return False
+    def _resolver_pk(self, demanda_id) -> Optional[int]:
+        """Aceita tanto a PK numerica quanto o codigo textual da demanda."""
+        res = supabase_db.execute_with_retry(self.demandas_table.select("id").eq('id', demanda_id))
+        if res.data:
+            return res.data[0]['id']
+        res = supabase_db.execute_with_retry(self.demandas_table.select("id").eq('demanda_id', demanda_id))
+        if res.data:
+            return res.data[0]['id']
+        return None
 
-            internal_pk = demanda_res.data[0]['id']
+    def deletar_demanda(self, demanda_id: str, user_id='System') -> Dict[str, Any]:
+        """Exclui a demanda definitivamente e devolve os pedidos a torre.
 
-            # 1. Deletar itens
-            supabase_db.execute_with_retry(self.itens_table.delete().eq('demanda_id', internal_pk))
+        A exclusao acontece dentro de `despacho_excluir_demanda`, uma unica
+        transacao no banco. Ela recusa demanda que ja movimentou estoque - nesse
+        caso o correto e cancelar, que estorna a coleta e preserva o ledger.
 
-            # 2. Deletar demanda
-            supabase_db.execute_with_retry(self.demandas_table.delete().eq('id', internal_pk))
+        A versao anterior deletava `itens_demanda` e `demandas_producao` direto e
+        engolia qualquer excecao devolvendo False. Como a rota ignorava o retorno,
+        o operador via "deletada com sucesso" para uma demanda que continuava
+        viva - e os pedidos ficavam com `despachado_em` carimbado, fora da torre
+        para sempre. Excecao agora sobe: e a rota que decide o que dizer.
+        """
+        internal_pk = self._resolver_pk(demanda_id)
+        if internal_pk is None:
+            raise ValueError(f'Demanda {demanda_id} nao encontrada.')
 
-            # 3. Log auditoria
-            auditoria_service.log_event('DEMANDA_EXCLUIDA', {'demanda_id': internal_pk}, user_id)
+        resultado = supabase_db.rpc('despacho_excluir_demanda', {
+            'p_demanda_id': internal_pk,
+            'p_user_id': str(user_id),
+        }).execute()
 
-            return True
-        except Exception as e:
-            print(f"Erro ao deletar demanda {demanda_id}: {e}")
-            return False
+        linha = (resultado.data or [{}])[0]
+        return {
+            'demanda_id': internal_pk,
+            'demanda_codigo': linha.get('out_demanda_codigo'),
+            'pedidos_devolvidos': linha.get('out_pedidos_devolvidos') or 0,
+        }
+
+    def cancelar_demanda(self, demanda_id: str, motivo: str = None, user_id='System') -> Dict[str, Any]:
+        """Cancela a demanda, estorna as saidas de coleta e devolve os pedidos.
+
+        Acao padrao para desfazer um lote que ja andou. O vinculo
+        demanda<->pedido e mantido como historico; a torre e as funcoes de
+        leitura ja ignoram demanda CANCELADO, e o trigger de sincronia limpa
+        `despachado_em` sozinho.
+        """
+        internal_pk = self._resolver_pk(demanda_id)
+        if internal_pk is None:
+            raise ValueError(f'Demanda {demanda_id} nao encontrada.')
+
+        resultado = supabase_db.rpc('despacho_cancelar_demanda', {
+            'p_demanda_id': internal_pk,
+            'p_motivo': motivo,
+            'p_user_id': str(user_id),
+        }).execute()
+
+        linha = (resultado.data or [{}])[0]
+        return {
+            'demanda_id': internal_pk,
+            'demanda_codigo': linha.get('out_demanda_codigo'),
+            'pedidos_devolvidos': linha.get('out_pedidos_devolvidos') or 0,
+            'estornos_estoque': linha.get('out_estornos_estoque') or 0,
+        }
+
 
 
 # Instância singleton para compatibilidade

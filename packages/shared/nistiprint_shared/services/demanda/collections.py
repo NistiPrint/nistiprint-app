@@ -179,7 +179,13 @@ class DemandaCollectionsService:
 
     def _registrar_saida_por_coleta(self, demanda_id, user_id='System'):
         """
-        Baixa o produto acabado das demandas coletadas por completo.
+        Fecha a demanda coletada: finaliza os itens e baixa o produto acabado.
+
+        A RPC faz duas coisas distintas, nessa ordem:
+          1. Finaliza TODOS os itens da demanda, com ou sem produto mapeado.
+             A coleta e um fato operacional — a mercadoria saiu, o item acabou.
+          2. Baixa o estoque apenas dos itens com produto mapeado. Item sem
+             produto nao tem o que movimentar.
 
         A RPC e idempotente e recusa demanda que nao esteja em COLETADO, entao
         chamar duas vezes — ou por um caminho que ainda nao fechou a coleta —
@@ -196,6 +202,31 @@ class DemandaCollectionsService:
                 logging.warning(
                     f"Saida por coleta nao registrada para a demanda {demanda_id}: {resultado}"
                 )
+            else:
+                # ok=true nao significa que tudo foi contabilizado. Item sem
+                # produto_id e finalizado mas nao movimenta estoque, e ate aqui
+                # isso passava despercebido: a demanda 139 fechou com 20 de 21
+                # itens sem baixa e ninguem foi avisado.
+                sem_produto = int(resultado.get('itens_sem_produto_mapeado') or 0)
+                if sem_produto > 0:
+                    logging.warning(
+                        f"Demanda {demanda_id}: {sem_produto} item(ns) finalizados sem "
+                        f"movimentacao de estoque por falta de produto mapeado. "
+                        f"Baixados: {resultado.get('itens_baixados')}, "
+                        f"finalizados agora: {resultado.get('itens_finalizados')}. "
+                        f"Cadastre o SKU em produtos para que o estoque seja contabilizado."
+                    )
+                    system_log_service.log(
+                        category='ESTOQUE',
+                        message=(
+                            f"Coleta da demanda {demanda_id} finalizou {sem_produto} "
+                            f"item(ns) sem produto mapeado — sem movimentacao de estoque."
+                        ),
+                        severity='WARNING',
+                        action='registrar_saida_por_coleta',
+                        reference_id=str(demanda_id),
+                        metadata=resultado,
+                    )
             return resultado
         except Exception as e:
             logging.error(f"Falha ao registrar saida por coleta da demanda {demanda_id}: {e}")

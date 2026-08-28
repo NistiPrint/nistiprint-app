@@ -287,18 +287,47 @@ export default function DemandasPlanejamentoPage() {
     toast.error(data.error || data.message || 'Nao foi possivel publicar.')
   }, [canUseAdminDemandActions, refresh])
 
-  const handleDeleteDemand = useCallback(async (id) => {
+  // Cancelar e a acao para desfazer um lote que ja andou: o vinculo com os
+  // pedidos vira historico, as baixas de coleta sao estornadas e os pedidos
+  // voltam para a torre. Deletar so serve para lote que nao deixou rastro.
+  const handleCancelDemand = useCallback(async (id) => {
     if (!canUseAdminDemandActions) return toast.error('Sem permissao.')
-    if (!window.confirm('Deletar permanentemente?')) return
-    const response = await fetch(`/api/v2/demanda_producao/${id}`, { method: 'DELETE' })
-    if (response.ok) {
-      toast.success('Demanda deletada.')
+    const motivo = window.prompt('Cancelar a demanda e devolver os pedidos para a torre de despacho.\n\nMotivo (opcional):')
+    if (motivo === null) return
+    const response = await fetch(`/api/v2/demanda_producao/${id}/cancelar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ motivo: motivo || null }),
+    })
+    const data = await response.json().catch(() => ({}))
+    if (response.ok && data.success) {
+      toast.success(data.message || 'Demanda cancelada.')
       refresh()
       return
     }
-    const data = await response.json()
-    toast.error(data.message || 'Nao foi possivel deletar.')
+    toast.error(data.message || 'Nao foi possivel cancelar.')
   }, [canUseAdminDemandActions, refresh])
+
+  // A rota podia responder 200 com success:false; checar so response.ok mostrava
+  // "deletada" para uma demanda que continuava viva. Agora o 409 de demanda com
+  // estoque oferece o cancelamento em vez de deixar o operador sem saida.
+  const handleDeleteDemand = useCallback(async (id) => {
+    if (!canUseAdminDemandActions) return toast.error('Sem permissao.')
+    if (!window.confirm('Deletar permanentemente? Os pedidos voltam para a torre de despacho.')) return
+    const response = await fetch(`/api/v2/demanda_producao/${id}`, { method: 'DELETE' })
+    const data = await response.json().catch(() => ({}))
+    if (response.ok && data.success) {
+      toast.success(data.message || 'Demanda deletada.')
+      refresh()
+      return
+    }
+    if (response.status === 409 && data.sugestao === 'cancelar') {
+      toast.error(data.message)
+      if (window.confirm(`${data.message}\n\nCancelar a demanda agora?`)) handleCancelDemand(id)
+      return
+    }
+    toast.error(data.message || 'Nao foi possivel deletar.')
+  }, [canUseAdminDemandActions, refresh, handleCancelDemand])
 
   const handlePrintDemand = useCallback(async (id) => {
     const response = await fetch(`/api/v2/printing/demanda/${id}/print`, { method: 'POST' })
@@ -486,6 +515,7 @@ export default function DemandasPlanejamentoPage() {
                 handleFinalizeDemand={handleFinalizeDemand}
                 handleCollectDemand={handleCollectDemand}
                 handleDeleteDemand={handleDeleteDemand}
+                handleCancelDemand={handleCancelDemand}
                 handlePublishDemand={handlePublishDemand}
                 handlePrintDemand={handlePrintDemand}
                 isAdmin={user?.is_admin === true}

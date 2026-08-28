@@ -284,7 +284,8 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
             pedido_id = service._upsert_pedido_status(
                 source='shopee', external_order_id='SN123',
                 marketplace_integration_id=12, bling_integration_id=None,
-                bling_loja_id=None, channel_id=22, situacao_pedido_id=5,
+                bling_loja_id=None, channel_id=22, ingest_origin_mode='marketplace_direct',
+                situacao_pedido_id=5,
                 status_original='SHIPPED', mirror_fields={'pedido_shopee_id': 44},
                 lifecycle_event=lifecycle_event,
                 raw_customer={'name': 'Cliente'}, total=10, currency='BRL',
@@ -315,7 +316,8 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
             pedido_id = service._upsert_pedido_status(
                 source='shopee', external_order_id='SN123',
                 marketplace_integration_id=12, bling_integration_id=None,
-                bling_loja_id=None, channel_id=22, situacao_pedido_id=4,
+                bling_loja_id=None, channel_id=22, ingest_origin_mode='erp_bling',
+                situacao_pedido_id=4,
                 status_original='PROCESSED', mirror_fields={'pedido_shopee_id': 44},
                 raw_customer={'name': 'Cliente'}, total=10, currency='BRL',
                 data_venda='2026-06-23T10:00:00+00:00', details={},

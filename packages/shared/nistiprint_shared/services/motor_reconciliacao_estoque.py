@@ -237,6 +237,19 @@ class MotorReconciliacaoEstoque:
                 # 5. Calcular deltas
                 deltas = await self._calcular_deltas(efetivas, realizado)
 
+                # 5.1 Consumir as reservas deste item ANTES de olhar saldo.
+                # O botão [-] da tela de Controle de Produção aloca (reserva) o
+                # componente para o item; aqui essa reserva vira saldo
+                # disponível de novo, para que a explosão de BOM CONSUMA o que
+                # já estava separado em vez de produzir JIT um segundo miolo.
+                # É neste ponto que a saída física finalmente acontece — uma
+                # única vez, no fim do fluxo produção -> alocação -> saída.
+                if deltas:
+                    try:
+                        demanda_alocacao_estoque_service.consumir_alocacoes_do_item(item_id)
+                    except Exception as e:
+                        print(f"AVISO: falha ao consumir alocações do item {item_id}: {e}")
+
                 # 6. Processar deltas em transação única via RPC
                 resultado = await self._processar_deltas_transacional(
                     item_id, demanda_id, deltas, efetivas, intencao, realizado, user_id, correlation_id

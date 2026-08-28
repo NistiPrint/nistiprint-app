@@ -204,7 +204,9 @@ def extract_identity(envelope: dict[str, Any]) -> dict[str, str | None]:
         order_id = content.get("order_sn") or body.get("order_sn")
     elif source == "mercadolivre":
         provider_id = provider_id or body.get("_id") or body.get("id")
-        scope = body.get("user_id") or payload.get("user_id")
+        # `account_id` no envelope e o que a borda resolve quando o n8n ja o
+        # extrai; o corpo continua sendo a fonte enquanto isso.
+        scope = envelope.get("account_id") or body.get("user_id") or payload.get("user_id")
         resource = str(body.get("resource") or "")
         order_id = body.get("order_id") or (resource.split("/orders/")[1].split("/")[0] if "/orders/" in resource else None)
     else:

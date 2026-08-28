@@ -27,6 +27,15 @@ const ProductionService = {
     return response.data;
   },
 
+  // Saída AVULSA: baixa imediata do estoque, sem vínculo com demanda.
+  // Diferente de registerRemoval (o [-]), que ALOCA — reserva o item para a
+  // demanda e só dá baixa física na reconciliação da finalização.
+  registerStandaloneRemoval: async (data) => {
+    // data: { product_id, quantity, date }
+    const response = await api.post('/producao/registrar-saida-estoque', data);
+    return response.data;
+  },
+
   getPendingItems: async (mioloId) => {
     const response = await api.get(`/demanda_producao/miolo/${mioloId}/itens-pendentes`);
     return response.data;

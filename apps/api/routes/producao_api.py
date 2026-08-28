@@ -54,29 +54,142 @@ def get_painel_setores_api():
 
 @producao_api_bp.route('/registrar-item', methods=['POST'])
 def registrar_item_producao():
+    """Botao [+] da tela de Controle de Producao: PRODUZ o item.
+
+    Producao imediata = entrada do produto no estoque + consumo da BOM. E a
+    primeira das tres etapas do fluxo: producao -> alocacao na demanda ->
+    saida fisica.
+
+    A tela mandava `field` em toda chamada, o que desviava para
+    `processar_alocacao_avulsa_otimizado` — que ALOCA em demanda em vez de
+    produzir. O resultado no banco era PROD_INT seguido de CONS_INT com o
+    mesmo correlation_id: saldo liquido zero, materia-prima debitada, miolo
+    nunca disponivel em estoque. O ramo de producao virou codigo morto.
+
+    `field` continua aceito por compatibilidade, mas e o caminho de ALOCACAO,
+    nao o de producao. A alocacao propria da tela e o botao [-], que passa
+    por /demanda_producao/registrar-saida.
+    """
     data = request.get_json()
-    if not all([data.get('product_id'), data.get('quantity'), data.get('date')]): return jsonify({'success': False, 'error': 'Dados incompletos.'}), 400
+    if not all([data.get('product_id'), data.get('quantity'), data.get('date')]):
+        return jsonify({'success': False, 'error': 'Dados incompletos.'}), 400
     try:
         user_id = get_current_user().get('email') if get_current_user() else 'System'
+
         if data.get('field'):
-            result = demanda_producao_service.processar_alocacao_avulsa_otimizado(data['product_id'], data['field'], float(data['quantity']), user_id, data.get('sincrono', False))
-        else:
-            result = ordem_producao_service.registrar_producao_imediata(str(data['product_id']), float(data['quantity']), data['date'], user_id, data.get('sincrono', False))
-        return jsonify({'success': True, 'message': 'Produção registrada!'})
+            # Caminho legado de alocacao avulsa. Mantido para chamadores antigos.
+            result = demanda_producao_service.processar_alocacao_avulsa_otimizado(
+                data['product_id'], data['field'], float(data['quantity']),
+                user_id, data.get('sincrono', False)
+            ) or {}
+            status = result.get('status')
+            # 'sem_alvo' significa que NADA foi gravado. Antes a resposta era
+            # sempre 'Produção registrada!' com o result descartado, entao o
+            # operador via sucesso enquanto o registro sumia.
+            if status == 'sem_alvo':
+                return jsonify({
+                    'success': False,
+                    'error': result.get('message') or 'Nenhuma demanda ativa recebeu a alocação.',
+                    'status': status,
+                    'quantidade_alocada': 0,
+                    'quantidade_nao_alocada': result.get('quantidade_nao_alocada'),
+                }), 409
+            resposta = {
+                'success': True,
+                'message': result.get('message') or 'Alocação registrada!',
+                'status': status,
+                'quantidade_alocada': result.get('quantidade_alocada'),
+                'quantidade_nao_alocada': result.get('quantidade_nao_alocada'),
+            }
+            if status == 'partial':
+                resposta['warning'] = (
+                    f"Apenas {result.get('quantidade_alocada')} de {result.get('quantidade_solicitada')} "
+                    f"foram alocados — nao ha demanda ativa para o restante."
+                )
+            return jsonify(resposta)
+
+        # Caminho padrao: producao imediata com entrada em estoque.
+        # sincrono=True processa a BOM na hora; a tela sempre pede sincrono.
+        result = ordem_producao_service.registrar_producao_imediata(
+            str(data['product_id']), float(data['quantity']), data['date'],
+            user_id, data.get('sincrono', False)
+        ) or {}
+        return jsonify({
+            'success': True,
+            'message': result.get('message') or 'Produção registrada!',
+            'correlation_id': result.get('correlation_id'),
+        })
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @producao_api_bp.route('/registrar-saida-estoque', methods=['POST'])
 def registrar_saida_estoque():
-    data = request.get_json()
-    if not all([data.get('product_id'), data.get('quantity'), data.get('date')]): return jsonify({'success': False, 'error': 'Incompleto'}), 400
+    """Saida AVULSA: baixa imediata do estoque, sem vinculo com demanda.
+
+    E a terceira porta da tela de Controle de Producao, ao lado de [+] (produz)
+    e [-] (aloca em demanda). Aqui a mercadoria simplesmente sai — perda,
+    amostra, uso interno, venda fora do fluxo de demanda. Nao ha reserva, nao
+    ha reconciliacao depois: a saida ja e definitiva no momento do clique.
+
+    Esta rota aceitava `demanda_id` e chamava associar_saida_a_demanda depois
+    da baixa. Com a alocacao virando reserva, isso passou a ser dupla contagem:
+    o item sairia aqui e sairia de novo na reconciliacao da demanda. Vinculo
+    com demanda agora e exclusivamente /demanda_producao/registrar-saida.
+    """
+    data = request.get_json() or {}
+    if not all([data.get('product_id'), data.get('quantity'), data.get('date')]):
+        return jsonify({'success': False, 'error': 'Incompleto'}), 400
+
+    if data.get('demanda_id'):
+        return jsonify({
+            'success': False,
+            'error': ('Saída avulsa não aceita vínculo com demanda. '
+                      'Para destinar o item a uma demanda use a alocação ([-]), '
+                      'que reserva o estoque e dá baixa na finalização.')
+        }), 400
+
     try:
+        quantidade = float(data['quantity'])
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'Quantidade inválida.'}), 400
+    if quantidade <= 0:
+        return jsonify({'success': False, 'error': 'Quantidade deve ser maior que zero.'}), 400
+
+    try:
+        produto = product_service.get_by_id(data['product_id']) or {}
+        deposito_id = app_config_service.get_config('default_production_deposit_id') or 'principal'
+
+        # Confere o DISPONIVEL, nao o saldo fisico: o que esta reservado para
+        # uma demanda nao pode ser levado por uma saida avulsa.
+        saldo = estoque_service.get_saldo_atual(data['product_id'], deposito_id)
+        disponivel = float(saldo.get('quantidade_disponivel') or 0)
+        if disponivel < quantidade:
+            return jsonify({
+                'success': False,
+                'error': (f"Saldo disponível insuficiente. Disponível: {disponivel}, "
+                          f"solicitado: {quantidade}. "
+                          f"Reservado para demandas: {saldo.get('quantidade_reservada') or 0}.")
+            }), 400
+
         user = get_current_user()
-        daily_production_log_service.registrar_saida_simples(datetime.strptime(data['date'], '%Y-%m-%d').date(), data['product_id'], product_service.get_by_id(data['product_id']).get('name', ''), int(data['quantity']), user.get('email') if user else None)
-        if data.get('demanda_id'):
-            demanda_producao_service.associar_saida_a_demanda(data['demanda_id'], data['product_id'], int(data['quantity']))
-        return jsonify({'success': True})
+        daily_production_log_service.registrar_saida_simples(
+            datetime.strptime(data['date'], '%Y-%m-%d').date(),
+            data['product_id'],
+            produto.get('name', ''),
+            quantidade,
+            user.get('email') if user else None,
+        )
+        novo_saldo = estoque_service.get_saldo_atual(data['product_id'], deposito_id)
+        return jsonify({
+            'success': True,
+            'message': f"Saída avulsa de {quantidade:g} un registrada. O estoque já foi baixado.",
+            'saldo': novo_saldo,
+        })
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @producao_api_bp.route('/registrar-sinal', methods=['POST'])

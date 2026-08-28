@@ -22,6 +22,7 @@ import {
     AlertTriangle,
     ArrowUp,
     ArrowUpCircle,
+    Ban,
     Bot,
     CheckCircle,
     CheckSquare,
@@ -54,6 +55,7 @@ const DemandaCard = React.memo(({
   handleFinalizeDemand,
   handleCollectDemand,
   handleDeleteDemand,
+  handleCancelDemand,
   handlePublishDemand,
   handlePrintDemand,
   isAdmin = false,
@@ -379,6 +381,11 @@ const DemandaCard = React.memo(({
                 {canUseExpeditionDemandActions && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleCollectDemand(demanda.id); }}>
                     <Truck className="mr-2 h-4 w-4" /> Coletar
+                  </DropdownMenuItem>
+                )}
+                {canUseAdminDemandActions && handleCancelDemand && (
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleCancelDemand(demanda.id); }} className="text-amber-600">
+                    <Ban className="mr-2 h-4 w-4" /> Cancelar e devolver à torre
                   </DropdownMenuItem>
                 )}
                 {canUseAdminDemandActions && (
