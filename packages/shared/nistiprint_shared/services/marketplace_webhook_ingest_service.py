@@ -145,6 +145,7 @@ class MarketplaceWebhookIngestService:
                     "event_status": result.get("event_status"),
                 },
                 pedido_id=result.get("pedido_id"),
+                marketplace_integration_id=result.get("marketplace_integration_id"),
             )
             return {**result, "correlation_id": correlation_id}
         except Exception as exc:
@@ -269,6 +270,7 @@ class MarketplaceWebhookIngestService:
             marketplace_integration_id=marketplace_inst.get("id"),
             bling_integration_id=(link or {}).get("bling_integration_id") or (link or {}).get("erp_integration_id"), bling_loja_id=(link or {}).get("aggregator_store_id") or (link or {}).get("erp_store_id"),
             channel_id=(link or {}).get("channel_id"),
+            ingest_origin_mode=(link or {}).get("ingest_origin_mode"),
             situacao_pedido_id=lifecycle.target_situacao_pedido_id,
             status_original=status_original,
             lifecycle_event={
@@ -503,6 +505,7 @@ class MarketplaceWebhookIngestService:
             marketplace_integration_id=marketplace_inst.get("id"),
             bling_integration_id=(link or {}).get("bling_integration_id") or (link or {}).get("erp_integration_id"), bling_loja_id=(link or {}).get("aggregator_store_id") or (link or {}).get("erp_store_id"),
             channel_id=(link or {}).get("channel_id"),
+            ingest_origin_mode=(link or {}).get("ingest_origin_mode"),
             situacao_pedido_id=lifecycle.target_situacao_pedido_id,
             status_original=status_original,
             lifecycle_event={
@@ -808,11 +811,18 @@ class MarketplaceWebhookIngestService:
         if not marketplace_integration_id:
             return None
 
+        # A consulta LE o modo, nao filtra por ele. Filtrar por
+        # `marketplace_direct` aqui — como se fazia — tornava invisivel um
+        # vinculo em `erp_bling` registrado so nesta tabela: a busca caia no
+        # `channel_connections` e, sem linha la, o webhook virava
+        # `skipped_inactive_source` em vez do `pending_erp_order` pretendido.
         link_rows = (
             supabase_db.table("erp_marketplace_links")
-            .select("id,erp_integration_id,marketplace_integration_id,process_webhooks,ingest_origin_mode,erp_store_id")
+            .select(
+                "id,erp_integration_id,marketplace_integration_id,process_webhooks,"
+                "ingest_origin_mode,erp_store_id,channel_id"
+            )
             .eq("marketplace_integration_id", marketplace_integration_id)
-            .eq("ingest_origin_mode", "marketplace_direct")
             .limit(1)
             .execute()
             .data
@@ -822,6 +832,9 @@ class MarketplaceWebhookIngestService:
             link = dict(link_rows[0])
             link["bling_integration_id"] = link.get("erp_integration_id")
             link["aggregator_store_id"] = link.get("erp_store_id")
+            if link.get("channel_id") is None:
+                # Vinculo ainda nao migrado: o canal vive no cadastro legado.
+                link["channel_id"] = self._legacy_channel_id(marketplace_integration_id)
             return link
 
         rows = (
@@ -835,6 +848,29 @@ class MarketplaceWebhookIngestService:
             or []
         )
         return rows[0] if rows else None
+
+    def _legacy_channel_id(self, marketplace_integration_id: int | None) -> int | None:
+        """Canal do cadastro legado, enquanto o backfill nao alcanca o vinculo."""
+        if not marketplace_integration_id:
+            return None
+        try:
+            rows = (
+                supabase_db.table("channel_connections")
+                .select("channel_id")
+                .eq("marketplace_integration_id", marketplace_integration_id)
+                .eq("is_active", True)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+        except Exception as exc:
+            logger.warning(
+                "[marketplace-webhook] falha ao resolver canal legado integration_id=%s: %s",
+                marketplace_integration_id, exc,
+            )
+            return None
+        return rows[0].get("channel_id") if rows else None
 
     def _hydrate_shopee_integration(self, marketplace_inst: dict) -> dict:
         credentials = marketplace_inst.get("credentials") or {}
@@ -1158,6 +1194,7 @@ class MarketplaceWebhookIngestService:
         bling_integration_id: int | None,
         bling_loja_id: str | None,
         channel_id: int | None,
+        ingest_origin_mode: str | None,
         situacao_pedido_id: int | None,
         status_original: str | None,
         mirror_fields: dict,
@@ -1276,6 +1313,11 @@ class MarketplaceWebhookIngestService:
             "erp_order_id": bling_ref.get("bling_order_id"),
             "erp_order_number": bling_ref.get("bling_order_number"),
             "canal_venda_id": channel_id,
+            # Congelado na ingestao de proposito: trocar o modo do vinculo
+            # (migrar a conta do ERP para o marketplace direto) passa a valer
+            # para pedidos novos, sem mudar retroativamente quem tem autoridade
+            # sobre os que ja estao em transito.
+            "ingest_origin_mode": ingest_origin_mode,
             "situacao_pedido_id": situacao_pedido_id,
             "status_original": status_original,
             "informacoes_cliente": raw_customer or {},
@@ -1332,6 +1374,7 @@ class MarketplaceWebhookIngestService:
         snapshot = {
             "identity": {
                 "ingest_source": source,
+                "ingest_origin_mode": ingest_origin_mode,
                 "marketplace": source,
                 "marketplace_order_id": str(external_order_id),
                 "marketplace_integration_id": marketplace_integration_id,
@@ -1701,6 +1744,11 @@ class MarketplaceWebhookIngestService:
             "lifecycle_stage": result.get("lifecycle_stage"),
             "last_status": result.get("event_status") or result.get("status"),
             "last_attempt_at": get_now_iso(),
+            # Sem isto, a unica pista da conta em `webhook_events` e o
+            # `dedupe_scope`, que guarda o identificador da conta por acidente de
+            # projeto. Com duas contas na mesma origem, filtrar backlog e falha
+            # por conta passa a ser rotina.
+            "marketplace_integration_id": result.get("marketplace_integration_id"),
         }
         fields = {key: value for key, value in fields.items() if value is not None}
         if not fields:
@@ -1720,6 +1768,7 @@ class MarketplaceWebhookIngestService:
         duration_ms: int | None,
         payload_summary: dict | None,
         pedido_id: int | None = None,
+        marketplace_integration_id: int | None = None,
     ):
         try:
             supabase_db.table("pedido_ingest_log").insert({
@@ -1730,6 +1779,7 @@ class MarketplaceWebhookIngestService:
                 "duration_ms": duration_ms,
                 "payload_summary": payload_summary,
                 "pedido_id": pedido_id,
+                "marketplace_integration_id": marketplace_integration_id,
             }).execute()
         except Exception as exc:
             logger.warning("[marketplace-ingest] erro ao gravar pedido_ingest_log stage=%s: %s", stage, exc)

@@ -358,6 +358,27 @@ def install_module():
         )
 
         update_fields = {}
+        # Vincular o aplicativo OAuth na propria instalacao. Sem isto, a
+        # instalacao nasce sem `app_profile_id` e, num modulo com mais de um
+        # aplicativo ativo, qualquer uso de credencial falha com
+        # `app_profile_ambiguous` ate alguem vincular pela tela.
+        if data.get("app_profile_id"):
+            profile = integration_app_profile_service.get_profile(data["app_profile_id"])
+            if not profile:
+                return jsonify({"error": "app_profile_id inexistente"}), 400
+            if str(profile.get("module_id")) != str(data["module_id"]):
+                return (
+                    jsonify(
+                        {
+                            "error": (
+                                "app_profile_id pertence ao modulo "
+                                f"{profile.get('module_id')}, nao a {data['module_id']}"
+                            )
+                        }
+                    ),
+                    400,
+                )
+            update_fields["app_profile_id"] = profile["id"]
         if data.get("parent_integration_id"):
             update_fields["parent_integration_id"] = data.get("parent_integration_id")
         if "is_default" in data:

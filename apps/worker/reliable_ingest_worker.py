@@ -35,6 +35,9 @@ TERMINAL_ERRORS = {
     "provider_topic_resource_mismatch", "provider_parameter_error",
     "provider_access_forbidden", "provider_identity_mismatch",
     "marketplace_integration_ambiguous",
+    # Instalacao sem vinculo de aplicativo e mais de um candidato ativo. Repetir
+    # nao resolve: so um humano decide de qual conta a credencial e.
+    "app_profile_ambiguous",
 }
 
 

@@ -527,20 +527,18 @@ class PlatformAuthService:
     def _refresh_mercadolivre_token(
         self, config: Dict, app_secrets: Dict, refresh_token: str
     ) -> Dict:
-        client_id = (
-            app_secrets.get("client_id")
-            or config.get("client_id")
-            or os.getenv("ML_CNPJ01_CLIENT_ID")
-        )
-        client_secret = (
-            app_secrets.get("client_secret")
-            or config.get("client_secret")
-            or os.getenv("ML_CNPJ01_CLIENT_SECRET")
-        )
+        # O ambiente nao e mais consultado aqui. `credential_resolver_service`
+        # decide de qual aplicativo esta instalacao renova — e, quando ha mais de
+        # um aplicativo ativo sem vinculo explicito, levanta em vez de escolher.
+        # Ler `ML_CNPJ01_*` neste ponto significaria renovar a conta B com o
+        # aplicativo da conta A: `invalid_grant` e refresh token queimado.
+        client_id = app_secrets.get("client_id") or config.get("client_id")
+        client_secret = app_secrets.get("client_secret") or config.get("client_secret")
 
         if not client_id or not client_secret:
             raise ValueError(
-                "Credenciais Mercado Livre nao encontradas no profile/config/ambiente."
+                "Credenciais Mercado Livre nao encontradas: vincule a instalacao a um "
+                "app profile do modulo."
             )
 
         url = "https://api.mercadolibre.com/oauth/token"

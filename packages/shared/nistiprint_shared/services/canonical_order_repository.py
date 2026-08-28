@@ -96,7 +96,10 @@ class CanonicalOrderRepository:
     def resolve_ingest_origin_mode_for_order(
         self, pedido_id: Any
     ) -> Optional[str]:
-        """Modo de ingest do vinculo que governa este pedido.
+        """Modo de ingest que governa este pedido.
+
+        Ordem: o modo congelado no proprio pedido, e so entao o modo atual do
+        vinculo (para pedidos anteriores ao congelamento).
 
         Retorna `None` quando o pedido existe mas o vinculo nao pode ser
         resolvido. Quem decide autoridade deve tratar `None` como *nao
@@ -107,7 +110,10 @@ class CanonicalOrderRepository:
             return None
         rows = (
             supabase_db.table("pedidos")
-            .select("erp_integration_id,erp_store_id,marketplace_module_id")
+            .select(
+                "erp_integration_id,erp_store_id,marketplace_module_id,"
+                "ingest_origin_mode"
+            )
             .eq("id", pedido_id)
             .limit(1)
             .execute()
@@ -117,6 +123,12 @@ class CanonicalOrderRepository:
         if not rows:
             return None
         pedido = rows[0]
+        # O modo congelado no pedido vence o modo atual do vinculo. E o que
+        # permite migrar uma conta do ERP para o marketplace direto sem que a
+        # virada mude, no meio do ciclo, quem manda nos pedidos em transito:
+        # eles terminam sob a fonte que os acompanhou desde o inicio.
+        if pedido.get("ingest_origin_mode"):
+            return str(pedido["ingest_origin_mode"])
         link = self.resolve_erp_marketplace_link(
             pedido.get("erp_integration_id"), pedido.get("erp_store_id")
         )
