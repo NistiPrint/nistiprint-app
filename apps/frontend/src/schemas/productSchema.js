@@ -30,13 +30,4 @@ export const productSchema = z.object({
     names: z.array(z.string()).optional(),
     ids: z.array(z.string()).optional(),
   }).optional(),
-  artworks: z.array(z.object({
-    id: z.string(),
-    filename: z.string(),
-    original_filename: z.string(),
-    file_path: z.string(),
-    file_size: z.number(),
-    mime_type: z.string(),
-    upload_date: z.string(),
-  })).optional(),
 });

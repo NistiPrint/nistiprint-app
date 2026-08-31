@@ -111,23 +111,9 @@ const ProductService = {
     return response.data;
   },
 
-  // Artwork Operations
-  uploadArtwork: async (productId, formData) => {
-    const response = await api.post(`/produtos/${productId}/artwork`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
-    });
-    return response.data;
-  },
-
-  getArtworks: async (productId) => {
-    const response = await api.get(`/produtos/${productId}/artworks`);
-    return response.data;
-  },
-
-  deleteArtwork: async (artworkId) => {
-    const response = await api.delete(`/produtos/artwork/${artworkId}`);
+  // Local artwork tree (files remain on the local Windows agent)
+  getRecursiveArtworks: async (productId) => {
+    const response = await api.get(`/produtos/${productId}/artes-recursivas`);
     return response.data;
   },
 

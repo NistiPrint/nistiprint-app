@@ -28,11 +28,10 @@ import SectorService from '@/services/SectorService';
 import TagService from '@/services/TagService';
 import UnitService from '@/services/UnitService';
 
-import ArtworkManager from '@/components/produtos/ArtworkManager';
 import BOMManager from '@/components/produtos/BOMManager';
 import BlingLinkManager from '@/components/produtos/BlingLinkManager';
 import ExternalIdentifiersManager from '@/components/produtos/ExternalIdentifiersManager';
-import PrintManager from '@/components/produtos/PrintManager';
+import LocalArtworkSection from '@/components/produtos/LocalArtworkSection';
 import VariationManager from '@/components/produtos/VariationManager';
 
 function ProdutoFormPage() {
@@ -74,7 +73,6 @@ function ProdutoFormPage() {
       herdar_bom_pai: true,
       tags: [],
       external_product_links: { skus: [], names: [], ids: [] },
-      artworks: [],
     },
   });
 
@@ -248,7 +246,14 @@ function ProdutoFormPage() {
         const data = await ProductService.getById(produto_id);
         const product = data.produto;
         
-        setProductData(product);
+        const productCategory = (data.categorias || []).find(
+          category => String(category.id) === String(product.categoria_id),
+        );
+        setProductData({
+          ...product,
+          permite_arte: product.permite_arte ?? productCategory?.permite_arte ?? false,
+          categoria_nome: product.categoria_nome || productCategory?.nome,
+        });
 
         // Certificar-se de que o formato do produto é mantido corretamente
         const formatoProduto = product.formato || 'simples';
@@ -270,7 +275,6 @@ function ProdutoFormPage() {
           herdar_dados_pai: product.herdar_dados_pai !== undefined ? product.herdar_dados_pai : true,
           herdar_bom_pai: product.herdar_bom_pai !== undefined ? product.herdar_bom_pai : true,
           external_product_links: product.external_product_links || { skus: [], names: [], ids: [] },
-          artworks: product.artworks || [],
         });
 
         // Handle Tags
@@ -317,8 +321,7 @@ function ProdutoFormPage() {
     if (loadingSubmit) return;
     setLoadingSubmit(true);
     try {
-      // Exclude artworks from the main product data since they're managed separately
-      const { artworks, ...productData } = data;
+      const productData = data;
       const payload = {
         ...productData,
         tags: selectedTags, // Ensure tags are sent as array of IDs
@@ -915,10 +918,7 @@ function ProdutoFormPage() {
               <CardTitle>Artes e Impressão</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-6">
-                <ArtworkManager productId={produto_id} />
-                <PrintManager productId={produto_id} artworks={form.watch('artworks') || []} />
-              </div>
+              <LocalArtworkSection productId={produto_id} product={productData || form.watch()} categories={categorias} />
             </CardContent>
           </Card>
         )}
@@ -977,7 +977,6 @@ function ProdutoFormPage() {
                               herdar_dados_pai: product.herdar_dados_pai !== undefined ? product.herdar_dados_pai : true,
                               herdar_bom_pai: product.herdar_bom_pai !== undefined ? product.herdar_bom_pai : true,
                               external_product_links: product.external_product_links || { skus: [], names: [], ids: [] },
-                              artworks: product.artworks || [],
                             });
                           } catch (error) {
                             console.error("Error refreshing product data", error);

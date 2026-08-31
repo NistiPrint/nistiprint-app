@@ -1,0 +1,1 @@
+"""Agente local de impressão da NistiPrint."""

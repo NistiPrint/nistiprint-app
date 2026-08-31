@@ -135,6 +135,7 @@ class ProductService:
             cat = pre_fetched_cats[cid]
             product['category_name'] = cat.get('nome')
             product['comercializavel'] = cat.get('comercializavel', False)
+            product['permite_arte'] = cat.get('permite_arte', False)
 
         # UOM
         uid = str(product.get('unidade_medida_id'))
@@ -556,6 +557,7 @@ class ProductService:
                 product['category_name'] = category.get('nome')
                 product['categoria_nome'] = category.get('nome')
                 product['comercializavel'] = category.get('comercializavel', False)
+                product['permite_arte'] = category.get('permite_arte', False)
 
         # Enrich Unit of Measure
         if product.get('unidade_medida_id'):
@@ -578,15 +580,6 @@ class ProductService:
                 product['is_composite'] = False
         except Exception:
             product['is_composite'] = False
-
-        # Include artworks for the product
-        try:
-            from nistiprint_shared.services.artwork_service import artwork_service
-            artworks = artwork_service.get_artworks_for_product(product['id'])
-            product['artworks'] = [artwork.to_dict(use_updated_url=True) for artwork in artworks] if artworks else []
-        except Exception as e:
-            logging.warning(f"Error getting artworks for product {product['id']}: {e}")
-            product['artworks'] = []
 
         # Dynamic inheritance logic for variations
         if product.get('parent_id') and product.get('herdar_dados_pai', False):
@@ -928,27 +921,6 @@ class ProductService:
         except Exception as e:
             logging.error(f"Erro ao copiar BOM para produto clonado {new_product_id}: {e}")
         
-        # Copia artworks
-        try:
-            from nistiprint_shared.services.artwork_service import artwork_service
-            original_artworks = artwork_service.get_artworks_for_product(product_id)
-            
-            if original_artworks:
-                for artwork in original_artworks:
-                    # Copia artwork apontando para o novo produto
-                    artwork_data = {
-                        'product_id': int(new_product_id),
-                        'filename': artwork.filename,
-                        'original_filename': artwork.original_filename,
-                        'file_path': artwork.file_path,
-                        'file_size': artwork.file_size,
-                        'mime_type': artwork.mime_type,
-                    }
-                    artwork_service.create_artwork(artwork_data)
-                logging.info(f"Artworks copiados para produto clonado {new_product_id}")
-        except Exception as e:
-            logging.error(f"Erro ao copiar artworks para produto clonado {new_product_id}: {e}")
-        
         # Copia links externos (Bling, etc.)
         try:
             original_links = self.get_external_product_links(product_id)
@@ -1149,74 +1121,6 @@ class ProductService:
         except Exception as e:
             logging.error(f"Error syncing external links for product {product_id}: {e}")
             # Nao propaga: um apelido mal cadastrado nao pode derrubar o salvamento do produto.
-
-    def get_artworks_for_product(self, product_id: str) -> List[Dict[str, Any]]:
-        """Get all artworks associated with a product."""
-        try:
-            # Using Supabase session to query the ProductArtwork model
-            from nistiprint_shared.models.product_artwork import ProductArtwork
-            from nistiprint_shared.database.supabase_db_service import get_db_session
-            with get_db_session() as session:
-                artworks = session.query_model(ProductArtwork).filter_by(
-                    product_id=product_id
-                ).all()
-
-            return [artwork.to_dict(use_updated_url=True) for artwork in artworks]
-        except Exception as e:
-            logging.warning(f"Error getting artworks for product {product_id}: {e}")
-            return []
-
-    def add_artwork_to_product(self, product_id: str, artwork_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Add an artwork to a product."""
-        try:
-            from nistiprint_shared.models.product_artwork import ProductArtwork
-            from nistiprint_shared.database.supabase_db_service import get_db_session
-
-            # Create new artwork record
-            artwork = ProductArtwork(
-                product_id=product_id,
-                filename=artwork_data.get('filename'),
-                original_filename=artwork_data.get('original_filename'),
-                file_path=artwork_data.get('file_path'),
-                file_size=artwork_data.get('file_size'),
-                mime_type=artwork_data.get('mime_type')
-            )
-
-            with get_db_session() as session:
-                session.add(artwork)
-                session.commit()
-
-            return artwork.to_dict(use_updated_url=True)
-        except Exception as e:
-            logging.error(f"Error adding artwork to product {product_id}: {e}")
-            raise e
-
-    def delete_artwork_from_product(self, artwork_id: str) -> bool:
-        """Delete an artwork from a product."""
-        try:
-            from nistiprint_shared.models.product_artwork import ProductArtwork
-            from nistiprint_shared.database.supabase_db_service import get_db_session
-
-            with get_db_session() as session:
-                artwork = session.query_model(ProductArtwork).filter_by(
-                    id=artwork_id
-                ).first()
-
-                if not artwork:
-                    return False
-
-                # Delete the physical file if it exists
-                import os
-                if os.path.exists(artwork.file_path):
-                    os.remove(artwork.file_path)
-
-                session.delete(artwork)
-                session.commit()
-
-            return True
-        except Exception as e:
-            logging.error(f"Error deleting artwork {artwork_id}: {e}")
-            return False
 
     # --- Variations Methods ---
 

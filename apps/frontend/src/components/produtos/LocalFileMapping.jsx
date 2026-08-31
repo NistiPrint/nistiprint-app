@@ -9,54 +9,66 @@ import { RotateCcw, Upload, Printer, Wifi, WifiOff, MapPin } from 'lucide-react'
 import { toast } from 'sonner';
 import useLocalAgent from '@/hooks/useLocalAgent';
 
-const LocalFileMapping = ({ productId }) => {
+const LocalFileMapping = ({ productId, sku }) => {
+  const mapKey = sku || String(productId || '');
   const {
     isAgentOnline,
     checkingAgent,
     checkAgentStatus,
     mapFileToProduct,
     getMappedFileForProduct,
-    printMappedFile
+    printMappedFile,
+    getPrinters,
+    saveMapping,
   } = useLocalAgent();
 
   const [mappedFile, setMappedFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [printCopies, setPrintCopies] = useState(1);
+  const [printers, setPrinters] = useState([]);
+  const [printerName, setPrinterName] = useState('');
 
   // Load mapped file when component mounts or agent status changes
   useEffect(() => {
-    if (productId && isAgentOnline) {
+    if (mapKey && isAgentOnline) {
       loadMappedFile();
+      getPrinters().then(({ printers: available }) => {
+        setPrinters(available || []);
+        setPrinterName(current => current || available?.[0] || '');
+      }).catch(() => setPrinters([]));
     }
-  }, [productId, isAgentOnline]);
+  }, [mapKey, isAgentOnline]);
 
   const loadMappedFile = async () => {
-    if (!productId) return;
+    if (!mapKey) return;
 
     try {
-      const result = await getMappedFileForProduct(productId);
+      const result = await getMappedFileForProduct(mapKey);
       setMappedFile(result);
+      setPrinterName(result?.printer_name || '');
     } catch (error) {
       console.error('Error loading mapped file:', error);
     }
   };
 
   const handleMapFile = async () => {
-    if (!productId) {
+    if (!mapKey) {
       toast.error('Produto não identificado');
       return;
     }
 
     setLoading(true);
     try {
-      const result = await mapFileToProduct(productId);
-      toast.success(result.message || 'Janela de seleção de arquivo aberta. Por favor, selecione um arquivo.');
-
-      // Wait a bit and reload the mapped file
-      setTimeout(() => {
-        loadMappedFile();
+      const result = await mapFileToProduct(mapKey);
+      if (!result.file_path) {
         setLoading(false);
-      }, 2000);
+        return;
+      }
+      if (!printerName) throw new Error('Selecione uma impressora.');
+      await saveMapping({ sku: mapKey, product_id: productId, file_path: result.file_path, printer_name: printerName });
+      await loadMappedFile();
+      toast.success('Arquivo e impressora vinculados.');
+      setLoading(false);
     } catch (error) {
       console.error('Error mapping file:', error);
       toast.error(`Erro ao mapear arquivo: ${error.message}`);
@@ -65,7 +77,7 @@ const LocalFileMapping = ({ productId }) => {
   };
 
   const handlePrint = async () => {
-    if (!productId) {
+    if (!mapKey) {
       toast.error('Produto não identificado');
       return;
     }
@@ -77,8 +89,12 @@ const LocalFileMapping = ({ productId }) => {
 
     setLoading(true);
     try {
-      const result = await printMappedFile(productId, parseInt(printCopies));
-      toast.success(result.message || `Enviado para impressão: ${result.file_path}`);
+      const result = await printMappedFile(mapKey, parseInt(printCopies));
+      if (result.status === 'file_opened') {
+        toast.warning('A impressão direta falhou. O arquivo foi aberto para impressão manual.');
+      } else {
+        toast.success(result.message || 'Enviado para impressão.');
+      }
       setLoading(false);
     } catch (error) {
       console.error('Error printing file:', error);
@@ -134,9 +150,7 @@ const LocalFileMapping = ({ productId }) => {
       <CardContent>
         {!isAgentOnline ? (
           <Alert>
-            <AlertDescription>
-              O agente local não está em execução. Por favor, inicie o serviço do agente local em sua máquina para usar esta funcionalidade.
-            </AlertDescription>
+            <AlertDescription>O agente local não está disponível. Verifique se ele está instalado e iniciado com o Windows.</AlertDescription>
           </Alert>
         ) : (
           <div className="space-y-4">
@@ -149,6 +163,14 @@ const LocalFileMapping = ({ productId }) => {
                 <Upload className="mr-2 h-4 w-4" />
                 Vincular Arquivo Local
               </Button>
+
+              <div className="flex-1 min-w-[220px]">
+                <Label htmlFor="printer">Impressora</Label>
+                <select id="printer" className="flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm" value={printerName} onChange={(e) => setPrinterName(e.target.value)} disabled={loading}>
+                  <option value="">Selecione...</option>
+                  {printers.map((printer) => <option key={printer} value={printer}>{printer}</option>)}
+                </select>
+              </div>
               
               <div className="flex-1 min-w-[150px]">
                 <Label htmlFor="copies">Cópias</Label>

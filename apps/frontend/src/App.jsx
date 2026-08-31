@@ -63,7 +63,6 @@ import EstoquePosicaoPage from './pages/estoque/EstoquePosicaoPage'
 import EstoqueRelatoriosPage from './pages/estoque/EstoqueRelatoriosPage'
 import EstoqueReservasPage from './pages/estoque/EstoqueReservasPage'
 import MovimentacaoLotePage from './pages/estoque/MovimentacaoLotePage'
-import FilaImpressao from './pages/impressao/FilaImpressao'
 import PedidoDetalhePage from './pages/pedidos/PedidoDetalhePage'
 import PedidosListPage from './pages/pedidos/PedidosListPageLotAware'
 import ControleProducaoPage from './pages/producao/ControleProducaoPage'
@@ -161,7 +160,6 @@ function App() {
               element={<ControleProducaoPage tipo='capa' />}
             />
             <Route path='expedicao' element={<ExpedicaoDashboardPage />} />
-            <Route path='impressao' element={<FilaImpressao />} />
           </Route>
 
           {/* 4. Logística (Estoque) */}

@@ -11,6 +11,7 @@ class Categoria(db.Model):
     nivel = db.Column(db.Integer, default=0)  # For hierarchical categories
     path = db.Column(db.Text)  # Full path for easy querying
     ativo = db.Column(db.Boolean, default=True)
+    permite_arte = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -31,6 +32,7 @@ class Categoria(db.Model):
             'nivel': self.nivel,
             'path': self.path,
             'ativo': self.ativo,
+            'permite_arte': self.permite_arte,
             'created_at': format_datetime(self.created_at),
             'updated_at': format_datetime(self.updated_at)
         }

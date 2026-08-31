@@ -84,7 +84,6 @@ def editar(produto_id):
         categorias, unidades, tags_d = category_service.get_all(), unit_of_measure_service.get_all(), tag_service.get_all()
         bom_components = product_service.get_bom_components(produto_id) if produto.get('is_composite') else []
         bling_links = product_service.get_bling_product_links(produto_id)
-        artworks = product_service.get_artworks_for_product(produto_id)
 
         if request.method in ['POST', 'PUT']:
             dados_atualizacao = {
@@ -105,7 +104,7 @@ def editar(produto_id):
             if not dados_atualizacao['sku'] or not dados_atualizacao['name']:
                 flash('Campos obrigatórios ausentes', 'error')
                 return render_template('produtos/form.html', produto=produto, categorias=categorias, unidades=unidades, 
-                                     tags=tags_d, bom_components=bom_components, product_artworks=artworks, view_mode=False)
+                                     tags=tags_d, bom_components=bom_components, view_mode=False)
 
             produto_atualizado = product_service.update(produto_id, dados_atualizacao)
             product_service.sync_external_product_links(produto_id, dados_atualizacao['external_product_links'])
@@ -114,7 +113,7 @@ def editar(produto_id):
 
         return render_template('produtos/form.html', produto=produto, categorias=categorias, unidades=unidades, 
                              tags=tags_d, bom_components=bom_components, bling_product_links=bling_links, 
-                             product_artworks=artworks, external_product_links=produto.get('external_product_links', {'skus': [], 'names': [], 'ids': []}), 
+                              external_product_links=produto.get('external_product_links', {'skus': [], 'names': [], 'ids': []}), 
                              view_mode=False, default_bling_account_id=app_config_service.get_config('default_bling_account_id'), 
                              all_bling_accounts=conta_bling_service.get_all())
     except Exception as e:

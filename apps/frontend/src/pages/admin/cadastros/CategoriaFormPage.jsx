@@ -47,6 +47,7 @@ const categoriaSchema = z.object({
   parent_category_id: z.string().optional().nullable(),
   comercializavel: z.boolean().optional(),
   componente: z.boolean().optional(),
+  permite_arte: z.boolean().optional(),
 })
 
 function CategoriaFormPage() {
@@ -75,6 +76,7 @@ function CategoriaFormPage() {
       parent_category_id: 'none',
       comercializavel: false,
       componente: false,
+      permite_arte: false,
     },
   })
 
@@ -102,6 +104,7 @@ function CategoriaFormPage() {
             parent_category_id: data.categoria_pai_id || 'none',
             comercializavel: data.comercializavel || false,
             componente: data.componente || false,
+            permite_arte: data.permite_arte || false,
           })
         }
       } catch (error) {
@@ -324,6 +327,30 @@ function CategoriaFormPage() {
                           </FormLabel>
                           <p className='text-xs text-muted-foreground'>
                             Pode ser usado como componente
+                          </p>
+                        </div>
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name='permite_arte'
+                    render={({ field }) => (
+                      <FormItem className='flex flex-row items-center space-x-3 space-y-0'>
+                        <FormControl>
+                          <input
+                            type='checkbox'
+                            checked={field.value || false}
+                            onChange={e => field.onChange(e.target.checked)}
+                            className='h-4 w-4 text-primary border-gray-300 rounded focus:ring-primary'
+                          />
+                        </FormControl>
+                        <div className='space-y-1 leading-none'>
+                          <FormLabel className='text-sm font-normal'>
+                            Permite associação de arte
+                          </FormLabel>
+                          <p className='text-xs text-muted-foreground'>
+                            Produtos desta categoria podem ter arquivo local para impressão
                           </p>
                         </div>
                       </FormItem>

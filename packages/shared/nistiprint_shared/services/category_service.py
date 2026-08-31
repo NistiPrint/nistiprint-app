@@ -72,6 +72,7 @@ class CategoryService:
             'ativo': category_data.get('ativo', True),
             'comercializavel': category_data.get('comercializavel', False),
             'componente': category_data.get('componente', False),
+            'permite_arte': category_data.get('permite_arte', False),
             'created_at': datetime.utcnow().isoformat(),
             'updated_at': datetime.utcnow().isoformat()
         }
@@ -106,6 +107,8 @@ class CategoryService:
             data['comercializavel'] = category_data['comercializavel']
         if 'componente' in category_data:
             data['componente'] = category_data['componente']
+        if 'permite_arte' in category_data:
+            data['permite_arte'] = category_data['permite_arte']
 
         query = self.table.update(data).eq('id', category_id)
         response = supabase_db.execute_with_retry(query)

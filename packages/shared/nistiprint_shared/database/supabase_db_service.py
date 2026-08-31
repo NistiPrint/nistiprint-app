@@ -702,7 +702,6 @@ class SupabaseSession:
         # Define known column names for common models to avoid relationship attributes
         # This is a more reliable approach than trying to detect relationships dynamically
         known_columns = {
-            'ProductArtwork': ['id', 'product_id', 'filename', 'original_filename', 'file_path', 'file_size', 'mime_type', 'upload_date'],
             'Product': ['id', 'nome', 'sku', 'descricao', 'categoria_id', 'tags', 'preco_custo', 'preco_venda',
                        'estoque_minimo', 'estoque_maximo', 'tipo_material', 'unidade_medida_id', 'sku_pai',
                        'atributos', 'precificacao', 'dados_estoque', 'created_at', 'updated_at']

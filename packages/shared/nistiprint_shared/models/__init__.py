@@ -27,9 +27,7 @@ from nistiprint_shared.models.pedido import *
 from nistiprint_shared.models.permissao import *
 from nistiprint_shared.models.plataforma import *
 from nistiprint_shared.models.ponto_coleta import *
-from nistiprint_shared.models.print_job import *
 from nistiprint_shared.models.product import *
-from nistiprint_shared.models.product_artwork import *
 from nistiprint_shared.models.produto_externo import *
 from nistiprint_shared.models.recurso_produtivo import *
 from nistiprint_shared.models.regra_logistica import *

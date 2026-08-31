@@ -450,29 +450,6 @@ function DemandaDashboardPage() {
     }
   }
 
-  const handlePrintDemanda = async mode => {
-    if (
-      !confirm(
-        `Enviar ${mode === 'full' ? 'TODOS' : 'PENDENTES'} os arquivos de producao para impressao?`,
-      )
-    )
-      return
-    try {
-      const response = await fetch(
-        `/api/v2/printing/demanda/${id}/print?mode=${mode}`,
-        { method: 'POST' },
-      )
-      const data = await response.json()
-      if (response.ok) {
-        toast.success(`Jobs criados: ${data.count}`)
-      } else {
-        toast.error(data.error || 'Erro ao criar jobs')
-      }
-    } catch (e) {
-      toast.error(e.message)
-    }
-  }
-
   const handleCopyOrderChunk = async chunk => {
     try {
       await navigator.clipboard.writeText(chunk)
@@ -553,7 +530,6 @@ function DemandaDashboardPage() {
   }
 
   const handlePrintItem = async (item, mode) => {
-    // Quantidade a imprimir
     let quantity = item.quantidade_total
     if (mode === 'balance') {
       quantity = Math.max(
@@ -567,55 +543,24 @@ function DemandaDashboardPage() {
       return
     }
 
-    // Tentar impressão local se agente estiver online
-    if (isAgentOnline && item.produto_id) {
-      try {
-        const mappedFile = await getMappedFileForProduct(item.produto_id)
-        if (mappedFile) {
-          if (
-            confirm(
-              `Arquivo local encontrado: ${mappedFile.file_path}
-
-Deseja imprimir ${quantity} cópias localmente?`,
-            )
-          ) {
-            try {
-              await printMappedFile(item.produto_id, quantity)
-              toast.success(`Enviado para impressora local: ${quantity} cópias`)
-            } catch (printError) {
-              console.error('Erro na impressão local:', printError)
-              // Extrai mensagem de erro detalhada se disponível
-              const errorMsg =
-                printError.response?.data?.detail ||
-                printError.message ||
-                'Erro desconhecido'
-              toast.error(`Erro ao imprimir localmente: ${errorMsg}`)
-            }
-            return // Interrompe fluxo para não tentar nuvem (pois o usuário escolheu local)
-          }
-        }
-      } catch (localError) {
-        console.warn(
-          'Falha na verificação local (ignorado), tentando nuvem...',
-          localError,
-        )
-      }
+    const sku = item.sku || item.sku_externo || item.codigo_sku
+    if (!isAgentOnline || !sku) {
+      toast.warning('O agente local está offline ou o item não possui SKU.')
+      return
     }
 
-    // Fallback para impressão via Nuvem (Print Node / Server)
     try {
-      const response = await fetch(
-        `/api/v2/printing/item/${item.id}/print?mode=${mode}`,
-        { method: 'POST' },
-      )
-      const data = await response.json()
-      if (response.ok) {
-        toast.success(`Jobs criados (Nuvem): ${data.count}`)
-      } else {
-        toast.error(data.error || 'Erro ao criar jobs')
+      const mappedFile = await getMappedFileForProduct(sku)
+      if (!mappedFile) {
+        toast.warning(`Nenhuma arte local está associada ao SKU ${sku}.`)
+        return
       }
-    } catch (e) {
-      toast.error(e.message)
+      const result = await printMappedFile(sku, quantity)
+      toast[result.status === 'file_opened' ? 'warning' : 'success'](
+        result.message || `Enviado para impressora local: ${quantity} cópias`,
+      )
+    } catch (error) {
+      toast.error(`Erro ao imprimir localmente: ${error.message}`)
     }
   }
 
@@ -1070,12 +1015,6 @@ Deseja imprimir ${quantity} cópias localmente?`,
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
-              <DropdownMenuItem onClick={() => handlePrintDemanda('full')}>
-                Enviar todos os arquivos
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handlePrintDemanda('balance')}>
-                Enviar arquivos pendentes
-              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 

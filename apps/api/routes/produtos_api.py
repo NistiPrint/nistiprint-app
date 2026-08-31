@@ -94,9 +94,24 @@ def api_get_produto(produto_id):
             'unidades': unit_of_measure_service.get_all(), 'tags': tag_service.get_all(),
             'bom_components': product_service.get_bom_components(produto_id) if produto.get('is_composite') else [],
             'bling_product_links': product_service.get_bling_product_links(produto_id),
-            'artworks': product_service.get_artworks_for_product(produto_id)
         })
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@produtos_api_bp.route('/<produto_id>/artes-recursivas', methods=['GET'])
+def api_get_recursive_artworks(produto_id):
+    """Lista componentes da ficha técnica que aceitam arte local."""
+    try:
+        from nistiprint_shared.services.recursive_artwork_service import recursive_artwork_service
+        product = product_service.get_by_id(produto_id)
+        if not product:
+            return jsonify({'error': 'Produto não encontrado'}), 404
+        return jsonify({
+            'produto_id': str(produto_id),
+            'artes': recursive_artwork_service.list_for_product(str(produto_id)),
+        })
+    except Exception as e:
+        logging.exception('Erro ao resolver artes recursivas')
         return jsonify({'error': str(e)}), 500
 
 @produtos_api_bp.route('/<produto_id>', methods=['PUT'])
@@ -197,14 +212,6 @@ def api_custo_calculado(produto_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@produtos_api_bp.route('/<produto_id>/clone', methods=['POST'])
-def api_clone_product(produto_id):
-    try:
-        data = request.get_json()
-        new_prod = product_service.clone_product(produto_id, data.get('new_sku'), data.get('new_name'))
-        return jsonify({'success': True, 'product': new_prod})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 @produtos_api_bp.route('/search', methods=['GET'])
 def api_search():
@@ -253,28 +260,6 @@ def api_get_bling_product(bid):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@produtos_api_bp.route('/<produto_id>/artwork', methods=['POST'])
-def api_upload_artwork(produto_id):
-    try:
-        from nistiprint_shared.services.artwork_service import artwork_service
-        art = artwork_service.save_artwork(request.files['artwork'], produto_id)
-        return jsonify({'success': True, 'artwork': art.to_dict(use_updated_url=True)}), 201
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@produtos_api_bp.route('/<produto_id>/artworks', methods=['GET'])
-def api_get_artworks(produto_id):
-    return jsonify({'artworks': product_service.get_artworks_for_product(produto_id)})
-
-@produtos_api_bp.route('/artwork/<aid>', methods=['DELETE'])
-def api_delete_artwork(aid):
-    try:
-        from nistiprint_shared.services.artwork_service import artwork_service
-        artwork_service.delete_artwork(aid)
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 @produtos_api_bp.route('/<produto_id>/variations', methods=['POST'])
 def api_create_product_with_variations(produto_id):
     try:
@@ -284,11 +269,3 @@ def api_create_product_with_variations(produto_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@produtos_api_bp.route('/<produto_id>/print', methods=['POST'])
-def api_send_to_print(produto_id):
-    try:
-        from nistiprint_shared.services.print_service import print_service
-        job = print_service.create_print_job(produto_id, request.get_json().get('artwork_id'))
-        return jsonify({'success': True, 'print_job': job})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500

@@ -57,7 +57,6 @@ const DemandaCard = React.memo(({
   handleDeleteDemand,
   handleCancelDemand,
   handlePublishDemand,
-  handlePrintDemand,
   isAdmin = false,
   isSelected,
   onSelect,
@@ -361,11 +360,6 @@ const DemandaCard = React.memo(({
                 {canUseAdminDemandActions && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); navigate(`/producao/demanda/${demanda.id}/editar`); }}>
                     <Edit className="mr-2 h-4 w-4" /> Editar
-                  </DropdownMenuItem>
-                )}
-                {canUseAdminDemandActions && (
-                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handlePrintDemand(demanda.id); }}>
-                    <Printer className="mr-2 h-4 w-4" /> Imprimir Tudo
                   </DropdownMenuItem>
                 )}
                 {canUseAdminDemandActions && String(demanda.status || '').toUpperCase() === 'RASCUNHO' && (

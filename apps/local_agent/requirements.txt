@@ -1,0 +1,4 @@
+# Dependências opcionais do ícone da bandeja do Windows.
+# O servidor local funciona sem elas.
+pystray>=0.19.5
+Pillow>=10.0.0

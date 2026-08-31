@@ -50,7 +50,6 @@ def setup_mock_query_interface():
             ('nistiprint_shared.models.notificacao', 'Notificacao'),
             ('nistiprint_shared.models.configuracao_aplicacao', 'ConfiguracaoAplicacao'),
             ('nistiprint_shared.models.fornecedor', 'Fornecedor'),
-            ('nistiprint_shared.models.product_artwork', 'ProductArtwork'),
             ('nistiprint_shared.models.bling_pedidos', 'BlingPedidos'),
             ('nistiprint_shared.models.bling_pedido_itens', 'BlingPedidoItens'),
             ('nistiprint_shared.models.shopee_orders', 'ShopeeOrders'),

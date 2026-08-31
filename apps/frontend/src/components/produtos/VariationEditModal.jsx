@@ -15,7 +15,7 @@ import { toast } from 'sonner';
 import ProductService from '@/services/ProductService';
 import CategoryService from '@/services/CategoryService';
 import TagService from '@/services/TagService';
-import ArtworkManager from './ArtworkManager';
+import LocalArtworkSection from './LocalArtworkSection';
 import { AlertTriangle, Info, Copy } from 'lucide-react';
 
 // Schema atualizado para edição de variação com campos de formato e herança
@@ -490,15 +490,7 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
               </TabsContent>
 
               <TabsContent value="media" className="py-4">
-                <div className="space-y-4">
-                    <div className="bg-muted p-4 rounded-md mb-4">
-                        <p className="text-sm text-muted-foreground">
-                            Gerencie as imagens específicas desta variação. Isso ajudará o cliente a identificar a cor/modelo exato.
-                        </p>
-                    </div>
-                    {/* Reutilizando ArtworkManager para a variação */}
-                    <ArtworkManager productId={variationId} />
-                </div>
+                <LocalArtworkSection productId={variationId} product={currentVariation} />
               </TabsContent>
             </Tabs>
           </Form>

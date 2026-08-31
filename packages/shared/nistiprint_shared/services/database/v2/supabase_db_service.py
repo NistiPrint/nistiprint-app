@@ -631,7 +631,6 @@ class SupabaseSession:
         # Define known column names for common models to avoid relationship attributes
         # This is a more reliable approach than trying to detect relationships dynamically
         known_columns = {
-            'ProductArtwork': ['id', 'product_id', 'filename', 'original_filename', 'file_path', 'file_size', 'mime_type', 'upload_date'],
             'Product': ['id', 'nome', 'sku', 'descricao', 'categoria_id', 'tags', 'preco_custo', 'preco_venda',
                        'estoque_minimo', 'estoque_maximo', 'tipo_material', 'unidade_medida_id', 'sku_pai',
                        'atributos', 'precificacao', 'dados_estoque', 'created_at', 'updated_at']
@@ -1030,12 +1029,6 @@ def setup_mock_query_interface():
         Fornecedor = None
 
     try:
-        from nistiprint_shared.models.product_artwork import ProductArtwork
-    except ImportError:
-        # ProductArtwork model might not exist yet
-        ProductArtwork = None
-
-    try:
         from nistiprint_shared.models.bling_pedidos import BlingPedidos
     except ImportError:
         BlingPedidos = None
@@ -1123,8 +1116,6 @@ def setup_mock_query_interface():
         ConfiguracaoAplicacao.query = SupabaseQueryInterface(ConfiguracaoAplicacao)
     if Fornecedor:
         Fornecedor.query = SupabaseQueryInterface(Fornecedor)
-    if ProductArtwork:
-        ProductArtwork.query = SupabaseQueryInterface(ProductArtwork)
     if BlingPedidos:
         BlingPedidos.query = SupabaseQueryInterface(BlingPedidos)
     if BlingPedidoItens:

@@ -1136,7 +1136,7 @@ def get_modalidades():
 
 #: O legado copia os codigos de origem em blocos porque a busca do Bling nao
 #: Deve coincidir com o limite usado pelo cliente Bling para numeros da loja.
-TAMANHO_BLOCO_IDS = 50
+TAMANHO_BLOCO_IDS = 100
 
 
 def _pedido_ids_do_lote(origem) -> tuple[list[int], str]:

@@ -457,7 +457,8 @@ def api_categoria_new():
             'description': data.get('description'),
             'parent_category_id': data.get('parent_category_id') if data.get('parent_category_id') else None,
             'comercializavel': data.get('comercializavel', False),
-            'componente': data.get('componente', False)
+            'componente': data.get('componente', False),
+            'permite_arte': data.get('permite_arte', False)
         }
         new_categoria = category_service.create(category_data)
         return jsonify({'success': True, 'message': 'Categoria criada com sucesso!', 'categoria': new_categoria}), 201
@@ -488,7 +489,8 @@ def api_categoria_edit(categoria_id):
             'description': data.get('description'),
             'parent_category_id': data.get('parent_category_id') if data.get('parent_category_id') else None,
             'comercializavel': data.get('comercializavel', False),
-            'componente': data.get('componente', False)
+            'componente': data.get('componente', False),
+            'permite_arte': data.get('permite_arte', False)
         }
         updated_categoria = category_service.update(categoria_id, category_data)
         return jsonify({'success': True, 'message': 'Categoria atualizada com sucesso!', 'categoria': updated_categoria})

@@ -85,8 +85,6 @@ class Product(db.Model):
             'precificacao': self.precificacao,  # pricing → precificacao (LEGACY)
             'dados_estoque': self.dados_estoque,  # inventory_data → dados_estoque (LEGACY)
 
-            'artworks': [artwork.to_dict(use_updated_url=True) for artwork in self.artworks] if self.artworks else [],
-
             # Novos campos para suporte a variações, composições e kits
             'formato': self.formato,
             'herdar_dados_pai': self.herdar_dados_pai,
@@ -111,7 +109,6 @@ class Product(db.Model):
 # --- Relationships definitions at the bottom ---
 Product.categoria = db.relationship('Categoria', backref='produtos_cat')
 Product.unidade_medida = db.relationship('UnidadeMedida', backref='produtos_uom')
-Product.artworks = db.relationship('ProductArtwork', back_populates='product', cascade='all, delete-orphan')
 Product.variants = db.relationship('Product', backref=db.backref('parent', remote_side=[Product.id]))
 Product.setor_responsavel = db.relationship('Setor', backref='produtos_responsaveis')
 

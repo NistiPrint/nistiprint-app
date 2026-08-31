@@ -329,16 +329,6 @@ export default function DemandasPlanejamentoPage() {
     toast.error(data.message || 'Nao foi possivel deletar.')
   }, [canUseAdminDemandActions, refresh, handleCancelDemand])
 
-  const handlePrintDemand = useCallback(async (id) => {
-    const response = await fetch(`/api/v2/printing/demanda/${id}/print`, { method: 'POST' })
-    const data = await response.json()
-    if (response.ok) {
-      toast.success(`Enviado para impressao. ${data.count || 0} jobs criados.`)
-      return
-    }
-    toast.error(data.error || 'Nao foi possivel imprimir.')
-  }, [])
-
   const changeTab = (tab) => {
     setSelectedDemandIds([])
     setSearchParams((current) => {
@@ -517,7 +507,6 @@ export default function DemandasPlanejamentoPage() {
                 handleDeleteDemand={handleDeleteDemand}
                 handleCancelDemand={handleCancelDemand}
                 handlePublishDemand={handlePublishDemand}
-                handlePrintDemand={handlePrintDemand}
                 isAdmin={user?.is_admin === true}
                 isSelected={selectedDemandIds.includes(demanda.id)}
                 onSelect={(id) =>
