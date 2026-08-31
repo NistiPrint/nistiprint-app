@@ -12,9 +12,13 @@ si por caminhos diferentes de codigo.
 """
 
 from datetime import date, datetime
+import json
+import os
+import tempfile
 from zoneinfo import ZoneInfo
 
 from flask import Blueprint, jsonify, request
+from werkzeug.utils import secure_filename
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.order_erp_reference_service import (
     order_erp_reference_service,
@@ -26,6 +30,110 @@ import logging
 logger = logging.getLogger("DespachoAPI")
 
 despacho_bp = Blueprint("despacho", __name__)
+
+
+def _json_request_value(value, default=None):
+    if value in (None, ""):
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _conferencia(conferencia_id: int) -> dict | None:
+    rows = (supabase_db.table("conferencias_arquivo").select("*")
+            .eq("id", conferencia_id).limit(1).execute().data or [])
+    return dict(rows[0]) if rows else None
+
+
+def _conferencia_payload(row: dict) -> dict:
+    """O que a tela do escopo precisa saber sobre a planilha que a originou.
+
+    Derivado inteiramente das colunas gravadas, e nao das contagens que a
+    leitura devolveu em memoria: assim a conferencia recem-criada e a mesma
+    conferencia relida depois do ingest respondem com o mesmo shape. Enquanto
+    isso nao era verdade, recarregar a conferencia apagava o funil da tela — e
+    com ele o botao que levava a consolidacao.
+
+    O funil conta o DESCARTE por etapa, nao o restante. O operador nao precisa
+    saber quantas linhas sobreviveram a cada filtro; ele precisa descobrir que
+    escolheu o filtro errado, e isso aparece no tamanho do que foi jogado fora.
+    """
+    descartes = row.get("descartes") or []
+    por_etapa: dict[str, int] = {}
+    for item in descartes:
+        etapa = (item or {}).get("etapa") or "filtro"
+        por_etapa[etapa] = por_etapa.get(etapa, 0) + 1
+
+    pedido_ids = [int(value) for value in (row.get("pedido_ids") or []) if value]
+    nao_encontrados = row.get("nao_encontrados") or []
+    fora_da_torre = row.get("fora_da_torre") or []
+
+    return {
+        "conferencia_id": row.get("id"),
+        "arquivo_nome": row.get("arquivo_nome"),
+        "module_id": row.get("module_id"),
+        "filtro": row.get("filtro") or {},
+        "demanda_id": row.get("demanda_id"),
+        "funil": {
+            "linhas": row.get("total_linhas") or 0,
+            "refs": row.get("total_refs") or 0,
+            "descartados": sorted(
+                ({"etapa": etapa, "qtd": qtd} for etapa, qtd in por_etapa.items()),
+                key=lambda item: -item["qtd"],
+            ),
+            "casados": len(pedido_ids) + len(fora_da_torre),
+            "na_torre": len(pedido_ids),
+            "nao_encontrados": len(nao_encontrados),
+            "fora_da_torre": len(fora_da_torre),
+        },
+        "nao_encontrados": nao_encontrados,
+        "fora_da_torre": fora_da_torre,
+        "ingest_resultado": row.get("ingest_resultado"),
+        "erp_resultado": row.get("erp_resultado"),
+    }
+
+
+def _pedido_ids_da_conferencia(conferencia_id: int) -> list[int]:
+    conferencia = _conferencia(conferencia_id)
+    if not conferencia:
+        return []
+    ids = [int(value) for value in (conferencia.get("pedido_ids") or []) if value]
+    if not ids:
+        return []
+    # O recorte salvo e a fonte de verdade, mas o pedido pode ter saido da
+    # torre entre a conferencia e a acao. Revalidar evita lancar cancelados ou
+    # pedidos ja publicados.
+    try:
+        rows = (supabase_db.table("vw_pedidos_pendentes_despacho")
+                .select("id").in_("id", ids).execute().data or [])
+    except Exception:
+        rows = (supabase_db.table("pedidos").select("id")
+                .in_("id", ids).is_("despachado_em", None)
+                .in_("situacao_pedido_id", [2, 3, 4]).execute().data or [])
+    validos = {int(row["id"]) for row in rows if row.get("id") is not None}
+    return [pedido_id for pedido_id in ids if pedido_id in validos]
+
+
+def _casar_refs(refs: list[str]) -> list[dict]:
+    if not refs:
+        return []
+    return supabase_db.rpc("consolidar_casar_refs", {"p_refs": refs}).execute().data or []
+
+
+def _serializar_linhas(linhas):
+    def safe(value):
+        if isinstance(value, dict):
+            return {str(key): safe(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [safe(item) for item in value]
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return value
+    return safe(linhas)
 
 
 #: O dia operacional e o do galpao. `date.today()` num container em UTC vira o
@@ -321,6 +429,7 @@ def get_escopo():
             return jsonify({"success": False, "error": "Nao autorizado"}), 401
 
         integration_id = _parse_int(request.args.get("integration_id"))
+        conferencia_id = _parse_int(request.args.get("conferencia_id"))
         horizonte = request.args.getlist("horizonte") or ["atrasado", "hoje"]
         p_data = _parse_data(request.args.get("data"))
 
@@ -332,18 +441,21 @@ def get_escopo():
             unico = _parse_int(request.args.get("modalidade_id"))
             modalidade_ids = [unico] if unico is not None else None
 
-        ids_result = supabase_db.rpc("despacho_escopo_lote", {
-            "p_integration_id": integration_id,
-            "p_modalidade_ids": modalidade_ids,
-            "p_horizonte": horizonte,
-            "p_data": p_data,
-        }).execute()
-        pedido_ids = [row if isinstance(row, int) else row.get("despacho_escopo_lote")
-                      for row in (ids_result.data or [])]
-        pedido_ids = [pid for pid in pedido_ids if pid is not None]
+        if conferencia_id is not None:
+            pedido_ids = _pedido_ids_da_conferencia(conferencia_id)
+        else:
+            ids_result = supabase_db.rpc("despacho_escopo_lote", {
+                "p_integration_id": integration_id,
+                "p_modalidade_ids": modalidade_ids,
+                "p_horizonte": horizonte,
+                "p_data": p_data,
+            }).execute()
+            pedido_ids = [row if isinstance(row, int) else row.get("despacho_escopo_lote")
+                          for row in (ids_result.data or [])]
+            pedido_ids = [pid for pid in pedido_ids if pid is not None]
 
         if not pedido_ids:
-            return jsonify({"success": True, "data": {"total": 0, "pedidos": []}})
+            return jsonify({"success": True, "data": {"total": 0, "pedidos": [], "conferencia_id": conferencia_id}})
 
         pedidos_result = (
             supabase_db.table("pedidos")
@@ -408,10 +520,283 @@ def get_escopo():
                 "pedidos": pedidos,
                 "buckets": buckets,
                 "total_no": sum(buckets.values()) if buckets else len(pedido_ids),
+                "conferencia_id": conferencia_id,
+                "conferencia": _conferencia(conferencia_id) if conferencia_id else None,
             },
         })
     except Exception as exc:
         logger.error("Erro ao obter escopo de despacho: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@despacho_bp.route("/arquivo/conferir", methods=["POST"])
+def conferir_arquivo():
+    """Le, filtra e casa uma planilha sem criar demanda."""
+    user = get_current_user()
+    if not user:
+        return jsonify({"success": False, "error": "Nao autorizado"}), 401
+
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"success": False, "error": "Arquivo obrigatorio"}), 400
+    original_name = upload.filename
+    safe_name = secure_filename(original_name)
+    suffix = os.path.splitext(safe_name)[1].lower()
+    if suffix not in {".xlsx", ".xls", ".csv"}:
+        return jsonify({"success": False, "error": "Apenas arquivos XLSX, XLS ou CSV sao aceitos"}), 400
+
+    from services.mapeamento_planilha import MAPEAMENTOS, conferir_linhas, ler_linhas, normalizar_module_id
+
+    module_id = normalizar_module_id(request.form.get("module_id") or request.form.get("platform"))
+    mapping = MAPEAMENTOS.get(module_id) if module_id else None
+    filtro = _json_request_value(request.form.get("filtro"), {}) or {}
+    integration_id = _parse_int(request.form.get("marketplace_integration_id") or request.form.get("integration_id"))
+    fd, path = tempfile.mkstemp(prefix="despacho-arquivo-", suffix=suffix)
+    os.close(fd)
+    try:
+        upload.save(path)
+        linhas, mapping = ler_linhas(path, mapping, module_id)
+        resultado = conferir_linhas(linhas, mapping, filtro)
+        refs = resultado.refs
+        casamentos = _casar_refs(refs)
+        por_ref = {str(row.get("ref")): row for row in casamentos}
+        pedido_ids = list(dict.fromkeys(
+            int(row["pedido_id"]) for row in casamentos
+            if row.get("pedido_id") and row.get("na_torre")
+        ))
+        nao_encontrados = [ref for ref in refs if not por_ref.get(ref, {}).get("pedido_id")]
+        fora = []
+        for row in casamentos:
+            if row.get("pedido_id") and not row.get("na_torre"):
+                fora.append({
+                    **row,
+                    "motivo": "Pedido ja despachado ou fora das situacoes pendentes da torre",
+                })
+        row = (supabase_db.table("conferencias_arquivo").insert({
+            "arquivo_nome": safe_name or "arquivo",
+            "module_id": mapping.module_id,
+            "marketplace_integration_id": integration_id,
+            "filtro": filtro,
+            "total_linhas": len(linhas),
+            "total_refs": len(refs),
+            "descartes": _serializar_linhas(resultado.descartes),
+            "linhas": _serializar_linhas([line.as_dict() for line in resultado.linhas]),
+            "pedido_ids": pedido_ids,
+            "nao_encontrados": nao_encontrados,
+            "fora_da_torre": _serializar_linhas(fora),
+            "criado_por": str((user or {}).get("id") or (user or {}).get("nome") or "System"),
+        }).execute().data or [None])[0]
+        if not row:
+            raise RuntimeError("Nao foi possivel gravar a conferencia")
+        # Mesmo shape de GET /arquivo/<id>: a tela do escopo le os dois pelo
+        # mesmo caminho, entao a conferencia recem-criada e a relida depois do
+        # ingest nao podem diferir.
+        data = {
+            **_conferencia_payload(row),
+            "filtros": [f.serialize() for f in mapping.filtros],
+        }
+        return jsonify({"success": True, "data": data})
+    except Exception as exc:
+        logger.error("Erro ao conferir arquivo de despacho: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 400
+    finally:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+@despacho_bp.route("/arquivo/<int:conferencia_id>", methods=["GET"])
+def get_conferencia_arquivo(conferencia_id):
+    if not get_current_user():
+        return jsonify({"success": False, "error": "Nao autorizado"}), 401
+    row = _conferencia(conferencia_id)
+    if not row:
+        return jsonify({"success": False, "error": "Conferencia nao encontrada"}), 404
+    return jsonify({"success": True, "data": _conferencia_payload(row)})
+
+
+@despacho_bp.route("/arquivo/<int:conferencia_id>/ingerir", methods=["POST"])
+def ingerir_conferencia_arquivo(conferencia_id):
+    """Cria pedidos ausentes pelo pipeline canonico, incluindo itens."""
+    if not get_current_user():
+        return jsonify({"success": False, "error": "Nao autorizado"}), 401
+    conferencia = _conferencia(conferencia_id)
+    if not conferencia:
+        return jsonify({"success": False, "error": "Conferencia nao encontrada"}), 404
+
+    from nistiprint_shared.services.canonical_order_repository import canonical_order_repository
+    from nistiprint_shared.services.canonical_order_snapshot_service import canonical_order_snapshot_service
+
+    linhas = conferencia.get("linhas") or []
+    nao_encontrados = set(str(item) for item in (conferencia.get("nao_encontrados") or []))
+    grupos: dict[str, list[dict]] = {}
+    for linha in linhas:
+        pedido = linha.get("pedido") or {}
+        item = linha.get("item") or {}
+        ref = str(pedido.get("marketplace_order_id") or "").strip()
+        if ref and ref in nao_encontrados and item.get("sku_externo"):
+            grupos.setdefault(ref, []).append(linha)
+
+    resultado = {"criados": [], "existentes": [], "erros": []}
+    for ref, itens_linha in grupos.items():
+        first = itens_linha[0]
+        pedido = first.get("pedido") or {}
+        itens = []
+        for linha in itens_linha:
+            item = linha.get("item") or {}
+            itens.append({
+                "sku": item.get("sku_externo"),
+                "name": item.get("titulo_anuncio"),
+                "quantity": item.get("quantidade") or 1,
+                "unit_price": item.get("preco_unitario") or 0,
+                "variacao": item.get("variacao_externa"),
+            })
+        order = {
+            "marketplace_module_id": conferencia.get("module_id"),
+            "marketplace_order_id": ref,
+            "marketplace_integration_id": conferencia.get("marketplace_integration_id"),
+            "ingest_source": "planilha",
+            "situacao_pedido_id": 2,
+            "cliente_nome": pedido.get("cliente_nome"),
+            "cliente_documento": pedido.get("cliente_documento"),
+            "total_pedido": pedido.get("total_pedido"),
+            "data_limite_envio": pedido.get("data_limite_envio"),
+            "metodo_envio_rotulo": pedido.get("metodo_envio_rotulo"),
+            "modalidade_logistica": pedido.get("modalidade_logistica"),
+        }
+        snapshot = {
+            "identity": {"marketplace_order_id": ref},
+            "customer": {"name": pedido.get("cliente_nome"), "document": pedido.get("cliente_documento"), "username": pedido.get("buyer_username")},
+            "items": itens,
+            "logistics": {"deadline": pedido.get("data_limite_envio"), "service": pedido.get("metodo_envio_rotulo"), "collection_at": pedido.get("data_coleta")},
+            "financial": {"total": pedido.get("total_pedido"), "currency": "BRL"},
+            "platform_fields": {"planilha": {"arquivo": conferencia.get("arquivo_nome"), "conferencia_id": conferencia_id, "linhas": [line.get("numero_linha") for line in itens_linha], "bruto": [line.get("bruto") for line in itens_linha]}},
+        }
+        refs = [{"role": "sales_origin", "module_id": conferencia.get("module_id"), "external_order_id": ref, "integration_id": conferencia.get("marketplace_integration_id")}]
+        try:
+            pedido_id = canonical_order_repository.upsert(order, snapshot, refs)
+            canonical_order_snapshot_service.upsert_snapshot(
+                pedido_id=pedido_id, ingest_source="planilha", marketplace=conferencia.get("module_id"),
+                marketplace_order_id=ref, marketplace_integration_id=conferencia.get("marketplace_integration_id"),
+                customer=snapshot["customer"], items=itens, logistics=snapshot["logistics"], financial=snapshot["financial"],
+                platform_fields=snapshot["platform_fields"], raw_refs={"sales_origin": ref}, upsert_items=True,
+            )
+            resultado["criados"].append({"pedido_id": pedido_id, "ref": ref})
+        except Exception as exc:
+            logger.warning("Falha ao ingerir pedido da conferencia %s (%s): %s", conferencia_id, ref, exc, exc_info=True)
+            resultado["erros"].append({"ref": ref, "erro": "Falha ao ingerir pedido"})
+
+    refs = [str((line.get("pedido") or {}).get("marketplace_order_id")) for line in linhas if (line.get("pedido") or {}).get("marketplace_order_id")]
+    casamentos = _casar_refs(list(dict.fromkeys(refs)))
+    pedido_ids = list(dict.fromkeys(int(item["pedido_id"]) for item in casamentos if item.get("pedido_id") and item.get("na_torre")))
+    update = {"pedido_ids": pedido_ids, "nao_encontrados": [item["ref"] for item in casamentos if not item.get("pedido_id")], "ingest_resultado": resultado}
+    supabase_db.table("conferencias_arquivo").update(update).eq("id", conferencia_id).execute()
+
+    # Resolve automaticamente o que acabou de nascer; o endpoint abaixo fica
+    # disponivel como retry quando o pedido ainda nao chegou ao Bling.
+    erp_resultado = {"ready": [], "blocked": []}
+    if resultado["criados"]:
+        erp_resultado = order_erp_reference_service.resolve_many([item["pedido_id"] for item in resultado["criados"]])
+        supabase_db.table("conferencias_arquivo").update({"erp_resultado": erp_resultado}).eq("id", conferencia_id).execute()
+    return jsonify({"success": True, "data": {"conferencia_id": conferencia_id, "ingest": resultado, "erp": erp_resultado, "pedido_ids": pedido_ids}})
+
+
+@despacho_bp.route("/arquivo/<int:conferencia_id>/resolver-erp", methods=["POST"])
+def resolver_erp_conferencia(conferencia_id):
+    if not get_current_user():
+        return jsonify({"success": False, "error": "Nao autorizado"}), 401
+    conferencia = _conferencia(conferencia_id)
+    if not conferencia:
+        return jsonify({"success": False, "error": "Conferencia nao encontrada"}), 404
+    resultado = order_erp_reference_service.resolve_many([int(value) for value in (conferencia.get("pedido_ids") or []) if value])
+    supabase_db.table("conferencias_arquivo").update({"erp_resultado": resultado}).eq("id", conferencia_id).execute()
+    return jsonify({"success": True, "data": {"conferencia_id": conferencia_id, "erp": resultado}})
+
+
+def _linha_consolidada(row: dict) -> dict:
+    """Contrato unico da linha de producao, venha da previa ou da demanda.
+
+    A previa sai de `despacho_consolidar_pedidos` e a demanda ja materializada
+    sai de `itens_demanda`. As duas descrevem exatamente a mesma linha — e
+    precisam, porque a previa existe para prometer o que o lancamento vai
+    produzir — mas nomeiam dois campos de forma diferente: `titulo_anuncio` vs.
+    `descricao` e `miolo` vs. `miolo_nome`.
+
+    Traduzir aqui, uma vez, e o que permite a tela renderizar as duas com o
+    mesmo componente. Enquanto a traducao nao existia, a previa do arquivo lia
+    `descricao` e `pedido_ids` — nomes que a RPC nao devolve — e toda linha
+    aparecia como "Sem descricao" com zero pedidos.
+    """
+    quantidade = float(row.get("quantidade") or 0)
+    return {
+        "ordem": row.get("ordem"),
+        "sku_externo": row.get("sku_externo"),
+        "descricao": row.get("descricao") or row.get("titulo_anuncio"),
+        "variacao": row.get("variacao"),
+        "quantidade": quantidade,
+        "produto_id": row.get("produto_id"),
+        "produto_nome": row.get("produto_nome"),
+        "miolo_nome": row.get("miolo_nome") or row.get("miolo"),
+        "miolo_chave": row.get("miolo_chave"),
+        "miolo_origem": row.get("miolo_origem"),
+        "id_produto_miolo": row.get("id_produto_miolo"),
+        "contabiliza_estoque": bool(row.get("contabiliza_estoque")),
+        "pedidos_origem": row.get("pedidos_origem") or [],
+    }
+
+
+def _resumo_consolidacao(itens: list[dict]) -> dict:
+    """Os tres numeros que a tela mostra acima da tabela."""
+    return {
+        "total_linhas": len(itens),
+        "total_pecas": sum(item["quantidade"] for item in itens),
+        "sem_estoque": sum(1 for item in itens if not item["contabiliza_estoque"]),
+        "total_miolos": len({item.get("miolo_chave") for item in itens}),
+    }
+
+
+@despacho_bp.route("/previsao", methods=["GET"])
+def previsao_consolidacao():
+    """A consolidacao do lote ANTES de fechar: produto, miolo e ordem de producao.
+
+    Chama a mesma RPC que o lancamento usa para materializar os itens
+    (`despacho_materializar_itens` -> `despacho_consolidar_pedidos`), so que sem
+    gravar nada. E por isso que a previa e a demanda publicada mostram as mesmas
+    linhas: nao existe uma segunda consolidacao para divergir da primeira.
+
+    Aceita as tres origens de lote (demanda_id, escopo da torre, conferencia de
+    arquivo) — a previa vale para todas, e nao so para o arquivo: no fluxo da
+    torre o operador tambem so via a consolidacao depois de ja ter criado o
+    rascunho no banco.
+    """
+    try:
+        if not get_current_user():
+            return jsonify({"success": False, "error": "Nao autorizado"}), 401
+
+        ids, chave = _pedido_ids_do_lote(request.args)
+        if not ids:
+            return jsonify({"success": True, "data": {
+                "total_pedidos": 0, "itens": [], "chave": chave,
+                **_resumo_consolidacao([]),
+            }})
+
+        rows = supabase_db.rpc(
+            "despacho_consolidar_pedidos", {"p_pedido_ids": ids}
+        ).execute().data or []
+        itens = [_linha_consolidada(row) for row in rows]
+
+        return jsonify({"success": True, "data": {
+            "total_pedidos": len(ids),
+            "itens": itens,
+            "chave": chave,
+            **_resumo_consolidacao(itens),
+        }})
+    except Exception as exc:
+        # Sem retaguarda que "degrade" para itens crus: uma lista sem miolo e
+        # sem produto resolvido nao e uma previa pior, e uma previa errada — e
+        # ela seria lida como a promessa do que vai para producao.
+        logger.error("Erro ao montar previa da consolidacao: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
@@ -450,6 +835,42 @@ def post_lancar():
         nome = body.get("nome")
         observacoes = body.get("observacoes")
         user_id = str((user or {}).get("id") or (user or {}).get("nome") or "System")
+
+        conferencia_id = _parse_int(body.get("conferencia_id"))
+        if conferencia_id is not None:
+            conferencia = _conferencia(conferencia_id)
+            if not conferencia:
+                return jsonify({"success": False, "error": "Conferencia nao encontrada"}), 404
+            pedido_ids = _pedido_ids_da_conferencia(conferencia_id)
+            if not pedido_ids:
+                return jsonify({"success": False, "error": "Conferencia sem pedidos pendentes"}), 409
+            result = supabase_db.rpc("despacho_lancar_pedidos", {
+                "p_pedido_ids": pedido_ids,
+                "p_nome": nome,
+                "p_user_id": user_id,
+                "p_observacoes": observacoes,
+                "p_escopo": {
+                    "conferencia_id": conferencia_id,
+                    "arquivo_nome": conferencia.get("arquivo_nome"),
+                    "module_id": conferencia.get("module_id"),
+                    "filtro": conferencia.get("filtro") or {},
+                    "nome": nome,
+                },
+            }).execute()
+            rows = result.data or []
+            if not rows:
+                return jsonify({"success": False, "error": "Escopo vazio"}), 409
+            row = rows[0]
+            demanda_id = row.get("out_demanda_id")
+            supabase_db.table("conferencias_arquivo").update({"demanda_id": demanda_id}).eq("id", conferencia_id).execute()
+            return jsonify({"success": True, "data": {
+                "demanda_id": demanda_id,
+                "demanda_codigo": row.get("out_demanda_codigo"),
+                "total_pedidos": row.get("out_total_pedidos"),
+                "total_itens": row.get("out_total_itens"),
+                "ja_em_rascunho": row.get("out_ja_em_rascunho") or [],
+                "status": "RASCUNHO",
+            }})
 
         result = supabase_db.rpc("despacho_lancar_lote", {
             "p_integration_id": integration_id,
@@ -572,7 +993,7 @@ def get_itens_demanda(demanda_id):
         if not user:
             return jsonify({"success": False, "error": "Nao autorizado"}), 401
 
-        itens = (
+        linhas = (
             supabase_db.table("itens_demanda")
             .select("id,ordem,sku_externo,descricao,variacao,quantidade,"
                     "miolo_nome,miolo_chave,miolo_origem,produto_id,"
@@ -581,6 +1002,14 @@ def get_itens_demanda(demanda_id):
             .order("ordem")
             .execute()
         ).data or []
+
+        # Mesmo contrato da previa: a tela usa um componente so para as duas.
+        itens = []
+        for linha in linhas:
+            item = _linha_consolidada(linha)
+            item["id"] = linha.get("id")
+            item["produto_nome"] = (linha.get("dados_adicionais") or {}).get("produto_nome")
+            itens.append(item)
 
         demanda = (
             supabase_db.table("demandas_producao")
@@ -591,8 +1020,7 @@ def get_itens_demanda(demanda_id):
         return jsonify({"success": True, "data": {
             "demanda": demanda[0] if demanda else None,
             "itens": itens,
-            "total_pecas": sum(float(i.get("quantidade") or 0) for i in itens),
-            "sem_estoque": sum(1 for i in itens if not i.get("contabiliza_estoque")),
+            **_resumo_consolidacao(itens),
         }})
     except Exception as exc:
         logger.error("Erro ao obter itens da demanda %s: %s", demanda_id, exc, exc_info=True)
@@ -707,8 +1135,8 @@ def get_modalidades():
 # URL num lote grande. Aqui quem resolve o conjunto e sempre o servidor.
 
 #: O legado copia os codigos de origem em blocos porque a busca do Bling nao
-#: aceita mais que isso de uma vez (`generate_ids_chunks`, chunk_size=100).
-TAMANHO_BLOCO_IDS = 100
+#: Deve coincidir com o limite usado pelo cliente Bling para numeros da loja.
+TAMANHO_BLOCO_IDS = 50
 
 
 def _pedido_ids_do_lote(origem) -> tuple[list[int], str]:
@@ -728,6 +1156,10 @@ def _pedido_ids_do_lote(origem) -> tuple[list[int], str]:
         )
         ids = [row.get("pedido_id") for row in (pivot.data or []) if row.get("pedido_id")]
         return ids, f"demanda:{demanda_id}"
+
+    conferencia_id = _parse_int(origem.get("conferencia_id"))
+    if conferencia_id is not None:
+        return _pedido_ids_da_conferencia(conferencia_id), f"conferencia:{conferencia_id}"
 
     integration_id = _parse_int(origem.get("integration_id"))
     if hasattr(origem, "getlist"):

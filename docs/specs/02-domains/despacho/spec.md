@@ -1,6 +1,6 @@
 # Domain Spec: Despacho e Consolidacao
 
-Last updated: 2026-08-02
+Last updated: 2026-08-31
 
 Status: target-state
 
@@ -13,6 +13,11 @@ reconhece e absorve novas modalidades logisticas sem alteracao de codigo.
 O escopo cobre a decisao operacional "o que eu lanco agora", nao a execucao da
 producao (ver [Producao](../producao/spec.md)) nem a ingestao do pedido (ver
 [Pedidos](../pedidos/spec.md)).
+
+Uma planilha de marketplace e uma terceira origem de selecao. O operador envia
+o arquivo em `/despacho/arquivo`, escolhe o filtro e o sistema persiste uma
+`conferencias_arquivo`. O conjunto apos o filtro, e nao o arquivo inteiro nem
+o no inteiro da torre, e o lote congelado da conferencia.
 
 ## Principio geral: degradar, nao bloquear
 
@@ -86,7 +91,8 @@ Buckets: `atrasado`, `hoje`, `amanha`, `depois`.
 ### Escopo de despacho
 
 Par (no da arvore, horizonte) que define o conjunto de pedidos de uma demanda.
-Nao existe selecao pedido a pedido no fluxo normal.
+Nao existe selecao pedido a pedido no fluxo normal. Para arquivo, a chave e
+`conferencia_id`; as linhas normalizadas e o filtro aplicado ficam persistidos.
 
 ## Regras de origem da venda
 
@@ -223,9 +229,9 @@ A torre conta apenas pedido que ainda e trabalho do galpao:
 - nao pertence a demanda publicada (status diferente de `RASCUNHO` e nao
   cancelada).
 
-Rascunho continua aparecendo na torre. A escolha assume o risco de o mesmo
-pedido ser lancado duas vezes em favor de nunca esconder pedido por causa de um
-rascunho que ninguem terminou: sumir em silencio e pior que aparecer duas vezes.
+Rascunho continua aparecendo na torre para permitir conferencia, mas o
+lancamento recusa pedidos que ja estejam em outro rascunho aberto e devolve a
+demanda existente para o operador abrir.
 
 ## Corte e coleta
 
@@ -483,6 +489,14 @@ Rotas alvo:
 - `POST /api/v2/despacho/lancar` cria ou publica a demanda a partir do escopo.
 - `GET /api/v2/despacho/esteira` retorna a fila de prazo relativo.
 - `GET /api/v2/admin/metodos-envio?status=nao_classificado`.
+- `POST /api/v2/despacho/arquivo/conferir` le, filtra, casa refs e grava a
+  conferencia; o upload e removido em qualquer caminho.
+- `POST /api/v2/despacho/arquivo/<id>/ingerir` cria ausentes pelo pipeline
+  canonico e popula `itens_pedido`.
+- `POST /api/v2/despacho/arquivo/<id>/resolver-erp` resolve `numeroLoja` em
+  blocos de 50 e pode ser repetido.
+- `GET /api/v2/despacho/previsao?conferencia_id=` mostra a consolidacao antes
+  do lancamento.
 
 Contratos de banco: ver [Supabase contracts](../../03-contracts/supabase-contracts.md)
 apos a migration.

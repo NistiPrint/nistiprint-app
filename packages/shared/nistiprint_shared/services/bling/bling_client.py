@@ -64,7 +64,13 @@ class BlingPermanentHTTPError(BlingAPIError):
         super().__init__(message, error_type='permanent_http_error', **kwargs)
 
 
+TAMANHO_BLOCO_NUMEROS_LOJA = 100
+
+
 class BlingClient:
+    #: Limite operacional usado nas buscas por numeros da loja. O valor menor
+    #: evita URLs grandes quando uma conferencia atravessa muitas contas.
+    TAMANHO_BLOCO_NUMEROS_LOJA = TAMANHO_BLOCO_NUMEROS_LOJA
     """Cliente para integração com a API do Bling.
 
     Encapsula todas as operações de autenticação e comunicação com a API do Bling,
@@ -987,8 +993,8 @@ class BlingClient:
             return []
 
         results = []
-        # Dividir os pedidos em chunks de 100 (limite da API do Bling)
-        chunks = [order_numbers[i:i + 100] for i in range(0, len(order_numbers), 100)]
+        chunks = [order_numbers[i:i + self.TAMANHO_BLOCO_NUMEROS_LOJA]
+                  for i in range(0, len(order_numbers), self.TAMANHO_BLOCO_NUMEROS_LOJA)]
 
         for chunk in chunks:
             # Construir parâmetros da URL usando numerosLojas[]
@@ -1020,7 +1026,8 @@ class BlingClient:
         bling_orders_data = []
         bling_orders_id_numero = []
 
-        chunks = [order_numbers[i:i + 100] for i in range(0, len(order_numbers), 100)]
+        chunks = [order_numbers[i:i + self.TAMANHO_BLOCO_NUMEROS_LOJA]
+                  for i in range(0, len(order_numbers), self.TAMANHO_BLOCO_NUMEROS_LOJA)]
         url = "pedidos/vendas"
 
         for chunk in chunks:
@@ -1132,7 +1139,7 @@ class BlingClient:
                 }
 
             converted_orders = []
-            chunk_size = 100
+            chunk_size = bling_client.TAMANHO_BLOCO_NUMEROS_LOJA
 
             for i in range(0, len(order_ids), chunk_size):
                 chunk_ids = order_ids[i:i + chunk_size]

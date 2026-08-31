@@ -13,7 +13,11 @@ from nistiprint_shared.database.supabase_db_service import supabase_db
 from ...constants import PLATFORM_X_CNPJ
 
 
+TAMANHO_BLOCO_NUMEROS_LOJA = 50
+
+
 class BlingClient:
+    TAMANHO_BLOCO_NUMEROS_LOJA = TAMANHO_BLOCO_NUMEROS_LOJA
     """Cliente para integração com a API do Bling.
 
     Encapsula todas as operações de autenticação e comunicação com a API do Bling,
@@ -567,8 +571,8 @@ class BlingClient:
         bling_orders_data = []
         bling_orders_id_numero = []
 
-        # Dividir os pedidos em chunks de 100
-        chunks = [order_numbers[i:i + 100] for i in range(0, len(order_numbers), 100)]
+        chunks = [order_numbers[i:i + self.TAMANHO_BLOCO_NUMEROS_LOJA]
+                  for i in range(0, len(order_numbers), self.TAMANHO_BLOCO_NUMEROS_LOJA)]
 
         url = "pedidos/vendas"
 
@@ -685,7 +689,7 @@ class BlingClient:
                 }
 
             converted_orders = []
-            chunk_size = 100
+            chunk_size = bling_client.TAMANHO_BLOCO_NUMEROS_LOJA
 
             for i in range(0, len(order_ids), chunk_size):
                 chunk_ids = order_ids[i:i + chunk_size]

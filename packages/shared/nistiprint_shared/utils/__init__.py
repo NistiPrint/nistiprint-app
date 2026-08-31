@@ -114,7 +114,7 @@ def fix_sku_devocional_amazon(miolo):
     return sku_map.get(miolo, miolo)
 
 
-def generate_ids_chunks(ids_pedidos, chunk_size=100):
+def generate_ids_chunks(ids_pedidos, chunk_size=50):
     # generate array of strings containing [chunk_size] order_ids in sequence split by ; each
     chunks = [ids_pedidos[i:i + chunk_size]
               for i in range(0, len(ids_pedidos), chunk_size)]

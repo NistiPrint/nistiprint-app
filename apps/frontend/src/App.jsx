@@ -54,8 +54,7 @@ import AuditoriaPage from './pages/auditoria/AuditoriaPage'
 import ConfiguracoesIA from './pages/configuracoes/ConfiguracoesIA'
 import TorreDespachoPage from './pages/despacho/TorreDespachoPage'
 import EscopoDespachoPage from './pages/despacho/EscopoDespachoPage'
-import ConsolidarPage from './pages/consolidar/ConsolidarPage'
-import ConsolidarReviewPage from './pages/consolidar/ConsolidarReviewPage'
+import ArquivoDespachoPage from './pages/despacho/ArquivoDespachoPage'
 import EstoqueAjustePage from './pages/estoque/EstoqueAjustePage'
 import EstoqueDashboardPage from './pages/estoque/EstoqueDashboardPage'
 import EstoqueHistoricoPage from './pages/estoque/EstoqueHistoricoPage'
@@ -122,10 +121,10 @@ function App() {
 
           <Route path='despacho' element={<TorreDespachoPage />} />
           <Route path='despacho/escopo' element={<EscopoDespachoPage />} />
-
-          <Route path='consolidar' element={<ConsolidarPage />} />
+          <Route path='despacho/arquivo' element={<ArquivoDespachoPage />} />
+          <Route path='consolidar' element={<Navigate to='/despacho' replace />} />
           <Route path='consolidar/rascunhos' element={<Navigate to='/despacho' replace />} />
-          <Route path='consolidar/revisao' element={<ConsolidarReviewPage />} />
+          <Route path='consolidar/revisao' element={<Navigate to='/despacho' replace />} />
 
           {/* 3. Industrial (Produção) */}
           <Route path='producao' element={<ProducaoPage />}>

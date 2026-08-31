@@ -1,6 +1,6 @@
 # Domain Spec: Pedidos
 
-Last updated: 2026-06-16
+Last updated: 2026-08-31
 
 Status: target-state
 
@@ -60,6 +60,13 @@ reprocessamento.
   installed marketplace instances.
 - Technical flows such as Bling webhook, Shopee webhook, Mercado Livre webhook
   or spreadsheet import do not change the commercial origin of the order.
+
+Spreadsheet import is a supported canonical ingest source. It writes
+`ingest_source='planilha'`, preserves the raw line in
+`pedido_snapshots.platform_fields.planilha`, and calls the snapshot service
+with `upsert_items=True`; an order without rows in `itens_pedido` cannot be
+consolidated for production. ERP references are resolved later in batches and
+do not block ingest.
 
 ## Precedence and enrichment
 

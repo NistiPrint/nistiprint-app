@@ -10,6 +10,8 @@ from utils import prepare_ml_file
 import traceback
 import json
 import logging
+from uuid import uuid4
+from werkzeug.utils import secure_filename
 
 logger = logging.getLogger(__name__)
 
@@ -142,8 +144,14 @@ def _resolve_bling_client(context):
 @consolidar_bp.route('/consolidar', methods=['GET', 'POST'])
 @login_required
 def consolidar():
+    return jsonify({
+        'success': False,
+        'error': 'O upload de planilhas agora acontece em /despacho/arquivo.',
+        'redirect': '/despacho/arquivo',
+    }), 410
+
+    # Mantido abaixo apenas como referência histórica durante a migração.
     if request.method == 'POST':
-        print(request.form)
         try:
             _file = request.files.get('file')
             results = {}
@@ -184,7 +192,10 @@ def consolidar():
             if not _file or not (_file.filename.endswith('.xlsx') or _file.filename.endswith('.csv')):
                 raise ValueError("Arquivo inválido. Apenas .xlsx e .csv são aceitos.")
 
-            filepath = os.path.join(basedir, _file.filename)
+            safe_name = secure_filename(_file.filename or '')
+            if not safe_name:
+                raise ValueError('Nome de arquivo invalido.')
+            filepath = os.path.join(basedir, f'{uuid4().hex}{os.path.splitext(safe_name)[1].lower()}')
             _file.save(filepath)
 
             # NOVA ARQUITETURA (Fase 7): Usar PlatformProcessorRegistry
@@ -368,6 +379,12 @@ def consolidar():
 @consolidar_bp.route('/consolidar-async', methods=['POST'])
 @login_required
 def consolidar_async():
+    return jsonify({
+        'success': False,
+        'error': 'O processamento assíncrono legado foi aposentado.',
+        'redirect': '/despacho/arquivo',
+    }), 410
+
     """
     Inicia processamento assíncrono de consolidação de pedidos.
     Retorna imediatamente com um ID para polling.
@@ -392,7 +409,10 @@ def consolidar_async():
 
         # Salva arquivo temporário
         basedir = _ensure_temp_dir()
-        filepath = os.path.join(basedir, _file.filename)
+        safe_name = secure_filename(_file.filename or '')
+        if not safe_name:
+            raise ValueError('Nome de arquivo invalido.')
+        filepath = os.path.join(basedir, f'{uuid4().hex}{os.path.splitext(safe_name)[1].lower()}')
         _file.save(filepath)
         
         # Prepara period filter

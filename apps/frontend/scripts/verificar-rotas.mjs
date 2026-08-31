@@ -21,7 +21,7 @@ const raiz = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ROTAS_SEM_MENU = new Set([
   '/login',
   '/perfil',
-  '/consolidar/revisao',
+  '/despacho/arquivo',
   '/despacho/escopo',
   '/producao/foco',
   '/producao/resumo',

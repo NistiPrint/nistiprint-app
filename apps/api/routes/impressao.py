@@ -98,6 +98,14 @@ def _primeira_custom_tag(order: dict) -> str:
     return ''
 
 
+def _primeiro_valor_preenchido(*valores):
+    """Retorna o primeiro valor textual que nao esteja vazio."""
+    for valor in valores:
+        if valor is not None and str(valor).strip():
+            return valor
+    return ''
+
+
 def _print_sort_key(order: dict):
     """Ordem de impressao — mesma chave do legado.
 
@@ -277,6 +285,38 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             except:
                 contato = {}
 
+        # O campo legado `numeroDocumento` pode existir vazio em
+        # `informacoes_cliente`; nesse caso `dict.get(..., fallback)` nao
+        # aciona o fallback. Os pedidos novos tambem usam `document`/`documento`
+        # no snapshot e `cliente_documento` na tabela principal.
+        documento = _primeiro_valor_preenchido(
+            pedido.get('cliente_documento'),
+            contato.get('numeroDocumento'),
+            contato.get('document'),
+            contato.get('documento'),
+        )
+        if not documento:
+            try:
+                snapshot_result = (
+                    supabase_db.table('pedido_snapshots')
+                    .select('customer')
+                    .eq('pedido_id', pedido_id)
+                    .limit(1)
+                    .execute()
+                )
+                snapshot_customer = ((snapshot_result.data or [{}])[0] or {}).get('customer') or {}
+                snapshot_raw_customer = snapshot_customer.get('raw') or {}
+                documento = _primeiro_valor_preenchido(
+                    snapshot_customer.get('document'),
+                    snapshot_customer.get('documento'),
+                    snapshot_customer.get('numeroDocumento'),
+                    snapshot_raw_customer.get('document'),
+                    snapshot_raw_customer.get('documento'),
+                    snapshot_raw_customer.get('numeroDocumento'),
+                )
+            except Exception:
+                logger.warning('Falha ao ler documento do cliente do pedido %s', pedido_id)
+
         # 7. Nome de exibição da plataforma e numeroLoja
         plataforma_nome = MARKETPLACE_DISPLAY_NAMES.get(
             plataforma_slug, plataforma_slug.replace('_', ' ').title()
@@ -298,7 +338,7 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             'numeroLoja': numero_loja,
             'contato': {
                 'nome': pedido.get('cliente_nome', contato.get('nome', '')),
-                'numeroDocumento': contato.get('numeroDocumento', pedido.get('cliente_documento', '')),
+                'numeroDocumento': documento,
                 'endereco': contato.get('endereco', ''),
                 'telefone': contato.get('telefone', pedido.get('cliente_telefone', '')),
                 'email': contato.get('email', pedido.get('cliente_email', '')),

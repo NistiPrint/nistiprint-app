@@ -2,7 +2,6 @@ from flask import Blueprint, request, jsonify
 from routes.auth import login_required
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from utils.api_response import ApiResponse
-from nistiprint_shared.services.product_service import product_service
 import logging
 
 logger = logging.getLogger("ConsolidarBase")
@@ -72,8 +71,6 @@ def get_pedidos_disponiveis():
         import traceback
         traceback.print_exc()
         return ApiResponse.error(str(e))
-
-
 @consolidar_base_bp.route('/pedidos/<int:pedido_id>/similares', methods=['GET'])
 @login_required
 def get_pedidos_similares_endpoint(pedido_id):
@@ -94,82 +91,4 @@ def get_pedidos_similares_endpoint(pedido_id):
         return ApiResponse.success(res.data or [])
     except Exception as e:
         logger.error(f"Erro ao buscar pedidos similares: {e}")
-        return ApiResponse.error(str(e))
-
-@consolidar_base_bp.route('/analisar', methods=['POST'])
-def analisar_pedidos_selecionados():
-    """
-    Recebe uma lista de IDs de pedidos (do banco) e faz a análise de itens,
-    resolvendo variações (variacao_id) igual ao ConsolidarPage faz com planilhas.
-    """
-    try:
-        data = request.get_json()
-        pedido_ids = data.get('pedido_ids', [])
-        
-        if not pedido_ids:
-            return ApiResponse.error("Nenhum pedido selecionado.")
-
-        # Busca os detalhes dos pedidos e seus itens
-        # Como já temos a view que agrupa itens, podemos usá-la
-        res = supabase_db.table('view_pedidos_para_consolidar').select('*').in_('pedido_id', pedido_ids).execute()
-        
-        pedidos = res.data
-        if not pedidos:
-            return ApiResponse.error("Pedidos não encontrados.")
-
-        # Lógica de Consolidação (Normalização de Itens)
-        # Similar ao que o FileProcessor faz
-        consolidado = {}
-        
-        for p in pedidos:
-            origem = p.get('plataforma_nome', 'DESCONHECIDA')
-            for item in p.get('itens', []):
-                sku = item.get('sku_externo')
-                nome_item = item.get('descricao')
-                qtd = float(item.get('quantidade', 0))
-                
-                # Resolvendo variação (Produto Interno)
-                # Esta função do product_service faz a mágica de achar o ID interno
-                resolved = product_service.resolve_variation(sku, origem, nome_item)
-                
-                key = (resolved['id'] if resolved else f"UNRESOLVED-{sku}", sku, nome_item)
-                
-                if key not in consolidado:
-                    consolidado[key] = {
-                        'produto_id': resolved['id'] if resolved else None,
-                        'produto_nome': resolved['nome'] if resolved else nome_item,
-                        'sku': sku,
-                        'descricao_original': nome_item,
-                        'quantidade': 0,
-                        'pedidos': []
-                    }
-                
-                consolidado[key]['quantidade'] += qtd
-                consolidado[key]['pedidos'].append({
-                    'pedido_id': p.get('pedido_id'), # Adicionado ID interno
-                    'codigo_pedido_externo': p.get('codigo_pedido_externo'),
-                    'quantidade': qtd
-                })
-
-        # Formata para o frontend
-        resultado_lista = []
-        for key, data in consolidado.items():
-            resultado_lista.append(data)
-
-        return ApiResponse.success({
-            'total_pedidos': len(pedidos),
-            'itens_consolidados': resultado_lista
-        })
-
-    except Exception as e:
-        logger.error(f"Erro ao analisar pedidos selecionados: {e}")
-        return ApiResponse.error(str(e))
-
-@consolidar_base_bp.route('/plataformas', methods=['GET'])
-def get_plataformas():
-    """Lista as plataformas ativas para o filtro do frontend"""
-    try:
-        res = supabase_db.table('plataformas').select('id, nome').eq('ativa', True).execute()
-        return ApiResponse.success(res.data)
-    except Exception as e:
         return ApiResponse.error(str(e))

@@ -2,7 +2,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { dataOperacionalHoje } from '@/lib/dataOperacional';
 import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
-import { AlertTriangle, Clock, FileText, Package, RefreshCw, Truck, Zap } from 'lucide-react';
+import { AlertTriangle, Clock, FileText, FileUp, Package, RefreshCw, Truck, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -348,14 +348,14 @@ export default function TorreDespachoPage() {
             Escolha o marketplace, confira o total contra o painel dele e consolide o lote.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={carregar}
-          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <RefreshCw className={'h-4 w-4 ' + (loading ? 'animate-spin' : '')} />
-          Atualizar
-        </button>
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={() => navigate('/despacho/arquivo')} className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+            <FileUp className="h-4 w-4" /> Conferir arquivo
+          </button>
+          <button type="button" onClick={carregar} className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+            <RefreshCw className={'h-4 w-4 ' + (loading ? 'animate-spin' : '')} /> Atualizar
+          </button>
+        </div>
       </div>
 
       {erro && (

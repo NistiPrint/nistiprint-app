@@ -33,7 +33,6 @@ export const TOP_NAV = [
       { name: 'Pedidos', href: '/vendas/pedidos', type: 'link', permission: { a: 'vendas', I: 'ler' } },
       { name: 'Torre de Despacho', href: '/despacho', type: 'link', permission: { a: 'vendas', I: 'ler' } },
       { name: 'Personalizados', href: '/vendas/personalizadas', type: 'link', permission: { a: 'vendas', I: 'ler' } },
-      { name: 'Consolidar', href: '/consolidar', type: 'link', permission: { a: 'vendas', I: 'ler' } },
     ],
   },
   {
@@ -121,14 +120,13 @@ export const SECOES = [
     // com pedidos nao procurava ali.
     id: 'pedidos',
     titulo: 'Operação: Pedidos',
-    prefixos: ['/vendas', '/despacho', '/consolidar'],
+    prefixos: ['/vendas', '/despacho'],
     grupos: [
       {
         itens: [
           { name: 'Pedidos', href: '/vendas/pedidos', icon: ClipboardList, description: 'Gestão unificada de pedidos' },
           { name: 'Torre de Despacho', href: '/despacho', icon: TowerControl, description: 'Agrupar pedidos e publicar a demanda', exato: true },
           { name: 'Personalizados', href: '/vendas/personalizadas', icon: Users, description: 'Vendas de produtos personalizados' },
-          { name: 'Consolidar', href: '/consolidar', icon: Layers, description: 'Conferir uma planilha do marketplace contra a base' },
         ],
       },
     ],

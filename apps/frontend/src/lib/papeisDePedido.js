@@ -75,19 +75,24 @@ function itemHtml(item) {
     </div>`;
 }
 
-function rodapeHtml(order) {
-  // A tag do modelo so faz sentido no pedido personalizado, e e o que o
-  // operador procura primeiro na folha: e por ela que ele acha a capa certa.
-  if (!order.hasCustomItem) return '<div class="stamp-footer"></div>';
+function tagsModeloHtml(order) {
+  // A tag do modelo fica no fim do corpo, e nao no rodape: assim continua
+  // dentro da area util quando o pedido tem varios itens.
   const tags = (order.itens || [])
     .map((item) => (item.custom_tag || '').trim())
     .filter(Boolean);
   const unicas = [...new Set(tags)];
-  return `
-    <div class="stamp-footer">
-      <div>${unicas.map((tag) => `<div class="custom-tag">${escaparHtml(tag)}</div>`).join('')}</div>
-      <div class="rodape-data">${escaparHtml(new Date().toLocaleDateString('pt-BR'))}</div>
-    </div>`;
+  if (unicas.length === 0) return '';
+  return `<div class="custom-tags" aria-label="Modelos">
+    ${unicas.map((tag) => `<div class="custom-tag">${escaparHtml(tag)}</div>`).join('')}
+  </div>`;
+}
+
+function rodapeHtml() {
+  return `<div class="stamp-footer">
+    <div></div>
+    <div class="rodape-data">${escaparHtml(new Date().toLocaleDateString('pt-BR'))}</div>
+  </div>`;
 }
 
 function mensagemHtml(order) {
@@ -105,6 +110,10 @@ function mensagemHtml(order) {
 function cartaoHtml(order) {
   const itens = order.itens || [];
   const totalItens = order.total_items || 0;
+  const documento = order.contato?.numeroDocumento
+    || order.contato?.documento
+    || order.contato?.document
+    || order.documento;
   const endereco = order.contato?.endereco
     ? `<div>${escaparHtml(order.contato.endereco)}</div>`
     : '';
@@ -113,7 +122,7 @@ function cartaoHtml(order) {
       <div class="stamp-header">
         <div>
           <div>Nome: ${escaparHtml(order.contato?.nome || 'N/A')}</div>
-          <div>CPF: ${escaparHtml(order.contato?.numeroDocumento || 'N/A')}</div>
+          <div>CPF: ${escaparHtml(documento || 'N/A')}</div>
           ${endereco}
         </div>
         <div></div>
@@ -131,13 +140,14 @@ function cartaoHtml(order) {
           <div class="item-quantity"></div>
           <div class="item-price">${moeda(order.totalProdutos)}</div>
         </div>
+        ${tagsModeloHtml(order)}
         <div class="total-items">
           <div></div>
           <div><span>${escaparHtml(totalItens)} ${totalItens > 1 ? 'itens' : 'item'}</span></div>
           <div></div>
         </div>
       </div>
-      ${rodapeHtml(order)}
+      ${rodapeHtml()}
     </div>`;
 }
 
@@ -150,19 +160,20 @@ const ESTILO = `
   .stamp-header{display:flex;justify-content:space-between;font-size:1.5rem;margin-bottom:30px}
   .stamp-header div div{padding:15px 0}
   .stamp-header .origem{text-align:right;font-weight:700}
-  .stamp-content{flex-grow:1;display:flex;flex-direction:column;justify-content:space-between}
+  .stamp-content{flex-grow:1;min-height:0;display:flex;flex-direction:column;justify-content:flex-start}
   .stamp-content .order-info{text-align:center;font-size:2.5rem;margin-bottom:40px}
   .stamp-content .order-info div,.stamp-content .item-details div{margin-bottom:5px}
-  .stamp-content .item{display:flex;align-items:center;border-top:1px solid #ddd;padding:15px 0;margin-bottom:15px}
+  .stamp-content .item{display:flex;align-items:center;border-top:1px solid #ddd;padding:15px 0;margin-bottom:15px;flex-shrink:0}
   .stamp-content .item:first-child{border-top:none}
   .stamp-content .item-details{width:80%;font-size:1.2rem}
   .stamp-content .item-details .variacao{font-size:.8rem;color:#666}
   .stamp-content .item-quantity{width:10%;text-align:center;font-size:1.6rem}
   .stamp-content .item-price{width:10%;text-align:center;font-size:.8rem}
-  .stamp-content .total-items{display:flex;justify-content:space-between;text-align:center;margin-top:auto;margin-bottom:20px}
+  .stamp-content .total-items{display:flex;justify-content:space-between;text-align:center;margin-top:auto;margin-bottom:20px;flex-shrink:0}
   .stamp-content .total-items span{font-size:2.5rem}
-  .stamp-footer{display:flex;justify-content:space-between;margin-top:auto;padding-top:20px}
-  .stamp-footer .custom-tag{font-size:1.8rem;font-weight:bolder;border:1px solid #000;padding:10px 25px;margin-bottom:6px}
+  .custom-tags{display:flex;justify-content:center;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0 16px;flex-shrink:0}
+  .custom-tags .custom-tag{font-size:1.8rem;font-weight:bolder;border:1px solid #000;padding:10px 25px}
+  .stamp-footer{display:flex;justify-content:space-between;margin-top:0;padding-top:10px;flex-shrink:0}
   .stamp-footer .rodape-data{font-size:.9rem;color:#666;align-self:flex-end}
   .mensagem-comprador{border:2px dashed #000;padding:10px 14px;margin:10px 0;font-size:1.3rem}
   .mensagem-comprador .rotulo{display:block;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#555;margin-bottom:4px}

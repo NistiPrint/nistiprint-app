@@ -161,11 +161,32 @@ class OrderErpReferenceService:
         }
 
     def resolve_many(self, pedido_ids: list[int], *, allow_remote: bool = True) -> dict[str, list[dict]]:
-        results = [self.resolve_order(int(pedido_id), allow_remote=allow_remote) for pedido_id in pedido_ids]
-        return {
-            "ready": [result for result in results if result.get("status") == "ready"],
-            "blocked": [result for result in results if result.get("status") != "ready"],
-        }
+        """Resolve a set using one bulk read and batched ERP lookups.
+
+        The old public method called ``resolve_order`` in a loop, which turned a
+        150-order lot into 150 HTTP requests. The reconciliation worker already
+        had the correct grouping implementation; exposing it here keeps the NFE
+        and spreadsheet paths on the same behavior.
+        """
+        ids = list(dict.fromkeys(int(value) for value in pedido_ids if value))
+        if not ids:
+            return {"ready": [], "blocked": []}
+        rows = (
+            supabase_db.table("pedidos")
+            .select("id")
+            .in_("id", ids)
+            .execute()
+            .data
+            or []
+        )
+        found = {int(row["id"]) for row in rows if row.get("id") is not None}
+        pending = [{"pedido_id": pedido_id} for pedido_id in ids if pedido_id in found]
+        results = _resolve_pending_references_in_batch(pending, allow_remote=allow_remote)
+        results["blocked"].extend(
+            {"status": "not_found", "pedido_id": pedido_id, "message": "Pedido nao encontrado"}
+            for pedido_id in ids if pedido_id not in found
+        )
+        return results
 
     @staticmethod
     def _ready_reference(pedido: dict) -> dict | None:
@@ -183,26 +204,31 @@ class OrderErpReferenceService:
 
 
 
-def _resolve_pending_references_in_batch(rows: list[dict]) -> dict:
+def _resolve_pending_references_in_batch(rows: list[dict], *, allow_remote: bool = True) -> dict:
     """Consulta numeroLoja agrupando pedidos pela mesma conta Bling."""
     from nistiprint_shared.services.bling.bling_client import BlingClient
     grouped = {}
     results = []
     pedidos_por_id = {}
-    for row in rows:
-        pedido = (supabase_db.table("pedidos")
-            .select("id,marketplace_order_id,marketplace_integration_id,marketplace_module_id,erp_store_id,pack_id,erp_order_id")
-            .eq("id", row.get("pedido_id")).limit(1).execute().data or [])
+    ids = list(dict.fromkeys(row.get("pedido_id") for row in rows if row.get("pedido_id")))
+    pedido_rows = (supabase_db.table("pedidos")
+        .select("id,marketplace_order_id,marketplace_integration_id,marketplace_module_id,erp_store_id,pack_id,erp_order_id")
+        .in_("id", ids).execute().data or [])
+    por_id = {row.get("id"): dict(row) for row in pedido_rows}
+    for pedido_id in ids:
+        pedido = por_id.get(pedido_id)
         if not pedido:
-            results.append({"status": "not_found", "pedido_id": row.get("pedido_id")})
+            results.append({"status": "not_found", "pedido_id": pedido_id})
             continue
-        pedido = pedido[0]
         # Irmao de pacote ja resolvido: `enrich_order_erp_reference` aplica a
         # referencia no pacote inteiro de uma vez, entao o irmao chega aqui
         # pronto. Gastar uma consulta ao Bling para redescobrir o que ele ja tem
         # so serviria para ele reivindicar de novo o mesmo pedido do ERP.
         if pedido.get("erp_order_id"):
             results.append({"status": "ready", "pedido_id": pedido["id"]})
+            continue
+        if not allow_remote:
+            results.append({"status": "pending", "pedido_id": pedido["id"], "message": "Referencia ERP ainda nao disponivel"})
             continue
         pedidos_por_id[pedido["id"]] = pedido
         resolved = integration_capability_service.resolve(
