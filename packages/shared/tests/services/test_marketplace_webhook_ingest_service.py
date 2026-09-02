@@ -25,6 +25,71 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
         self.assertEqual(error["error_type"], "marketplace_integration_not_found")
         self.assertTrue(error["retryable"])
 
+    # --- Duas contas da mesma plataforma no mesmo endpoint ------------------
+    #
+    # O webhook do Mercado Livre chega sempre na mesma URL; quem separa as
+    # contas e o `user_id` do payload. Estes casos cobrem a entrada da segunda
+    # conta ML, que passa a dividir o endpoint com a primeira.
+
+    #: Como as duas contas ficam no banco. `bling_loja_id` esta presente de
+    #: proposito: ele conta como identificador legado e e a origem da armadilha
+    #: documentada em `test_second_account_without_user_id_is_invisible`.
+    _MELI_DUAS_CONTAS = [
+        {"id": 7091, "config": {
+            "user_id": "207584268", "bling_loja_id": "203753446",
+            "account_identifiers": {"primary": "207584268", "kind": "user_id", "aliases": []},
+        }},
+        {"id": 7099, "config": {
+            "user_id": "998877665", "bling_loja_id": "205421972",
+            "account_identifiers": {"primary": "998877665", "kind": "user_id", "aliases": []},
+        }},
+    ]
+
+    def _resolve_meli(self, rows, identifier):
+        service = MarketplaceWebhookIngestService()
+        with patch.object(service, "_active_marketplace_integrations", return_value=rows):
+            return service._resolve_marketplace_integration(
+                "mercadolivre", account_identifier=identifier
+            )
+
+    def test_each_meli_account_resolves_by_its_own_user_id(self):
+        for identifier, expected in (("207584268", 7091), ("998877665", 7099)):
+            with self.subTest(user_id=identifier):
+                integration, error = self._resolve_meli(self._MELI_DUAS_CONTAS, identifier)
+                self.assertIsNone(error)
+                self.assertEqual(integration["id"], expected)
+
+    def test_meli_webhook_without_user_id_refuses_to_guess(self):
+        # Com uma conta so, um webhook sem identificador resolvia por eliminacao.
+        # Com duas, adivinhar significaria atribuir o pedido a loja errada.
+        integration, error = self._resolve_meli(self._MELI_DUAS_CONTAS, None)
+        self.assertIsNone(integration)
+        self.assertEqual(error["error_type"], "marketplace_integration_ambiguous")
+
+    def test_second_account_without_user_id_is_invisible(self):
+        # Armadilha: `bling_loja_id` entra no conjunto de identificadores, entao
+        # uma conta cadastrada sem user_id ainda "parece" identificavel. Ela
+        # nunca casa com o user_id de um webhook, e so os pedidos dela somem —
+        # a conta antiga segue funcionando, o que torna a falha silenciosa.
+        rows = [
+            self._MELI_DUAS_CONTAS[0],
+            {"id": 7099, "config": {"bling_loja_id": "205421972"}},
+        ]
+        integration, error = self._resolve_meli(rows, "998877665")
+        self.assertIsNone(integration)
+        self.assertEqual(error["error_type"], "marketplace_integration_not_found")
+        # A conta ja configurada continua resolvendo normalmente.
+        integration, error = self._resolve_meli(rows, "207584268")
+        self.assertIsNone(error)
+        self.assertEqual(integration["id"], 7091)
+
+    def test_bling_loja_id_of_one_account_never_resolves_another(self):
+        # O identificador do webhook e sempre `user_id`; o `bling_loja_id` de
+        # uma conta nao pode servir de chave para outra.
+        integration, error = self._resolve_meli(self._MELI_DUAS_CONTAS, "203753446")
+        self.assertEqual(integration["id"], 7091)
+        self.assertIsNone(error)
+
     def test_ambiguous_account_never_chooses_a_candidate(self):
         service = MarketplaceWebhookIngestService()
         rows = [

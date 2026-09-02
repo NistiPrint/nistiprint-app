@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertTriangle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import api from '@/services/api';
 
 /**
  * Faixa de alerta das modalidades de prazo relativo (Turbo).
@@ -43,8 +44,17 @@ export default function AlertaTurbo() {
     if (carregandoRef.current) return;
     carregandoRef.current = true;
     try {
-      const { data, error } = await supabase.rpc('despacho_esteira_relativo');
-      if (!error) setPedidos(data || []);
+      // A sessão da aplicação é gerenciada pelo backend (cookie). Não chamar a
+      // RPC diretamente evita 401 quando o cliente Supabase não tem JWT.
+      const response = await api.get('/despacho/esteira');
+      const pedidosDaApi = response.data?.data?.pedidos || [];
+      setPedidos(pedidosDaApi.map((pedido) => ({
+        ...pedido,
+        compromisso_em: pedido.compromisso_em || pedido.compromisso_logistico_em,
+        marketplace_nome: pedido.marketplace_nome || pedido.metodo_envio_rotulo || '',
+      })));
+    } catch (error) {
+      if (error.response?.status === 401) setPedidos([]);
     } finally {
       carregandoRef.current = false;
     }

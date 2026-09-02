@@ -216,10 +216,28 @@ class ProductService:
             'estoque_maximo': int(product_data.get('stock_max') or 0),
             'tipo_material': product_data.get('material_type'),
             'unidade_medida_id': product_data.get('unit_of_measure_id') or product_data.get('unidade_medida_id'),
-            'status': product_data.get('status', 'ativo'),
+            'status': product_data.get('status', 'inativo'),
+            'estagio': product_data.get('estagio', 'RASCUNHO'),
             'parent_id': product_data.get('parent_id'),
             'sku_pai': product_data.get('sku_pai'),
             'setor_responsavel_id': product_data.get('setor_responsavel_id'),
+            'ncm': product_data.get('ncm'),
+            'cest': product_data.get('cest'),
+            'origem_mercadoria': product_data.get('origem_mercadoria'),
+            'cfop_padrao_venda': product_data.get('cfop_padrao_venda'),
+            'gtin': product_data.get('gtin'),
+            'gtin_embalagem': product_data.get('gtin_embalagem'),
+            'marca': product_data.get('marca'),
+            'fabricante': product_data.get('fabricante'),
+            'mpn': product_data.get('mpn'),
+            'peso_liquido': product_data.get('peso_liquido'),
+            'peso_bruto': product_data.get('peso_bruto'),
+            'comprimento': product_data.get('comprimento'),
+            'largura': product_data.get('largura'),
+            'altura': product_data.get('altura'),
+            'garantia_meses': product_data.get('garantia_meses'),
+            'perfil_fiscal_id': product_data.get('perfil_fiscal_id'),
+            'origem_fiscal': product_data.get('origem_fiscal', 'interno'),
 
             # New fields for product formats and inheritance
             'formato': product_data.get('formato', 'simples'),
@@ -251,6 +269,8 @@ class ProductService:
         if response.data:
             result = dict(response.data[0])
             result['id'] = result.get('id')
+
+            self.sync_product_tags(result['id'], product_data.get('tags'))
 
             # Clear cache since we've added a new product
             self.clear_cache()
@@ -302,6 +322,7 @@ class ProductService:
         if 'unit_of_measure_id' in product_data or 'unidade_medida_id' in product_data:
             update_data['unidade_medida_id'] = product_data.get('unit_of_measure_id') or product_data.get('unidade_medida_id')
         if 'status' in product_data: update_data['status'] = product_data['status']
+        if 'estagio' in product_data: update_data['estagio'] = product_data['estagio']
 
         # New fields for product formats and inheritance
         if 'formato' in product_data: update_data['formato'] = product_data['formato']
@@ -311,6 +332,13 @@ class ProductService:
         # Handle setor responsável
         if 'setor_responsavel_id' in product_data:
             update_data['setor_responsavel_id'] = product_data['setor_responsavel_id']
+
+        for field in ('ncm', 'cest', 'origem_mercadoria', 'cfop_padrao_venda', 'gtin',
+                      'gtin_embalagem', 'marca', 'fabricante', 'mpn', 'peso_liquido',
+                      'peso_bruto', 'comprimento', 'largura', 'altura', 'garantia_meses',
+                      'perfil_fiscal_id', 'origem_fiscal'):
+            if field in product_data:
+                update_data[field] = product_data[field]
 
         # Get existing product to merge JSONB fields
         current = self.get_by_id(product_id)
@@ -345,12 +373,30 @@ class ProductService:
 
         if links_externos is not None:
             self.sync_external_product_links(product_id, links_externos)
+        if 'tags' in product_data:
+            self.sync_product_tags(product_id, product_data.get('tags'))
 
         # Clear cache since we've updated a product
         self.clear_cache()
 
         # Return updated product
         return self.get_by_id(product_id)
+
+    def sync_product_tags(self, product_id: str, tags: Any) -> None:
+        """Sincroniza tags normalizadas sem remover o array legado do produto."""
+        tag_ids = []
+        for tag in tags or []:
+            value = tag.get('tag_id') if isinstance(tag, dict) else tag
+            if value is not None and str(value).strip():
+                tag_ids.append(int(value))
+        tag_ids = list(dict.fromkeys(tag_ids))
+        relation = supabase_db.table('produto_tags')
+        relation.delete().eq('produto_id', int(product_id)).execute()
+        if tag_ids:
+            relation.insert([
+                {'produto_id': int(product_id), 'tag_id': tag_id}
+                for tag_id in tag_ids
+            ]).execute()
 
     def delete(self, product_id: str):
         """Delete a product."""
@@ -669,7 +715,27 @@ class ProductService:
 
         components = bom_service.get_bom_for_produto(int(product['id']))
         deposito_id = kwargs.get('deposito_id')
-        
+
+        # M6: a categoria de cada componente era buscada uma a uma, sem cache,
+        # com a excecao engolida — uma ficha de 5 componentes fazia 5 idas ao
+        # banco por chamada, e qualquer falha virava "Não classificado",
+        # indistinguível do caso legítimo. Uma consulta em lote resolve.
+        categorias_por_id = {}
+        ids_categoria = sorted({
+            comp_cat for comp_cat in (
+                (self.get_by_id(str(c.componente_id)) or {}).get('categoria_id')
+                for c in components
+            ) if comp_cat
+        })
+        if ids_categoria:
+            try:
+                categorias_por_id = {
+                    linha['id']: linha
+                    for linha in category_service.get_by_ids(ids_categoria)
+                }
+            except Exception:
+                logging.warning("Não foi possível carregar as categorias dos componentes em lote", exc_info=True)
+
         # Enrich components with details
         result = []
         for comp in components:
@@ -678,6 +744,8 @@ class ProductService:
             
             if comp_product:
                 comp_product = self.enrich_product_data(comp_product)
+                categoria_componente = categorias_por_id.get(comp_product.get('categoria_id'))
+
                 item = {
                     'component_id': comp_product['id'], 
                     'id': comp_product['id'], # For backward compatibility
@@ -689,6 +757,13 @@ class ProductService:
                     'cost': comp_product.get('cost_price', 0),
                     'material_type': comp_product.get('material_type'),
                     'categoria_id': comp_product.get('categoria_id'),
+                    'categoria_nome': categoria_componente.get('nome') if categoria_componente else None,
+                    'grupo_bom': categoria_componente.get('grupo_bom') if categoria_componente else None,
+                    # `grupo` e o grupo EFETIVO da linha, resolvido pelo banco
+                    # (grupo da linha > grupo da categoria > miolo por categoria
+                    # > capa/contra pelo nome). A categoria sozinha nao serve:
+                    # capa e contra dividem a mesma categoria neste catalogo.
+                    'grupo': comp.grupo,
                     'is_inherited': comp.is_inherited
                     }
                 # Add stock info if deposit is provided
@@ -1031,6 +1106,68 @@ class ProductService:
             print(f"Error fetching external product links: {e}")
             return []
 
+    def list_product_ads(self, only_orphans: bool = False) -> List[Dict[str, Any]]:
+        """Lista anúncios históricos para revisão e vínculo manual."""
+        query = supabase_db.table('produto_anuncios').select('*').order('updated_at', desc=True)
+        if only_orphans:
+            query = query.is_('produto_id', 'null')
+        return [dict(row) for row in (query.execute().data or [])]
+
+    def link_product_ad(self, ad_id: str, product_id: str) -> Dict[str, Any]:
+        """Vincula um anúncio a um produto sem alterar pedidos históricos."""
+        product = self.get_by_id(product_id)
+        if not product:
+            raise ValueError(f"Produto {product_id} não encontrado")
+        response = supabase_db.table('produto_anuncios').update({
+            'produto_id': int(product_id),
+            'updated_at': datetime.utcnow().isoformat(),
+            'ultimo_erro': None,
+        }).eq('id', ad_id).execute()
+        if not response.data:
+            raise ValueError(f"Anúncio {ad_id} não encontrado")
+        return dict(response.data[0])
+
+    def list_product_aliases(self, product_id: str = None) -> List[Dict[str, Any]]:
+        """Lista aliases preservando a origem e a plataforma."""
+        query = self.produtos_externos_table.select('*').order('codigo_externo')
+        if product_id:
+            query = query.eq('produto_id', product_id)
+        return [dict(row) for row in (query.execute().data or [])]
+
+    def add_product_alias(self, product_id: str, codigo_externo: str, tipo: str = 'SKU', plataforma: str = None) -> Dict[str, Any]:
+        if not self.get_by_id(product_id):
+            raise ValueError(f"Produto {product_id} não encontrado")
+        codigo = str(codigo_externo or '').strip()
+        if not codigo:
+            raise ValueError('Código externo é obrigatório')
+        response = self.produtos_externos_table.insert({
+            'produto_id': int(product_id), 'codigo_externo': codigo,
+            'tipo': (tipo or 'SKU').upper(), 'plataforma': plataforma or None,
+            'metadados': {'origem': 'cadastro_manual'},
+        }).execute()
+        return dict(response.data[0]) if response.data else None
+
+    def list_product_prices(self, product_id: str) -> List[Dict[str, Any]]:
+        response = supabase_db.table('produto_precos').select('*').eq('produto_id', product_id).order('vigencia_inicio', desc=True).execute()
+        return [dict(row) for row in (response.data or [])]
+
+    def add_product_price(self, product_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.get_by_id(product_id):
+            raise ValueError(f"Produto {product_id} não encontrado")
+        tipo = data.get('tipo')
+        if tipo not in ('padrao', 'promocional', 'minimo'):
+            raise ValueError('Tipo de preço inválido')
+        valor = float(data.get('valor'))
+        if valor < 0:
+            raise ValueError('Preço não pode ser negativo')
+        response = supabase_db.table('produto_precos').insert({
+            'produto_id': int(product_id), 'integration_id': data.get('integration_id'),
+            'tipo': tipo, 'valor': valor,
+            'vigencia_inicio': data.get('vigencia_inicio') or datetime.utcnow().isoformat(),
+            'vigencia_fim': data.get('vigencia_fim'),
+        }).execute()
+        return dict(response.data[0]) if response.data else None
+
     def add_external_product_link(self, product_id: str, codigo_externo: str, plataforma: str, metadados: Dict[str, Any] = None, tipo: str = 'SKU'):
         """Add a link to an external product. tipo: SKU, ID ou NOME."""
         data = {
@@ -1209,13 +1346,172 @@ class ProductService:
             logging.warning(f"Error getting variants for parent {parent_id}: {e}")
             return []
 
+    def get_variation_axes(self, parent_id: str = None) -> List[Dict[str, Any]]:
+        """Retorna os eixos normalizados disponíveis/configurados para um pai."""
+        axes = (supabase_db.table('produto_eixos').select(
+            'id,codigo,nome,ordem_sku,ativo,produto_eixo_opcoes(id,codigo,nome,ativo)'
+        ).eq('ativo', True).order('ordem_sku').execute().data or [])
+        if not parent_id:
+            return axes
+        selected = (supabase_db.table('produto_pai_eixos').select('eixo_id,posicao')
+                    .eq('produto_pai_id', parent_id).order('posicao').execute().data or [])
+        selected_ids = {row['eixo_id'] for row in selected}
+        return [axis for axis in axes if axis['id'] in selected_ids]
+
+    def configure_variation_axes(self, parent_id: str, axis_codes: List[str]) -> List[Dict[str, Any]]:
+        """Define explicitamente os eixos usados por um produto-pai."""
+        if not axis_codes:
+            raise ValueError('Informe ao menos um eixo para configurar variações.')
+        axes = (supabase_db.table('produto_eixos').select('id,codigo')
+                .in_('codigo', axis_codes).eq('ativo', True).execute().data or [])
+        by_code = {axis['codigo']: axis for axis in axes}
+        if len(by_code) != len(set(axis_codes)):
+            missing = [code for code in axis_codes if code not in by_code]
+            raise ValueError(f"Eixos inválidos ou inativos: {', '.join(missing)}")
+        supabase_db.table('produto_pai_eixos').delete().eq('produto_pai_id', parent_id).execute()
+        supabase_db.table('produto_pai_eixos').insert([
+            {'produto_pai_id': int(parent_id), 'eixo_id': by_code[code]['id'], 'posicao': index}
+            for index, code in enumerate(axis_codes)
+        ]).execute()
+        return self.get_variation_axes(parent_id)
+
+    def _sync_normalized_variation(self, product_id: int, parent_id: str, axis_values: Any) -> None:
+        """Persiste a combinação normalizada da variação.
+
+        M7: a versão anterior gravava `posicao` em `produto_pai_eixos` na ordem
+        em que o CLIENTE mandou as chaves do JSON. Salvar UMA variação reescrevia
+        a ordem dos eixos do modelo inteiro — e a posição é o que dá sentido à
+        leitura do SKU. A ordem agora vem de `produto_eixos.ordem_sku`, que é do
+        catálogo, e o pai só é configurado aqui quando ainda não tem eixo nenhum;
+        havendo, esta função apenas confere.
+
+        `combinacao_chave` também saiu daqui: quem a mantém é o trigger
+        `atualizar_chave_combinacao_variacao`, e duas escritas para o mesmo campo
+        com ordens diferentes é como a divergência entra.
+        """
+        if not axis_values:
+            return
+        if not isinstance(axis_values, dict):
+            raise ValueError('variation_axis_values deve ser um objeto eixo -> opção.')
+
+        catalogo = {axis['codigo']: axis for axis in self.get_variation_axes()}
+        eixos_do_pai = self.get_variation_axes(parent_id)
+
+        valores = []
+        for code, option_code in axis_values.items():
+            axis = catalogo.get(code)
+            if not axis:
+                raise ValueError(f"Eixo '{code}' não existe no catálogo.")
+            option = next((item for item in axis.get('produto_eixo_opcoes', [])
+                           if str(item.get('codigo')) == str(option_code)), None)
+            if not option:
+                raise ValueError(
+                    f"Opção '{option_code}' não pertence ao eixo '{code}'. "
+                    f"Cadastre a opção antes de usá-la na variação."
+                )
+            valores.append((axis, option))
+
+        valores.sort(key=lambda par: (par[0].get('ordem_sku') or 0, par[0]['id']))
+
+        if eixos_do_pai:
+            esperados = {axis['codigo'] for axis in eixos_do_pai}
+            informados = {axis['codigo'] for axis, _ in valores}
+            if esperados != informados:
+                faltando = ', '.join(sorted(esperados - informados)) or '-'
+                sobrando = ', '.join(sorted(informados - esperados)) or '-'
+                raise ValueError(
+                    f'A variação precisa preencher exatamente os eixos do produto pai. '
+                    f'Faltando: {faltando}. Não previstos: {sobrando}.'
+                )
+        else:
+            # Primeira variação do pai: ela define quais eixos o modelo usa.
+            supabase_db.table('produto_pai_eixos').upsert([
+                {'produto_pai_id': int(parent_id), 'eixo_id': axis['id'], 'posicao': indice}
+                for indice, (axis, _option) in enumerate(valores)
+            ], on_conflict='produto_pai_id,eixo_id').execute()
+
+        supabase_db.table('produto_variacao_valores').upsert([
+            {'produto_id': product_id, 'eixo_id': axis['id'], 'opcao_id': option['id']}
+            for axis, option in valores
+        ], on_conflict='produto_id,eixo_id').execute()
+
+    def set_variation_values(self, product_id: str, axis_values: Dict[str, Any]) -> Dict[str, Any]:
+        """Grava os eixos de um produto já existente e o tira da fila de revisão.
+
+        É o caminho da tela de revisão: o backfill de 20260831190000 deduziu só o
+        MIOLO (o segmento do SKU que corresponde a um produto cadastrado) e
+        deixou estampa e acabamento para a mão humana, porque não dá para lê-los
+        do texto sem errar — 17 dos 44 acabados nem seguem a gramática.
+        """
+        produto = self.get_by_id(str(product_id))
+        if not produto:
+            raise ValueError(f'Produto {product_id} não encontrado')
+        pai = produto.get('parent_id') or produto.get('id')
+        self._sync_normalized_variation(int(produto['id']), str(pai), axis_values)
+        supabase_db.table('produto_variacao_backfill_revisao').update(
+            {'resolvido_em': datetime.utcnow().isoformat()}
+        ).eq('produto_id', int(produto['id'])).execute()
+        return self.get_by_id(str(product_id))
+
+    def get_variation_review_queue(self) -> List[Dict[str, Any]]:
+        """Produtos cujos eixos ainda precisam de decisão humana."""
+        fila = (supabase_db.table('produto_variacao_backfill_revisao')
+                .select('produto_id,sku_observado,motivo,criado_em')
+                .is_('resolvido_em', 'null').execute().data or [])
+        if not fila:
+            return []
+        ids = [linha['produto_id'] for linha in fila]
+        produtos = {linha['id']: linha for linha in (supabase_db.table('produtos')
+                    .select('id,sku,nome,categoria_id,parent_id,formato').in_('id', ids)
+                    .execute().data or [])}
+        valores = (supabase_db.table('produto_variacao_valores')
+                   .select('produto_id,eixo_id,opcao_id').in_('produto_id', ids)
+                   .execute().data or [])
+        por_produto: Dict[int, List[Dict[str, Any]]] = {}
+        for valor in valores:
+            por_produto.setdefault(valor['produto_id'], []).append(valor)
+        resultado = []
+        for linha in fila:
+            produto = produtos.get(linha['produto_id']) or {}
+            resultado.append({
+                **linha,
+                'sku': produto.get('sku'),
+                'nome': produto.get('nome'),
+                'categoria_id': produto.get('categoria_id'),
+                'parent_id': produto.get('parent_id'),
+                'valores_atuais': por_produto.get(linha['produto_id'], []),
+            })
+        resultado.sort(key=lambda item: (item.get('sku') or ''))
+        return resultado
+
+    def create_axis_option(self, axis_code: str, codigo: str, nome: str = None) -> Dict[str, Any]:
+        """Cria uma opção de eixo — é o que uma estampa nova da coleção é."""
+        codigo = (codigo or '').strip()
+        if not codigo:
+            raise ValueError('O código da opção é obrigatório.')
+        eixo = (supabase_db.table('produto_eixos').select('id,codigo')
+                .eq('codigo', axis_code).limit(1).execute().data or [])
+        if not eixo:
+            raise ValueError(f"Eixo '{axis_code}' não encontrado.")
+        existente = (supabase_db.table('produto_eixo_opcoes').select('id,codigo,nome,ativo')
+                     .eq('eixo_id', eixo[0]['id']).eq('codigo', codigo).limit(1)
+                     .execute().data or [])
+        if existente:
+            return existente[0]
+        criado = supabase_db.table('produto_eixo_opcoes').insert({
+            'eixo_id': eixo[0]['id'], 'codigo': codigo,
+            'nome': (nome or codigo).strip(), 'ativo': True,
+        }).execute()
+        return (criado.data or [{}])[0]
+
     def create_variant(self, parent_id: str, variant_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new product variant."""
         sku = variant_data.get('sku')
-        if sku:
-            existing = self.get_by_sku(sku)
-            if existing:
-                 raise ValueError(f"SKU '{sku}' já existe no sistema.")
+        if not sku or not str(sku).strip():
+            raise ValueError("SKU é obrigatório e deve ser digitado pelo usuário.")
+        existing = self.get_by_sku(sku)
+        if existing:
+             raise ValueError(f"SKU '{sku}' já existe no sistema.")
 
         # Get parent to inherit properties
         parent = self.get_by_id(parent_id)
@@ -1245,6 +1541,9 @@ class ProductService:
 
             # New fields for product formats and inheritance
             'formato': 'variacao',  # Variants always have this formato
+            'estagio': variant_data.get('estagio', 'RASCUNHO'),
+            # Produtos novos só podem ficar ativos após publicação explícita.
+            'status': variant_data.get('status', 'inativo'),
             'herdar_dados_pai': variant_data.get('herdar_dados_pai', True),
             'herdar_bom_pai': variant_data.get('herdar_bom_pai', True),
 
@@ -1282,6 +1581,8 @@ class ProductService:
         if response.data:
             result = dict(response.data[0])
             result['id'] = result.get('id')
+
+            self._sync_normalized_variation(result['id'], parent_id, variant_data.get('variation_axis_values'))
             
             # --- NORMALIZAÇÃO DE ATRIBUTOS (TASK 4.1) ---
             if variation_values:
@@ -1393,13 +1694,10 @@ class ProductService:
         # 2. Get IDs present in the payload (active variations)
         payload_ids = {str(v['id']) for v in variations_data if v.get('id')}
         
-        # 3. Identify orphans (Existing in DB but NOT in Payload)
-        orphans_ids = existing_ids - payload_ids
-        
-        # 4. Inactivate orphans
-        for orphan_id in orphans_ids:
-            # We use update instead of delete to preserve history (Soft Delete)
-            self.update(orphan_id, {'status': 'inativo'})
+        # Variações existentes que não estão na nova grade não são inativadas
+        # automaticamente. A grade normalizada pode coexistir com variações
+        # legadas ainda não revisadas; somente uma ação explícita do usuário
+        # pode alterar sua disponibilidade comercial.
 
         # --- Create / Update Active Variations ---
 
@@ -1411,20 +1709,20 @@ class ProductService:
                 attrs_str = "; ".join([f"{k}:{v}" for k, v in variation_values.items()])
                 variation['nome'] = f"{parent_product.get('nome')} - {attrs_str}"
 
-            # Generate a unique SKU for the variation if not provided
-            if not variation.get('sku'):
-                variation_values_str = "-".join([f"{v}" for v in variation_values.values()])
-                variation['sku'] = f"{parent_product['sku']}-{variation_values_str}"
+            if not variation.get('sku') or not str(variation['sku']).strip():
+                raise ValueError('Cada variação deve ter um SKU digitado pelo usuário.')
 
             # Set the parent ID for the variation
             variation['parent_id'] = parent_id
             
-            # Ensure status is active for sent variations
-            variation['status'] = 'ativo'
+            # Novas variações entram como rascunho; publicação é uma ação explícita.
+            variation['status'] = variation.get('status', 'inativo')
+            variation['estagio'] = variation.get('estagio', 'RASCUNHO')
 
             if variation.get('id'):
                 # Update existing variation
                 self.update_variant(str(variation['id']), variation)
+                self._sync_normalized_variation(variation['id'], parent_id, variation.get('variation_axis_values'))
             else:
                 # Create new variation
                 self.create_variant(str(parent_id), variation)

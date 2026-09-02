@@ -12,7 +12,7 @@ import { ProductLevelBadge } from '@/components/produtos/ProductLevelBadge';
 const BOMManager = ({ productId, formato }) => {
   const [components, setComponents] = useState([]);
   const [rules, setRules] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [isInherited, setIsInherited] = useState(false);
 
   // Search State
@@ -54,9 +54,15 @@ const BOMManager = ({ productId, formato }) => {
       const comps = data.components || [];
       setComponents(comps);
       
-      // Check if any component is inherited (the backend now returns this)
+      // `is_inherited` vem POR LINHA. Antes a tela lia comps[0] e aplicava a
+      // resposta à ficha inteira: bastava UMA linha herdada para o formulário de
+      // adicionar sumir e todas as ações virarem o selo "Herdado" — e a variação
+      // ficava sem nenhum caminho para criar a linha própria que a diferencia,
+      // que é o recurso central do modelo pai/variação.
+      // Aqui o estado guarda só se a variação HERDA (para o aviso e o texto);
+      // o que pode ser editado é decidido linha a linha, em `comp.is_inherited`.
       if (comps.length > 0) {
-        setIsInherited(comps[0].is_inherited || false);
+        setIsInherited(comps.some((c) => c.is_inherited));
       } else {
         // If empty, check the product directly if it has herdar_bom_pai
         const prodData = await ProductService.getById(productId);
@@ -64,21 +70,6 @@ const BOMManager = ({ productId, formato }) => {
       }
     } catch (error) {
       console.error("Error loading BOM:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCustomize = async () => {
-    if (!confirm("Isso irá criar uma cópia da composição do pai para esta variação, permitindo edições independentes. Deseja continuar?")) return;
-    
-    try {
-      setLoading(true);
-      await ProductService.copyBOMFromParent(productId);
-      toast.success("Agora você pode customizar a composição desta variação.");
-      loadBOM();
-    } catch (error) {
-      toast.error("Erro ao customizar composição: " + error.message);
     } finally {
       setLoading(false);
     }
@@ -213,17 +204,18 @@ const BOMManager = ({ productId, formato }) => {
 
       {/* Inheritance Warning */}
       {isInherited && (
-        <div className="flex items-center justify-between gap-4 p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800">
+        <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800">
           <div className="flex items-center gap-3">
             <AlertTriangle className="h-5 w-5 text-amber-500" />
             <div>
-              <p className="font-semibold">Composição Herdada</p>
-              <p className="text-sm">Esta variação está utilizando a mesma estrutura do produto pai. Alterações no pai refletirão aqui.</p>
+              <p className="font-semibold">Composição herdada do produto pai</p>
+              <p className="text-sm">
+                As linhas marcadas como <strong>Herdado</strong> vêm da ficha do pai e são editadas lá.
+                Adicione aqui só o que diferencia esta variação: a linha própria
+                <strong> substitui</strong> a linha herdada do mesmo grupo.
+              </p>
             </div>
           </div>
-          <Button variant="outline" size="sm" onClick={handleCustomize} className="bg-white border-amber-300 hover:bg-amber-100 text-amber-900">
-            Customizar Composição
-          </Button>
         </div>
       )}
 
@@ -296,8 +288,9 @@ const BOMManager = ({ productId, formato }) => {
         </div>
       )}
 
-      {/* Add Component Section */}
-      {!isInherited && (
+      {/* Add Component Section — disponível também quando há herança: é assim
+          que a variação ganha a linha que a diferencia (§4.5 do plano). */}
+      {(
         <Card>
           <CardContent className="pt-6">
             <div className="flex flex-col md:flex-row gap-4 items-end">
@@ -378,6 +371,7 @@ const BOMManager = ({ productId, formato }) => {
             <TableRow>
               <TableHead>SKU</TableHead>
               <TableHead>Componente</TableHead>
+              <TableHead>Grupo</TableHead>
               <TableHead className="text-right">Custo Unit.</TableHead>
               <TableHead className="text-center">Qtd</TableHead>
               <TableHead className="text-right">Subtotal</TableHead>
@@ -387,7 +381,7 @@ const BOMManager = ({ productId, formato }) => {
           <TableBody>
             {components.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-6 text-muted-foreground">
+                <TableCell colSpan={7} className="text-center py-6 text-muted-foreground">
                   Nenhum componente adicionado.
                 </TableCell>
               </TableRow>
@@ -400,6 +394,11 @@ const BOMManager = ({ productId, formato }) => {
                     {comp.material_type && (
                       <ProductLevelBadge type={comp.material_type} />
                     )}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={comp.grupo ? 'outline' : 'secondary'}>
+                      {comp.grupo || 'Não classificado'}
+                    </Badge>
                   </TableCell>
                   <TableCell className="text-right">
                     R$ {comp.cost?.toFixed(4)}
@@ -422,7 +421,7 @@ const BOMManager = ({ productId, formato }) => {
                     R$ {(comp.quantity * comp.cost).toFixed(4)}
                   </TableCell>
                   <TableCell className="text-right">
-                    {!isInherited ? (
+                    {!comp.is_inherited ? (
                       editingId === comp.component_id ? (
                         <div className="flex justify-end gap-2">
                           <Button variant="ghost" size="icon" onClick={() => saveEdit(comp.component_id)}>
@@ -443,7 +442,9 @@ const BOMManager = ({ productId, formato }) => {
                         </div>
                       )
                     ) : (
-                      <Badge variant="outline" className="text-xs">Herdado</Badge>
+                      <Badge variant="outline" className="text-xs" title="Vem da ficha do produto pai — edite lá, ou adicione aqui uma linha do mesmo grupo para substituí-la">
+                        Herdado
+                      </Badge>
                     )}
                   </TableCell>
                 </TableRow>

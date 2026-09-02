@@ -15,7 +15,7 @@
 
 import {
   Activity, BarChart3, Boxes, Building, CalendarClock, ClipboardList, Cog, Database, Factory,
-  HardDrive, Home, Layers, MapPin, Monitor, Package, Printer, Scale, ScrollText,
+  HardDrive, Home, Layers, MapPin, Monitor, Package, Scale, ScrollText,
   Settings, Share2, ShieldCheck, ShoppingCart, Sparkles, Store, Tag, TowerControl,
   Trello, Truck, Users, Warehouse, Waypoints, Wrench,
 } from 'lucide-react';
@@ -41,7 +41,6 @@ export const TOP_NAV = [
     type: 'collapsible',
     children: [
       { name: 'Produção', href: '/producao', type: 'link', permission: { a: 'producao', I: 'ler' } },
-      { name: 'Fila de Impressão', href: '/producao/impressao', type: 'link', permission: { a: 'producao', I: 'ler' } },
       { name: 'Expedição', href: '/producao/expedicao', type: 'link', permission: { a: 'producao', I: 'ler' } },
     ],
   },
@@ -147,7 +146,6 @@ export const SECOES = [
           { name: 'Miolos', href: '/producao/miolos', icon: Layers, description: 'Controle de produção de miolos' },
           { name: 'Capas', href: '/producao/capas', icon: Layers, description: 'Controle de produção de capas' },
           { name: 'Expedição', href: '/producao/expedicao', icon: Package, description: 'Sincronia e retirada de itens' },
-          { name: 'Impressão', href: '/producao/impressao', icon: Printer, description: 'Fila de impressão de artes' },
         ],
       },
     ],
@@ -169,6 +167,10 @@ export const SECOES = [
       {
         itens: [
           { name: 'Produtos', href: '/produtos', icon: Boxes, description: 'Catálogo de produtos e variações' },
+          { name: 'Prontidão da coleção', href: '/produtos/prontidao', icon: ClipboardList, description: 'Pendências e estágios do catálogo' },
+          { name: 'Anúncios e vínculos', href: '/produtos/anuncios', icon: Share2, description: 'Revisão de anúncios e aliases' },
+          { name: 'Eixos das variações', href: '/produtos/eixos', icon: ClipboardList, description: 'Estampa e acabamento pendentes de revisão' },
+          { name: 'Kits e códigos sem produto', href: '/produtos/kits', icon: Boxes, description: 'Combos e produtos que faltam no cadastro' },
           { name: 'Categorias', href: '/cadastros/categoria', icon: Tag, description: 'Classificação de produtos' },
           { name: 'Tags', href: '/cadastros/tag', icon: Tag, description: 'Marcadores livres' },
           { name: 'Unidades de Medida', href: '/cadastros/unidade-medida', icon: Scale, description: 'Unidades usadas na ficha técnica' },

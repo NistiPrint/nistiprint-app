@@ -45,12 +45,14 @@ def processar_personalizacoes_task(self, order_sn=None, limit=None):
     try:
         from nistiprint_shared.services.ai_personalization_service import (
             process_orders,
-            get_orders_with_chats,
+            select_orders_for_processing,
         )
 
-        # Contar pedidos antes de processar
-        orders = get_orders_with_chats(order_sn=order_sn, limit=limit)
-        total = len(orders)
+        # A pre-contagem precisa usar a mesma selecao da IA. A listagem da tela
+        # tambem inclui pedidos em producao/prontos para envio, mas eles nunca
+        # podem entrar na fila de processamento.
+        candidates, _ = select_orders_for_processing(order_sn=order_sn, limit=limit)
+        total = len(candidates)
 
         if total == 0:
             return {
@@ -60,7 +62,7 @@ def processar_personalizacoes_task(self, order_sn=None, limit=None):
             }
 
         # Processar pedidos
-        success, message = process_orders(order_sn=order_sn, limit=limit)
+        success, message, _ = process_orders(order_sn=order_sn, limit=limit)
 
         return {
             'success': success,

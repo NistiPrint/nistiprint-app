@@ -11,16 +11,28 @@ class BomService:
         # Using the standardized 'ficha_tecnica' table in Supabase
         self.bom_table = supabase_db.table('ficha_tecnica')
 
-    def _validate_component_can_be_used(self, component_id: int) -> Dict[str, Any]:
+    def _validate_component_can_be_used(self, component_id: int,
+                                        parent_id: int | None = None) -> Dict[str, Any]:
+        """Um produto acabado so pode ser componente de um KIT.
+
+        Sem o parametro `parent_id` esta validacao contradizia o trigger
+        `validar_componente_kit` do banco, que EXIGE produto acabado como
+        componente de kit: nenhum kit conseguia ser cadastrado por nenhum
+        caminho da aplicacao. A regra correta e a mesma dos dois lados —
+        produto acabado nao entra em ficha de producao, mas E o que compoe um
+        combo vendido junto.
+        """
         component = product_service.get_by_id(str(component_id))
         if not component:
             raise ValueError(f"Componente com ID '{component_id}' nao encontrado")
 
         if component.get('tipo_produto') == 'PRODUTO_ACABADO':
-            raise ValueError(
-                f"Produto acabado nao pode ser componente de BOM: "
-                f"{component.get('sku') or component.get('nome') or component_id}"
-            )
+            parent = product_service.get_by_id(str(parent_id)) if parent_id else None
+            if not parent or parent.get('formato') != 'kit':
+                raise ValueError(
+                    f"Produto acabado so pode ser componente de um kit: "
+                    f"{component.get('sku') or component.get('nome') or component_id}"
+                )
 
         return component
 
@@ -31,7 +43,7 @@ class BomService:
         """
         for item in components_data:
             try:
-                self._validate_component_can_be_used(item['component_id'])
+                self._validate_component_can_be_used(item['component_id'], product_id)
             except (ValueError, KeyError) as e:
                 raise ValueError(f"Invalid component data format: {item}. Error: {e}")
 
@@ -64,16 +76,26 @@ class BomService:
 
         # Get the product to check if it's a variation with inheritance enabled
         product = product_service.get_by_id(str(product_id))
-        is_inherited = False
+        heranca_legada = False
 
-        if product and product.get('parent_id') and product.get('herdar_bom_pai', False):
-            # This is a variation that inherits BOM from its parent
-            parent_id = product.get('parent_id')
-            response = self.bom_table.select("*").eq('produto_pai_id', parent_id).execute()
-            is_inherited = True
-        else:
-            # Regular product or variation without inheritance
-            response = self.bom_table.select("*").eq('produto_pai_id', product_id).execute()
+        # A regra de herança por grupo é centralizada no banco para manter a
+        # saída desta API idêntica à usada pela consolidação de pedidos.
+        #
+        # A RPC devolve `is_inherited` POR LINHA — é esse o dado que a tela usa
+        # para saber quais linhas o usuário pode editar e quais vieram do pai.
+        # Achatar tudo num único booleano fazia a tela esconder a edição da
+        # ficha inteira sempre que houvesse uma linha herdada, tornando
+        # impossível criar a linha própria que diferencia a variação.
+        try:
+            response = supabase_db.rpc('bom_efetiva_produto', {
+                'p_produto_id': int(product_id)
+            }).execute()
+        except Exception as error:
+            # Cair para a regra antiga em silêncio faz Python e SQL divergirem
+            # para o mesmo produto — exatamente o que a centralização no banco
+            # existe para impedir. O erro sobe.
+            logging.error("Falha ao consultar a BOM efetiva do produto %s: %s", product_id, error)
+            raise
 
         # If no results found by ID, try to find by SKU
         if not response.data:
@@ -101,7 +123,8 @@ class BomService:
                     componente_id=componente_id,
                     quantidade=row.get('quantidade_necessaria'),
                     unit=row.get('unidade_medida', 'un'),
-                    is_inherited=is_inherited
+                    is_inherited=bool(row.get('is_inherited', heranca_legada)),
+                    grupo=row.get('grupo')
                 ))
         return components
 
@@ -125,36 +148,34 @@ class BomService:
             return {}
         
         result = {pid: [] for pid in unique_ids}
-        
+
+        # Este caminho lia SEMPRE a ficha propria, ignorando `herdar_bom_pai`,
+        # enquanto `get_bom_for_produto` aplicava a heranca. `demanda/core.py`
+        # usa os dois: uma variacao que herda aparecia sem componentes por um
+        # caminho e com a ficha completa pelo outro, na MESMA demanda.
+        # Agora os dois leem a mesma funcao do banco, em uma chamada so.
         try:
-            # Busca todos os componentes de uma vez
-            response = self.bom_table.select("*").in_('produto_pai_id', unique_ids).execute()
-            
-            if response.data:
-                # Agrupa por produto_pai_id
-                for row in response.data:
-                    produto_pai_id = row.get('produto_pai_id')
-                    if produto_pai_id in result:
-                        componente_id = row.get('componente_id')
-                        
-                        # Se não tem componente_id, tenta buscar por SKU
-                        if not componente_id:
-                            sku_componente = row.get('sku_componente')
-                            if sku_componente:
-                                componente = product_service.get_by_sku(sku_componente)
-                                if componente:
-                                    componente_id = componente.get('id')
-                        
-                        if componente_id:
-                            result[produto_pai_id].append(BOMItem(
-                                componente_id=componente_id,
-                                quantidade=row.get('quantidade_necessaria'),
-                                unit=row.get('unidade_medida', 'un'),
-                                is_inherited=False
-                            ))
-                            
+            response = supabase_db.rpc('bom_efetiva_produtos', {
+                'p_produto_ids': unique_ids
+            }).execute()
+
+            for row in (response.data or []):
+                alvo = row.get('produto_id')
+                if alvo not in result:
+                    continue
+                componente_id = row.get('componente_id')
+                if not componente_id:
+                    continue
+                result[alvo].append(BOMItem(
+                    componente_id=componente_id,
+                    quantidade=row.get('quantidade_necessaria'),
+                    unit=row.get('unidade_medida', 'un'),
+                    is_inherited=bool(row.get('is_inherited', False)),
+                    grupo=row.get('grupo')
+                ))
         except Exception as e:
             logging.error(f"Erro no batch loading de BOM: {e}")
+            raise
         
         return result
 
@@ -249,7 +270,7 @@ class BomService:
         """
         # --- Validation Start ---
         parent_product = product_service.get_by_id(str(parent_product_id))
-        component_product = self._validate_component_can_be_used(component_product_id)
+        component_product = self._validate_component_can_be_used(component_product_id, parent_product_id)
         
         if parent_product and parent_product.get('categoria_id'):
             from nistiprint_shared.services.category_bom_rule_service import category_bom_rule_service
@@ -334,7 +355,7 @@ class BomService:
         # 3. Copy entries
         new_entries = []
         for item in parent_bom_resp.data:
-            self._validate_component_can_be_used(item['componente_id'])
+            self._validate_component_can_be_used(item['componente_id'], product_id)
             new_entries.append({
                 'produto_pai_id': product_id,
                 'componente_id': item['componente_id'],

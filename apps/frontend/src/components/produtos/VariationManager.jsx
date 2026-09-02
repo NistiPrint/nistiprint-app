@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { AlertTriangle, CheckCircle, Edit3, Package, Plus, RefreshCw, Save, Settings, Tags, Trash2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import ProductService from '@/services/ProductService';
 import VariationEditModal from './VariationEditModal';
 
 const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
@@ -25,7 +26,32 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
   const [newAttributeValue, setNewAttributeValue] = useState('');
   const [selectedAttributeIndex, setSelectedAttributeIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [availableAxes, setAvailableAxes] = useState([]);
+  const [selectedAxisCodes, setSelectedAxisCodes] = useState([]);
+
+  useEffect(() => {
+    ProductService.getVariationAxes().then(setAvailableAxes).catch(error => {
+      console.error('Erro ao carregar eixos normalizados:', error);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!product?.id) return;
+    ProductService.getVariationAxes(product.id).then(axes => {
+      setSelectedAxisCodes(axes.map(axis => axis.codigo));
+      if (!product?.atributos?.variations_config) {
+        setVariationsConfig(axes.map(axis => ({
+          codigo: axis.codigo,
+          name: axis.nome,
+          options: (axis.produto_eixo_opcoes || [])
+            .filter(option => option.ativo !== false)
+            .map(option => option.codigo)
+        })));
+      }
+    }).catch(error => {
+      console.error('Erro ao carregar eixos do produto pai:', error);
+    });
+  }, [product?.id]);
 
   // Initialize from product data if available
   useEffect(() => {
@@ -105,8 +131,11 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
           isPersisted: !!existingVariant,
           isOrphan: false,
           attributes: comboObj,
-          // If persisted, use its SKU. If draft, generate a suggestion.
-          sku: existingVariant?.sku || `${product?.sku || 'PROD'}-${Object.values(comboObj).join('-')}`,
+          axisValues: Object.fromEntries(
+            config.map((attr, i) => [attr.codigo || attr.name, combo[i]])
+          ),
+          // SKU é sempre informado manualmente pelo usuário.
+          sku: existingVariant?.sku || '',
           initialStock: existingVariant?.estoque_inicial || (existingVariant ? (existingVariant.stock_min || 0) : 0),
           price: existingVariant?.price || existingVariant?.preco_venda || 0,
           variantData: existingVariant || null
@@ -191,7 +220,7 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
     setEditingInlineIndex(index);
   };
 
-  const saveInlineEditing = (index) => {
+  const saveInlineEditing = () => {
     setEditingInlineIndex(null);
   };
 
@@ -231,6 +260,14 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
 
     setIsLoading(true);
     try {
+      const missingSku = variationsTable.some(item => !item.isOrphan && !String(item.sku || '').trim());
+      if (missingSku) {
+        throw new Error('Informe manualmente o SKU de todas as novas variações.');
+      }
+      if (!selectedAxisCodes.length) {
+        throw new Error('Selecione ao menos um eixo normalizado para o produto pai.');
+      }
+      await ProductService.configureVariationAxes(product.id, selectedAxisCodes);
       // Filter only what needs to be saved/updated
       // Usually we send everything and the backend figures it out,
       // creating new ones (drafts) and updating existing ones.
@@ -242,7 +279,13 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
         variation_values: item.attributes,
         preco_venda: parseFloat(item.price) || 0,
         estoque_inicial: parseInt(item.initialStock) || 0,
-        parent_id: product.id
+        parent_id: product.id,
+        variation_axis_values: Object.fromEntries(
+          selectedAxisCodes.map(code => [
+            code,
+            item.axisValues?.[code] || item.attributes[availableAxes.find(axis => axis.codigo === code)?.nome || code]
+          ])
+        )
       }));
 
       await onSave({
@@ -289,10 +332,38 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
       <CardContent className="pb-6 px-6">
         {/* Attributes Configuration */}
         <div className="attributes-section space-y-4 mb-8 bg-muted/30 p-4 rounded-lg">
+          <div className="space-y-2 border-b pb-4">
+            <h3 className="text-base font-semibold">1. Selecionar eixos normalizados</h3>
+            <p className="text-sm text-muted-foreground">O SKU não define o significado da variação. Selecione os eixos usados pelo modelo.</p>
+            <div className="flex flex-wrap gap-3">
+              {availableAxes.map(axis => (
+                <label key={axis.codigo} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={selectedAxisCodes.includes(axis.codigo)}
+                    onChange={event => {
+                      const codes = event.target.checked
+                        ? [...selectedAxisCodes, axis.codigo]
+                        : selectedAxisCodes.filter(code => code !== axis.codigo);
+                      setSelectedAxisCodes(codes);
+                      const nextConfig = availableAxes.filter(item => codes.includes(item.codigo)).map(item => ({
+                        codigo: item.codigo,
+                        name: item.nome,
+                        options: (item.produto_eixo_opcoes || []).filter(option => option.ativo !== false).map(option => option.codigo)
+                      }));
+                      setVariationsConfig(nextConfig);
+                      refreshTable(nextConfig, product?.variants || []);
+                    }}
+                  />
+                  {axis.nome}
+                </label>
+              ))}
+            </div>
+          </div>
           <div className="attributes-header flex justify-between items-center mb-2">
             <div className="flex items-center space-x-2">
               <Tags className="h-4 w-4 text-muted-foreground" />
-              <h3 className="text-base font-semibold">1. Definir Atributos</h3>
+              <h3 className="text-base font-semibold">2. Conferir opções</h3>
             </div>
             <Button variant="outline" size="sm" onClick={addAttribute} className="gap-2 bg-white">
               <Plus className="h-4 w-4" /> Novo Atributo
@@ -370,7 +441,7 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
         <div className="variations-section space-y-4">
             <div className="flex items-center space-x-2">
               <Package className="h-4 w-4 text-muted-foreground" />
-              <h3 className="variations-title text-base font-semibold">2. Grade de Produtos Gerada</h3>
+              <h3 className="variations-title text-base font-semibold">3. Grade de Produtos Gerada</h3>
             </div>
 
             {variationsTable.length > 0 ? (
@@ -466,7 +537,7 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
                                 editingInlineIndex === idx ? (
                                     <div className="flex justify-end space-x-2">
                                         <Button size="sm" variant="ghost" onClick={cancelInlineEditing}><X className="h-4 w-4"/></Button>
-                                        <Button size="sm" variant="default" onClick={() => saveInlineEditing(idx)}><Save className="h-4 w-4"/></Button>
+                                        <Button size="sm" variant="default" onClick={saveInlineEditing}><Save className="h-4 w-4"/></Button>
                                     </div>
                                 ) : (
                                     <Button size="sm" variant="ghost" onClick={() => startInlineEditing(idx)}>

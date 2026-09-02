@@ -105,8 +105,46 @@ class TestAiPersonalizationService(unittest.TestCase):
             with patch.object(service, "_get_shopee_channel_ids", return_value=[1, 27]):
                 service._fetch_recent_personalized_orders(recent_days=None)
 
-        query.in_.assert_called_once_with("canal_venda_id", [1, 27])
-        query.eq.assert_called_once_with("situacao_pedido_id", service.STATUS_EM_ANDAMENTO)
+        query.in_.assert_any_call("canal_venda_id", [1, 27])
+        query.in_.assert_any_call("situacao_pedido_id", [2, 3, 4])
+
+    def test_processing_selection_uses_only_in_progress_orders(self):
+        with patch.object(service, "_assemble_orders", return_value=[]) as assemble:
+            service.select_orders_for_processing()
+
+        assemble.assert_called_once_with(
+            order_sn=None,
+            pedido_ids=None,
+            limit=None,
+            recent_days=None,
+            situacao_ids=[service.STATUS_EM_ANDAMENTO],
+        )
+
+    def test_display_selection_includes_production_and_ready_to_ship_orders(self):
+        with patch.object(service, "_assemble_orders", return_value=[]) as assemble:
+            service.get_orders_with_chats()
+
+        assemble.assert_called_once_with(
+            order_sn=None,
+            limit=None,
+            recent_days=None,
+            situacao_ids=[2, 3, 4],
+        )
+
+    def test_processing_rejects_later_order_status_even_when_forced(self):
+        order = {
+            "id": 3,
+            "numero_pedido": "123",
+            "numero_loja": "SN-123",
+            "situacao_pedido_id": 3,
+            "itens": [],
+        }
+
+        with patch.object(service, "_assemble_orders", return_value=[order]):
+            to_process, skipped = service.select_orders_for_processing(force=True)
+
+        self.assertEqual(to_process, [])
+        self.assertEqual(skipped[0]["reason"], "status_not_eligible")
 
 
 class _FakeQuery:

@@ -6,6 +6,7 @@ from flask import jsonify, redirect, request, url_for
 from routes.auth import admin_required, login_required
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.credential_resolver_service import (
+    AmbiguousAppProfileError,
     credential_resolver_service,
 )
 from nistiprint_shared.services.integracao_canal_service import (
@@ -95,6 +96,27 @@ def _auth_update_payload(inst, platform, tokens, explicit_identifier=None):
         "sync_status": "active",
         "is_active": True,
     }
+
+
+@marketplace_api_bp.errorhandler(AmbiguousAppProfileError)
+def _handle_ambiguous_app_profile(exc):
+    """Instalacao sem vinculo de aplicativo, com mais de um candidato ativo.
+
+    Chega aqui como 409 e nao 500 porque nao e falha do servidor: e cadastro
+    incompleto, e a acao corretiva e do usuario. O corpo diz quais aplicativos
+    disputam a instalacao para que a tela consiga oferecer a escolha.
+    """
+    return (
+        jsonify(
+            {
+                "error": str(exc),
+                "error_type": exc.error_type,
+                "module_id": exc.module_id,
+                "candidate_app_profile_ids": exc.candidate_ids,
+            }
+        ),
+        409,
+    )
 
 
 def _callback_redirect_url(platform):

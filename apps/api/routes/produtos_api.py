@@ -1,5 +1,6 @@
 from flask import request, jsonify
 from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.category_service import category_service
 from nistiprint_shared.services.tag_service import tag_service
 from nistiprint_shared.services.unit_of_measure_service import unit_of_measure_service
@@ -46,6 +47,144 @@ def api_index():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@produtos_api_bp.route('/variation-axes', methods=['GET'])
+@login_required
+def api_get_variation_axes():
+    try:
+        return jsonify({'eixos': product_service.get_variation_axes()})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@produtos_api_bp.route('/variacoes/pendentes', methods=['GET'])
+@login_required
+def api_variation_review_queue():
+    """Produtos cujos eixos ainda dependem de decisão humana.
+
+    O backfill de `20260831190000` gravou só o MIOLO — o segmento do SKU que
+    corresponde a um produto cadastrado, e portanto verificável. Estampa e
+    acabamento ficaram de fora de propósito: 17 dos 44 acabados nem seguem a
+    gramática de três segmentos, e adivinhar ali seria gravar erro no banco.
+    """
+    try:
+        return jsonify({
+            'pendentes': product_service.get_variation_review_queue(),
+            'eixos': product_service.get_variation_axes(),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@produtos_api_bp.route('/<produto_id>/variacao-valores', methods=['PUT'])
+@login_required
+def api_set_variation_values(produto_id):
+    """Grava os eixos de um produto e o tira da fila de revisão."""
+    try:
+        data = request.get_json() or {}
+        valores = data.get('valores') or data.get('axis_values')
+        if not isinstance(valores, dict) or not valores:
+            return jsonify({'error': 'Informe os valores dos eixos'}), 400
+        produto = product_service.set_variation_values(produto_id, valores)
+        return jsonify({'success': True, 'produto': produto})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@produtos_api_bp.route('/eixos/<axis_code>/opcoes', methods=['POST'])
+@login_required
+def api_create_axis_option(axis_code):
+    """Cadastra uma opção de eixo. Uma estampa nova da coleção é exatamente isso."""
+    try:
+        data = request.get_json() or {}
+        opcao = product_service.create_axis_option(
+            axis_code, data.get('codigo'), data.get('nome'))
+        return jsonify({'success': True, 'opcao': opcao}), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@produtos_api_bp.route('/kits/pendentes', methods=['GET'])
+@login_required
+def api_kit_pending_codes():
+    """Códigos de pedido que não resolvem para nenhum produto interno.
+
+    É a fila de cadastro do combo: o código aparece na venda, a fábrica precisa
+    dele, e enquanto ele não for um produto (`formato = 'kit'`) com ficha de
+    produtos acabados, a consolidação não tem como explodi-lo.
+    """
+    try:
+        resultado = supabase_db.rpc('codigos_externos_sem_produto', {}).execute()
+        return jsonify({'pendentes': resultado.data or []})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@produtos_api_bp.route('/readiness', methods=['GET'])
+@login_required
+def api_product_readiness():
+    try:
+        tag_id = request.args.get('tag_id')
+        estagio = request.args.get('estagio')
+        query = supabase_db.rpc('listar_produtos_prontidao', {
+            'p_tag_id': int(tag_id) if tag_id else None,
+            'p_estagio': estagio or None,
+        })
+        return jsonify({'produtos': query.execute().data or []})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+@produtos_api_bp.route('/anuncios', methods=['GET'])
+@login_required
+def api_product_ads():
+    try:
+        return jsonify({'anuncios': product_service.list_product_ads(request.args.get('orfaos') == 'true')})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+@produtos_api_bp.route('/anuncios/<ad_id>/vincular', methods=['PUT'])
+@login_required
+def api_link_product_ad(ad_id):
+    try:
+        data = request.get_json() or {}
+        return jsonify({'anuncio': product_service.link_product_ad(ad_id, data.get('produto_id'))})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+@produtos_api_bp.route('/aliases', methods=['GET', 'POST'])
+@login_required
+def api_product_aliases():
+    try:
+        if request.method == 'POST':
+            data = request.get_json() or {}
+            return jsonify({'alias': product_service.add_product_alias(data.get('produto_id'), data.get('codigo_externo'), data.get('tipo'), data.get('plataforma'))}), 201
+        return jsonify({'aliases': product_service.list_product_aliases(request.args.get('produto_id'))})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+@produtos_api_bp.route('/<produto_id>/precos', methods=['GET', 'POST'])
+@login_required
+def api_product_prices(produto_id):
+    try:
+        if request.method == 'POST':
+            return jsonify({'preco': product_service.add_product_price(produto_id, request.get_json() or {})}), 201
+        return jsonify({'precos': product_service.list_product_prices(produto_id)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+@produtos_api_bp.route('/<produto_id>/publicar', methods=['POST'])
+@login_required
+def api_publish_product(produto_id):
+    try:
+        result = supabase_db.rpc('publicar_produto', {'p_produto_id': int(produto_id)}).execute()
+        if not result.data:
+            return jsonify({'error': 'Produto não encontrado'}), 404
+        return jsonify({'success': True, 'produto': result.data[0]})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
 @produtos_api_bp.route('/por-setor', methods=['GET'])
 @login_required
 def api_produtos_por_setor():
@@ -64,6 +203,7 @@ def api_produtos_por_setor():
         return jsonify({'error': str(e)}), 500
 
 @produtos_api_bp.route('', methods=['POST'])
+@login_required
 def api_criar():
     try:
         data = request.get_json()
@@ -72,10 +212,12 @@ def api_criar():
             'category_id': data.get('category_id'), 'unit_of_measure_id': data.get('unit_of_measure_id'),
             'material_type': data.get('material_type', 'produto_acabado'), 'cost_price': float(data.get('cost_price') or 0),
             'stock_min': data.get('stock_min'), 'stock_max': data.get('stock_max'),
-            'requires_personalization': data.get('requires_personalization'), 'status': data.get('status'),
+            'requires_personalization': data.get('requires_personalization'), 'status': data.get('status', 'inativo'),
+            'estagio': data.get('estagio', 'RASCUNHO'),
             'formato': data.get('formato', 'simples'), 'setor_responsavel_id': data.get('setor_responsavel_id'),
             'parent_id': data.get('parent_id'), 'herdar_dados_pai': data.get('herdar_dados_pai', True),
-            'herdar_bom_pai': data.get('herdar_bom_pai', True), 'tags': [{'tag_id': tid} for tid in data.get('tags', []) if tid]
+            'herdar_bom_pai': data.get('herdar_bom_pai', True), 'tags': [{'tag_id': tid} for tid in data.get('tags', []) if tid],
+            **{field: data[field] for field in ('ncm', 'cest', 'origem_mercadoria', 'cfop_padrao_venda', 'gtin', 'gtin_embalagem', 'marca', 'fabricante', 'mpn', 'peso_liquido', 'peso_bruto', 'comprimento', 'largura', 'altura', 'garantia_meses', 'perfil_fiscal_id', 'origem_fiscal') if field in data}
         }
         if not dados_produto['sku'] or not dados_produto['name']: return jsonify({'error': 'SKU e Nome são obrigatórios'}), 400
         produto = product_service.create(dados_produto)
@@ -115,6 +257,7 @@ def api_get_recursive_artworks(produto_id):
         return jsonify({'error': str(e)}), 500
 
 @produtos_api_bp.route('/<produto_id>', methods=['PUT'])
+@login_required
 def api_editar(produto_id):
     try:
         data = request.get_json()
@@ -127,8 +270,19 @@ def api_editar(produto_id):
             'setor_responsavel_id': data.get('setor_responsavel_id'),
             'herdar_dados_pai': data.get('herdar_dados_pai'),
             'herdar_bom_pai': data.get('herdar_bom_pai'),
-            'tags': [{'tag_id': tid} for tid in data.get('tags', []) if tid]
+            **{field: data[field] for field in ('ncm', 'cest', 'origem_mercadoria', 'cfop_padrao_venda', 'gtin', 'gtin_embalagem', 'marca', 'fabricante', 'mpn', 'peso_liquido', 'peso_bruto', 'comprimento', 'largura', 'altura', 'garantia_meses', 'perfil_fiscal_id', 'origem_fiscal') if field in data}
         }
+        # M4: `tags` estava SEMPRE presente no dict, e `sync_product_tags` apaga
+        # antes de inserir. Qualquer cliente que fizesse PUT sem o campo (script
+        # de sincronizacao, integracao, edicao em massa) zerava as tags do
+        # produto — inclusive a tag que define a colecao no painel de prontidao.
+        if 'tags' in data:
+            dados['tags'] = [{'tag_id': tid} for tid in (data.get('tags') or []) if tid]
+        # M3: `estagio` chegava do formulario e era descartado aqui. A esteira de
+        # estagios so andava por `publicar_produto`; nenhum outro avanco ou
+        # retrocesso era possivel pela tela do produto.
+        if 'estagio' in data:
+            dados['estagio'] = data['estagio']
         # Campos que mudam a NATUREZA do produto: so incluir se o cliente
         # enviou explicitamente. Sem isso, editar uma variacao via UI sem
         # reenviar parent_id/formato sobrescrevia esses campos com None,
@@ -145,6 +299,7 @@ def api_editar(produto_id):
         return jsonify({'error': str(e)}), 400
 
 @produtos_api_bp.route('/<produto_id>', methods=['DELETE'])
+@login_required
 def api_deletar(produto_id):
     try:
         product_service.delete(produto_id)
@@ -153,6 +308,7 @@ def api_deletar(produto_id):
         return jsonify({'error': str(e)}), 500
 
 @produtos_api_bp.route('/bulk_update', methods=['POST'])
+@login_required
 def api_bulk_update():
     data = request.get_json()
     product_ids, updates = data.get('product_ids', []), data.get('updates', {})
@@ -169,6 +325,7 @@ def api_bulk_update():
     return jsonify({'success': True, 'message': f'{count} atualizados.', 'errors': errors})
 
 @produtos_api_bp.route('/<produto_id>/bom', methods=['GET', 'POST', 'DELETE', 'PUT'])
+@login_required
 def api_gerenciar_bom(produto_id):
     try:
         if request.method == 'POST':
@@ -187,6 +344,7 @@ def api_gerenciar_bom(produto_id):
         return jsonify({'error': str(e)}), 500
 
 @produtos_api_bp.route('/<produto_id>/bom/copy-from-parent', methods=['POST'])
+@login_required
 def api_copy_bom_from_parent(produto_id):
     try:
         return jsonify({'success': bom_service.copy_bom_from_parent(produto_id)})
@@ -235,6 +393,7 @@ def api_search_bling_products():
         return jsonify({'error': str(e)}), 500
 
 @produtos_api_bp.route('/<produto_id>/bling_links', methods=['POST'])
+@login_required
 def api_add_bling_link(produto_id):
     try:
         data = request.get_json()
@@ -244,6 +403,7 @@ def api_add_bling_link(produto_id):
         return jsonify({'error': str(e)}), 500
 
 @produtos_api_bp.route('/<produto_id>/bling_links/<bid>/<aid>', methods=['DELETE'])
+@login_required
 def api_remove_bling_link(produto_id, bid, aid):
     try:
         product_service.remove_bling_product_link(produto_id, bid, aid)
@@ -261,6 +421,7 @@ def api_get_bling_product(bid):
         return jsonify({'error': str(e)}), 500
 
 @produtos_api_bp.route('/<produto_id>/variations', methods=['POST'])
+@login_required
 def api_create_product_with_variations(produto_id):
     try:
         data = request.get_json()
@@ -268,4 +429,16 @@ def api_create_product_with_variations(produto_id):
         return jsonify({'success': True, 'produto': res})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@produtos_api_bp.route('/<produto_id>/variation-axes', methods=['GET', 'PUT'])
+def api_product_variation_axes(produto_id):
+    try:
+        if request.method == 'PUT':
+            data = request.get_json() or {}
+            eixos = product_service.configure_variation_axes(produto_id, data.get('eixos', []))
+        else:
+            eixos = product_service.get_variation_axes(produto_id)
+        return jsonify({'eixos': eixos})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
 

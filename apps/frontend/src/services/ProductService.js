@@ -126,6 +126,85 @@ const ProductService = {
     return response.data;
   },
 
+  getVariationAxes: async (parentId = null) => {
+    const response = await api.get(parentId ? `/produtos/${parentId}/variation-axes` : '/produtos/variation-axes');
+    return response.data.eixos || [];
+  },
+
+  // Fila de revisão de eixos. O backfill gravou só o MIOLO (o segmento do SKU
+  // que corresponde a um produto cadastrado); estampa e acabamento ficaram para
+  // decisão humana, porque 17 dos 44 acabados nem seguem a gramática de três
+  // segmentos e adivinhar ali seria gravar erro no banco.
+  getVariationReviewQueue: async () => {
+    const response = await api.get('/produtos/variacoes/pendentes');
+    return response.data;
+  },
+
+  setVariationValues: async (productId, valores) => {
+    const response = await api.put(`/produtos/${productId}/variacao-valores`, { valores });
+    return response.data;
+  },
+
+  // Uma estampa nova da coleção é exatamente uma opção de eixo.
+  createAxisOption: async (axisCode, codigo, nome) => {
+    const response = await api.post(`/produtos/eixos/${encodeURIComponent(axisCode)}/opcoes`, { codigo, nome });
+    return response.data.opcao;
+  },
+
+  // Códigos que aparecem em pedido e não chegam a produto interno nenhum.
+  getPendingCodes: async () => {
+    const response = await api.get('/produtos/kits/pendentes');
+    return response.data.pendentes || [];
+  },
+
+  configureVariationAxes: async (parentId, axisCodes) => {
+    const response = await api.put(`/produtos/${parentId}/variation-axes`, { eixos: axisCodes });
+    return response.data.eixos || [];
+  },
+
+  getReadiness: async ({ tagId, estagio } = {}) => {
+    const params = {};
+    if (tagId) params.tag_id = tagId;
+    if (estagio && estagio !== 'all') params.estagio = estagio;
+    const response = await api.get('/produtos/readiness', { params });
+    return response.data.produtos || [];
+  },
+
+  getAds: async (orphansOnly = false) => {
+    const response = await api.get('/produtos/anuncios', { params: { orfaos: orphansOnly ? 'true' : 'false' } });
+    return response.data.anuncios || [];
+  },
+
+  linkAd: async (adId, productId) => {
+    const response = await api.put(`/produtos/anuncios/${adId}/vincular`, { produto_id: productId });
+    return response.data.anuncio;
+  },
+
+  getAliases: async (productId = null) => {
+    const response = await api.get('/produtos/aliases', { params: productId ? { produto_id: productId } : {} });
+    return response.data.aliases || [];
+  },
+
+  addAlias: async (data) => {
+    const response = await api.post('/produtos/aliases', data);
+    return response.data.alias;
+  },
+
+  getPrices: async (productId) => {
+    const response = await api.get(`/produtos/${productId}/precos`);
+    return response.data.precos || [];
+  },
+
+  addPrice: async (productId, data) => {
+    const response = await api.post(`/produtos/${productId}/precos`, data);
+    return response.data.preco;
+  },
+
+  publish: async (productId) => {
+    const response = await api.post(`/produtos/${productId}/publicar`);
+    return response.data.produto;
+  },
+
   // Clone Product
   cloneProduct: async (productId, newSku, newName = null) => {
     const response = await api.post(`/produtos/${productId}/clone`, {

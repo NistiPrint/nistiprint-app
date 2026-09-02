@@ -7,8 +7,9 @@
 // que existia na tela de demanda tinha perdido, deixando o operador sem saber
 // qual capa pegar para um pedido personalizado.
 //
-// A ordem de impressao vem pronta do backend (`_print_sort_key`): personalizados
-// juntos e agrupados por modelo. Nao reordene no cliente.
+// A ordem de impressao vem pronta do backend (`_print_sort_key`): Shopee mantém
+// personalizados juntos e agrupados por modelo; MercadoLivre usa o numero
+// externo crescente. Nao reordene no cliente.
 
 // O backend monta os dados de um pedido por vez; alem disso a lista de ids vai
 // na URL. Em lote grande as duas coisas doem, entao a busca vai em fatias.
