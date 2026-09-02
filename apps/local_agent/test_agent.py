@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent import MappingStore, print_direct, unc_path_for
+from agent import MappingStore, print_direct
 
 
 class MappingStoreTests(unittest.TestCase):
@@ -12,9 +12,7 @@ class MappingStoreTests(unittest.TestCase):
             store = MappingStore(Path(directory) / "maps.json")
             mapping = {"sku": "ABC", "file_path": "C:\\a.pdf", "printer_name": "Printer"}
             store.save("ABC", mapping)
-            saved = store.get("ABC")
-            self.assertEqual(saved["sku"], mapping["sku"])
-            self.assertTrue(saved["stale"])
+            self.assertEqual(store.get("ABC"), mapping)
             self.assertTrue(store.delete("ABC"))
             self.assertIsNone(store.get("ABC"))
 
@@ -28,12 +26,6 @@ class FallbackTests(unittest.TestCase):
         except FileNotFoundError:
             pass
         opened.assert_not_called()
-
-
-class PathTests(unittest.TestCase):
-    @patch("agent.os.name", "posix")
-    def test_local_path_has_no_unc_equivalent(self):
-        self.assertIsNone(unc_path_for("/tmp/arte.pdf"))
 
 
 if __name__ == "__main__":

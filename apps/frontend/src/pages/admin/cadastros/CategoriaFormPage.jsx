@@ -48,7 +48,6 @@ const categoriaSchema = z.object({
   comercializavel: z.boolean().optional(),
   componente: z.boolean().optional(),
   permite_arte: z.boolean().optional(),
-  grupo_bom: z.enum(['NAO_CLASSIFICADO', 'MIOLO', 'CAPA', 'CONTRA', 'ACABAMENTO', 'EMBALAGEM', 'OUTRO']).optional(),
 })
 
 function CategoriaFormPage() {
@@ -78,7 +77,6 @@ function CategoriaFormPage() {
       comercializavel: false,
       componente: false,
       permite_arte: false,
-      grupo_bom: 'NAO_CLASSIFICADO',
     },
   })
 
@@ -107,7 +105,6 @@ function CategoriaFormPage() {
             comercializavel: data.comercializavel || false,
             componente: data.componente || false,
             permite_arte: data.permite_arte || false,
-            grupo_bom: data.grupo_bom || 'NAO_CLASSIFICADO',
           })
         }
       } catch (error) {
@@ -126,7 +123,6 @@ function CategoriaFormPage() {
       const dataToSend = { ...data }
       if (dataToSend.parent_category_id === 'none')
         dataToSend.parent_category_id = null
-      if (dataToSend.grupo_bom === 'NAO_CLASSIFICADO') dataToSend.grupo_bom = null
 
       if (isEditing) {
         await CategoryService.update(categoriaId, dataToSend)
@@ -288,28 +284,6 @@ function CategoriaFormPage() {
                   )}
                 />
                 <div className='space-y-4'>
-                  <FormField
-                    control={form.control}
-                    name='grupo_bom'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Grupo na ficha técnica</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value || ''}>
-                          <FormControl><SelectTrigger><SelectValue placeholder='Não classificado' /></SelectTrigger></FormControl>
-                          <SelectContent>
-                            <SelectItem value='NAO_CLASSIFICADO'>Não classificado</SelectItem>
-                            <SelectItem value='MIOLO'>Miolo</SelectItem>
-                            <SelectItem value='CAPA'>Capa</SelectItem>
-                            <SelectItem value='CONTRA'>Contra</SelectItem>
-                            <SelectItem value='ACABAMENTO'>Acabamento</SelectItem>
-                            <SelectItem value='EMBALAGEM'>Embalagem</SelectItem>
-                            <SelectItem value='OUTRO'>Outro</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
                   <FormField
                     control={form.control}
                     name='comercializavel'

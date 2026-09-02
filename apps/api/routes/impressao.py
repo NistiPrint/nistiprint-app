@@ -106,85 +106,8 @@ def _primeiro_valor_preenchido(*valores):
     return ''
 
 
-def _nome_completo(primeiro, ultimo) -> str:
-    """Monta um nome completo sem criar espacos extras."""
-    return ' '.join(
-        str(parte).strip()
-        for parte in (primeiro, ultimo)
-        if parte is not None and str(parte).strip()
-    )
-
-
-def _nome_destinatario_mercadolivre(
-    *,
-    logistics: dict | None,
-    customer: dict | None,
-    platform_fields: dict | None,
-    fallback: str,
-) -> str:
-    """Resolve o nome do comprador MercadoLivre sem confundir nickname com nome."""
-    logistics = logistics if isinstance(logistics, dict) else {}
-    customer = customer if isinstance(customer, dict) else {}
-    platform_fields = platform_fields if isinstance(platform_fields, dict) else {}
-
-    address = logistics.get('address')
-    if not isinstance(address, dict):
-        address = {}
-
-    # Snapshots antigos podem ter o endereco somente dentro do payload bruto
-    # especifico do MercadoLivre. Mantemos esse fallback para nao exigir
-    # reingestao dos pedidos ja existentes.
-    meli_fields = platform_fields.get('mercadolivre')
-    if not isinstance(meli_fields, dict):
-        meli_fields = {}
-    meli_order = meli_fields.get('order')
-    if not isinstance(meli_order, dict):
-        meli_order = {}
-    meli_shipment = meli_fields.get('shipment')
-    if not isinstance(meli_shipment, dict):
-        meli_shipment = {}
-    meli_shipping = meli_order.get('shipping')
-    if not isinstance(meli_shipping, dict):
-        meli_shipping = {}
-    raw_address = meli_shipment.get('receiver_address') or meli_shipping.get('receiver_address')
-    addresses = [address]
-    if isinstance(raw_address, dict) and raw_address != address:
-        addresses.append(raw_address)
-
-    raw_buyer = customer.get('raw')
-    if not isinstance(raw_buyer, dict):
-        raw_buyer = {}
-
-    nome_comprador = _nome_completo(
-        raw_buyer.get('first_name') or customer.get('first_name'),
-        raw_buyer.get('last_name') or customer.get('last_name'),
-    )
-    return _primeiro_valor_preenchido(
-        nome_comprador,
-        *(campo
-          for address_candidate in addresses
-          for campo in (
-              address_candidate.get('receiver_name'),
-              address_candidate.get('recipient_name'),
-              address_candidate.get('name'),
-          )),
-        fallback,
-    )
-
-
-def _numero_externo_mercadolivre_sort_key(order: dict):
-    """Ordena IDs numericos e usa o texto como fallback."""
-    numero = str(order.get('numeroLoja') or '').strip()
-    if numero.isdigit():
-        return (0, int(numero), numero)
-    return (1, 0, numero)
-
-
 def _print_sort_key(order: dict):
-    """Ordem de impressao por plataforma.
-
-    MercadoLivre usa o numero externo crescente. As demais plataformas usam
-    a chave legada abaixo.
+    """Ordem de impressao — mesma chave do legado.
 
     Do legado (`kb/legado/services/bling/bling.py`):
 
@@ -200,9 +123,6 @@ def _print_sort_key(order: dict):
     que desfazia justamente o agrupamento por modelo — que e o ganho
     operacional da ordenacao: quem imprime quer as mesmas capas juntas.
     """
-    if order.get('plataforma_slug') == 'mercadolivre':
-        return (0, *_numero_externo_mercadolivre_sort_key(order))
-
     itens = order.get('itens') or []
     return (
         1 if order.get('hasCustomItem') else 0,
@@ -365,25 +285,6 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             except:
                 contato = {}
 
-        snapshot_customer = {}
-        snapshot_logistics = {}
-        snapshot_platform_fields = {}
-        if plataforma_slug == 'mercadolivre':
-            try:
-                snapshot_result = (
-                    supabase_db.table('pedido_snapshots')
-                    .select('customer, logistics, platform_fields')
-                    .eq('pedido_id', pedido_id)
-                    .limit(1)
-                    .execute()
-                )
-                snapshot = ((snapshot_result.data or [{}])[0] or {})
-                snapshot_customer = snapshot.get('customer') or {}
-                snapshot_logistics = snapshot.get('logistics') or {}
-                snapshot_platform_fields = snapshot.get('platform_fields') or {}
-            except Exception:
-                logger.warning('Falha ao ler dados do destinatario MercadoLivre do pedido %s', pedido_id)
-
         # O campo legado `numeroDocumento` pode existir vazio em
         # `informacoes_cliente`; nesse caso `dict.get(..., fallback)` nao
         # aciona o fallback. Os pedidos novos tambem usam `document`/`documento`
@@ -431,22 +332,12 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
         is_flex = pedido.get('is_flex', False)
         servico_logistico = pedido.get('servico_logistico', '')
 
-        nome_contato = pedido.get('cliente_nome', contato.get('nome', ''))
-        if plataforma_slug == 'mercadolivre':
-            nome_contato = _nome_destinatario_mercadolivre(
-                logistics=snapshot_logistics,
-                customer=snapshot_customer,
-                platform_fields=snapshot_platform_fields,
-                fallback=nome_contato,
-            )
-
         return {
             'id': pedido.get('id'),
             'numero': str(erp_number),
             'numeroLoja': numero_loja,
-            'plataforma_slug': plataforma_slug,
             'contato': {
-                'nome': nome_contato,
+                'nome': pedido.get('cliente_nome', contato.get('nome', '')),
                 'numeroDocumento': documento,
                 'endereco': contato.get('endereco', ''),
                 'telefone': contato.get('telefone', pedido.get('cliente_telefone', '')),

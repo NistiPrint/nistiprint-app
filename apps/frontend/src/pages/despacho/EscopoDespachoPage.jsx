@@ -6,7 +6,6 @@ import PacoteBadge from '@/components/pedidos/PacoteBadge';
 import AcoesDoLote from '@/components/despacho/AcoesDoLote';
 import ConferenciaDoArquivo from '@/components/despacho/ConferenciaDoArquivo';
 import LinhasConsolidadas from '@/components/despacho/LinhasConsolidadas';
-import { ajusteDaLinha, aplicarAjustes, resumoDaLista } from '@/lib/ajustesConsolidacao';
 import { dataOperacionalHoje } from '@/lib/dataOperacional';
 import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
 import { AlertTriangle, ArrowLeft, ChevronRight } from 'lucide-react';
@@ -64,7 +63,7 @@ function parseIntOrNull(value) {
 // materializar os itens (`despacho_materializar_itens` ->
 // `despacho_consolidar_pedidos`). E por isso que o que esta na tela e o que
 // vai para producao: nao existe uma segunda consolidacao para divergir.
-function PreviaConsolidacao({ params, ajustes, onAjustesChange }) {
+function PreviaConsolidacao({ params }) {
   const [dados, setDados] = useState(null);
   const [erro, setErro] = useState(null);
   const [carregando, setCarregando] = useState(true);
@@ -100,31 +99,14 @@ function PreviaConsolidacao({ params, ajustes, onAjustesChange }) {
     return () => { vivo = false; };
   }, [chave]);
 
-  // O escopo mudou de baixo dos ajustes (o operador trocou o horizonte, por
-  // exemplo): manter ajustes que apontam para linhas de outro lote produziria
-  // um erro no lançamento. Some com eles.
-  useEffect(() => { onAjustesChange([]); }, [chave, onAjustesChange]);
-
-  const itensAjustados = useMemo(
-    () => aplicarAjustes(dados?.itens || [], ajustes),
-    [dados, ajustes]
-  );
-
-  const registrar = ({ op, linha, valor }) => {
-    onAjustesChange([...ajustes, ajusteDaLinha(op, linha, op === 'quantidade' ? { valor } : {})]);
-  };
-
   return (
     <LinhasConsolidadas
-      itens={itensAjustados}
-      resumo={ajustes.length ? resumoDaLista(itensAjustados) : dados}
+      itens={dados?.itens || []}
+      resumo={dados}
       titulo="Consolidação do lote"
-      ajuda="o que este lote vai produzir — corrija o que faltar antes de publicar"
+      ajuda="o que este lote vai produzir — miolo com mais carga primeiro"
       carregando={carregando}
       erro={erro}
-      onAjustar={registrar}
-      totalAjustes={ajustes.length}
-      onDesfazerAjustes={() => onAjustesChange([])}
     />
   );
 }
@@ -158,10 +140,6 @@ export default function EscopoDespachoPage() {
   const [publicando, setPublicando] = useState(false);
   const [conflitos, setConflitos] = useState([]);
   const [erro, setErro] = useState(null);
-  // Os ajustes da prévia vivem aqui, e não dentro dela, porque quem publica é
-  // esta página: é ela que precisa enviá-los junto com o lançamento.
-  const [ajustes, setAjustes] = useState([]);
-  const aplicarAjustesNaPrevia = useCallback((novos) => setAjustes(novos), []);
 
   const horizonte = useMemo(() => {
     const passos = HORIZONTE_STEPS.slice(0, horizonteAte + 1);
@@ -235,7 +213,6 @@ export default function EscopoDespachoPage() {
           modalidade_id: modalidadeIds[0] ?? null,
           horizonte,
           data: dataOperacionalHoje(),
-          ...(ajustes.length ? { ajustes } : {}),
           ...(origemArquivo ? { conferencia_id: conferenciaId } : {}),
         }),
       });
@@ -389,13 +366,7 @@ export default function EscopoDespachoPage() {
       </Card>
 
       {/* A consolidação, direto — sem passar por criar rascunho. */}
-      {!loading && total > 0 && (
-        <PreviaConsolidacao
-          params={chaveDoEscopo}
-          ajustes={ajustes}
-          onAjustesChange={aplicarAjustesNaPrevia}
-        />
-      )}
+      {!loading && total > 0 && <PreviaConsolidacao params={chaveDoEscopo} />}
 
       {/* A ordem dos blocos é a ordem da fábrica: conferir a produção, emitir
           as notas, imprimir os papéis e só então publicar. Publicar antes de

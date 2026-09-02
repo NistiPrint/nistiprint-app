@@ -732,11 +732,6 @@ def _linha_consolidada(row: dict) -> dict:
     return {
         "ordem": row.get("ordem"),
         "sku_externo": row.get("sku_externo"),
-        # `titulo` fecha a chave da linha. A consolidacao agrupa por
-        # (titulo, sku, variacao, miolo_chave): o mesmo SKU anunciado com dois
-        # titulos diferentes vira DUAS linhas, e um ajuste sem o titulo acerta
-        # uma delas em silencio.
-        "titulo": row.get("descricao") or row.get("titulo_anuncio"),
         "descricao": row.get("descricao") or row.get("titulo_anuncio"),
         "variacao": row.get("variacao"),
         "quantidade": quantidade,
@@ -748,29 +743,7 @@ def _linha_consolidada(row: dict) -> dict:
         "id_produto_miolo": row.get("id_produto_miolo"),
         "contabiliza_estoque": bool(row.get("contabiliza_estoque")),
         "pedidos_origem": row.get("pedidos_origem") or [],
-        "eh_kit": bool(row.get("eh_kit")),
     }
-
-
-def _marcar_kits(itens: list[dict]) -> list[dict]:
-    """Diz quais linhas sao kit, em uma consulta para o lote inteiro.
-
-    A consolidacao nao explode kit — quem decide isso e o operador (ver
-    `20260901100000`). Para decidir, ele precisa VER que aquela linha e um kit,
-    e e so isso que este passo acrescenta.
-    """
-    ids = sorted({item["produto_id"] for item in itens if item.get("produto_id")})
-    if not ids:
-        return itens
-    try:
-        resp = supabase_db.table("produtos").select("id,formato").in_("id", ids).execute()
-        kits = {row["id"] for row in (resp.data or []) if row.get("formato") == "kit"}
-    except Exception:
-        logger.warning("Nao foi possivel marcar os kits da previa", exc_info=True)
-        return itens
-    for item in itens:
-        item["eh_kit"] = item.get("produto_id") in kits
-    return itens
 
 
 def _resumo_consolidacao(itens: list[dict]) -> dict:
@@ -811,7 +784,7 @@ def previsao_consolidacao():
         rows = supabase_db.rpc(
             "despacho_consolidar_pedidos", {"p_pedido_ids": ids}
         ).execute().data or []
-        itens = _marcar_kits([_linha_consolidada(row) for row in rows])
+        itens = [_linha_consolidada(row) for row in rows]
 
         return jsonify({"success": True, "data": {
             "total_pedidos": len(ids),
@@ -824,92 +797,6 @@ def previsao_consolidacao():
         # sem produto resolvido nao e uma previa pior, e uma previa errada — e
         # ela seria lida como a promessa do que vai para producao.
         logger.error("Erro ao montar previa da consolidacao: %s", exc, exc_info=True)
-        return jsonify({"success": False, "error": str(exc)}), 500
-
-
-# Ajustes da previa -----------------------------------------------------------
-#
-# O operador edita a lista ANTES de publicar: remove uma linha, corrige uma
-# quantidade, ou explode um kit nos produtos que o compoem. O contrato e
-# pequeno de proposito — o que chega ao banco e uma lista de operacoes
-# auditavel, gravada em `escopo_despacho.ajustes`, e nao uma segunda
-# consolidacao feita no cliente.
-
-_OPS_AJUSTE = {"remover", "quantidade", "explodir"}
-
-
-def _ajustes_validos(bruto) -> list[dict]:
-    """Filtra e valida os ajustes vindos da tela.
-
-    Recusar aqui, com mensagem, e melhor do que deixar o `RAISE EXCEPTION` do
-    Postgres chegar cru na tela — e evita gravar um rascunho para so depois
-    descobrir que o ajuste era invalido.
-    """
-    if not bruto:
-        return []
-    if not isinstance(bruto, list):
-        raise ValueError("ajustes deve ser uma lista")
-
-    limpos: list[dict] = []
-    for item in bruto:
-        if not isinstance(item, dict):
-            raise ValueError("cada ajuste deve ser um objeto")
-        op = str(item.get("op") or "").strip().lower()
-        if op not in _OPS_AJUSTE:
-            raise ValueError(f"operacao de ajuste desconhecida: {op or '(vazia)'}")
-        sku = str(item.get("sku") or "").strip()
-        if not sku:
-            raise ValueError("ajuste sem sku")
-        limpo = {
-            "op": op,
-            "sku": sku,
-            "variacao": str(item.get("variacao") or "-").strip() or "-",
-            "miolo_chave": item.get("miolo_chave"),
-        }
-        titulo = str(item.get("titulo") or "").strip()
-        if titulo:
-            limpo["titulo"] = titulo
-        if op == "quantidade":
-            try:
-                valor = float(item.get("valor"))
-            except (TypeError, ValueError):
-                raise ValueError(f"quantidade invalida para {sku}")
-            if valor <= 0:
-                raise ValueError(f"quantidade deve ser maior que zero ({sku})")
-            limpo["valor"] = valor
-        limpos.append(limpo)
-    return limpos
-
-
-def _aplicar_ajustes(demanda_id: int, ajustes: list[dict], user_id: str) -> float | None:
-    """Refaz os itens do rascunho com os ajustes. Devolve o novo total."""
-    if not ajustes:
-        return None
-    resultado = supabase_db.rpc("despacho_reaplicar_itens", {
-        "p_demanda_id": int(demanda_id),
-        "p_ajustes": ajustes,
-        "p_user_id": user_id,
-    }).execute()
-    return resultado.data
-
-
-@despacho_bp.route("/kit/<int:produto_id>/componentes", methods=["GET"])
-def get_kit_componentes(produto_id: int):
-    """Em que produtos um kit se desdobra, com o miolo de cada um.
-
-    A tela usa isto para mostrar o resultado da explosao antes de o operador
-    confirmar — explodir sem ver no que vai dar e o tipo de acao que se desfaz
-    tarde demais.
-    """
-    try:
-        if not get_current_user():
-            return jsonify({"success": False, "error": "Nao autorizado"}), 401
-        rows = supabase_db.rpc("despacho_kit_componentes", {
-            "p_produto_id": produto_id
-        }).execute().data or []
-        return jsonify({"success": True, "data": {"componentes": rows}})
-    except Exception as exc:
-        logger.error("Erro ao buscar componentes do kit %s: %s", produto_id, exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
@@ -949,11 +836,6 @@ def post_lancar():
         observacoes = body.get("observacoes")
         user_id = str((user or {}).get("id") or (user or {}).get("nome") or "System")
 
-        try:
-            ajustes = _ajustes_validos(body.get("ajustes"))
-        except ValueError as erro:
-            return jsonify({"success": False, "error": str(erro)}), 400
-
         conferencia_id = _parse_int(body.get("conferencia_id"))
         if conferencia_id is not None:
             conferencia = _conferencia(conferencia_id)
@@ -981,13 +863,11 @@ def post_lancar():
             row = rows[0]
             demanda_id = row.get("out_demanda_id")
             supabase_db.table("conferencias_arquivo").update({"demanda_id": demanda_id}).eq("id", conferencia_id).execute()
-            total_ajustado = _aplicar_ajustes(demanda_id, ajustes, user_id)
             return jsonify({"success": True, "data": {
                 "demanda_id": demanda_id,
                 "demanda_codigo": row.get("out_demanda_codigo"),
                 "total_pedidos": row.get("out_total_pedidos"),
-                "total_itens": total_ajustado if total_ajustado is not None else row.get("out_total_itens"),
-                "ajustes_aplicados": len(ajustes),
+                "total_itens": row.get("out_total_itens"),
                 "ja_em_rascunho": row.get("out_ja_em_rascunho") or [],
                 "status": "RASCUNHO",
             }})
@@ -1007,15 +887,13 @@ def post_lancar():
             return jsonify({"success": False, "error": "Escopo vazio"}), 409
 
         row = rows[0]
-        total_ajustado = _aplicar_ajustes(row.get("out_demanda_id"), ajustes, user_id)
         return jsonify({
             "success": True,
             "data": {
                 "demanda_id": row.get("out_demanda_id"),
                 "demanda_codigo": row.get("out_demanda_codigo"),
                 "total_pedidos": row.get("out_total_pedidos"),
-                "total_itens": total_ajustado if total_ajustado is not None else row.get("out_total_itens"),
-                "ajustes_aplicados": len(ajustes),
+                "total_itens": row.get("out_total_itens"),
                 # somou num rascunho que ja existia em vez de criar outro
                 "somou_em_rascunho": row.get("out_complementar"),
                 "status": "RASCUNHO",

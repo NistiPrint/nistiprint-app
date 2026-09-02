@@ -35,7 +35,6 @@ DEFAULT_MAX_PROCESSING = 50
 CHAT_CONTEXT_LIMIT = 60
 CHAT_LOOKBACK_DAYS = 7
 STATUS_EM_ANDAMENTO = 2
-STATUS_PERSONALIZADOS_EXIBICAO = [2, 3, 4]
 PROMPT_FALLBACK_PATH = Path(get_prompt_template_path())
 
 _httpx_client = httpx.Client(
@@ -306,9 +305,7 @@ def _fetch_recent_personalized_orders(
     pedido_ids=None,
     limit=None,
     recent_days: Optional[int] = None,
-    situacao_ids=None,
 ):
-    situacao_ids = situacao_ids or STATUS_PERSONALIZADOS_EXIBICAO
     query = (
         supabase_db.table("pedidos")
         .select(
@@ -318,7 +315,7 @@ def _fetch_recent_personalized_orders(
             "shipping_carrier,contact_marketplace_id,buyer_user_id,marketplace_integration_id"
         )
         .in_("canal_venda_id", _get_shopee_channel_ids())
-        .in_("situacao_pedido_id", situacao_ids)
+        .eq("situacao_pedido_id", STATUS_EM_ANDAMENTO)
         .order("data_venda", desc=True)
     )
 
@@ -453,14 +450,12 @@ def _assemble_orders(
     pedido_ids=None,
     limit=None,
     recent_days: Optional[int] = None,
-    situacao_ids=None,
 ):
     base_orders = _fetch_recent_personalized_orders(
         order_sn=order_sn,
         pedido_ids=pedido_ids,
         limit=limit,
         recent_days=recent_days,
-        situacao_ids=situacao_ids,
     )
     if not base_orders:
         return []
@@ -646,20 +641,12 @@ def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, for
         pedido_ids=pedido_ids,
         limit=normalized_limit,
         recent_days=None,
-        situacao_ids=[STATUS_EM_ANDAMENTO],
     )
     to_process = []
     skipped = []
 
     for row in rows:
         normalized = _normalize_order_row(row)
-        if normalized.get("situacao_pedido_id") != STATUS_EM_ANDAMENTO:
-            skipped.append({
-                "id": normalized["id"],
-                "order_sn": normalized["shopee_order_sn"],
-                "reason": "status_not_eligible",
-            })
-            continue
         if should_process_order(normalized, force=force):
             to_process.append({
                 "id": normalized["id"],
@@ -767,11 +754,7 @@ def compact_chat_messages(messages: List[Dict[str, Any]], buyer_username: str, b
 
 
 def _load_order_for_ai(pedido_id: int) -> Dict[str, Any]:
-    rows = _assemble_orders(
-        pedido_ids=[pedido_id],
-        recent_days=None,
-        situacao_ids=[STATUS_EM_ANDAMENTO],
-    )
+    rows = _assemble_orders(pedido_ids=[pedido_id], recent_days=None)
     if not rows:
         raise ValueError(f"Pedido {pedido_id} nao encontrado na view de personalizados")
 
@@ -1275,7 +1258,6 @@ def get_orders_with_chats(order_sn=None, limit=None):
         order_sn=order_sn,
         limit=limit,
         recent_days=None,
-        situacao_ids=STATUS_PERSONALIZADOS_EXIBICAO,
     )
     normalized_orders = [_normalize_order_row(row) for row in rows]
     if limit:

@@ -41,7 +41,6 @@ function ProdutoFormPage() {
   const [searchParams] = useSearchParams();
 
   const variationIdParam = searchParams.get('variation_id');
-  const cloneIdParam = searchParams.get('clone_id');
 
   const [loadingProduct, setLoadingProduct] = useState(true);
   const [loadingSubmit, setLoadingSubmit] = useState(false);
@@ -68,15 +67,10 @@ function ProdutoFormPage() {
       stock_min: 0,
       stock_max: 0,
       requires_personalization: false,
-      status: 'inativo',
-      estagio: 'RASCUNHO',
+      status: 'ativo',
       formato: 'simples',
       herdar_dados_pai: true,
       herdar_bom_pai: true,
-      ncm: '', cest: '', origem_mercadoria: null, cfop_padrao_venda: '',
-      gtin: '', gtin_embalagem: '', marca: '', fabricante: '', mpn: '',
-      peso_liquido: null, peso_bruto: null, comprimento: null, largura: null,
-      altura: null, garantia_meses: null, perfil_fiscal_id: null, origem_fiscal: 'interno',
       tags: [],
       external_product_links: { skus: [], names: [], ids: [] },
     },
@@ -277,17 +271,9 @@ function ProdutoFormPage() {
           stock_max: product.stock_max !== null ? parseInt(product.stock_max, 10) : 0,
           requires_personalization: !!product.requires_personalization,
           status: product.status || 'ativo',
-          estagio: product.estagio || 'RASCUNHO',
           formato: formatoProduto,
           herdar_dados_pai: product.herdar_dados_pai !== undefined ? product.herdar_dados_pai : true,
           herdar_bom_pai: product.herdar_bom_pai !== undefined ? product.herdar_bom_pai : true,
-          ncm: product.ncm || '', cest: product.cest || '', origem_mercadoria: product.origem_mercadoria ?? null,
-          cfop_padrao_venda: product.cfop_padrao_venda || '', gtin: product.gtin || '', gtin_embalagem: product.gtin_embalagem || '',
-          marca: product.marca || '', fabricante: product.fabricante || '', mpn: product.mpn || '',
-          peso_liquido: product.peso_liquido ?? null, peso_bruto: product.peso_bruto ?? null,
-          comprimento: product.comprimento ?? null, largura: product.largura ?? null, altura: product.altura ?? null,
-          garantia_meses: product.garantia_meses ?? null, perfil_fiscal_id: product.perfil_fiscal_id ?? null,
-          origem_fiscal: product.origem_fiscal || 'interno',
           external_product_links: product.external_product_links || { skus: [], names: [], ids: [] },
         });
 
@@ -329,32 +315,6 @@ function ProdutoFormPage() {
     const newTags = selectedTags.filter(id => id !== tagIdStr);
     setSelectedTags(newTags);
     form.setValue('tags', newTags, { shouldDirty: true });
-  };
-
-  const handleSnapshotFromParent = async () => {
-    if (!productData?.parent_id) return;
-
-    try {
-      const parentResponse = await ProductService.getById(productData.parent_id);
-      const parent = parentResponse.produto;
-      if (!parent) return;
-
-      const inheritedTags = Array.isArray(parent.tags)
-        ? parent.tags.map(tag => String(tag.tag_id ?? tag.id ?? tag))
-        : [];
-
-      form.setValue('name', parent.name || parent.nome || '', { shouldDirty: true });
-      form.setValue('description', parent.description || parent.descricao || '', { shouldDirty: true });
-      form.setValue('category_id', parent.categoria_id ? String(parent.categoria_id) : '', { shouldDirty: true });
-      form.setValue('cost_price', Number(parent.cost_price ?? parent.preco_custo ?? 0), { shouldDirty: true });
-      form.setValue('stock_min', Number(parent.stock_min ?? parent.estoque_minimo ?? 0), { shouldDirty: true });
-      form.setValue('stock_max', Number(parent.stock_max ?? parent.estoque_maximo ?? 0), { shouldDirty: true });
-      form.setValue('tags', inheritedTags, { shouldDirty: true });
-      setSelectedTags(inheritedTags);
-    } catch (error) {
-      console.error('Erro ao copiar dados do produto pai:', error);
-      toast.error('Erro ao obter dados do produto pai.');
-    }
   };
 
   const onSubmit = async (data) => {
@@ -879,36 +839,6 @@ function ProdutoFormPage() {
                       )}
                     />
                   </div>
-
-                  <div className="border rounded-lg p-4">
-                    <h3 className="text-lg font-medium mb-4 text-primary">Dados ERP e fiscais</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      {[
-                        ['ncm', 'NCM', '8 dígitos'], ['cest', 'CEST', '7 dígitos'],
-                        ['cfop_padrao_venda', 'CFOP padrão', '4 dígitos'], ['gtin', 'GTIN/EAN', 'ou SEM GTIN'],
-                        ['gtin_embalagem', 'GTIN embalagem', 'opcional'], ['marca', 'Marca', ''],
-                        ['fabricante', 'Fabricante', ''], ['mpn', 'MPN', ''],
-                      ].map(([name, label, placeholder]) => (
-                        <FormField key={name} control={form.control} name={name} render={({ field }) => (
-                          <FormItem><FormLabel>{label}</FormLabel><FormControl><Input {...field} value={field.value ?? ''} placeholder={placeholder} /></FormControl><FormMessage /></FormItem>
-                        )} />
-                      ))}
-                      <FormField control={form.control} name="origem_mercadoria" render={({ field }) => (
-                        <FormItem><FormLabel>Origem da mercadoria</FormLabel><FormControl><Input type="number" min="0" max="8" {...field} value={field.value ?? ''} onChange={event => field.onChange(event.target.value === '' ? null : Number(event.target.value))} /></FormControl><FormMessage /></FormItem>
-                      )} />
-                      {[
-                        ['peso_liquido', 'Peso líquido'], ['peso_bruto', 'Peso bruto'], ['comprimento', 'Comprimento'],
-                        ['largura', 'Largura'], ['altura', 'Altura'], ['garantia_meses', 'Garantia (meses)'],
-                      ].map(([name, label]) => (
-                        <FormField key={name} control={form.control} name={name} render={({ field }) => (
-                          <FormItem><FormLabel>{label}</FormLabel><FormControl><Input type="number" min="0" step="0.0001" {...field} value={field.value ?? ''} onChange={event => field.onChange(event.target.value === '' ? null : Number(event.target.value))} /></FormControl><FormMessage /></FormItem>
-                        )} />
-                      ))}
-                    </div>
-                    <FormField control={form.control} name="origem_fiscal" render={({ field }) => (
-                      <FormItem className="mt-4 max-w-sm"><FormLabel>Origem dos dados fiscais</FormLabel><Select onValueChange={field.onChange} value={field.value}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent><SelectItem value="interno">Cadastro interno</SelectItem><SelectItem value="espelho_bling">Espelho do Bling</SelectItem></SelectContent></Select><FormMessage /></FormItem>
-                    )} />
-                  </div>
                 </div>
 
                 {/* Footer with save button */}
@@ -960,7 +890,7 @@ function ProdutoFormPage() {
                   if (produto_id) {
                     try {
                       // Call the backend to save variations
-                      await ProductService.createProductWithVariations(
+                      const response = await ProductService.createProductWithVariations(
                         produto_id,
                         variationsData.variations_config,
                         variationsData.variations_data

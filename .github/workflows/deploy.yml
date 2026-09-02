@@ -3,11 +3,6 @@ name: Deploy
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'apps/local_agent/**'
-      - 'docs/'
-      - 'kb/'
-      - 'scripts/'
 
 jobs:
   deploy:

@@ -23,30 +23,10 @@ PORT = int(os.environ.get("NISTIPRINT_AGENT_PORT", "8181"))
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "NistiPrint"
 MAP_FILE = DATA_DIR / "mappings.json"
 LOG_FILE = DATA_DIR / "agent.log"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 MAX_COPIES = 999
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-# Controle de acesso: allowlist de Origin, sem token.
-#
-# A versao com token gerava um segredo ALEATORIO POR MAQUINA e o frontend lia um
-# unico valor de build (VITE_LOCAL_AGENT_TOKEN): na pratica todo mundo tomava
-# 401. E a "solucao" de usar o mesmo token em todas as maquinas publicaria o
-# segredo em texto claro no bundle servido a qualquer visitante, porque
-# variaveis VITE_ vao para o JS.
-#
-# Fica a allowlist, que e a protecao que de fato funciona sem digitacao: o
-# agente so responde a origens declaradas, e a resposta deixou de espelhar o
-# Origin de quem pergunta. A allowlist PRECISA ser configurada em producao —
-# `NISTIPRINT_AGENT_ORIGINS` com a URL do app. O default cobre so o dev local.
-ALLOWED_ORIGINS = {
-    origin.strip().rstrip("/")
-    for origin in os.environ.get(
-        "NISTIPRINT_AGENT_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173",
-    ).split(",")
-    if origin.strip()
-}
 
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -57,22 +37,6 @@ logger = logging.getLogger("NistiPrintAgent")
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def unc_path_for(path: str) -> str | None:
-    """Retorna a forma UNC quando o Windows fornece uma unidade de rede."""
-    if os.name != "nt" or len(path) < 2 or path[1] != ":":
-        return None
-    drive = path[0]
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-         f"(Get-PSDrive {drive}).DisplayRoot"],
-        capture_output=True, text=True, check=False, timeout=5, creationflags=NO_WINDOW,
-    )
-    root = result.stdout.strip()
-    if not root.startswith("\\\\"):
-        return None
-    return root.rstrip("\\/") + path[2:].replace("/", "\\")
 
 
 class MappingStore:
@@ -88,10 +52,7 @@ class MappingStore:
 
     def all(self) -> dict:
         with self.lock:
-            data = self._read()
-            for mapping in data.values():
-                mapping["stale"] = not Path(mapping.get("file_path", "")).is_file()
-            return data
+            return self._read()
 
     def get(self, sku: str) -> dict | None:
         return self.all().get(sku)
@@ -99,7 +60,7 @@ class MappingStore:
     def save(self, sku: str, mapping: dict) -> dict:
         with self.lock:
             data = self._read()
-            data[sku] = {**mapping, "product_id": mapping.get("product_id"), "updated_at": mapping.get("updated_at", _now())}
+            data[sku] = mapping
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd, temporary = tempfile.mkstemp(prefix="mappings-", suffix=".json", dir=self.path.parent)
             try:
@@ -176,23 +137,11 @@ class AgentHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        origin = self.headers.get("Origin", "")
-        if origin in ALLOWED_ORIGINS:
-            self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin", "*"))
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-NistiPrint-Agent")
         self.end_headers()
         self.wfile.write(body)
-
-    def _authorized(self) -> bool:
-        """Origem declarada na allowlist.
-
-        Requisicao sem cabecalho Origin (curl, script local) e recusada: o
-        agente existe para o app, e uma origem que nao se identifica nao tem
-        como ser conferida.
-        """
-        origem = (self.headers.get("Origin") or "").strip().rstrip("/")
-        return bool(origem) and origem in ALLOWED_ORIGINS
 
     def do_OPTIONS(self):
         self._send(204, {})
@@ -205,8 +154,6 @@ class AgentHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/health":
             return self._send(200, {"success": True, "status": "online", "port": PORT})
-        if not self._authorized():
-            return self._send(403, {"error": "Origem não autorizada para este agente"})
         if path == "/printers":
             return self._send(200, {"printers": list_printers()})
         if path == "/mappings":
@@ -219,17 +166,9 @@ class AgentHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if not self._authorized():
-            return self._send(403, {"error": "Origem não autorizada para este agente"})
         try:
             data = self._json()
             sku = str(data.get("sku", "")).strip()
-            if path == "/coverage":
-                skus = [str(value).strip() for value in data.get("skus", []) if str(value).strip()]
-                mappings = STORE.all()
-                mapped = [value for value in skus if value in mappings and not mappings[value].get("stale")]
-                stale = [value for value in skus if value in mappings and mappings[value].get("stale")]
-                return self._send(200, {"mapped": mapped, "missing": [value for value in skus if value not in mappings], "stale": stale})
             if path == "/mappings":
                 file_path = str(data.get("file_path", "")).strip()
                 printer = str(data.get("printer_name", "")).strip()
@@ -237,8 +176,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     return self._send(400, {"error": "sku, file_path e printer_name são obrigatórios"})
                 if not Path(file_path).is_file():
                     return self._send(400, {"error": "Arquivo não encontrado"})
-                mapping = {"sku": sku, "product_id": data.get("product_id"), "file_path": file_path,
-                           "unc_path": unc_path_for(file_path), "printer_name": printer, "updated_at": _now()}
+                mapping = {"sku": sku, "file_path": file_path, "printer_name": printer, "updated_at": _now()}
                 return self._send(200, {"success": True, "mapping": STORE.save(sku, mapping)})
             if path == "/map-file":
                 if not sku:
@@ -266,8 +204,6 @@ class AgentHandler(BaseHTTPRequestHandler):
             return self._send(400, {"error": str(error)})
 
     def do_DELETE(self):
-        if not self._authorized():
-            return self._send(403, {"error": "Origem não autorizada para este agente"})
         path = urlparse(self.path).path
         if path.startswith("/mappings/"):
             sku = unquote(path.removeprefix("/mappings/"))

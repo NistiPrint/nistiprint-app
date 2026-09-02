@@ -35,24 +35,6 @@ class CategoryService:
             return category
         return None
 
-    def get_by_ids(self, category_ids):
-        """Categorias de uma lista de ids, em uma consulta.
-
-        Existe para tirar o N+1 de `get_bom_components`, que buscava a categoria
-        de cada componente da ficha uma a uma.
-        """
-        ids = [int(valor) for valor in (category_ids or []) if str(valor).isdigit()]
-        if not ids:
-            return []
-        query = self.table.select("*").in_('id', ids)
-        response = supabase_db.execute_with_retry(query)
-        categorias = []
-        for row in response.data or []:
-            categoria = dict(row)
-            categoria['name'] = categoria.get('nome')
-            categorias.append(categoria)
-        return categorias
-
     def get_marketable_ids(self):
         """Get IDs of categories marked as marketable."""
         query = self.table.select("id").eq("comercializavel", True)
@@ -91,7 +73,6 @@ class CategoryService:
             'comercializavel': category_data.get('comercializavel', False),
             'componente': category_data.get('componente', False),
             'permite_arte': category_data.get('permite_arte', False),
-            'grupo_bom': category_data.get('grupo_bom'),
             'created_at': datetime.utcnow().isoformat(),
             'updated_at': datetime.utcnow().isoformat()
         }
@@ -128,8 +109,6 @@ class CategoryService:
             data['componente'] = category_data['componente']
         if 'permite_arte' in category_data:
             data['permite_arte'] = category_data['permite_arte']
-        if 'grupo_bom' in category_data:
-            data['grupo_bom'] = category_data['grupo_bom']
 
         query = self.table.update(data).eq('id', category_id)
         response = supabase_db.execute_with_retry(query)

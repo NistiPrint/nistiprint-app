@@ -78,10 +78,6 @@ import ProducaoPage from './pages/producao/ProducaoPage'
 import ResumoProducaoPage from './pages/producao/ResumoProducaoPage'
 import ProdutoFormPage from './pages/produtos/ProdutoFormPage'
 import ProdutoListPage from './pages/produtos/ProdutoListPage'
-import ProdutoReadinessPage from './pages/produtos/ProdutoReadinessPage'
-import ProdutoAdsPage from './pages/produtos/ProdutoAdsPage'
-import ProdutoEixosPage from './pages/produtos/ProdutoEixosPage'
-import ProdutoKitsPage from './pages/produtos/ProdutoKitsPage'
 import VendasPage from './pages/vendas/VendasPage'
 import VendasPersonalizadasPage from './pages/vendas/VendasPersonalizadasPage'
 import PerfilPage from './pages/PerfilPage'
@@ -108,10 +104,6 @@ function App() {
 
           {/* 1. Produtos (Dados Mestres) */}
           <Route path='produtos' element={<ProdutoListPage />} />
-          <Route path='produtos/prontidao' element={<ProdutoReadinessPage />} />
-          <Route path='produtos/anuncios' element={<ProdutoAdsPage />} />
-          <Route path='produtos/eixos' element={<ProdutoEixosPage />} />
-          <Route path='produtos/kits' element={<ProdutoKitsPage />} />
           <Route path='produtos/novo' element={<ProdutoFormPage />} />
           <Route path='produtos/:id/editar' element={<ProdutoFormPage />} />
 

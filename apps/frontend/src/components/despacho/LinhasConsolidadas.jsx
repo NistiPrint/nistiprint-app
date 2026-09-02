@@ -1,8 +1,6 @@
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { AlertTriangle, FileText, Package, RotateCcw, X } from 'lucide-react';
+import { AlertTriangle, FileText, Package } from 'lucide-react';
 import { Fragment } from 'react';
 
 // A consolidação de um lote — a mesma tabela, venha ela da prévia ou da demanda
@@ -20,18 +18,6 @@ import { Fragment } from 'react';
 // normalmente, só não movimenta estoque, porque o SKU do marketplace não tem
 // produto interno vinculado. Aparece como aviso e com caminho para o cadastro,
 // nunca como bloqueio — a regra do domínio é degradar, não reter.
-//
-// MODO EDIÇÃO (`onAjustar` presente): o operador corrige a lista antes de
-// publicar — remove uma linha, ajusta uma quantidade. É a saída para o que
-// NÃO está cadastrado: kit cadastrado já chega aqui explodido nos produtos que
-// o compõem (`despacho_consolidar_pedidos`), e não depende de ninguém clicar.
-// O componente não decide nada: emite a operação, e quem grava é a página. A
-// conta que aparece aqui é a MESMA que `despacho_materializar_itens` refaz no
-// servidor, que é quem vale.
-//
-// Linha com selo "kit" é, por definição, um kit SEM ficha técnica válida — se
-// tivesse, teria sido explodida antes de chegar na tela. O selo é o aviso de
-// lacuna de cadastro, não um botão.
 
 function agruparPorMiolo(itens) {
   // Agrupa preservando a ordem que veio do banco, em vez de ordenar por chave:
@@ -57,12 +43,7 @@ export default function LinhasConsolidadas({
   carregando = false,
   erro = null,
   className = 'mb-6',
-  // Edição da prévia. Sem `onAjustar` a tabela é só leitura, como sempre foi.
-  onAjustar = null,
-  totalAjustes = 0,
-  onDesfazerAjustes = null,
 }) {
-  const editavel = typeof onAjustar === 'function';
   if (erro) {
     return (
       <Card className={`border-destructive/50 ${className}`}>
@@ -84,16 +65,8 @@ export default function LinhasConsolidadas({
     return (
       <Card className={`border-dashed ${className}`}>
         <CardContent className="py-8 text-center text-sm text-muted-foreground">
-          {totalAjustes > 0
-            ? 'Os ajustes removeram todas as linhas do lote.'
-            : 'Nenhum item para consolidar. Os pedidos deste lote ainda não têm itens registrados na base.'}
-          {totalAjustes > 0 && onDesfazerAjustes && (
-            <div className="mt-3">
-              <Button size="sm" variant="outline" onClick={onDesfazerAjustes}>
-                <RotateCcw className="mr-2 h-3.5 w-3.5" /> Desfazer os ajustes
-              </Button>
-            </div>
-          )}
+          Nenhum item para consolidar. Os pedidos deste lote ainda não têm itens
+          registrados na base.
         </CardContent>
       </Card>
     );
@@ -111,23 +84,6 @@ export default function LinhasConsolidadas({
           {totalMiolos === 1 ? 'miolo' : 'miolos'}
         </span>
       </div>
-
-      {totalAjustes > 0 && (
-        <div className="mb-2 flex items-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs text-sky-800">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-          {totalAjustes === 1 ? '1 ajuste manual' : `${totalAjustes} ajustes manuais`} nesta
-          lista — o lote será publicado como está abaixo.
-          {onDesfazerAjustes && (
-            <button
-              type="button"
-              onClick={onDesfazerAjustes}
-              className="ml-auto inline-flex items-center gap-1 font-medium underline underline-offset-2"
-            >
-              <RotateCcw className="h-3 w-3" /> desfazer tudo
-            </button>
-          )}
-        </div>
-      )}
 
       {semEstoque > 0 && (
         <div className="mb-2 flex items-center gap-1.5 text-xs text-amber-700">
@@ -147,7 +103,6 @@ export default function LinhasConsolidadas({
               <th className="px-3 py-2 font-medium">SKU</th>
               <th className="px-3 py-2 font-medium">Produto interno</th>
               <th className="w-20 px-3 py-2 text-right font-medium">Qtde</th>
-              {editavel && <th className="w-24 px-3 py-2 font-medium" />}
             </tr>
           </thead>
           <tbody>
@@ -160,7 +115,7 @@ export default function LinhasConsolidadas({
               return (
                 <Fragment key={grupo.chave ?? `miolo-${indice}`}>
                   <tr className="border-t bg-muted/30">
-                    <td colSpan={editavel ? 6 : 5} className="px-3 py-1.5 text-xs font-semibold">
+                    <td colSpan={5} className="px-3 py-1.5 text-xs font-semibold">
                       <span className="inline-flex items-center gap-1.5">
                         <Package className="h-3.5 w-3.5" />
                         Miolo {grupo.rotulo || grupo.chave || 'não identificado'}
@@ -178,18 +133,7 @@ export default function LinhasConsolidadas({
                       <td className="px-3 py-2 text-xs tabular-nums text-muted-foreground">
                         {item.ordem}
                       </td>
-                      <td className="px-3 py-2">
-                        {item.descricao || '—'}
-                        {item.eh_kit && (
-                          <Badge
-                            variant="outline"
-                            className="ml-2 border-amber-400 text-[9px] text-amber-700"
-                            title="Kit sem produtos acabados na ficha técnica — cadastre a ficha para ele passar a explodir sozinho"
-                          >
-                            kit sem ficha
-                          </Badge>
-                        )}
-                      </td>
+                      <td className="px-3 py-2">{item.descricao || '—'}</td>
                       <td className="px-3 py-2 text-muted-foreground">
                         {item.variacao && item.variacao !== '-' ? item.variacao : '—'}
                       </td>
@@ -211,38 +155,8 @@ export default function LinhasConsolidadas({
                         )}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">
-                        {editavel ? (
-                          <Input
-                            type="number"
-                            min="1"
-                            className="h-8 w-20 text-right tabular-nums"
-                            value={inteiro(item.quantidade)}
-                            onChange={(evento) => {
-                              const valor = Math.round(Number(evento.target.value));
-                              if (!Number.isFinite(valor) || valor < 1) return;
-                              if (valor === inteiro(item.quantidade)) return;
-                              onAjustar({ op: 'quantidade', linha: item, valor });
-                            }}
-                          />
-                        ) : (
-                          inteiro(item.quantidade)
-                        )}
+                        {inteiro(item.quantidade)}
                       </td>
-                      {editavel && (
-                        <td className="px-3 py-2">
-                          <div className="flex items-center justify-end gap-1">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
-                              title="Remover esta linha do lote"
-                              onClick={() => onAjustar({ op: 'remover', linha: item })}
-                            >
-                              <X className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </td>
-                      )}
                     </tr>
                   ))}
                 </Fragment>
