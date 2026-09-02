@@ -1482,8 +1482,13 @@ class MarketplaceWebhookIngestService:
 
     def _meli_customer(self, order: dict) -> dict:
         buyer = order.get("buyer") or {}
+        buyer_name = " ".join(
+            part for part in (buyer.get("first_name"), buyer.get("last_name")) if part
+        ) or buyer.get("name") or buyer.get("nickname")
         return {
-            "name": buyer.get("nickname") or " ".join(part for part in (buyer.get("first_name"), buyer.get("last_name")) if part),
+            "name": buyer_name,
+            "first_name": buyer.get("first_name"),
+            "last_name": buyer.get("last_name"),
             "nickname": buyer.get("nickname"),
             "buyer_user_id": buyer.get("id"),
             "raw": buyer,

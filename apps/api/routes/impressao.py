@@ -106,8 +106,139 @@ def _primeiro_valor_preenchido(*valores):
     return ''
 
 
+def _normalizar_plataforma_slug(valor) -> str:
+    """Normaliza aliases de plataforma usados nos pedidos legados."""
+    slug = str(valor or '').strip().lower()
+    compacto = slug.replace(' ', '').replace('_', '').replace('-', '')
+    if compacto in ('mercadolivre', 'meli', 'ml'):
+        return 'mercadolivre'
+    return slug
+
+
+def _nome_completo(primeiro, ultimo) -> str:
+    """Monta um nome completo sem criar espacos extras."""
+    return ' '.join(
+        str(parte).strip()
+        for parte in (primeiro, ultimo)
+        if parte is not None and str(parte).strip()
+    )
+
+
+def _nome_comprador_mercadolivre(
+    *,
+    logistics: dict | None,
+    customer: dict | None,
+    platform_fields: dict | None,
+    fallback: str,
+) -> str:
+    """Resolve o nome real do comprador MercadoLivre, sem usar nickname como prioridade."""
+    logistics = logistics if isinstance(logistics, dict) else {}
+    customer = customer if isinstance(customer, dict) else {}
+    platform_fields = platform_fields if isinstance(platform_fields, dict) else {}
+
+    raw_buyer = customer.get('raw')
+    if not isinstance(raw_buyer, dict):
+        raw_buyer = {}
+    nome_comprador = _nome_completo(
+        raw_buyer.get('first_name') or customer.get('first_name'),
+        raw_buyer.get('last_name') or customer.get('last_name'),
+    )
+
+    nomes_usuario = {
+        str(valor).strip()
+        for valor in (
+            raw_buyer.get('nickname'),
+            customer.get('nickname'),
+            customer.get('username'),
+            customer.get('buyer_username'),
+            platform_fields.get('buyer_username'),
+        )
+        if valor is not None and str(valor).strip()
+    }
+    nome_campo_comprador = (
+        raw_buyer.get('name')
+        if str(raw_buyer.get('name') or '').strip() not in nomes_usuario
+        else ''
+    )
+
+    address = logistics.get('address')
+    if not isinstance(address, dict):
+        address = {}
+
+    # Compatibilidade com snapshots antigos, nos quais o endereco pode estar
+    # apenas dentro do payload bruto do MercadoLivre.
+    meli_fields = platform_fields.get('mercadolivre')
+    if not isinstance(meli_fields, dict):
+        meli_fields = {}
+    meli_order = meli_fields.get('order')
+    if not isinstance(meli_order, dict):
+        meli_order = {}
+    platform_buyer = meli_order.get('buyer')
+    if isinstance(platform_buyer, dict):
+        # Alguns snapshots antigos guardam o comprador completo apenas no
+        # payload da plataforma, e deixam customer.name como nickname.
+        raw_buyer = {**platform_buyer, **raw_buyer}
+        nome_comprador = _nome_completo(
+            raw_buyer.get('first_name') or customer.get('first_name'),
+            raw_buyer.get('last_name') or customer.get('last_name'),
+        )
+        nomes_usuario.update(
+            str(valor).strip()
+            for valor in (raw_buyer.get('nickname'), platform_fields.get('buyer_username'))
+            if valor is not None and str(valor).strip()
+        )
+        nome_campo_comprador = (
+            raw_buyer.get('name')
+            if str(raw_buyer.get('name') or '').strip() not in nomes_usuario
+            else ''
+        )
+    meli_shipment = meli_fields.get('shipment')
+    if not isinstance(meli_shipment, dict):
+        meli_shipment = {}
+    meli_shipping = meli_order.get('shipping')
+    if not isinstance(meli_shipping, dict):
+        meli_shipping = {}
+    raw_address = meli_shipment.get('receiver_address') or meli_shipping.get('receiver_address')
+
+    addresses = [address]
+    if isinstance(raw_address, dict) and raw_address != address:
+        addresses.append(raw_address)
+
+    # O comprador tem prioridade; receiver_name identifica o destinatario da
+    # entrega e so deve ser usado quando o nome do comprador nao estiver no
+    # snapshot.
+    fallback_sem_usuario = '' if str(fallback or '').strip() in nomes_usuario else fallback
+    return _primeiro_valor_preenchido(
+        nome_comprador,
+        nome_campo_comprador,
+        *(campo
+          for address_candidate in addresses
+          for campo in (
+              address_candidate.get('receiver_name'),
+              address_candidate.get('recipient_name'),
+              address_candidate.get('name'),
+          )),
+        fallback_sem_usuario,
+    )
+
+
+def _numero_externo_mercadolivre_sort_key(order: dict):
+    """Ordena o numero externo do MercadoLivre como numero, nao como texto."""
+    numero = str(order.get('numeroLoja') or '').strip()
+    try:
+        numero_numerico = int(numero)
+    except (TypeError, ValueError):
+        numero_numerico = None
+    if numero_numerico is not None and numero.lstrip('+-').isdigit():
+        return (0, numero_numerico, numero)
+    return (1, 0, numero)
+
+
 def _print_sort_key(order: dict):
-    """Ordem de impressao — mesma chave do legado.
+    """Ordem de impressao por plataforma.
+
+    MercadoLivre usa o numero externo crescente. As demais plataformas usam
+    a chave legada abaixo.
 
     Do legado (`kb/legado/services/bling/bling.py`):
 
@@ -123,8 +254,12 @@ def _print_sort_key(order: dict):
     que desfazia justamente o agrupamento por modelo — que e o ganho
     operacional da ordenacao: quem imprime quer as mesmas capas juntas.
     """
+    if order.get('plataforma_slug') == 'mercadolivre':
+        return (0, *_numero_externo_mercadolivre_sort_key(order), '')
+
     itens = order.get('itens') or []
     return (
+        1,
         1 if order.get('hasCustomItem') else 0,
         order.get('total_items') or 0,
         len(itens),
@@ -158,9 +293,11 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
         # porque a lista de vinculos nunca tinha nada para casar.
         #
         # A origem canonica ja esta no proprio pedido.
-        plataforma_slug = (pedido.get('marketplace_module_id') or '').strip().lower()
+        plataforma_slug = _normalizar_plataforma_slug(
+            pedido.get('marketplace_module_id') or pedido.get('origem')
+        )
         if plataforma_filter:
-            filtro = plataforma_filter.strip().lower()
+            filtro = _normalizar_plataforma_slug(plataforma_filter)
             # `BLING` nao e marketplace: e o caminho de ingest. Um pedido
             # ingerido via ERP satisfaz o filtro qualquer que seja seu canal.
             if filtro == 'bling':
@@ -240,6 +377,25 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
                 'custom_tag': custom_tag,
             }
             itens_formatted.append(item_formatted)
+
+        snapshot_customer = {}
+        snapshot_logistics = {}
+        snapshot_platform_fields = {}
+        if plataforma_slug == 'mercadolivre':
+            try:
+                snapshot_result = (
+                    supabase_db.table('pedido_snapshots')
+                    .select('customer, logistics, platform_fields')
+                    .eq('pedido_id', pedido_id)
+                    .limit(1)
+                    .execute()
+                )
+                snapshot = ((snapshot_result.data or [{}])[0] or {})
+                snapshot_customer = snapshot.get('customer') or {}
+                snapshot_logistics = snapshot.get('logistics') or {}
+                snapshot_platform_fields = snapshot.get('platform_fields') or {}
+            except Exception:
+                logger.warning('Falha ao ler dados do comprador MercadoLivre do pedido %s', pedido_id)
 
         # 5b. Mensagem do comprador.
         #
@@ -332,12 +488,31 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
         is_flex = pedido.get('is_flex', False)
         servico_logistico = pedido.get('servico_logistico', '')
 
+        nome_contato = pedido.get('cliente_nome', contato.get('nome', ''))
+        if plataforma_slug == 'mercadolivre':
+            nome_contato = _nome_comprador_mercadolivre(
+                logistics=snapshot_logistics,
+                customer=snapshot_customer,
+                platform_fields={
+                    **snapshot_platform_fields,
+                    'buyer_username': (
+                        snapshot_platform_fields.get('buyer_username')
+                        or pedido.get('buyer_username')
+                    ),
+                },
+                # cliente_nome e informacoes_cliente podem ter sido populados
+                # pelo nickname em registros antigos; nao os reutilizar como
+                # fallback do papel, para nunca imprimir o nome de usuario.
+                fallback='',
+            )
+
         return {
             'id': pedido.get('id'),
             'numero': str(erp_number),
             'numeroLoja': numero_loja,
+            'plataforma_slug': plataforma_slug,
             'contato': {
-                'nome': pedido.get('cliente_nome', contato.get('nome', '')),
+                'nome': nome_contato,
                 'numeroDocumento': documento,
                 'endereco': contato.get('endereco', ''),
                 'telefone': contato.get('telefone', pedido.get('cliente_telefone', '')),

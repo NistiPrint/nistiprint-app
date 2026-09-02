@@ -17,10 +17,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from routes.impressao import _print_sort_key  # noqa: E402
+from routes.impressao import (  # noqa: E402
+    _nome_comprador_mercadolivre,
+    _print_sort_key,
+)
 
 
-def pedido(numero_loja, tags, total_items=None, hascustom=None):
+def pedido(numero_loja, tags, total_items=None, hascustom=None, plataforma_slug=None):
     itens = [{'custom_tag': t} for t in tags]
     return {
         'numeroLoja': numero_loja,
@@ -29,6 +32,7 @@ def pedido(numero_loja, tags, total_items=None, hascustom=None):
         'hasCustomItem': hascustom
         if hascustom is not None
         else int(any((t or '').strip() for t in tags)),
+        'plataforma_slug': plataforma_slug,
     }
 
 
@@ -92,6 +96,82 @@ class TestOrdemImpressao(unittest.TestCase):
             pedido('A', ['CAPA-A']),
         ]
         self.assertEqual(self.ordenar(pedidos), self.ordenar(pedidos))
+
+    def test_mercadolivre_ordena_numero_externo_crescente(self):
+        pedidos = [
+            pedido('100', [], plataforma_slug='mercadolivre'),
+            pedido('99', [], plataforma_slug='mercadolivre'),
+            pedido('1000', [], plataforma_slug='mercadolivre'),
+        ]
+        self.assertEqual(self.ordenar(pedidos), ['99', '100', '1000'])
+
+    def test_mercadolivre_desempata_por_texto(self):
+        pedidos = [
+            pedido('MELI-B', [], plataforma_slug='mercadolivre'),
+            pedido('MELI-A', [], plataforma_slug='mercadolivre'),
+            pedido('10', [], plataforma_slug='mercadolivre'),
+        ]
+        self.assertEqual(self.ordenar(pedidos), ['10', 'MELI-A', 'MELI-B'])
+
+    def test_mercadolivre_desempata_textualmente_ids_numericos_equivalentes(self):
+        pedidos = [
+            pedido('1', [], plataforma_slug='mercadolivre'),
+            pedido('001', [], plataforma_slug='mercadolivre'),
+        ]
+        self.assertEqual(self.ordenar(pedidos), ['001', '1'])
+
+    def test_mercadolivre_prioriza_nome_do_comprador(self):
+        nome = _nome_comprador_mercadolivre(
+            logistics={'address': {'receiver_name': 'Maria da Silva'}},
+            customer={
+                'name': 'apelido-do-usuario',
+                'nickname': 'apelido-do-usuario',
+                'raw': {'first_name': 'Joao', 'last_name': 'Santos'},
+            },
+            platform_fields={},
+            fallback='apelido-do-usuario',
+        )
+        self.assertEqual(nome, 'Joao Santos')
+
+    def test_mercadolivre_faz_fallback_para_endereco(self):
+        nome = _nome_comprador_mercadolivre(
+            logistics={'address': {'receiver_name': 'Maria da Silva'}},
+            customer={'name': 'apelido-do-usuario'},
+            platform_fields={},
+            fallback='apelido-do-usuario',
+        )
+        self.assertEqual(nome, 'Maria da Silva')
+
+    def test_mercadolivre_busca_comprador_no_payload_da_plataforma(self):
+        nome = _nome_comprador_mercadolivre(
+            logistics={},
+            customer={'name': 'apelido-do-usuario'},
+            platform_fields={
+                'buyer_username': 'apelido-do-usuario',
+                'mercadolivre': {
+                    'order': {
+                        'buyer': {'first_name': 'Carlos', 'last_name': 'Oliveira'},
+                    },
+                },
+            },
+            fallback='',
+        )
+        self.assertEqual(nome, 'Carlos Oliveira')
+
+    def test_mercadolivre_sem_endereco_nao_quebra(self):
+        nome = _nome_comprador_mercadolivre(
+            logistics={}, customer={}, platform_fields={}, fallback='Nome legado'
+        )
+        self.assertEqual(nome, 'Nome legado')
+
+    def test_mercadolivre_nao_exibe_nickname_como_fallback(self):
+        nome = _nome_comprador_mercadolivre(
+            logistics={},
+            customer={'nickname': 'usuario-ml', 'name': 'usuario-ml'},
+            platform_fields={'buyer_username': 'usuario-ml'},
+            fallback='usuario-ml',
+        )
+        self.assertEqual(nome, '')
 
 
 if __name__ == '__main__':

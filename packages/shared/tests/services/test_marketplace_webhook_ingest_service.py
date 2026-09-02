@@ -11,6 +11,19 @@ from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 
 
 class TestMarketplaceWebhookIngestService(unittest.TestCase):
+    def test_meli_customer_prefers_buyer_name_over_nickname(self):
+        customer = MarketplaceWebhookIngestService()._meli_customer({
+            "buyer": {
+                "nickname": "usuario-ml",
+                "first_name": "Joao",
+                "last_name": "Santos",
+                "id": 123,
+            },
+        })
+
+        self.assertEqual(customer["name"], "Joao Santos")
+        self.assertEqual(customer["nickname"], "usuario-ml")
+
     def test_account_not_found_never_falls_back_to_another_integration(self):
         service = MarketplaceWebhookIngestService()
         rows = [
@@ -393,5 +406,4 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
