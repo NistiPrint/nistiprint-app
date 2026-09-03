@@ -1,170 +1,53 @@
-import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { AlertTriangle, FileText, Package } from 'lucide-react';
-import { Fragment } from 'react';
+import { Input } from '@/components/ui/input';
+import { AlertTriangle, GripVertical, MoreHorizontal, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { inserirLinha, linhaVazia, moverLinha, normalizarLinha, totalizarLinhas } from '@/lib/consolidacaoEditavel';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 
-// A consolidação de um lote — a mesma tabela, venha ela da prévia ou da demanda
-// já materializada.
-//
-// Contrato: docs/specs/02-domains/despacho/spec.md
-//
-// A ordem É a informação: miolo com mais carga primeiro e, dentro do miolo,
-// quantidade decrescente. É a ordem em que a fábrica produz, e é a mesma da
-// planilha do legado. Ela vem pronta do banco (`despacho_consolidar_pedidos`,
-// via `ordem`) e NÃO deve ser reordenada aqui — reordenar no cliente criaria
-// uma segunda opinião sobre a ordem de produção.
-//
-// `contabiliza_estoque` falso não é pendência nem erro: a linha produz
-// normalmente, só não movimenta estoque, porque o SKU do marketplace não tem
-// produto interno vinculado. Aparece como aviso e com caminho para o cadastro,
-// nunca como bloqueio — a regra do domínio é degradar, não reter.
-
-function agruparPorMiolo(itens) {
-  // Agrupa preservando a ordem que veio do banco, em vez de ordenar por chave:
-  // itens do mesmo miolo já chegam adjacentes, e qualquer reordenação aqui
-  // desmancharia o ranking por carga.
-  const grupos = [];
-  for (const item of itens) {
-    const ultimo = grupos[grupos.length - 1];
-    if (ultimo && ultimo.chave === item.miolo_chave) ultimo.itens.push(item);
-    else grupos.push({ chave: item.miolo_chave, rotulo: item.miolo_nome, itens: [item] });
-  }
-  return grupos;
+function statusBadge(status) {
+  if (status === 'resolvido') return <span className="ml-1 text-emerald-600" title="Vínculo resolvido">✓</span>;
+  if (status === 'ambiguo') return <span className="ml-1 text-amber-600" title="Mais de um vínculo possível">!</span>;
+  if (status === 'nao_resolvido') return <span className="ml-1 text-amber-600" title="Sem vínculo de estoque">!</span>;
+  return null;
 }
 
-const inteiro = (valor) => Math.round(Number(valor || 0));
+export default function LinhasConsolidadas({ itens = [], resumo = null, titulo = 'Consolidação do lote', ajuda = null, rotuloDemanda = null, carregando = false, erro = null, className = 'mb-6', onChange, onReset }) {
+  const [linhas, setLinhas] = useState(() => itens.map(normalizarLinha));
+  const [arrastando, setArrastando] = useState(null);
 
-export default function LinhasConsolidadas({
-  itens = [],
-  resumo = null,
-  titulo = 'Ordem de produção',
-  ajuda = 'miolo com mais carga primeiro',
-  rotuloDemanda = null,
-  carregando = false,
-  erro = null,
-  className = 'mb-6',
-}) {
-  if (erro) {
-    return (
-      <Card className={`border-destructive/50 ${className}`}>
-        <CardContent className="py-4 text-sm text-destructive">{erro}</CardContent>
-      </Card>
-    );
-  }
+  const atualizar = (proxima) => { setLinhas(proxima); onChange?.(proxima); };
+  const editar = (indice, campo, valor) => atualizar(linhas.map((linha, i) => i === indice ? { ...linha, [campo]: valor, manual: true } : linha));
+  const restaurar = () => { const proxima = itens.map(normalizarLinha); setLinhas(proxima); onReset?.(proxima); onChange?.(proxima); };
 
-  if (carregando) {
-    return <div className={`h-32 w-full animate-pulse rounded-md bg-muted ${className}`} />;
-  }
+  if (erro) return <Card className={`border-destructive/50 ${className}`}><CardContent className="py-4 text-sm text-destructive">{erro}</CardContent></Card>;
+  if (carregando) return <div className={`h-48 w-full animate-pulse rounded-md bg-muted ${className}`} />;
 
-  const grupos = agruparPorMiolo(itens);
-  const totalPecas = resumo?.total_pecas ?? itens.reduce((s, i) => s + Number(i.quantidade || 0), 0);
-  const totalMiolos = resumo?.total_miolos ?? grupos.length;
-  const semEstoque = resumo?.sem_estoque ?? itens.filter((i) => !i.contabiliza_estoque).length;
-
-  if (!itens.length) {
-    return (
-      <Card className={`border-dashed ${className}`}>
-        <CardContent className="py-8 text-center text-sm text-muted-foreground">
-          Nenhum item para consolidar. Os pedidos deste lote ainda não têm itens
-          registrados na base.
-        </CardContent>
-      </Card>
-    );
-  }
-
+  const totalPecas = totalizarLinhas(linhas);
+  const semVinculo = linhas.filter((linha) => linha.sku_status === 'nao_resolvido' || linha.sku_status === 'ambiguo' || linha.contabiliza_estoque === false).length;
   return (
     <div className={className}>
-      <div className="mb-2 flex flex-wrap items-baseline gap-2">
-        <span className="text-sm font-medium">{titulo}</span>
-        {ajuda && <span className="text-xs text-muted-foreground">{ajuda}</span>}
-        <span className="ml-auto text-xs text-muted-foreground">
-          <FileText className="mr-1 inline h-3.5 w-3.5" />
-          {rotuloDemanda ? `${rotuloDemanda} · ` : ''}
-          {itens.length} linhas · {inteiro(totalPecas)} peças · {totalMiolos}{' '}
-          {totalMiolos === 1 ? 'miolo' : 'miolos'}
-        </span>
-      </div>
-
-      {semEstoque > 0 && (
-        <div className="mb-2 flex items-center gap-1.5 text-xs text-amber-700">
-          <AlertTriangle className="h-3 w-3 shrink-0" />
-          {semEstoque} {semEstoque === 1 ? 'linha produz' : 'linhas produzem'} sem movimentar
-          estoque — o SKU do marketplace ainda não tem produto interno vinculado.
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div><div className="text-sm font-medium">{titulo}</div>{ajuda && <div className="text-xs text-muted-foreground">{ajuda}</div>}</div>
+        <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+          {rotuloDemanda && <span>{rotuloDemanda} ·</span>}<span>{linhas.length} linhas</span><span>·</span><span className="font-medium text-foreground">{Math.round(totalPecas)} itens</span>
+          {resumo?.total_miolos > 0 && <span>· {resumo.total_miolos} miolos</span>}
+          <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={restaurar} disabled={!linhas.some((linha) => linha.manual)}><RotateCcw className="h-3 w-3" /> Restaurar</Button>
         </div>
-      )}
-
+      </div>
+      {semVinculo > 0 && <div className="mb-2 flex items-center gap-1.5 text-xs text-amber-700"><AlertTriangle className="h-3 w-3 shrink-0" />{semVinculo} linha{semVinculo === 1 ? '' : 's'} sem vínculo de estoque. A publicação continuará, mas não haverá baixa para essas linhas.</div>}
       <div className="overflow-x-auto rounded-md border">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
-            <tr>
-              <th className="w-10 px-3 py-2 font-medium">#</th>
-              <th className="px-3 py-2 font-medium">Produto</th>
-              <th className="px-3 py-2 font-medium">Variação</th>
-              <th className="px-3 py-2 font-medium">SKU</th>
-              <th className="px-3 py-2 font-medium">Produto interno</th>
-              <th className="w-20 px-3 py-2 text-right font-medium">Qtde</th>
-            </tr>
-          </thead>
-          <tbody>
-            {grupos.map((grupo, indice) => {
-              const carga = grupo.itens.reduce((s, i) => s + Number(i.quantidade || 0), 0);
-              // `miolo_origem` distingue o miolo que veio da ficha técnica do
-              // que foi derivado do prefixo do SKU. São confianças diferentes:
-              // o primeiro é cadastro, o segundo é convenção de nomenclatura.
-              const viaBom = grupo.itens[0]?.miolo_origem === 'BOM';
-              return (
-                <Fragment key={grupo.chave ?? `miolo-${indice}`}>
-                  <tr className="border-t bg-muted/30">
-                    <td colSpan={5} className="px-3 py-1.5 text-xs font-semibold">
-                      <span className="inline-flex items-center gap-1.5">
-                        <Package className="h-3.5 w-3.5" />
-                        Miolo {grupo.rotulo || grupo.chave || 'não identificado'}
-                        {viaBom && (
-                          <Badge variant="outline" className="text-[9px]">via ficha técnica</Badge>
-                        )}
-                      </span>
-                    </td>
-                    <td className="px-3 py-1.5 text-right text-xs font-semibold tabular-nums">
-                      {inteiro(carga)}
-                    </td>
-                  </tr>
-                  {grupo.itens.map((item, linha) => (
-                    <tr key={item.id ?? `${grupo.chave}-${item.sku_externo}-${linha}`} className="border-t">
-                      <td className="px-3 py-2 text-xs tabular-nums text-muted-foreground">
-                        {item.ordem}
-                      </td>
-                      <td className="px-3 py-2">{item.descricao || '—'}</td>
-                      <td className="px-3 py-2 text-muted-foreground">
-                        {item.variacao && item.variacao !== '-' ? item.variacao : '—'}
-                      </td>
-                      <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
-                        {item.sku_externo || '—'}
-                      </td>
-                      <td className="px-3 py-2 text-xs">
-                        {item.contabiliza_estoque ? (
-                          <span className="text-muted-foreground">
-                            {item.produto_nome || `#${item.produto_id}`}
-                          </span>
-                        ) : (
-                          // Não é um controle de vínculo: vincular produto é
-                          // cadastro, e é lá que a decisão persiste. Um seletor
-                          // aqui salvaria no nada — foi o que a tela antiga fazia.
-                          <Badge variant="outline" className="border-amber-400 text-[10px] text-amber-700">
-                            sem vínculo
-                          </Badge>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {inteiro(item.quantidade)}
-                      </td>
-                    </tr>
-                  ))}
-                </Fragment>
-              );
-            })}
-          </tbody>
+        <table className="w-full min-w-[760px] text-sm"><thead className="bg-muted/50 text-left text-xs text-muted-foreground"><tr><th className="w-8 px-2 py-2" aria-label="Mover" /><th className="px-3 py-2 font-medium">Produto</th><th className="px-3 py-2 font-medium">SKU</th><th className="px-3 py-2 font-medium">Variação</th><th className="px-3 py-2 font-medium">Miolo</th><th className="w-28 px-3 py-2 text-right font-medium">Quantidade</th><th className="w-12 px-2 py-2" aria-label="Ações" /></tr></thead>
+          <tbody>{linhas.map((linha, indice) => <tr key={linha.client_id} className={`border-t ${linhaVazia(linha) ? 'bg-amber-50/40' : ''}`} draggable onDragStart={() => setArrastando(indice)} onDragOver={(evento) => evento.preventDefault()} onDrop={() => { if (arrastando !== null) atualizar(moverLinha(linhas, arrastando, indice)); setArrastando(null); }} onDragEnd={() => setArrastando(null)}>
+            <td className="px-2 py-2 text-muted-foreground"><button type="button" className="cursor-grab p-1" title="Arrastar linha" aria-label={`Arrastar linha ${indice + 1}`}><GripVertical className="h-4 w-4" /></button></td>
+            {[['descricao', 'Produto'], ['sku_externo', 'SKU'], ['variacao', 'Variação'], ['miolo_nome', 'Miolo']].map(([campo, placeholder]) => <td key={campo} className="px-2 py-1.5"><div className="flex items-center"><Input value={linha[campo]} placeholder={placeholder} onChange={(evento) => editar(indice, campo, evento.target.value)} className="h-8 min-w-[130px]" />{campo === 'sku_externo' && statusBadge(linha.sku_status)}{campo === 'miolo_nome' && statusBadge(linha.miolo_status)}</div></td>)}
+            <td className="px-2 py-1.5"><Input type="number" min="1" step="1" value={linha.quantidade} onChange={(evento) => editar(indice, 'quantidade', evento.target.value === '' ? '' : Number(evento.target.value))} className="h-8 text-right" aria-label={`Quantidade da linha ${indice + 1}`} /></td>
+            <td className="px-2 py-1.5 text-right"><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Ações da linha ${indice + 1}`}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onClick={() => atualizar(inserirLinha(linhas, indice, true))}><Plus className="mr-2 h-4 w-4" /> Inserir acima</DropdownMenuItem><DropdownMenuItem onClick={() => atualizar(inserirLinha(linhas, indice, false))}><Plus className="mr-2 h-4 w-4" /> Inserir abaixo</DropdownMenuItem><DropdownMenuItem className="text-destructive" onClick={() => atualizar(linhas.filter((_, i) => i !== indice))}><Trash2 className="mr-2 h-4 w-4" /> Excluir linha</DropdownMenuItem></DropdownMenuContent></DropdownMenu></td>
+          </tr>)}</tbody>
         </table>
       </div>
+      <Button type="button" variant="outline" size="sm" className="mt-2 gap-1.5" onClick={() => atualizar(inserirLinha(linhas, linhas.length, false))}><Plus className="h-4 w-4" /> Adicionar linha</Button>
     </div>
   );
 }

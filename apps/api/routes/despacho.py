@@ -12,6 +12,7 @@ si por caminhos diferentes de codigo.
 """
 
 from datetime import date, datetime
+import hashlib
 import json
 import os
 import tempfile
@@ -729,7 +730,7 @@ def _linha_consolidada(row: dict) -> dict:
     aparecia como "Sem descricao" com zero pedidos.
     """
     quantidade = float(row.get("quantidade") or 0)
-    return {
+    linha = {
         "ordem": row.get("ordem"),
         "sku_externo": row.get("sku_externo"),
         "descricao": row.get("descricao") or row.get("titulo_anuncio"),
@@ -744,6 +745,12 @@ def _linha_consolidada(row: dict) -> dict:
         "contabiliza_estoque": bool(row.get("contabiliza_estoque")),
         "pedidos_origem": row.get("pedidos_origem") or [],
     }
+    linha["linha_chave"] = hashlib.md5("|".join([
+        str(linha["produto_id"] or ""), str(linha["sku_externo"] or ""),
+        str(linha["descricao"] or ""), str(linha["variacao"] or ""),
+        str(linha["miolo_chave"] or linha["miolo_nome"] or ""),
+    ]).encode("utf-8")).hexdigest()
+    return linha
 
 
 def _resumo_consolidacao(itens: list[dict]) -> dict:
@@ -754,6 +761,73 @@ def _resumo_consolidacao(itens: list[dict]) -> dict:
         "sem_estoque": sum(1 for item in itens if not item["contabiliza_estoque"]),
         "total_miolos": len({item.get("miolo_chave") for item in itens}),
     }
+
+
+def _resolver_sku_exato(sku: str) -> dict:
+    """Resolve SKU sem heurística; usado para linhas editadas e novas."""
+    valor = str(sku or "").strip()
+    if not valor:
+        return {"status": "nao_resolvido", "produto_id": None, "produto_nome": None}
+    produtos = (supabase_db.table("produtos").select("id,sku,nome")
+                .ilike("sku", valor).limit(2).execute().data or [])
+    if len(produtos) == 1:
+        produto = produtos[0]
+        return {"status": "resolvido", "produto_id": produto.get("id"), "produto_nome": produto.get("nome")}
+    if len(produtos) > 1:
+        return {"status": "ambiguo", "produto_id": None, "produto_nome": None}
+    aliases = (supabase_db.table("produtos_externos").select("produto_id")
+               .ilike("codigo_externo", valor).limit(2).execute().data or [])
+    ids = {item.get("produto_id") for item in aliases if item.get("produto_id") is not None}
+    if len(ids) == 1:
+        produto = (supabase_db.table("produtos").select("id,nome").eq("id", next(iter(ids))).limit(1).execute().data or [])
+        return {"status": "resolvido", "produto_id": next(iter(ids)), "produto_nome": produto[0].get("nome") if produto else None}
+    return {"status": "ambiguo" if len(ids) > 1 else "nao_resolvido", "produto_id": None, "produto_nome": None}
+
+
+def _guardar_versao_previsao(demanda_id: int, versao: str | None) -> None:
+    if not demanda_id or not versao:
+        return
+    rows = (supabase_db.table("demandas_producao").select("escopo_despacho")
+            .eq("id", demanda_id).limit(1).execute().data or [])
+    if not rows:
+        return
+    escopo = dict(rows[0].get("escopo_despacho") or {})
+    escopo["previsao_versao"] = versao
+    supabase_db.table("demandas_producao").update({"escopo_despacho": escopo}).eq("id", demanda_id).execute()
+
+
+@despacho_bp.route("/linhas/validar", methods=["POST"])
+def validar_linhas_editadas():
+    """Valida SKUs/Miolos da grade sem criar ou alterar uma demanda."""
+    if not get_current_user():
+        return jsonify({"success": False, "error": "Nao autorizado"}), 401
+    body = request.get_json(silent=True) or {}
+    linhas = body.get("linhas") or []
+    resultado = []
+    try:
+        for indice, linha in enumerate(linhas):
+            sku = str(linha.get("sku") or "").strip()
+            resolucao = _resolver_sku_exato(sku)
+            miolo = str(linha.get("miolo") or "").strip()
+            miolos = []
+            if miolo:
+                por_sku = (supabase_db.table("produtos").select("id,nome,sku")
+                           .ilike("sku", miolo).limit(2).execute().data or [])
+                por_nome = (supabase_db.table("produtos").select("id,nome,sku")
+                            .ilike("nome", miolo).limit(2).execute().data or [])
+                miolos = list({item.get("id"): item for item in [*por_sku, *por_nome] if item.get("id") is not None}.values())[:2]
+            resultado.append({
+                "client_id": linha.get("client_id") or indice,
+                "sku_status": resolucao["status"],
+                "produto_id": resolucao.get("produto_id"),
+                "produto_nome": resolucao.get("produto_nome"),
+                "miolo_status": "resolvido" if len(miolos) == 1 else ("ambiguo" if len(miolos) > 1 else "nao_resolvido"),
+                "id_produto_miolo": miolos[0].get("id") if len(miolos) == 1 else None,
+            })
+        return jsonify({"success": True, "data": {"linhas": resultado}})
+    except Exception as exc:
+        logger.error("Erro ao validar linhas editadas: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @despacho_bp.route("/previsao", methods=["GET"])
@@ -778,6 +852,7 @@ def previsao_consolidacao():
         if not ids:
             return jsonify({"success": True, "data": {
                 "total_pedidos": 0, "itens": [], "chave": chave,
+                "previsao_versao": hashlib.sha256(b"empty").hexdigest(),
                 **_resumo_consolidacao([]),
             }})
 
@@ -785,11 +860,16 @@ def previsao_consolidacao():
             "despacho_consolidar_pedidos", {"p_pedido_ids": ids}
         ).execute().data or []
         itens = [_linha_consolidada(row) for row in rows]
+        versao = hashlib.sha256(json.dumps({
+            "pedido_ids": sorted(ids),
+            "linhas": [{key: item.get(key) for key in ("linha_chave", "quantidade")} for item in itens],
+        }, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
         return jsonify({"success": True, "data": {
             "total_pedidos": len(ids),
             "itens": itens,
             "chave": chave,
+            "previsao_versao": versao,
             **_resumo_consolidacao(itens),
         }})
     except Exception as exc:
@@ -862,6 +942,7 @@ def post_lancar():
                 return jsonify({"success": False, "error": "Escopo vazio"}), 409
             row = rows[0]
             demanda_id = row.get("out_demanda_id")
+            _guardar_versao_previsao(demanda_id, body.get("previsao_versao"))
             supabase_db.table("conferencias_arquivo").update({"demanda_id": demanda_id}).eq("id", conferencia_id).execute()
             return jsonify({"success": True, "data": {
                 "demanda_id": demanda_id,
@@ -887,6 +968,7 @@ def post_lancar():
             return jsonify({"success": False, "error": "Escopo vazio"}), 409
 
         row = rows[0]
+        _guardar_versao_previsao(row.get("out_demanda_id"), body.get("previsao_versao"))
         return jsonify({
             "success": True,
             "data": {
@@ -928,10 +1010,19 @@ def post_publicar():
             return jsonify({"success": False, "error": "demanda_id e obrigatorio"}), 400
 
         user_id = str((user or {}).get("id") or (user or {}).get("nome") or "System")
-        result = supabase_db.rpc("despacho_publicar_demanda", {
-            "p_demanda_id": demanda_id,
-            "p_user_id": user_id,
-        }).execute()
+        linhas = body.get("linhas")
+        if isinstance(linhas, list) and linhas:
+            result = supabase_db.rpc("despacho_publicar_demanda_editada", {
+                "p_demanda_id": demanda_id,
+                "p_user_id": user_id,
+                "p_previsao_versao": body.get("previsao_versao"),
+                "p_linhas": linhas,
+            }).execute()
+        else:
+            result = supabase_db.rpc("despacho_publicar_demanda", {
+                "p_demanda_id": demanda_id,
+                "p_user_id": user_id,
+            }).execute()
 
         rows = result.data or []
         if not rows:
@@ -953,6 +1044,8 @@ def post_publicar():
             return jsonify({"success": False, "error": "Esta demanda ja foi publicada."}), 409
         if "nao tem pedidos" in message:
             return jsonify({"success": False, "error": "Rascunho sem pedidos."}), 409
+        if "versao" in message.lower() or "escopo mudou" in message.lower():
+            return jsonify({"success": False, "error": "O escopo mudou desde a prévia. Recarregue e confira a tabela novamente."}), 409
         logger.error("Erro ao publicar demanda: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": message}), 500
 

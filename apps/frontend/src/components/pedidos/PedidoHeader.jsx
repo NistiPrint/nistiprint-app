@@ -9,12 +9,9 @@ import {
 import {
   ArrowLeft,
   Copy,
-  ExternalLink,
   FileText,
   MoreHorizontal,
-  Printer,
   RefreshCw,
-  Share2,
   Sparkles,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -29,8 +26,7 @@ export default function PedidoHeader({
   pedido,
   onBack,
   onCopy,
-  onPrint,
-  onShare,
+  onOpenDetails,
   onOpenLogs,
   onReprocess,
   isReprocessing,
@@ -43,10 +39,6 @@ export default function PedidoHeader({
     navigator.clipboard.writeText(texto);
     toast.success('Número do pedido copiado!');
     onCopy?.();
-  };
-
-  const handleOpenMarketplace = () => {
-    toast.info('Funcionalidade em desenvolvimento');
   };
 
   return (
@@ -137,6 +129,7 @@ export default function PedidoHeader({
         </div>
 
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={onOpenDetails}>Mais detalhes</Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="icon">
@@ -148,10 +141,6 @@ export default function PedidoHeader({
                 <Copy className="w-4 h-4 mr-2" />
                 Copiar ID
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={onPrint}>
-                <Printer className="w-4 h-4 mr-2" />
-                Imprimir
-              </DropdownMenuItem>
               <DropdownMenuItem onClick={onOpenLogs}>
                 <FileText className="w-4 h-4 mr-2" />
                 Logs
@@ -159,14 +148,6 @@ export default function PedidoHeader({
               <DropdownMenuItem onClick={onReprocess} disabled={isReprocessing}>
                 <RefreshCw className={`w-4 h-4 mr-2 ${isReprocessing ? 'animate-spin' : ''}`} />
                 Reprocessar
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleOpenMarketplace}>
-                <ExternalLink className="w-4 h-4 mr-2" />
-                Ver no Marketplace
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onShare}>
-                <Share2 className="w-4 h-4 mr-2" />
-                Compartilhar
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

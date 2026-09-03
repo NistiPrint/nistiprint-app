@@ -43,8 +43,9 @@ export default function AlertaTurbo() {
     if (carregandoRef.current) return;
     carregandoRef.current = true;
     try {
-      const { data, error } = await supabase.rpc('despacho_esteira_relativo');
-      if (!error) setPedidos(data || []);
+      const resposta = await fetch('/api/v2/despacho/esteira');
+      const json = await resposta.json();
+      if (resposta.ok && json.success) setPedidos(json.data?.pedidos || []);
     } finally {
       carregandoRef.current = false;
     }

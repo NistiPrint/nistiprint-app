@@ -44,7 +44,7 @@ function paramsParaQuery(params) {
   return query;
 }
 
-export default function AcoesDoLote({ params, titulo = 'Ações do lote', className = '' }) {
+export default function AcoesDoLote({ params, titulo = 'Ações do lote', className = '', mostrarIds = true, acoesExtras = null }) {
   const [dados, setDados] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
@@ -176,6 +176,7 @@ export default function AcoesDoLote({ params, titulo = 'Ações do lote', classN
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {acoesExtras}
             <Button variant="outline" size="sm" className="gap-2" onClick={imprimir}
               disabled={carregando || imprimindo || !dados?.total}>
               {imprimindo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
@@ -236,7 +237,7 @@ export default function AcoesDoLote({ params, titulo = 'Ações do lote', classN
           </div>
         )}
 
-        {blocos.length > 0 && (
+        {mostrarIds && blocos.length > 0 && (
           <div className="space-y-2 rounded-md border bg-muted/30 p-3">
             <div className="flex items-center justify-between">
               <div className="text-xs font-medium">

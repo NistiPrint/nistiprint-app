@@ -5,21 +5,14 @@ import PedidoIntegracoesCard from '@/components/pedidos/PedidoIntegracoesCard';
 import PedidoItensList from '@/components/pedidos/PedidoItensList';
 import PedidoPlatformFieldsCard from '@/components/pedidos/PedidoPlatformFieldsCard';
 import PedidoTimeline from '@/components/pedidos/PedidoTimeline';
-import PedidoResumoCards from '@/components/pedidos/PedidoResumoCards';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import * as pedidoService from '@/services/pedidoService';
 import { formatAppDateTime } from '@/lib/dateTime';
 import { getOrderTimestamps } from '@/lib/orderTimestamps';
-import {
-  CalendarClock,
-  Clock3,
-  Loader2,
-  Package,
-  Truck,
-  Warehouse
-} from 'lucide-react';
-import { createElement, useCallback, useEffect, useMemo, useState } from 'react';
+import { CalendarClock, Loader2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -35,25 +28,6 @@ function InfoLine({ label, value, mono = false }) {
         {value || 'Não informado'}
       </span>
     </div>
-  );
-}
-
-function DateCard({ icon, label, value, hint, tone = 'text-muted-foreground' }) {
-  return (
-    <Card className="h-full">
-      <CardContent className="pt-6">
-        <div className="flex items-start justify-between gap-3">
-          <div className="space-y-2">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
-            <p className="text-lg font-semibold">{value || 'Não informado'}</p>
-            {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-          </div>
-          <div className={`rounded-full bg-muted p-2 ${tone}`}>
-            {createElement(icon, { className: 'h-4 w-4' })}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -98,6 +72,7 @@ export default function PedidoDetalhePage() {
   const [error, setError] = useState(null);
   const [isLogsOpen, setIsLogsOpen] = useState(false);
   const [isReprocessing, setIsReprocessing] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
   const carregarPedido = useCallback(async () => {
     setLoading(true);
@@ -137,14 +112,6 @@ export default function PedidoDetalhePage() {
 
   function handleBack() {
     navigate('/vendas/pedidos', { replace: true });
-  }
-
-  function handlePrint() {
-    toast.info('Funcionalidade de impressão em desenvolvimento');
-  }
-
-  function handleShare() {
-    toast.info('Funcionalidade de compartilhamento em desenvolvimento');
   }
 
   function handleOpenLogs() {
@@ -209,62 +176,24 @@ export default function PedidoDetalhePage() {
         <PedidoHeader
           pedido={pedido}
           onBack={handleBack}
-          onPrint={handlePrint}
-          onShare={handleShare}
+          onOpenDetails={() => setIsDetailsOpen(true)}
           onOpenLogs={handleOpenLogs}
           onReprocess={handleReprocess}
           isReprocessing={isReprocessing}
         />
 
-        <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <DateCard
-            icon={Package}
-            label="Compra"
-            value={formatValue(timestamps.compra || pedido.datas?.venda)}
-            hint="Data/hora de criação do pedido"
-          />
-          <DateCard
-            icon={Clock3}
-            label="Pagamento"
-            value={formatValue(timestamps.pagamento)}
-            hint="Usada para validar a hora de corte"
-          />
-          <DateCard
-            icon={Warehouse}
-            label="Coleta"
-            value={formatValue(timestamps.coleta)}
-            hint="Coleta pela transportadora ou ponto"
-          />
-          <DateCard
-            icon={Truck}
-            label="Envio"
-            value={formatValue(timestamps.envio)}
-            hint="Bipagem no marketplace"
-          />
-        </div>
+        <Card className="mb-6"><CardContent className="grid gap-4 py-5 sm:grid-cols-3">
+          <InfoLine label="Comprador" value={pedido.cliente?.nome} />
+          <InfoLine label="Data da compra" value={formatValue(timestamps.compra || pedido.datas?.venda)} />
+          <InfoLine label="Limite de envio" value={formatValue(timestamps.limite)} />
+        </CardContent></Card>
+        <PedidoItensList itens={pedido.itens} />
+      </div>
 
-        <PedidoResumoCards pedido={pedido} />
-
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1.4fr_0.9fr]">
-          <div className="space-y-6">
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Itens do pedido</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <PedidoItensList itens={pedido.itens} />
-              </CardContent>
-            </Card>
-
-            <PedidoTimeline
-              eventos={pedido.timeline}
-              pedidoId={pedido.id}
-              codigoPedidoExterno={pedido.codigo_pedido_externo}
-              onReprocess={carregarPedido}
-            />
-          </div>
-
-          <div className="space-y-6">
+      <Sheet open={isDetailsOpen} onOpenChange={setIsDetailsOpen}>
+        <SheetContent side="right" className="w-[96vw] overflow-y-auto sm:max-w-2xl">
+          <SheetHeader><SheetTitle>Mais detalhes do pedido #{pedido.numero_pedido}</SheetTitle></SheetHeader>
+          <div className="mt-6 space-y-6">
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">Resumo operacional</CardTitle>
@@ -285,6 +214,7 @@ export default function PedidoDetalhePage() {
 
             <OperacaoCard pedido={pedido} />
 
+            <PedidoTimeline eventos={pedido.timeline} pedidoId={pedido.id} codigoPedidoExterno={pedido.codigo_pedido_externo} onReprocess={carregarPedido} />
             <PedidoDemandaCard
               pedidoId={pedido.id}
               demandas={demandas}
@@ -294,8 +224,8 @@ export default function PedidoDetalhePage() {
             <PedidoIntegracoesCard integracoes={pedido.integracoes} />
             <PedidoPlatformFieldsCard pedido={pedido} />
           </div>
-        </div>
-      </div>
+        </SheetContent>
+      </Sheet>
 
       <PedidoLogsModal
         open={isLogsOpen}
