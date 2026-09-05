@@ -6,6 +6,7 @@ from flask import jsonify, redirect, request, url_for
 from routes.auth import admin_required, login_required
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.credential_resolver_service import (
+    AmbiguousAppProfileError,
     credential_resolver_service,
 )
 from nistiprint_shared.services.integracao_canal_service import (
@@ -95,6 +96,27 @@ def _auth_update_payload(inst, platform, tokens, explicit_identifier=None):
         "sync_status": "active",
         "is_active": True,
     }
+
+
+@marketplace_api_bp.errorhandler(AmbiguousAppProfileError)
+def _handle_ambiguous_app_profile(exc):
+    """Instalacao sem vinculo de aplicativo, com mais de um candidato ativo.
+
+    Chega como 409 e nao 500 porque nao e falha do servidor: e cadastro
+    incompleto, e a acao corretiva e do usuario. O corpo diz quais aplicativos
+    disputam a instalacao para que a tela consiga oferecer a escolha.
+    """
+    return (
+        jsonify(
+            {
+                "error": str(exc),
+                "error_type": exc.error_type,
+                "module_id": exc.module_id,
+                "candidate_app_profile_ids": exc.candidate_ids,
+            }
+        ),
+        409,
+    )
 
 
 def _callback_redirect_url(platform):
@@ -355,30 +377,12 @@ def install_module():
             credentials=data.get("credentials", {}),
             instance_color=data.get("instance_color", "#64748b"),
             description=data.get("description"),
+            # Vai na criacao, e nao num update depois: a linha nunca chega a
+            # existir apontando para o aplicativo errado.
+            app_profile_id=data.get("app_profile_id"),
         )
 
         update_fields = {}
-        # Vincular o aplicativo OAuth na propria instalacao. Sem isto, a
-        # instalacao nasce sem `app_profile_id` e, num modulo com mais de um
-        # aplicativo ativo, qualquer uso de credencial falha com
-        # `app_profile_ambiguous` ate alguem vincular pela tela.
-        if data.get("app_profile_id"):
-            profile = integration_app_profile_service.get_profile(data["app_profile_id"])
-            if not profile:
-                return jsonify({"error": "app_profile_id inexistente"}), 400
-            if str(profile.get("module_id")) != str(data["module_id"]):
-                return (
-                    jsonify(
-                        {
-                            "error": (
-                                "app_profile_id pertence ao modulo "
-                                f"{profile.get('module_id')}, nao a {data['module_id']}"
-                            )
-                        }
-                    ),
-                    400,
-                )
-            update_fields["app_profile_id"] = profile["id"]
         if data.get("parent_integration_id"):
             update_fields["parent_integration_id"] = data.get("parent_integration_id")
         if "is_default" in data:

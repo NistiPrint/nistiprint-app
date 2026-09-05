@@ -246,7 +246,42 @@ class InstalledIntegrationService:
 
         return installations
 
-    def install_module(self, user_id: str, module_id: str, instance_name: str, config: Dict = None, credentials: Dict = None, instance_color: str = "#64748b", description: str = None) -> str:
+    def _resolve_install_app_profile_id(self, module_id: str, app_profile_id=None):
+        """Aplicativo OAuth de uma instalacao nova, sem escolher por conta propria.
+
+        Antes isto era `get_default_profile(module_id)`, que devolve o primeiro
+        profile ativo do modulo quando nenhum esta marcado como padrao. Com dois
+        aplicativos ativos — duas contas da mesma plataforma — a instalacao nova
+        nascia carimbada com um deles, escolhido por ordem de retorno do banco.
+        E o carimbo errado e pior que carimbo nenhum: a guarda de ambiguidade em
+        `credential_resolver_service` nunca dispara, porque o vinculo existe;
+        ele so aponta para a conta errada.
+
+        Com escolha explicita, ela vence. Sem escolha e com um unico candidato,
+        nao ha o que decidir. Com varios, deixa nulo: o primeiro uso da
+        credencial levanta `app_profile_ambiguous` e alguem escolhe.
+        """
+        if app_profile_id not in (None, "", "none"):
+            profile = integration_app_profile_service.get_profile(app_profile_id)
+            if not profile:
+                raise ValueError(f"app_profile_id {app_profile_id} nao encontrado")
+            if str(profile.get("module_id")) != str(module_id):
+                raise ValueError(
+                    f"app_profile_id {app_profile_id} pertence ao modulo "
+                    f"{profile.get('module_id')}, nao a {module_id}"
+                )
+            return profile["id"]
+
+        candidates = [
+            row
+            for row in integration_app_profile_service.list_profiles(module_id=module_id)
+            if row.get("is_active")
+        ]
+        if len(candidates) == 1:
+            return candidates[0]["id"]
+        return None
+
+    def install_module(self, user_id: str, module_id: str, instance_name: str, config: Dict = None, credentials: Dict = None, instance_color: str = "#64748b", description: str = None, app_profile_id=None) -> str:
         """Install a new instance of an integration module"""
         from nistiprint_shared.services.integration_module_service import integration_module_service
 
@@ -263,7 +298,9 @@ class InstalledIntegrationService:
 
         # Create new installation
         from nistiprint_shared.models.integration_module import InstalledIntegration
-        default_profile = integration_app_profile_service.get_default_profile(module_id)
+        resolved_app_profile_id = self._resolve_install_app_profile_id(
+            module_id, app_profile_id
+        )
 
         installation = InstalledIntegration(
             user_id=user_id,
@@ -284,7 +321,7 @@ class InstalledIntegrationService:
             updated_at=datetime.now(timezone.utc),
             instance_color=instance_color,
             description=description,
-            app_profile_id=default_profile['id'] if default_profile else None,
+            app_profile_id=resolved_app_profile_id,
             legacy_credentials={
                 **(config or {}),
                 **(credentials or {}),
