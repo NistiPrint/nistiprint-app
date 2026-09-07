@@ -29,6 +29,12 @@ MAX_ATTEMPTS = int(os.getenv("INGEST_MAX_ATTEMPTS", "7"))
 SIGNATURE_VERDICT_GRACE_SECONDS = max(
     1.0, float(os.getenv("INGEST_SIGNATURE_VERDICT_GRACE_SECONDS", "30"))
 )
+# Rede de seguranca do SellerChat: o bundle e resolvido no proprio push, entao a
+# varredura so pega o que falhou ali e as conversas em que a loja respondeu. O
+# ciclo curto existe porque a Shopee oculta a mensagem nao lida em 12h -- perder
+# a janela e perder o conteudo, nao so atrasa-lo.
+CHATSYNC_INTERVAL_SECONDS = max(30, int(os.getenv("INGEST_CHATSYNC_INTERVAL_SECONDS", "120")))
+CHATSYNC_BATCH = max(1, int(os.getenv("INGEST_CHATSYNC_BATCH", "25")))
 TERMINAL_ERRORS = {
     "unsupported_source", "unsupported_business_type", "not_chat",
     "invalid_provider_resource", "invalid_provider_resource_id",
@@ -168,6 +174,19 @@ def _process_chat(item):
         webhook_event_id=int(item["webhook_event_id"]))
 
 
+def _sync_chat_once():
+    """Varre as conversas Shopee com lacuna declarada.
+
+    Nao consome fila do Redis: a fila e a propria tabela `conversas_chat_shopee`,
+    que sobrevive a reinicio e nao depende de o evento original ainda existir.
+    """
+    from nistiprint_shared.services.shopee_chat_service import shopee_chat_ingest_service
+    resumo = shopee_chat_ingest_service.varrer_conversas_pendentes(limite=CHATSYNC_BATCH)
+    if resumo.get("processadas") or resumo.get("falhas"):
+        logger.info("[chatsync] %s", resumo)
+    return resumo
+
+
 def _consume_once(ready, processing, processor, client=None):
     r = client or redis_client()
     item = claim(ready, processing, WORKER, client=r)
@@ -282,7 +301,7 @@ def monitor_once(client=None):
     spool = Path(os.getenv("WEBHOOK_SPOOL_DIR", "/data/webhook-spool")) / "ready"
     spool_count = len(list(spool.glob("*.json"))) if spool.exists() else 0
     if spool_count: problems.append(f"spool={spool_count}")
-    for role in ("router", "orders", "chat", "retry", "lease", "spool", "archive"):
+    for role in ("router", "orders", "chat", "chatsync", "retry", "lease", "spool", "archive"):
         if not r.exists(f"np:ingest:heartbeat:{role}"): problems.append(f"worker_down={role}")
     try:
         from nistiprint_shared.database.supabase_db_service import supabase_db
@@ -307,6 +326,7 @@ def run(role):
             if role == "router": route_once(r)
             elif role == "orders": _consume_once(ORDERS_READY, ORDERS_PROCESSING, _process_order, r)
             elif role == "chat": _consume_once(CHAT_READY, CHAT_PROCESSING, _process_chat, r)
+            elif role == "chatsync": _sync_chat_once(); time.sleep(CHATSYNC_INTERVAL_SECONDS)
             elif role == "retry": requeue_due_retries(r); time.sleep(1)
             elif role == "lease": reap_expired_leases(r); reap_orphaned_processing(r); time.sleep(5)
             elif role == "spool": replay_spool_once(r); time.sleep(2)
@@ -324,5 +344,6 @@ def run(role):
 if __name__ == "__main__":
     logging.basicConfig(level=os.getenv("WORKER_LOG_LEVEL", "INFO"))
     parser = argparse.ArgumentParser()
-    parser.add_argument("role", choices=("router", "orders", "chat", "retry", "lease", "spool", "archive", "monitor"))
+    parser.add_argument("role", choices=("router", "orders", "chat", "chatsync", "retry",
+                                        "lease", "spool", "archive", "monitor"))
     run(parser.parse_args().role)

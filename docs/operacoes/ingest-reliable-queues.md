@@ -59,6 +59,42 @@ calcula o HMAC `callback_url|raw_body` em memória e grava no Redis apenas o
 veredito associado ao `event_id`. O router aguarda esse veredito antes de
 processar; ausência temporária entra em retry curto.
 
+## Reconciliação do SellerChat (`chatsync`)
+
+O push da Shopee não entrega a conversa inteira. Mensagem digitada dentro da
+sessão do chatbot chega como `bundle_message`, que é só uma lista de IDs sem
+corpo, e mensagem enviada pela loja não chega — só o aviso `mark_as_replied`.
+Como a Shopee oculta do vendedor a mensagem que passa 12h sem leitura, a
+recuperação tem prazo: o que não for buscado nesse intervalo não volta.
+
+O caminho quente fica no consumidor `chat`: ao gravar um `bundle_message`, ele
+resolve os IDs referenciados numa única chamada a `get_message`
+(`message_id_list`), sem paginação. Falha ali não derruba o webhook — o push já
+está gravado e a conversa fica marcada como pendente.
+
+O papel `chatsync` é a rede de segurança. Ele não consome fila do Redis: a fila
+é a tabela `conversas_chat_shopee`, que sobrevive a reinício e não depende de o
+evento original ainda existir. A cada ciclo ele pega as conversas com lacuna
+declarada (`status_completude` em `pendente`/`erro`, respeitando o backoff) e as
+que pediram varredura (`sincronizacao_solicitada_em`), escolhendo o modo por
+informação disponível: sabendo quais IDs faltam, resolve pontualmente; sem
+saber, varre a janela de sete dias.
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `INGEST_CHATSYNC_INTERVAL_SECONDS` | `120` | intervalo entre ciclos |
+| `INGEST_CHATSYNC_BATCH` | `25` | conversas por ciclo |
+| `SELLERCHAT_JANELA_DIAS` | `7` | janela de contexto e de paginação |
+| `SELLERCHAT_MAX_PAGINAS` | `20` | teto de páginas no modo completo |
+
+O que a Shopee já ocultou vira `status_completude = 'expirada'` com os IDs em
+`ids_nao_recuperados` — perda declarada, nunca descarte silencioso. A IA lê esse
+estado antes de montar o prompt e adia o pedido em vez de decidir sobre uma
+conversa que o sistema sabe estar furada.
+
+Para recuperar o passado: `python scripts/backfill_chat_shopee.py --dry-run`
+lista a fila; sem `--dry-run` ele reconcilia com token bucket (`--rps`).
+
 ## Arquivamento e retenção
 
 O serviço `ingest-archive` fica desativado por padrão. Para ativá-lo, configure

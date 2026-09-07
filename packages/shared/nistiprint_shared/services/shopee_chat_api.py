@@ -73,15 +73,49 @@ def get_chat_messages(integration: Dict, conversation_id: str, *, page_size: int
             "raw": data}
 
 
+def message_timestamp(row: Dict) -> Optional[int]:
+    """Epoch da mensagem, aceitando os tres nomes que a Shopee usa."""
+    for key in ("created_timestamp", "created_at", "timestamp"):
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def get_all_chat_messages(integration: Dict, conversation_id: str, *, page_size: int = 100,
-                          business_type: int = 0, max_pages: int = 100) -> Dict:
+                          business_type: int = 0, max_pages: int = 100,
+                          desde_epoch: Optional[int] = None) -> Dict:
+    """Percorre a conversa, opcionalmente parando ao sair da janela.
+
+    A Shopee devolve a pagina mais recente primeiro, mas isso nao e contrato
+    publicado. Por isso so paramos por janela depois de ja termos visto ao menos
+    uma mensagem dentro dela: numa ordem invertida a busca degrada para varredura
+    completa em vez de devolver zero mensagens.
+    """
     messages, offset, seen_offsets = [], None, set()
+    viu_dentro_da_janela = False
     for _ in range(max(1, int(max_pages))):
         page = get_chat_messages(integration, conversation_id, page_size=page_size,
                                  offset=offset, business_type=business_type)
         if page.get("error"):
             return {**page, "messages": messages}
-        messages.extend(page.get("messages") or [])
+        pagina = page.get("messages") or []
+        messages.extend(pagina)
+
+        if desde_epoch is not None and pagina:
+            marcas = [marca for marca in (message_timestamp(row) for row in pagina)
+                      if marca is not None]
+            if marcas:
+                if max(marcas) >= int(desde_epoch):
+                    viu_dentro_da_janela = True
+                elif viu_dentro_da_janela:
+                    return {"messages": messages, "next_offset": None, "complete": True,
+                            "parou_na_janela": True}
+
         next_offset = page.get("next_offset")
         if next_offset in (None, ""):
             return {"messages": messages, "next_offset": None, "complete": True}

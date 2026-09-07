@@ -297,5 +297,97 @@ class TestVarreduraDeLotesParados(unittest.TestCase):
         self.assertEqual(self._status("b1"), "RODANDO")
 
 
+class TestGateDeContextoDeChat(unittest.TestCase):
+    """A IA nao pode decidir sobre uma conversa que o sistema sabe estar furada."""
+
+    PEDIDO = {"buyer_id": 697040328, "marketplace_integration_id": 6,
+              "shopee_order_sn": "260907E7M74H2C"}
+
+    def _com_estado(self, estado):
+        return patch.object(service, "_estado_da_conversa", return_value=estado)
+
+    def test_conversa_completa_segue_sem_tocar_na_shopee(self):
+        with self._com_estado({"conversation_id": 1, "status_completude": "completa",
+                               "ids_nao_recuperados": []}), \
+             patch.object(service, "_tentar_fechar_conversa") as fechar:
+            gate = service.avaliar_contexto_de_chat(self.PEDIDO)
+        fechar.assert_not_called()
+        self.assertEqual(gate["acao"], "seguir")
+
+    def test_pedido_sem_conversa_registrada_segue(self):
+        # Pode ter so `message_to_seller`, que nao passa pelo SellerChat.
+        with self._com_estado(None):
+            gate = service.avaliar_contexto_de_chat(self.PEDIDO)
+        self.assertEqual(gate["acao"], "seguir")
+        self.assertEqual(gate["status_completude"], "sem_conversa")
+
+    def test_conversa_pendente_que_fecha_na_hora_segue(self):
+        with self._com_estado({"conversation_id": 1, "status_completude": "pendente",
+                               "ids_nao_recuperados": ["111"]}), \
+             patch.object(service, "_tentar_fechar_conversa",
+                          return_value={"conversation_id": 1,
+                                        "status_completude": "completa",
+                                        "ids_nao_recuperados": []}):
+            gate = service.avaliar_contexto_de_chat(self.PEDIDO)
+        self.assertEqual(gate["acao"], "seguir")
+
+    def test_conversa_que_nao_fecha_adia_o_pedido(self):
+        with self._com_estado({"conversation_id": 1, "status_completude": "pendente",
+                               "ids_nao_recuperados": ["111", "222"]}), \
+             patch.object(service, "_tentar_fechar_conversa",
+                          side_effect=lambda estado: estado):
+            gate = service.avaliar_contexto_de_chat(self.PEDIDO)
+        self.assertEqual(gate["acao"], "adiar")
+        self.assertEqual(gate["mensagens_nao_recuperadas"], 2)
+
+    def test_conversa_expirada_roda_mas_pede_revisao(self):
+        """Esperar mais nao traz de volta o que a Shopee ja ocultou."""
+        with self._com_estado({"conversation_id": 1, "status_completude": "expirada",
+                               "ids_nao_recuperados": ["111"]}):
+            gate = service.avaliar_contexto_de_chat(self.PEDIDO)
+        self.assertEqual(gate["acao"], "seguir")
+        self.assertTrue(gate["revisar"])
+
+
+class TestRecorteDaConversaPorPedido(unittest.TestCase):
+    """A conversa da Shopee e por comprador; o recorte e que e por pedido."""
+
+    def _linhas(self):
+        return [
+            {"id": "1", "created_at": "2026-09-01T10:00:00", "from_id": 9,
+             "from_user_name": "comprador", "to_user_name": "loja",
+             "type": "text", "display_content": "antes do pedido"},
+            {"id": "2", "created_at": "2026-09-03T10:00:00", "from_id": 9,
+             "from_user_name": "comprador", "to_user_name": "loja",
+             "type": "text", "display_content": "sobre este pedido"},
+            {"id": "3", "created_at": "2026-09-06T10:00:00", "from_id": 9,
+             "from_user_name": "comprador", "to_user_name": "loja",
+             "type": "text", "display_content": "ja e do pedido seguinte"},
+        ]
+
+    def _buscar(self, **kwargs):
+        db = MagicMock()
+        (db.table.return_value.select.return_value.eq.return_value.gte.return_value
+         .order.return_value.limit.return_value.execute.return_value.data) = self._linhas()
+        with patch.object(service, "supabase_db", db):
+            return service._fetch_chat_messages("comprador", buyer_id=9, **kwargs)
+
+    def test_sem_recorte_traz_tudo(self):
+        conteudos = [linha["display_content"] for linha in self._buscar()]
+        self.assertEqual(len(conteudos), 3)
+
+    def test_limite_superior_corta_o_pedido_seguinte(self):
+        limite = datetime(2026, 9, 5, tzinfo=timezone.utc)
+        conteudos = [linha["display_content"] for linha in self._buscar(limite_superior=limite)]
+        self.assertNotIn("ja e do pedido seguinte", conteudos)
+        self.assertIn("sobre este pedido", conteudos)
+
+    def test_ancora_corta_o_que_veio_antes(self):
+        ancora = datetime(2026, 9, 2, tzinfo=timezone.utc)
+        conteudos = [linha["display_content"] for linha in self._buscar(ancora=ancora)]
+        self.assertNotIn("antes do pedido", conteudos)
+        self.assertIn("sobre este pedido", conteudos)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -45,15 +45,15 @@ A aplicação roda em um **servidor único**, com os processos da aplicação ge
 | API (Flask + gunicorn) | Processo no host | `systemd: nistiprint-api` |
 | Worker (Celery) | Processo no host | `systemd: nistiprint-worker` |
 | Beat (Celery scheduler) | Processo no host | `systemd: nistiprint-beat` |
-| Ingest confiável (8 papéis) | Processos no host | `systemd: nistiprint-ingest@<papel>` |
+| Ingest confiável (9 papéis) | Processos no host | `systemd: nistiprint-ingest@<papel>` |
 | Legado | Processo no host | `systemd: nistiprint-legado` |
 | Redis | Container Docker (stack `nistiprint-infra`) | Portainer |
 | n8n | Container Docker (stack `nistiprint-infra`) | Portainer |
 | nginx-proxy-manager | Container Docker | Portainer |
 
 Os papéis do ingest são instâncias de um mesmo template: `router`, `orders`,
-`chat`, `retry`, `lease`, `spool`, `archive` e `monitor`. Cada um é uma unidade
-independente (`nistiprint-ingest@orders.service`) — ver
+`chat`, `chatsync`, `retry`, `lease`, `spool`, `archive` e `monitor`. Cada um é
+uma unidade independente (`nistiprint-ingest@orders.service`) — ver
 [ingest-reliable-queues.md](./ingest-reliable-queues.md).
 
 ### Por que sem containers para a aplicação?
@@ -142,6 +142,7 @@ Cmnd_Alias NISTIPRINT_SERVICES = /bin/systemctl restart nistiprint-api.service, 
     /bin/systemctl restart nistiprint-beat.service, \
     /bin/systemctl restart nistiprint-ingest@archive.service, \
     /bin/systemctl restart nistiprint-ingest@chat.service, \
+    /bin/systemctl restart nistiprint-ingest@chatsync.service, \
     /bin/systemctl restart nistiprint-ingest@lease.service, \
     /bin/systemctl restart nistiprint-ingest@monitor.service, \
     /bin/systemctl restart nistiprint-ingest@orders.service, \

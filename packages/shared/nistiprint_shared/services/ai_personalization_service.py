@@ -34,6 +34,11 @@ DEFAULT_MODEL = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER]
 DEFAULT_MAX_PROCESSING = 50
 CHAT_CONTEXT_LIMIT = 60
 CHAT_LOOKBACK_DAYS = 7
+# Uma tentativa sincrona de fechar a conversa antes de desistir do pedido. O
+# orcamento e curto de proposito: o caminho normal e a conversa ja estar completa
+# porque o bundle foi resolvido no ingest. Isto aqui e excecao, nao rotina.
+CHAT_GATE_TIMEOUT_SEGUNDOS = float(os.getenv("AI_CHAT_GATE_TIMEOUT_SEGUNDOS", "3"))
+CHAT_GATE_ATIVO = os.getenv("AI_CHAT_GATE_ATIVO", "1").strip().lower() not in ("0", "false", "off")
 STATUS_EM_ANDAMENTO = 2
 PROMPT_FALLBACK_PATH = Path(get_prompt_template_path())
 
@@ -666,7 +671,104 @@ def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, for
     return to_process, skipped
 
 
-def _fetch_chat_messages(buyer_username: str, buyer_id=None, integration_id=None, order_date=None, last_ai_executed_at=None) -> List[Dict[str, Any]]:
+def _pedidos_do_comprador(buyer_id, buyer_username, integration_id) -> List[Dict[str, Any]]:
+    """Pedidos Shopee do mesmo comprador dentro da janela de contexto.
+
+    Precisa ser consulta propria. Quando a IA roda para um pedido so -- que e o
+    caminho de `_load_order_for_ai` e, portanto, de toda execucao real -- a lista
+    montada em memoria tem uma linha, e a ambiguidade justamente do caso perigoso
+    (dois pedidos do mesmo comprador disputando a mesma conversa) passaria
+    despercebida.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=CHAT_LOOKBACK_DAYS)
+    query = (
+        supabase_db.table("pedidos")
+        .select("id,codigo_pedido_externo,data_venda,marketplace_integration_id")
+        .in_("canal_venda_id", _get_shopee_channel_ids())
+        .gte("data_venda", cutoff.isoformat())
+        .order("data_venda", desc=False)
+    )
+    if buyer_id not in (None, ""):
+        query = query.eq("buyer_user_id", buyer_id)
+    elif buyer_username:
+        query = query.eq("buyer_username", buyer_username)
+    else:
+        return []
+    try:
+        rows = query.execute().data or []
+    except Exception as exc:
+        logger.warning("Nao foi possivel listar pedidos do comprador: %s", exc)
+        return []
+    if integration_id:
+        rows = [
+            row for row in rows
+            if not row.get("marketplace_integration_id")
+            or str(row.get("marketplace_integration_id")) == str(integration_id)
+        ]
+    return rows
+
+
+def _ancora_do_pedido(order_sn: str, buyer_id, buyer_username) -> Optional[datetime]:
+    """Momento em que o comprador anexou este pedido na conversa.
+
+    A Shopee manda uma mensagem `order` quando o comprador abre o chat a partir
+    de um pedido. E a unica marcacao explicita de "daqui para baixo e sobre este
+    pedido", e vale mais que qualquer corte por tempo.
+    """
+    if not order_sn:
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(days=CHAT_LOOKBACK_DAYS)
+    try:
+        query = (
+            supabase_db.table("mensagem_chat_shopee")
+            .select("created_at,from_id,from_user_name")
+            .eq("type", "order")
+            .eq("content->>order_sn", str(order_sn))
+            .gte("created_at", cutoff.isoformat())
+            .order("created_at", desc=False)
+            .limit(1)
+        )
+        rows = query.execute().data or []
+    except Exception as exc:
+        logger.warning("Nao foi possivel buscar ancora de pedido no chat: %s", exc)
+        return None
+    if not rows:
+        return None
+    return _parse_datetime(rows[0].get("created_at"))
+
+
+def _janela_do_pedido(order: Dict[str, Any]) -> Dict[str, Any]:
+    """Recorte da conversa que pertence a este pedido.
+
+    A conversa da Shopee e por comprador, nunca por pedido -- em producao sao 993
+    conversas para 993 compradores. Com mais de um pedido do mesmo comprador na
+    janela, o unico criterio disponivel e o tempo: o que vem depois do pedido
+    seguinte ja e assunto do pedido seguinte.
+    """
+    buyer_id = order.get("buyer_id")
+    buyer_username = order.get("buyer_username") or ""
+    irmaos = _pedidos_do_comprador(buyer_id, buyer_username, order.get("marketplace_integration_id"))
+    data_pedido = _parse_datetime(order.get("order_date"))
+
+    posteriores = []
+    for row in irmaos:
+        if str(row.get("codigo_pedido_externo") or "") == str(order.get("shopee_order_sn") or ""):
+            continue
+        data_irmao = _parse_datetime(row.get("data_venda"))
+        if data_pedido and data_irmao and data_irmao > data_pedido:
+            posteriores.append(data_irmao)
+
+    ancora = _ancora_do_pedido(order.get("shopee_order_sn"), buyer_id, buyer_username)
+    return {
+        "ambiguo": len(irmaos) > 1,
+        "total_pedidos_comprador": len(irmaos),
+        "limite_superior": min(posteriores) if posteriores else None,
+        "ancora": ancora,
+    }
+
+
+def _fetch_chat_messages(buyer_username: str, buyer_id=None, integration_id=None, order_date=None,
+                         last_ai_executed_at=None, limite_superior=None, ancora=None) -> List[Dict[str, Any]]:
     if not buyer_username and not buyer_id:
         return []
 
@@ -690,6 +792,17 @@ def _fetch_chat_messages(buyer_username: str, buyer_id=None, integration_id=None
     rows = [row for row in rows if (not integration_id or not row.get("installed_integration_id")
             or str(row.get("installed_integration_id")) == str(integration_id))]
     rows.sort(key=lambda row: _parse_datetime(row.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
+
+    # A ancora, quando existe, e uma marcacao do proprio comprador de onde o
+    # assunto deste pedido comeca; o limite superior e o pedido seguinte dele.
+    if ancora is not None:
+        rows = [row for row in rows
+                if (_parse_datetime(row.get("created_at")) or ancora) >= ancora]
+    if limite_superior is not None:
+        rows = [row for row in rows
+                if (_parse_datetime(row.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
+                < limite_superior]
+
     return compact_chat_messages(rows[-CHAT_CONTEXT_LIMIT:], buyer_username, buyer_id=buyer_id)
 
 
@@ -753,18 +866,140 @@ def compact_chat_messages(messages: List[Dict[str, Any]], buyer_username: str, b
     return compacted
 
 
+def _estado_da_conversa(buyer_id, integration_id) -> Optional[Dict[str, Any]]:
+    if buyer_id in (None, ""):
+        return None
+    try:
+        rows = (
+            supabase_db.table("conversas_chat_shopee")
+            .select("conversation_id,installed_integration_id,status_completude,"
+                    "ids_nao_recuperados,ultima_mensagem_em,mensagens_esperadas,"
+                    "mensagens_presentes")
+            .eq("buyer_user_id", buyer_id)
+            .order("ultima_mensagem_em", desc=True)
+            .limit(5)
+            .execute().data or []
+        )
+    except Exception as exc:
+        logger.warning("Nao foi possivel ler o estado da conversa: %s", exc)
+        return None
+    if integration_id:
+        da_integracao = [
+            row for row in rows
+            if not row.get("installed_integration_id")
+            or str(row.get("installed_integration_id")) == str(integration_id)
+        ]
+        rows = da_integracao or rows
+    return rows[0] if rows else None
+
+
+def _tentar_fechar_conversa(estado: Dict[str, Any]) -> Dict[str, Any]:
+    """Uma tentativa curta de completar a conversa, sem paginar.
+
+    So vale a pena quando ja se sabe quais IDs faltam: e uma chamada. Quando nao
+    se sabe -- resposta da loja ainda nao espelhada --, pedir a varredura e adiar
+    o pedido custa menos que segurar a IA numa paginacao de historico.
+    """
+    from nistiprint_shared.services.shopee_chat_service import shopee_chat_ingest_service
+
+    conversation_id = estado.get("conversation_id")
+    integration = shopee_chat_ingest_service.carregar_integracao(
+        estado.get("installed_integration_id")
+    )
+    if not integration or conversation_id in (None, ""):
+        return estado
+
+    ausentes = estado.get("ids_nao_recuperados") or []
+    if not ausentes:
+        shopee_chat_ingest_service.solicitar_sincronizacao(
+            conversation_id, integration_id=estado.get("installed_integration_id")
+        )
+        return estado
+
+    resultado = shopee_chat_ingest_service.resolver_bundle(
+        integration, conversation_id, ausentes,
+        timeout_seconds=CHAT_GATE_TIMEOUT_SEGUNDOS,
+    )
+    if resultado.get("status") != "success":
+        return estado
+    return {
+        **estado,
+        "status_completude": resultado.get("status_completude") or estado.get("status_completude"),
+        "ids_nao_recuperados": resultado.get("ids_nao_recuperados") or [],
+    }
+
+
+def avaliar_contexto_de_chat(order: Dict[str, Any]) -> Dict[str, Any]:
+    """Decide se da para confiar na conversa deste pedido.
+
+    Existe porque ate aqui a IA nao tinha como saber que faltava conteudo: o
+    `bundle_message` era filtrado da view e o silencio parecia ausencia de
+    mensagem. Em 76% das execucoes medidas a conversa estava incompleta.
+
+    No regime normal isto nao custa nada: o bundle e resolvido no ingest, segundos
+    depois do push, e a conversa ja chega aqui completa.
+    """
+    if not CHAT_GATE_ATIVO:
+        return {"acao": "seguir", "status_completude": "gate_desligado"}
+
+    estado = _estado_da_conversa(order.get("buyer_id"), order.get("marketplace_integration_id"))
+    if not estado:
+        # Sem conversa registrada nao ha lacuna conhecida: o pedido pode ter
+        # apenas `message_to_seller`, que nao passa pelo SellerChat.
+        return {"acao": "seguir", "status_completude": "sem_conversa"}
+
+    status = str(estado.get("status_completude") or "")
+    if status in ("pendente", "erro"):
+        estado = _tentar_fechar_conversa(estado)
+        status = str(estado.get("status_completude") or "")
+
+    ausentes = estado.get("ids_nao_recuperados") or []
+    base = {
+        "conversation_id": estado.get("conversation_id"),
+        "status_completude": status,
+        "mensagens_nao_recuperadas": len(ausentes),
+    }
+    if status == "completa":
+        return {**base, "acao": "seguir"}
+    if status == "expirada":
+        # A Shopee ja ocultou o que faltava; esperar mais nao traz de volta.
+        # Roda, mas o resultado nasce para revisao humana.
+        return {**base, "acao": "seguir", "revisar": True}
+    return {**base, "acao": "adiar"}
+
+
 def _load_order_for_ai(pedido_id: int) -> Dict[str, Any]:
     rows = _assemble_orders(pedido_ids=[pedido_id], recent_days=None)
     if not rows:
         raise ValueError(f"Pedido {pedido_id} nao encontrado na view de personalizados")
 
     normalized = _normalize_order_row(rows[0])
+
+    # O gate vem antes da leitura das mensagens: quando ele consegue fechar a
+    # conversa, o que faltava ja esta gravado quando o contexto e montado.
+    normalized["chat_gate"] = (
+        avaliar_contexto_de_chat(normalized)
+        if should_process_order(normalized)
+        else {"acao": "seguir", "status_completude": "nao_avaliado"}
+    )
+
+    janela = _janela_do_pedido(normalized)
+    normalized["chat_context_ambiguous"] = bool(
+        normalized.get("chat_context_ambiguous")
+    ) or bool(janela.get("ambiguo"))
+    normalized["chat_janela"] = {
+        "total_pedidos_comprador": janela.get("total_pedidos_comprador"),
+        "limite_superior": janela["limite_superior"].isoformat() if janela.get("limite_superior") else None,
+        "ancora": janela["ancora"].isoformat() if janela.get("ancora") else None,
+    }
     normalized["chat_messages"] = _fetch_chat_messages(
         buyer_username=normalized.get("buyer_username", ""),
         buyer_id=normalized.get("buyer_id"),
         integration_id=normalized.get("marketplace_integration_id"),
         order_date=normalized.get("order_date"),
         last_ai_executed_at=normalized.get("last_ai_executed_at"),
+        limite_superior=janela.get("limite_superior"),
+        ancora=janela.get("ancora"),
     )
     return normalized
 
@@ -872,6 +1107,23 @@ def _process_single_order_sync(pedido_id: int, force: bool = False):
             "message": "Pedido ja esta atualizado para IA.",
         }
 
+    gate = order.get("chat_gate") or {}
+    if gate.get("acao") == "adiar":
+        # Sem log em `logs_execucao_ia`: registrar aqui marcaria o pedido como
+        # processado e ele so voltaria a fila se o comprador escrevesse de novo.
+        # O adiamento fica em `execucoes_ai_item`, que e o log do lote.
+        return {
+            "success": True,
+            "status": "chat_incompleto",
+            "order_sn": order_sn,
+            "message": (
+                f"Conversa {gate.get('conversation_id')} incompleta "
+                f"({gate.get('mensagens_nao_recuperadas')} mensagens ausentes). "
+                "Aguardando a reconciliacao do SellerChat."
+            ),
+            "chat_gate": gate,
+        }
+
     prompt_payload = generate_prompt_payload(order)
     chat_context = order.get("chat_messages") or []
 
@@ -883,6 +1135,17 @@ def _process_single_order_sync(pedido_id: int, force: bool = False):
                 "Mais de um pedido em andamento compartilha a identidade do comprador; "
                 "o contexto de sete dias requer revisao. " + str(result.get("reasoning") or "")
             ).strip()
+        if gate.get("revisar"):
+            # Perda declarada, nao suposta: a Shopee ocultou as mensagens antes de
+            # conseguirmos busca-las. Um NO_PERSONALIZATION_FOUND aqui seria uma
+            # conclusao sobre um texto que ninguem leu.
+            result["status"] = "NEEDS_REVIEW"
+            result["reasoning"] = (
+                f"{gate.get('mensagens_nao_recuperadas')} mensagem(ns) do comprador nao "
+                "puderam ser recuperadas da Shopee (ocultadas apos 12h sem leitura); "
+                "a decisao foi tomada sobre contexto incompleto. "
+                + str(result.get("reasoning") or "")
+            ).strip()
         _persistir_personalizacao(order, result)
         # Provedor e modelo efetivo ficam no log: com `openrouter/auto` quem
         # escolhe o modelo e o OpenRouter, e sem isso nao ha como auditar
@@ -893,7 +1156,11 @@ def _process_single_order_sync(pedido_id: int, force: bool = False):
             chat_context,
             "success",
             result=result,
-            metadata=ai_response.to_metadata(),
+            metadata={
+                **ai_response.to_metadata(),
+                "chat_gate": gate,
+                "chat_janela": order.get("chat_janela"),
+            },
         )
         return {
             "success": True,
@@ -983,6 +1250,11 @@ def processar_pedido_ia(self, batch_id: str, pedido_id: int):
         result = _process_single_order_sync(pedido_id)
         if result["status"] == "up_to_date":
             status = "UP_TO_DATE"
+        elif result["status"] == "chat_incompleto":
+            # Nem sucesso nem erro: o pedido volta ao proximo lote assim que a
+            # varredura fechar a conversa.
+            status = "ADIADO"
+            error_message = result["message"]
         elif not result["success"]:
             status = "ERRO"
             error_message = result["message"]
