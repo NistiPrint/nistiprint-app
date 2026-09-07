@@ -40,16 +40,24 @@ def get_chat_messages(integration: Dict, conversation_id: str, *, page_size: int
                 retry_after = max(1, int(headers["Retry-After"]))
             except (TypeError, ValueError):
                 retry_after = None
-        if status == 429:
+        if status in (429, 491):
+            # 491 nao e codigo HTTP padrao: e a Shopee sinalizando limite no
+            # gateway, antes de chegar na API. Tratar como erro de servidor faria
+            # o backfill desistir de uma conversa que so precisava esperar.
             error_type, retryable = "rate_limit", True
+            retry_after = retry_after or 60
         elif status in (401, 403):
             error_type, retryable = "authentication_error", False
         elif status == 400:
             error_type, retryable = "parameter_error", False
         else:
             error_type, retryable = "server_error", status >= 500
-        return {"error": f"Erro na API SellerChat: {status}", "error_type": error_type,
-                "retryable": retryable, "retry_after": retry_after, "details": response.text}
+        # O corpo e a unica fonte do motivo real quando o status nao e padrao;
+        # descarta-lo transforma toda falha em "erro 491" sem diagnostico.
+        corpo = (response.text or "")[:500]
+        return {"error": f"Erro na API SellerChat: {status}{(' - ' + corpo) if corpo else ''}",
+                "error_type": error_type, "retryable": retryable,
+                "retry_after": retry_after, "status_code": status, "details": response.text}
     try:
         data = response.json()
     except (ValueError, requests.JSONDecodeError) as exc:

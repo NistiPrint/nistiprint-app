@@ -133,6 +133,9 @@ def _rodar(args):
     proximo = time.monotonic()
 
     resumo = {"resolvidas": 0, "expiradas": 0, "falhas": 0, "recuperadas": 0}
+    # Disjuntor: se a Shopee nega tudo, insistir em 200 conversas nao produz
+    # informacao nova -- so gasta chamada e esconde o erro real no meio do log.
+    falhas_seguidas = 0
     for indice, linha in enumerate(conversas, start=1):
         agora = time.monotonic()
         if agora < proximo:
@@ -161,13 +164,26 @@ def _rodar(args):
 
         if resultado.get("status") != "success":
             resumo["falhas"] += 1
-            logger.warning("[%s/%s] conversa=%s falhou: %s (%s)", indice, len(conversas),
-                           conversation_id, resultado.get("error_type"), resultado.get("message"))
+            falhas_seguidas += 1
+            logger.warning("[%s/%s] conversa=%s falhou: %s | %s", indice, len(conversas),
+                           conversation_id, resultado.get("error_type"),
+                           str(resultado.get("message"))[:400])
+            if falhas_seguidas >= args.max_falhas_seguidas:
+                logger.error(
+                    "%s falhas seguidas -- interrompendo. Nada foi perdido: a fila e a "
+                    "tabela `conversas_chat_shopee` e o script retoma de onde parou. "
+                    "Para ver o que a Shopee esta respondendo:\n"
+                    "    /opt/nistiprint/.venv/bin/python scripts/diagnostico_sellerchat.py",
+                    falhas_seguidas,
+                )
+                break
             if resultado.get("error_type") == "rate_limit":
-                espera = int(resultado.get("retry_after") or 30)
-                logger.info("rate limit da Shopee: aguardando %ss", espera)
+                espera = int(resultado.get("retry_after") or 60)
+                logger.info("limite da Shopee: aguardando %ss", espera)
                 time.sleep(espera)
             continue
+
+        falhas_seguidas = 0
 
         recuperadas = int(resultado.get("messages_upserted") or 0)
         resumo["recuperadas"] += recuperadas
@@ -200,6 +216,8 @@ def main():
                         help="janela de contexto em dias (padrao 7)")
     parser.add_argument("--conversa", type=int, default=None,
                         help="reconcilia uma unica conversation_id, ignorando os filtros")
+    parser.add_argument("--max-falhas-seguidas", type=int, default=5,
+                        help="interrompe apos N falhas consecutivas (padrao 5)")
     parser.add_argument("--dry-run", action="store_true",
                         help="lista a fila sem chamar a Shopee")
     return _rodar(parser.parse_args())

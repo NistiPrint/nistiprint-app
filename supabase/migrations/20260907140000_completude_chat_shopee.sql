@@ -187,15 +187,14 @@ BEGIN
 
     v_tentativas := COALESCE(v_tentativas, 0) + (CASE WHEN p_tentativa THEN 1 ELSE 0 END);
 
-    -- Sem ausentes a conversa esta inteira. Com ausentes, ela so vira perda
-    -- declarada depois de ao menos uma tentativa real: uma conversa antiga
-    -- recem-descoberta merece a primeira busca antes de ser dada como perdida.
+    -- `expirada` significa uma coisa so: a Shopee respondeu e nao devolveu a
+    -- mensagem. Uma chamada que falhou (rede, limite, permissao) nao ensina nada
+    -- sobre o que a Shopee ainda tem -- tratar isso como expiracao declararia
+    -- perdido um dado perfeitamente recuperavel, e de forma irreversivel, ja que
+    -- ninguem tenta de novo o que esta dado como perdido.
     IF COALESCE(array_length(v_ausentes, 1), 0) = 0 THEN
         v_status := 'completa';
-    ELSIF v_tentativas >= 1 AND (
-            v_tentativas >= 5
-            OR COALESCE(v_ultima, now()) < now() - interval '12 hours'
-         ) THEN
+    ELSIF p_sincronizou AND COALESCE(v_ultima, now()) < now() - interval '12 hours' THEN
         v_status := 'expirada';
     ELSIF p_erro IS NOT NULL THEN
         v_status := 'erro';
@@ -208,7 +207,7 @@ BEGIN
         mensagens_esperadas = COALESCE(array_length(v_esperados, 1), 0),
         mensagens_presentes = COALESCE(v_presentes, 0),
         ids_nao_recuperados = CASE
-            WHEN v_status IN ('completa') THEN '[]'::jsonb
+            WHEN v_status = 'completa' THEN '[]'::jsonb
             ELSE to_jsonb(v_ausentes)
         END,
         status_completude = v_status,
