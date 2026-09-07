@@ -768,8 +768,9 @@ def _janela_do_pedido(order: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _fetch_chat_messages(buyer_username: str, buyer_id=None, integration_id=None, order_date=None,
-                         last_ai_executed_at=None, limite_superior=None, ancora=None) -> List[Dict[str, Any]]:
-    if not buyer_username and not buyer_id:
+                         last_ai_executed_at=None, limite_superior=None, ancora=None,
+                         conversation_id=None) -> List[Dict[str, Any]]:
+    if not buyer_username and not buyer_id and not conversation_id:
         return []
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=CHAT_LOOKBACK_DAYS)
@@ -781,6 +782,13 @@ def _fetch_chat_messages(buyer_username: str, buyer_id=None, integration_id=None
         return request.execute().data or []
 
     rows = []
+    # A conversa e a chave certa quando conhecida. A API do SellerChat devolve as
+    # mensagens sem `from_user_name`/`to_user_name` -- so os ids numericos -- e a
+    # busca por username deixaria de fora exatamente as respostas da loja, que so
+    # chegam por ela. Os filtros por comprador ficam como fallback para as linhas
+    # antigas, vindas de webhook, cuja conversa pode nao estar registrada.
+    if conversation_id not in (None, ""):
+        rows += query("conversation_id", conversation_id)
     if buyer_id not in (None, ""):
         rows += query("from_id", buyer_id)
     if buyer_username:
@@ -1000,6 +1008,7 @@ def _load_order_for_ai(pedido_id: int) -> Dict[str, Any]:
         last_ai_executed_at=normalized.get("last_ai_executed_at"),
         limite_superior=janela.get("limite_superior"),
         ancora=janela.get("ancora"),
+        conversation_id=(normalized.get("chat_gate") or {}).get("conversation_id"),
     )
     return normalized
 

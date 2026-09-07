@@ -101,6 +101,33 @@ cd /opt/nistiprint
 .venv/bin/python scripts/backfill_chat_shopee.py --rps 2     # reconcilia
 ```
 
+## De onde saem as chamadas à Shopee
+
+A Shopee libera a API só para o IP do servidor, então **toda chamada de saída
+para `partner.shopeemobile.com` tem que partir da VPS**. Hoje isso é garantido
+pela arquitetura, não por configuração: o único código que monta requisição para
+a Shopee é Python em `packages/shared/nistiprint_shared/services/` (o driver
+`platform_drivers/shopee.py`, o `shopee_chat_api.py`, o `platform_auth_service` e
+o `token_manager`), e ele só executa em processos da VPS — as units
+`nistiprint-ingest@*`, o worker Celery, a API e os scripts em `scripts/`.
+
+O que **não** chama a Shopee, e não pode passar a chamar:
+
+- **O frontend.** Nenhuma referência a `shopeemobile` em `apps/frontend/src`. Se
+  passasse a ter, a chamada sairia do IP do navegador do usuário.
+- **O Postgres.** A extensão `pg_net` não está instalada no projeto, então o
+  banco não tem como fazer requisição HTTP. O único job de `pg_cron` é uma purga
+  local de logs.
+- **A Edge Function `shopee-webhook`.** Ela é só receptora: lê o corpo, valida
+  HMAC e grava no Supabase. Não faz nenhuma chamada de saída para a Shopee.
+
+O n8n roda em container no mesmo host, então compartilha o IP — mas ele também só
+recebe webhook, não consulta a API.
+
+Se o IP da VPS mudar, a liberação precisa ser refeita no painel da Shopee: o
+sintoma seria falha de autenticação em todas as chamadas ao mesmo tempo, com
+todos os outros parâmetros corretos.
+
 ## Arquivamento e retenção
 
 O serviço `ingest-archive` fica desativado por padrão. Para ativá-lo, configure
