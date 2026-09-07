@@ -2,7 +2,60 @@
 import time
 from typing import Dict, Optional, Sequence
 import requests
-from nistiprint_shared.services.platform_drivers.shopee import _generate_sign, _resolve_credentials
+from nistiprint_shared.services.platform_drivers.shopee import (
+    SHOPEE_AUTH_CODES,
+    SHOPEE_TRANSIENT_CODES,
+    _generate_sign,
+    _resolve_credentials,
+)
+
+# Documentado em v2.sellerchat.get_message: "default 25, maximum is 60".
+# Pedir mais que isso e `param_error`, nao truncamento.
+PAGE_SIZE_MAXIMO = 60
+
+
+def _erro_sellerchat(response, data: Optional[Dict], codigo: str) -> Dict:
+    """Classifica pelo codigo da Shopee antes do status HTTP.
+
+    A Shopee usa 491, que nao e status HTTP padrao, e poe o motivo real no corpo:
+    `{"error":"param_error","message":"Error or loss in request parameter."}`.
+    Classificar pelo status faria um erro de parametro -- permanente, so o codigo
+    conserta -- ser tratado como limite de taxa e repetido para sempre.
+    """
+    status = getattr(response, "status_code", 0)
+    retry_after = None
+    headers = getattr(response, "headers", {})
+    if isinstance(headers, dict) and headers.get("Retry-After"):
+        try:
+            retry_after = max(1, int(headers["Retry-After"]))
+        except (TypeError, ValueError):
+            retry_after = None
+
+    if codigo:
+        if codigo in SHOPEE_AUTH_CODES:
+            error_type, retryable = "authentication_error", False
+        elif codigo in SHOPEE_TRANSIENT_CODES:
+            error_type, retryable = "transient_api_error", True
+        else:
+            error_type, retryable = "parameter_error", False
+    elif status == 429:
+        error_type, retryable = "rate_limit", True
+    elif status in (401, 403):
+        error_type, retryable = "authentication_error", False
+    elif status == 400:
+        error_type, retryable = "parameter_error", False
+    elif data is None and status == 200:
+        error_type, retryable = "invalid_response", True
+    else:
+        error_type, retryable = "server_error", status >= 500
+
+    detalhe = (data or {}).get("message") if isinstance(data, dict) else None
+    corpo = (getattr(response, "text", "") or "")[:500]
+    mensagem = detalhe or corpo or f"Erro na API SellerChat: {status}"
+    return {"error": f"[HTTP {status}] {mensagem}", "code": codigo or None,
+            "error_type": error_type, "retryable": retryable,
+            "retry_after": retry_after, "status_code": status,
+            "details": data if data is not None else corpo}
 
 
 def get_chat_messages(integration: Dict, conversation_id: str, *, page_size: int = 20,
@@ -19,59 +72,36 @@ def get_chat_messages(integration: Dict, conversation_id: str, *, page_size: int
               "sign": _generate_sign(partner_id, resolved["partner_key"], path, timestamp,
                                       resolved["access_token"], shop_id),
               "access_token": resolved["access_token"], "shop_id": shop_id,
-              "conversation_id": str(conversation_id), "page_size": max(1, min(int(page_size), 100)),
+              "conversation_id": str(conversation_id),
+              "page_size": max(1, min(int(page_size), PAGE_SIZE_MAXIMO)),
               "business_type": int(business_type)}
     if offset not in (None, ""):
         params["offset"] = str(offset)
     if message_id_list:
-        params["message_id_list"] = [str(item) for item in message_id_list]
+        # Array vai separado por virgula, como em `order_sn_list` do
+        # get_order_detail -- que e a chamada Shopee que ja funciona em producao
+        # neste codigo. Passar a lista crua faz o `requests` repetir a chave
+        # (`message_id_list=a&message_id_list=b`), e a Shopee responde
+        # `param_error` com HTTP 491.
+        params["message_id_list"] = ",".join(str(item) for item in message_id_list)
     try:
         response = requests.get(f"{host}{path}", params=params, timeout=timeout_seconds)
     except requests.Timeout as exc:
         return {"error": str(exc) or "Timeout na API SellerChat", "error_type": "timeout", "retryable": True}
     except requests.RequestException as exc:
         return {"error": str(exc), "error_type": "network_error", "retryable": True}
-    if response.status_code != 200:
-        status = response.status_code
-        retry_after = None
-        headers = getattr(response, "headers", {})
-        if isinstance(headers, dict) and headers.get("Retry-After"):
-            try:
-                retry_after = max(1, int(headers["Retry-After"]))
-            except (TypeError, ValueError):
-                retry_after = None
-        if status in (429, 491):
-            # 491 nao e codigo HTTP padrao: e a Shopee sinalizando limite no
-            # gateway, antes de chegar na API. Tratar como erro de servidor faria
-            # o backfill desistir de uma conversa que so precisava esperar.
-            error_type, retryable = "rate_limit", True
-            retry_after = retry_after or 60
-        elif status in (401, 403):
-            error_type, retryable = "authentication_error", False
-        elif status == 400:
-            error_type, retryable = "parameter_error", False
-        else:
-            error_type, retryable = "server_error", status >= 500
-        # O corpo e a unica fonte do motivo real quando o status nao e padrao;
-        # descarta-lo transforma toda falha em "erro 491" sem diagnostico.
-        corpo = (response.text or "")[:500]
-        return {"error": f"Erro na API SellerChat: {status}{(' - ' + corpo) if corpo else ''}",
-                "error_type": error_type, "retryable": retryable,
-                "retry_after": retry_after, "status_code": status, "details": response.text}
     try:
         data = response.json()
-    except (ValueError, requests.JSONDecodeError) as exc:
-        return {"error": str(exc) or "Resposta JSON invalida da API SellerChat",
-                "error_type": "invalid_response", "retryable": True,
-                "details": response.text[:2000]}
-    if data.get("error"):
-        code = str(data.get("error") or "")
-        retryable_codes = {"error_network", "internal_server_error", "error_server", "system_busy", "error_rate_limit"}
-        auth_codes = {"error_auth", "error_sign", "invalid_access_token",
-                      "invalid_acceess_token", "error_api_permission", "user_is_unauthorized"}
-        error_type = "authentication_error" if code in auth_codes else ("transient_api_error" if code in retryable_codes else "parameter_error")
-        return {"error": data.get("message") or "Erro reportado pela Shopee", "code": code,
-                "error_type": error_type, "retryable": code in retryable_codes, "details": data}
+    except (ValueError, requests.JSONDecodeError):
+        data = None
+    # Corpo que nao e um objeto JSON (array, escalar, HTML de gateway) nao tem
+    # como ser lido como resposta da Shopee.
+    if not isinstance(data, dict):
+        data = None
+
+    codigo = str(data.get("error") or "").strip() if data else ""
+    if response.status_code != 200 or codigo or data is None:
+        return _erro_sellerchat(response, data, codigo)
     body = data.get("response") or data.get("data") or data
     if isinstance(body, list):
         return {"messages": body, "raw": data}
@@ -94,7 +124,8 @@ def message_timestamp(row: Dict) -> Optional[int]:
     return None
 
 
-def get_all_chat_messages(integration: Dict, conversation_id: str, *, page_size: int = 100,
+def get_all_chat_messages(integration: Dict, conversation_id: str, *,
+                          page_size: int = PAGE_SIZE_MAXIMO,
                           business_type: int = 0, max_pages: int = 100,
                           desde_epoch: Optional[int] = None) -> Dict:
     """Percorre a conversa, opcionalmente parando ao sair da janela.

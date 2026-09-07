@@ -38,7 +38,8 @@ SHOPEE_CHAT_CODE = 10
 SHOPEE_ORDER_CODE = 3
 
 JANELA_DIAS = max(1, int(os.getenv("SELLERCHAT_JANELA_DIAS", "7")))
-MAX_IDS_POR_CHAMADA = max(1, int(os.getenv("SELLERCHAT_MAX_IDS_POR_CHAMADA", "50")))
+# Teto de 60 vem do `page_size` do get_message, que derivamos do tamanho do lote.
+MAX_IDS_POR_CHAMADA = max(1, min(60, int(os.getenv("SELLERCHAT_MAX_IDS_POR_CHAMADA", "50"))))
 MAX_PAGINAS = max(1, int(os.getenv("SELLERCHAT_MAX_PAGINAS", "20")))
 CACHE_INTEGRACAO_SEGUNDOS = max(30, int(os.getenv("SELLERCHAT_CACHE_INTEGRACAO_SEGUNDOS", "300")))
 

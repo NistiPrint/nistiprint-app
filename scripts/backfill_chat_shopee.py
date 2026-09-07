@@ -177,9 +177,9 @@ def _rodar(args):
                     falhas_seguidas,
                 )
                 break
-            if resultado.get("error_type") == "rate_limit":
+            if resultado.get("error_type") in ("rate_limit", "transient_api_error"):
                 espera = int(resultado.get("retry_after") or 60)
-                logger.info("limite da Shopee: aguardando %ss", espera)
+                logger.info("limite/instabilidade da Shopee: aguardando %ss", espera)
                 time.sleep(espera)
             continue
 

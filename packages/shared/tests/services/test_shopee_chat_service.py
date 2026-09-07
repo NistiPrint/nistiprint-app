@@ -451,6 +451,49 @@ class ShopeeChatApiTest(unittest.TestCase):
         self.assertEqual(auth_result["error_type"], "authentication_error")
         self.assertFalse(auth_result["retryable"])
 
+    @patch("nistiprint_shared.services.shopee_chat_api.requests.get")
+    def test_lista_vai_separada_por_virgula(self, request_get):
+        """A Shopee recusa a chave repetida com `param_error` e HTTP 491.
+
+        O array vai como string separada por virgula, igual ao `order_sn_list` do
+        get_order_detail -- a chamada Shopee que ja funciona neste codigo.
+        """
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"error": "", "response": {"messages": []}}
+        request_get.return_value = response
+        get_chat_messages(self.integration, "conversation-1",
+                          message_id_list=["111", "222", "333"])
+        params = request_get.call_args.kwargs["params"]
+        self.assertEqual(params["message_id_list"], "111,222,333")
+
+    @patch("nistiprint_shared.services.shopee_chat_api.requests.get")
+    def test_page_size_respeita_o_teto_documentado_de_60(self, request_get):
+        """`page_size` acima de 60 e `param_error`, nao truncamento silencioso."""
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"error": "", "response": {"messages": []}}
+        request_get.return_value = response
+        get_chat_messages(self.integration, "conversation-1", page_size=100)
+        self.assertEqual(request_get.call_args.kwargs["params"]["page_size"], 60)
+
+    @patch("nistiprint_shared.services.shopee_chat_api.requests.get")
+    def test_param_error_em_491_nao_e_tratado_como_limite_de_taxa(self, request_get):
+        """491 nao e status HTTP padrao; quem diz o motivo e o corpo.
+
+        Classificar pelo status faria um erro permanente de parametro ser
+        repetido para sempre com espera de rate limit.
+        """
+        response = MagicMock(status_code=491, text='{"error":"param_error"}')
+        response.json.return_value = {
+            "error": "param_error",
+            "message": "Error or loss in request parameter.",
+        }
+        request_get.return_value = response
+        result = get_chat_messages(self.integration, "conversation-1")
+        self.assertEqual(result["error_type"], "parameter_error")
+        self.assertFalse(result["retryable"])
+        self.assertEqual(result["code"], "param_error")
+        self.assertIn("Error or loss in request parameter", result["error"])
+
     @patch("nistiprint_shared.services.shopee_chat_api.get_chat_messages")
     def test_para_de_paginar_ao_sair_da_janela(self, get_page):
         """Paginar ate o inicio da conversa e a lentidao que impede reconciliar."""
