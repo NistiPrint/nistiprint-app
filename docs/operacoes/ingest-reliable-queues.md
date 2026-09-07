@@ -92,8 +92,14 @@ O que a Shopee já ocultou vira `status_completude = 'expirada'` com os IDs em
 estado antes de montar o prompt e adia o pedido em vez de decidir sobre uma
 conversa que o sistema sabe estar furada.
 
-Para recuperar o passado: `python scripts/backfill_chat_shopee.py --dry-run`
-lista a fila; sem `--dry-run` ele reconcilia com token bucket (`--rps`).
+Para recuperar o passado, com o interpretador do projeto (o `python3` do
+sistema nao tem as dependencias):
+
+```bash
+cd /opt/nistiprint
+.venv/bin/python scripts/backfill_chat_shopee.py --dry-run   # lista a fila
+.venv/bin/python scripts/backfill_chat_shopee.py --rps 2     # reconcilia
+```
 
 ## Arquivamento e retenção
 

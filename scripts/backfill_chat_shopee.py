@@ -1,9 +1,13 @@
 """
 Backfill das conversas do SellerChat com lacuna declarada.
 
-Uso:
-    python scripts/backfill_chat_shopee.py [--limite N] [--rps 2] [--dry-run]
-                                           [--janela-dias 7] [--conversa ID]
+Uso (no servidor, com o interpretador do projeto):
+    /opt/nistiprint/.venv/bin/python scripts/backfill_chat_shopee.py --dry-run
+    /opt/nistiprint/.venv/bin/python scripts/backfill_chat_shopee.py [--limite N]
+        [--rps 2] [--janela-dias 7] [--conversa ID]
+
+O `python3` do sistema nao serve: as dependencias (supabase, requests) estao no
+.venv, que e o mesmo interpretador que o systemd usa para os papeis do ingest.
 
 Recupera as mensagens que a Shopee entregou apenas como referencia dentro de um
 `bundle_message` e nunca foram buscadas. Le a fila de `conversas_chat_shopee`
@@ -20,14 +24,61 @@ pedidos que ainda precisam ser atendidos.
 """
 import argparse
 import logging
+import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
+
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# Quando o pacote nao esta instalado (`pip install -e packages/shared`),
+# apontamos o sys.path direto para os fontes.
+for _candidato in (_PROJECT_ROOT, os.path.join(_PROJECT_ROOT, "packages", "shared")):
+    if _candidato not in sys.path:
+        sys.path.insert(0, _candidato)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("backfill_chat_shopee")
 
 COLUNAS = ("conversation_id,installed_integration_id,buyer_username,ids_nao_recuperados,"
            "status_completude,ultima_mensagem_em,mensagens_esperadas,mensagens_presentes")
+
+
+def _carregar_env() -> None:
+    """Carrega o .env antes de qualquer import que instancie o cliente Supabase."""
+    caminho = next(
+        (candidato for candidato in (os.path.join(os.getcwd(), ".env"),
+                                     os.path.join(_PROJECT_ROOT, ".env"))
+         if os.path.exists(candidato)),
+        None,
+    )
+    if not caminho:
+        logger.warning("Arquivo .env nao localizado a partir de %s", os.getcwd())
+        return
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError:
+        # Interpretador sem as dependencias do projeto. Carregamos na mao so
+        # para conseguir reportar o proximo problema com clareza.
+        carregadas = 0
+        with open(caminho, "r", encoding="utf-8") as arquivo:
+            for linha in arquivo:
+                linha = linha.strip()
+                if not linha or linha.startswith("#") or "=" not in linha:
+                    continue
+                if linha.startswith("export "):
+                    linha = linha[len("export "):]
+                chave, _, valor = linha.partition("=")
+                chave, valor = chave.strip(), valor.strip()
+                if len(valor) >= 2 and valor[0] == valor[-1] and valor[0] in ("\"", "'"):
+                    valor = valor[1:-1]
+                if chave and chave not in os.environ:
+                    os.environ[chave] = valor
+                    carregadas += 1
+        logger.info("Ambiente carregado de %s (%s variaveis, parser interno)",
+                    caminho, carregadas)
+        return
+    load_dotenv(dotenv_path=caminho)
+    logger.info("Ambiente carregado de %s", caminho)
 
 
 def _conversas_pendentes(supabase_db, *, janela_dias, limite, conversa=None):
@@ -44,8 +95,17 @@ def _conversas_pendentes(supabase_db, *, janela_dias, limite, conversa=None):
 
 
 def _rodar(args):
-    from nistiprint_shared.database.supabase_db_service import supabase_db
-    from nistiprint_shared.services.shopee_chat_service import shopee_chat_ingest_service
+    _carregar_env()
+    try:
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        from nistiprint_shared.services.shopee_chat_service import shopee_chat_ingest_service
+    except ModuleNotFoundError as exc:
+        logger.error(
+            "Dependencia ausente (%s). Rode com o interpretador do projeto:\n"
+            "    /opt/nistiprint/.venv/bin/python scripts/backfill_chat_shopee.py %s",
+            exc.name, " ".join(sys.argv[1:]) or "--dry-run",
+        )
+        return 2
 
     conversas = _conversas_pendentes(
         supabase_db, janela_dias=args.janela_dias, limite=args.limite, conversa=args.conversa
