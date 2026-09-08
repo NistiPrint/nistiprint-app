@@ -15,6 +15,7 @@ class TestOrdersQueryService(unittest.TestCase):
             "nome_cliente": "Maria",
             "buyer_username": "maria123",
             "message_to_seller": "nome: Maria",
+            "latest_buyer_message": "Pode gravar Maria Clara",
             "has_chat_messages": True,
             "has_buyer_message": True,
             "needs_ai_processing": True,
@@ -35,7 +36,8 @@ class TestOrdersQueryService(unittest.TestCase):
         self.assertEqual(rows[0]["numero"], "12345")
         self.assertEqual(rows[0]["numeroLoja"], "260618ABC123")
         self.assertEqual(rows[0]["shopee"]["username"], "maria123")
-        self.assertEqual(rows[0]["shopee"]["message"], "nome: Maria")
+        self.assertEqual(rows[0]["shopee"]["message"], "Pode gravar Maria Clara")
+        self.assertEqual(rows[0]["shopee"]["message_to_seller"], "nome: Maria")
         self.assertTrue(rows[0]["needs_ai_processing"])
         self.assertTrue(rows[0]["has_buyer_message"])
 

@@ -77,6 +77,19 @@ def _parse_json_if_needed(value: Any, fallback: Any):
     return fallback
 
 
+def _message_from_shopee_mirror(row: Dict[str, Any]) -> str:
+    """Le a observacao da compra do espelho Shopee, inclusive do payload bruto."""
+    raw_payload = _parse_json_if_needed((row or {}).get("raw_payload"), {}) or {}
+    for candidate in (
+        (row or {}).get("mensagem"),
+        raw_payload.get("message_to_seller"),
+        raw_payload.get("mensagem"),
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return ""
+
+
 def _truncate(value: Any, max_len: int = 1000):
     if value is None or not isinstance(value, str):
         return value
@@ -238,6 +251,7 @@ def _normalize_order_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "bling_id": row.get("bling_id"),
         "order_date": row.get("data_pedido"),
         "message_to_seller": row.get("shopee_message") or "",
+        "latest_buyer_message": row.get("latest_buyer_message") or "",
         "items": items,
         "buyer_info": buyer_info,
         "buyer_username": row.get("buyer_username") or buyer_info.get("username") or "",
@@ -316,7 +330,7 @@ def _fetch_recent_personalized_orders(
         .select(
             "id,numero_pedido,codigo_pedido_externo,data_venda,informacoes_cliente,"
             "cliente_nome,cliente_documento,cliente_telefone,cliente_email,canal_venda_id,"
-            "situacao_pedido_id,buyer_username,marketplace_order_id,message_to_seller,"
+            "situacao_pedido_id,buyer_username,marketplace_order_id,message_to_seller,pedido_shopee_id,"
             "shipping_carrier,contact_marketplace_id,buyer_user_id,marketplace_integration_id"
         )
         .in_("canal_venda_id", _get_shopee_channel_ids())
@@ -333,6 +347,56 @@ def _fetch_recent_personalized_orders(
         query = query.limit(max(limit * 4, limit, 150))
 
     return query.execute().data or []
+
+
+def _fetch_shopee_messages_for_orders(orders: List[Dict[str, Any]]) -> Dict[int, str]:
+    """Recupera observacoes que existem no espelho, mas faltam em `pedidos`."""
+    missing = [
+        order for order in orders
+        if not str(order.get("message_to_seller") or "").strip()
+    ]
+    if not missing:
+        return {}
+
+    mirror_rows = []
+    mirror_ids = [order.get("pedido_shopee_id") for order in missing if order.get("pedido_shopee_id")]
+    order_sns = [str(order.get("codigo_pedido_externo")) for order in missing if order.get("codigo_pedido_externo")]
+    columns = "id,codigo_pedido,mensagem,raw_payload"
+
+    if mirror_ids:
+        mirror_rows += (
+            supabase_db.table("pedidos_shopee")
+            .select(columns)
+            .in_("id", mirror_ids)
+            .execute()
+            .data
+            or []
+        )
+    if order_sns:
+        mirror_rows += (
+            supabase_db.table("pedidos_shopee")
+            .select(columns)
+            .in_("codigo_pedido", order_sns)
+            .execute()
+            .data
+            or []
+        )
+
+    by_id = {str(row.get("id")): row for row in mirror_rows if row.get("id") is not None}
+    by_order_sn = {
+        str(row.get("codigo_pedido")): row
+        for row in mirror_rows
+        if row.get("codigo_pedido") not in (None, "")
+    }
+    messages = {}
+    for order in missing:
+        mirror = by_id.get(str(order.get("pedido_shopee_id")))
+        if mirror is None:
+            mirror = by_order_sn.get(str(order.get("codigo_pedido_externo")))
+        message = _message_from_shopee_mirror(mirror or {})
+        if message:
+            messages[order["id"]] = message
+    return messages
 
 
 def _fetch_chat_stats_by_username(usernames: List[str], order_dates: List[Any], buyer_ids: Optional[List[Any]] = None) -> Dict[str, Dict[str, Any]]:
@@ -416,18 +480,29 @@ def _fetch_chat_stats_for_orders(orders: List[Dict[str, Any]]) -> Dict[int, Dict
     cutoff = datetime.now(timezone.utc) - timedelta(days=CHAT_LOOKBACK_DAYS)
     buyer_ids = [str(order.get("buyer_user_id") or order.get("contact_marketplace_id")) for order in orders if order.get("buyer_user_id") or order.get("contact_marketplace_id")]
     usernames = [str(order.get("buyer_username")).strip() for order in orders if order.get("buyer_username")]
-    columns = "id,installed_integration_id,from_id,from_user_name,to_user_name,created_at"
+    columns = (
+        "id,installed_integration_id,from_id,from_user_name,to_user_name,"
+        "created_at,type,display_content"
+    )
     rows = []
     if buyer_ids:
-        rows += (supabase_db.table("mensagem_chat_shopee").select(columns)
+        rows += (supabase_db.table("view_mensagens_chat_ai_v2").select(columns)
                  .in_("from_id", buyer_ids).gte("created_at", cutoff.isoformat()).execute().data or [])
     if usernames:
-        rows += (supabase_db.table("mensagem_chat_shopee").select(columns)
+        rows += (supabase_db.table("view_mensagens_chat_ai_v2").select(columns)
                  .in_("from_user_name", usernames).gte("created_at", cutoff.isoformat()).execute().data or [])
-        rows += (supabase_db.table("mensagem_chat_shopee").select(columns)
+        rows += (supabase_db.table("view_mensagens_chat_ai_v2").select(columns)
                  .in_("to_user_name", usernames).gte("created_at", cutoff.isoformat()).execute().data or [])
     rows = list({str(row.get("id")): row for row in rows}.values())
-    stats = {order.get("id"): {"last_chat_message_at": None, "last_buyer_message_at": None, "has_chat_messages": False} for order in orders}
+    stats = {
+        order.get("id"): {
+            "last_chat_message_at": None,
+            "last_buyer_message_at": None,
+            "latest_buyer_message": "",
+            "has_chat_messages": False,
+        }
+        for order in orders
+    }
     for row in rows:
         created_at = _parse_datetime(row.get("created_at"))
         if not created_at:
@@ -448,6 +523,8 @@ def _fetch_chat_stats_for_orders(orders: List[Dict[str, Any]]) -> Dict[int, Dict
                 current["last_chat_message_at"] = created_at
             if buyer_match and (not current["last_buyer_message_at"] or created_at > current["last_buyer_message_at"]):
                 current["last_buyer_message_at"] = created_at
+                display_content = str(row.get("display_content") or "").strip()
+                current["latest_buyer_message"] = display_content if row.get("type") == "text" else ""
     return stats
 
 def _assemble_orders(
@@ -489,6 +566,8 @@ def _assemble_orders(
     filtered_orders = [order_map[pedido_id] for pedido_id in filtered_order_ids]
     if not filtered_orders:
         return []
+
+    shopee_messages_by_order = _fetch_shopee_messages_for_orders(filtered_orders)
 
     order_sns = [str(order["codigo_pedido_externo"]) for order in filtered_orders if order.get("codigo_pedido_externo")]
     numeros_pedido = [str(order["numero_pedido"]) for order in filtered_orders if order.get("numero_pedido")]
@@ -597,8 +676,17 @@ def _assemble_orders(
         last_ai_executed_at = latest_log.get("executed_at")
         last_buyer_message_at = chat_stats.get("last_buyer_message_at")
         ai_status = latest_log.get("status") or "NOT_PROCESSED"
-        message_to_seller = order.get("message_to_seller") or ""
+        message_to_seller = (
+            str(order.get("message_to_seller") or "").strip()
+            or shopee_messages_by_order.get(order["id"], "")
+        )
         has_buyer_signal = bool(message_to_seller.strip()) or bool(last_buyer_message_at)
+        buyer_key = (
+            order.get("marketplace_integration_id"),
+            order.get("buyer_user_id") or order.get("contact_marketplace_id") or order.get("buyer_username"),
+        )
+        chat_context_ambiguous = buyer_order_counts.get(buyer_key, 0) > 1
+        latest_buyer_message = "" if chat_context_ambiguous else chat_stats.get("latest_buyer_message", "")
 
         assembled.append({
             "id": order["id"],
@@ -613,10 +701,11 @@ def _assemble_orders(
             "situacao_pedido_id": order.get("situacao_pedido_id"),
             "informacoes_comprador": buyer_info,
             "shopee_message": message_to_seller,
+            "latest_buyer_message": latest_buyer_message,
             "buyer_username": buyer_username,
             "buyer_id": order.get("buyer_user_id") or order.get("contact_marketplace_id"),
             "marketplace_integration_id": order.get("marketplace_integration_id"),
-            "chat_context_ambiguous": buyer_order_counts.get((order.get("marketplace_integration_id"), order.get("buyer_user_id") or order.get("contact_marketplace_id") or order.get("buyer_username")), 0) > 1,
+            "chat_context_ambiguous": chat_context_ambiguous,
             "has_chat_messages": bool(chat_stats.get("has_chat_messages")),
             "last_chat_message_at": chat_stats.get("last_chat_message_at").isoformat() if chat_stats.get("last_chat_message_at") else None,
             "last_buyer_message_at": last_buyer_message_at.isoformat() if last_buyer_message_at else None,

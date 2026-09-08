@@ -62,7 +62,13 @@ class OrdersQueryService:
                     "shopee": {
                         "username": row.get("buyer_username") or "",
                         "order_sn": row.get("shopee_order_sn") or row.get("numero_loja"),
-                        "message": row.get("message_to_seller") or row.get("shopee_message"),
+                        "message": (
+                            row.get("latest_buyer_message")
+                            or row.get("message_to_seller")
+                            or row.get("shopee_message")
+                        ),
+                        "message_to_seller": row.get("message_to_seller") or row.get("shopee_message"),
+                        "latest_buyer_message": row.get("latest_buyer_message") or "",
                     },
                     "personalizado": row.get("personalizado", True),
                     "has_chat_messages": row.get("has_chat_messages", False),

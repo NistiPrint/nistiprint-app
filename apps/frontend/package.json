@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "verificar:rotas": "node scripts/verificar-rotas.mjs",
-    "test:unit": "node --test src/lib/consolidacaoEditavel.test.js"
+    "test:unit": "node --test src/lib/consolidacaoEditavel.test.js src/lib/dateTime.test.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

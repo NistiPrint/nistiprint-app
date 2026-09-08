@@ -7,6 +7,48 @@ from nistiprint_shared.services import ai_personalization_service as service
 
 
 class TestAiPersonalizationService(unittest.TestCase):
+    def test_message_from_shopee_mirror_uses_explicit_message(self):
+        message = service._message_from_shopee_mirror({
+            "mensagem": " Nome: Maria ",
+            "raw_payload": {"message_to_seller": "Nome antigo"},
+        })
+
+        self.assertEqual(message, "Nome: Maria")
+
+    def test_message_from_shopee_mirror_falls_back_to_raw_payload(self):
+        message = service._message_from_shopee_mirror({
+            "mensagem": "",
+            "raw_payload": '{"message_to_seller": "Nome: Ana"}',
+        })
+
+        self.assertEqual(message, "Nome: Ana")
+
+    def test_chat_stats_exposes_latest_buyer_text(self):
+        query = MagicMock()
+        query.select.return_value = query
+        query.in_.return_value = query
+        query.gte.return_value = query
+        query.execute.return_value.data = [{
+            "id": "msg-1",
+            "installed_integration_id": 6,
+            "from_id": "9",
+            "from_user_name": "comprador",
+            "to_user_name": "loja",
+            "created_at": "2026-09-07T10:00:00+00:00",
+            "type": "text",
+            "display_content": "Pode gravar Ana Clara",
+        }]
+
+        with patch.object(service.supabase_db, "table", return_value=query) as table:
+            stats = service._fetch_chat_stats_for_orders([{
+                "id": 1,
+                "buyer_user_id": 9,
+                "marketplace_integration_id": 6,
+            }])
+
+        table.assert_called_once_with("view_mensagens_chat_ai_v2")
+        self.assertEqual(stats[1]["latest_buyer_message"], "Pode gravar Ana Clara")
+
     def test_should_process_order_without_buyer_signal(self):
         self.assertFalse(
             service.should_process_order({

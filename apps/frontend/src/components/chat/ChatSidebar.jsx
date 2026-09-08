@@ -1,8 +1,7 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { format } from 'date-fns';
-import { ptBR } from 'date-fns/locale';
+import { formatAppDate, formatAppDateInput, formatAppDateTime } from '@/lib/dateTime';
 import { Loader2, MessageSquare, RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
@@ -204,8 +203,8 @@ function renderMessage(msg, username, highlightSet) {
 function groupMessagesByDate(messages) {
   const groups = {};
   messages.forEach((msg) => {
-    if (!msg.created_at) return;
-    const date = msg.created_at.split('T')[0];
+    const date = formatAppDateInput(msg.created_at);
+    if (!date) return;
     if (!groups[date]) groups[date] = [];
     groups[date].push(msg);
   });
@@ -213,21 +212,20 @@ function groupMessagesByDate(messages) {
 }
 
 function formatDateBadge(dateString) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const date = new Date(dateString + 'T00:00:00');
+  const today = formatAppDateInput();
+  const yesterday = shiftDateKey(today, -1);
 
-  if (date.toDateString() === today.toDateString()) return 'Hoje';
-  if (date.toDateString() === yesterday.toDateString()) return 'Ontem';
-  return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  if (dateString === today) return 'Hoje';
+  if (dateString === yesterday) return 'Ontem';
+  return formatAppDate(dateString, { fallback: '' });
 }
 
 function formatTs(ts) {
-  try {
-    return format(new Date(ts), 'dd/MM/yyyy HH:mm', { locale: ptBR });
-  } catch {
-    return '';
-  }
+  return formatAppDateTime(ts, { fallback: '' }).replace(',', '');
+}
+
+function shiftDateKey(dateKey, days) {
+  const date = new Date(`${dateKey}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return formatAppDateInput(date);
 }
