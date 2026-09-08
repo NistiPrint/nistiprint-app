@@ -169,12 +169,16 @@ def get_all_chat_messages(integration: Dict, conversation_id: str, *,
                             "parou_na_janela": True}
 
         next_offset = page.get("next_offset")
-        if next_offset in (None, ""):
+        if next_offset in (None, "") or not pagina:
             return {"messages": messages, "next_offset": None, "complete": True}
         next_offset = str(next_offset)
         if next_offset in seen_offsets:
-            return {"error": "Paginacao SellerChat repetiu next_offset", "error_type": "pagination_loop",
-                    "retryable": False, "messages": messages, "next_offset": next_offset}
+            # `offset` e um message_id e a paginacao caminha para tras. Ao chegar
+            # no inicio da conversa a Shopee repete o offset em vez de devolver
+            # vazio -- isso e fim de paginacao, nao laco. Tratar como erro
+            # descartava uma conversa inteira que ja estava em maos.
+            return {"messages": messages, "next_offset": None, "complete": True,
+                    "fim_por_offset_repetido": True}
         seen_offsets.add(next_offset)
         offset = next_offset
     return {"error": "Limite de paginas SellerChat atingido", "error_type": "page_limit",

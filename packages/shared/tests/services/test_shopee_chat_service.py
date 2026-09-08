@@ -514,6 +514,34 @@ class ShopeeChatApiTest(unittest.TestCase):
         self.assertIn("Error or loss in request parameter", result["error"])
 
     @patch("nistiprint_shared.services.shopee_chat_api.get_chat_messages")
+    def test_offset_repetido_encerra_a_paginacao_sem_perder_o_que_veio(self, get_page):
+        """A Shopee repete o offset ao chegar no inicio da conversa.
+
+        `offset` e um message_id e a paginacao anda para tras; no fim ela devolve
+        o mesmo valor em vez de vazio. Tratar isso como laco descartava a conversa
+        inteira que ja estava em maos.
+        """
+        get_page.side_effect = [
+            {"messages": [{"message_id": "2"}], "next_offset": "9"},
+            {"messages": [{"message_id": "1"}], "next_offset": "9"},
+        ]
+        result = get_all_chat_messages(self.integration, "conversation-1")
+        self.assertTrue(result["complete"])
+        self.assertTrue(result["fim_por_offset_repetido"])
+        self.assertNotIn("error", result)
+        self.assertEqual([m["message_id"] for m in result["messages"]], ["2", "1"])
+
+    @patch("nistiprint_shared.services.shopee_chat_api.get_chat_messages")
+    def test_pagina_vazia_encerra_a_paginacao(self, get_page):
+        get_page.side_effect = [
+            {"messages": [{"message_id": "2"}], "next_offset": "1"},
+            {"messages": [], "next_offset": "0"},
+        ]
+        result = get_all_chat_messages(self.integration, "conversation-1")
+        self.assertTrue(result["complete"])
+        self.assertEqual(len(result["messages"]), 1)
+
+    @patch("nistiprint_shared.services.shopee_chat_api.get_chat_messages")
     def test_para_de_paginar_ao_sair_da_janela(self, get_page):
         """Paginar ate o inicio da conversa e a lentidao que impede reconciliar."""
         get_page.side_effect = [
