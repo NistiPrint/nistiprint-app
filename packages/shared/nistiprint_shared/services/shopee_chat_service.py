@@ -44,9 +44,14 @@ MAX_IDS_POR_CHAMADA = max(1, int(os.getenv("SELLERCHAT_MAX_IDS_POR_CHAMADA", "50
 MAX_PAGINAS = max(1, int(os.getenv("SELLERCHAT_MAX_PAGINAS", "20")))
 CACHE_INTEGRACAO_SEGUNDOS = max(30, int(os.getenv("SELLERCHAT_CACHE_INTEGRACAO_SEGUNDOS", "300")))
 
-CONFLITO_MENSAGEM = "installed_integration_id,provider_message_id"
+# `id` continua sendo a identidade canonica da mensagem em todo o schema
+# (inclusive nas referencias de bundle e nas consultas de completude). Usar o
+# indice composto como arbitro deixa a PK fora do ON CONFLICT: uma linha legacy
+# com o mesmo id e integracao nula/diferente vira um INSERT e falha com 23505.
+CONFLITO_MENSAGEM = "id"
 
 _CACHE_INTEGRACOES: dict[int, tuple[float, dict]] = {}
+_CACHE_NOME_LOJA: dict[int, tuple[float, str | None]] = {}
 
 
 def _body(payload: dict) -> dict:
@@ -316,7 +321,8 @@ class ShopeeChatIngestService:
     # Persistencia
     # ------------------------------------------------------------------
     def _persistir(self, mensagens: Iterable[dict], *, integration_id: int, shop_id: Any,
-                   ingestion_source: str, webhook_event_id: int | None = None) -> list[dict]:
+                   ingestion_source: str, webhook_event_id: int | None = None,
+                   conversation_id: Any = None) -> list[dict]:
         # Deduplica dentro do lote: o Postgres recusa um ON CONFLICT que afete a
         # mesma linha duas vezes, e a paginacao da Shopee pode repetir mensagens
         # entre paginas.
@@ -335,10 +341,71 @@ class ShopeeChatIngestService:
                 continue
             por_id[linha["provider_message_id"]] = linha
         linhas = list(por_id.values())
+        self._preencher_nomes(linhas, shop_id, conversation_id)
         if linhas:
             (supabase_db.table("mensagem_chat_shopee")
              .upsert(linhas, on_conflict=CONFLITO_MENSAGEM).execute())
         return linhas
+
+    def _nome_da_loja(self, shop_id: Any) -> str | None:
+        """Nome da loja como a Shopee o escreve nas mensagens de push."""
+        ident = _inteiro(shop_id)
+        if ident is None:
+            return None
+        em_cache = _CACHE_NOME_LOJA.get(ident)
+        if em_cache and time.monotonic() - em_cache[0] < 3600:
+            return em_cache[1]
+        nome = None
+        try:
+            linhas = (supabase_db.table("mensagem_chat_shopee").select("to_user_name")
+                      .eq("to_shop_id", ident).not_.is_("to_user_name", "null")
+                      .limit(1).execute().data or [])
+            nome = linhas[0].get("to_user_name") if linhas else None
+        except Exception:
+            logger.exception("falha ao resolver nome da loja shop_id=%s", ident)
+        _CACHE_NOME_LOJA[ident] = (time.monotonic(), nome)
+        return nome
+
+    def _nome_do_comprador(self, conversation_id: Any) -> str | None:
+        cid = _inteiro(conversation_id)
+        if cid is None:
+            return None
+        try:
+            linhas = (supabase_db.table("conversas_chat_shopee").select("buyer_username")
+                      .eq("conversation_id", cid).limit(1).execute().data or [])
+            return linhas[0].get("buyer_username") if linhas else None
+        except Exception:
+            logger.exception("falha ao resolver comprador conversa=%s", cid)
+            return None
+
+    def _preencher_nomes(self, linhas: list[dict], shop_id: Any,
+                         conversation_id: Any) -> None:
+        """Completa `from_user_name`/`to_user_name` nas linhas vindas da API.
+
+        A API do SellerChat devolve so os ids numericos. Sem esses nomes, a
+        mensagem existe no banco e fica invisivel para todo consumidor que casa
+        por username -- foi assim que a tela do pedido continuou mostrando uma
+        mensagem so depois de a conversa ja ter sido recuperada por inteiro.
+        """
+        nosso = _inteiro(shop_id)
+        if nosso is None or not any(
+            not linha.get("from_user_name") or not linha.get("to_user_name")
+            for linha in linhas
+        ):
+            return
+        loja = self._nome_da_loja(nosso)
+        comprador = self._nome_do_comprador(conversation_id)
+        if not loja and not comprador:
+            return
+        for linha in linhas:
+            if _inteiro(linha.get("from_shop_id")) == nosso:
+                remetente, destinatario = loja, comprador
+            elif _inteiro(linha.get("to_shop_id")) == nosso:
+                remetente, destinatario = comprador, loja
+            else:
+                continue
+            linha["from_user_name"] = linha.get("from_user_name") or remetente
+            linha["to_user_name"] = linha.get("to_user_name") or destinatario
 
     def _ids_ausentes(self, ids: Sequence[str]) -> list[str]:
         presentes: set[str] = set()
@@ -408,6 +475,7 @@ class ShopeeChatIngestService:
             obtidas, integration_id=integration_id,
             shop_id=(integration.get("config") or {}).get("shop_id"),
             ingestion_source="sellerchat_api", webhook_event_id=webhook_event_id,
+            conversation_id=cid,
         )
         estado = self._atualizar_completude(cid, tentativa=True, sincronizou=True)
         return {"status": "success", "event_status": "bundle_resolvido",
@@ -457,7 +525,7 @@ class ShopeeChatIngestService:
         linhas = self._persistir(
             mensagens, integration_id=integration_id,
             shop_id=(integration.get("config") or {}).get("shop_id"),
-            ingestion_source="sellerchat_api",
+            ingestion_source="sellerchat_api", conversation_id=cid,
         )
         estado = self._atualizar_completude(cid, tentativa=True, sincronizou=True)
         return {"status": "success", "event_status": "chat_reconciled",

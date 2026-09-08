@@ -19,11 +19,6 @@ const hasIdentifiedName = (order) =>
     item.personalizations?.some(p => p.status === 'SUCCESS' && p.customization_name),
   );
 
-const needsReview = (order) =>
-  order.itens?.some(item =>
-    item.personalizations?.some(p => p.status === 'NEEDS_REVIEW'),
-  );
-
 const hasNoName = (order) =>
   order.itens?.some(item =>
     item.personalizations?.some(
@@ -40,7 +35,8 @@ function VendasPersonalizadasPage() {
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  const [aiFilter, setAiFilter] = useState('');
+  const [chatFilter, setChatFilter] = useState('');
 
   // Pagination/Slicing
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
@@ -173,38 +169,40 @@ function VendasPersonalizadasPage() {
       );
     }
 
-    // 2. Filtro por status
-    if (statusFilter === 'pendente_ia') {
+    // 2. Filtro por status da IA
+    if (aiFilter === 'pendente_ia') {
       result = result.filter(order => order.needs_ai_processing);
-    } else if (statusFilter === 'sem_chat') {
-      result = result.filter(order => order.has_chat_messages !== true);
-    } else if (statusFilter === 'nome_identificado') {
+    } else if (aiFilter === 'nome_identificado') {
       result = result.filter(order => hasIdentifiedName(order));
-    } else if (statusFilter === 'a_revisar') {
-      result = result.filter(order => needsReview(order));
-    } else if (statusFilter === 'sem_nome') {
+    } else if (aiFilter === 'sem_nome') {
       result = result.filter(order => hasNoName(order));
     }
 
+    // 3. Filtro por disponibilidade de historico no chat
+    if (chatFilter === 'com_chat') {
+      result = result.filter(order => order.has_chat_messages === true);
+    } else if (chatFilter === 'sem_chat') {
+      result = result.filter(order => order.has_chat_messages !== true);
+    }
+
     return result;
-  }, [orders, debouncedSearchTerm, statusFilter]);
+  }, [orders, debouncedSearchTerm, aiFilter, chatFilter]);
 
   // Memoized status counts
   const statusCounts = useMemo(() => {
     const counts = {
-      all: orders.length,
       pendente_ia: 0,
+      com_chat: 0,
       sem_chat: 0,
       nome_identificado: 0,
-      a_revisar: 0,
       sem_nome: 0,
     };
 
     orders.forEach(order => {
       if (order.needs_ai_processing) counts.pendente_ia++;
-      if (order.has_chat_messages !== true) counts.sem_chat++;
+      if (order.has_chat_messages === true) counts.com_chat++;
+      else counts.sem_chat++;
       if (hasIdentifiedName(order)) counts.nome_identificado++;
-      if (needsReview(order)) counts.a_revisar++;
       if (hasNoName(order)) counts.sem_nome++;
     });
 
@@ -484,9 +482,14 @@ function VendasPersonalizadasPage() {
           <OrderFilters
             searchTerm={searchTerm}
             onSearchChange={setSearchTerm}
-            statusFilter={statusFilter}
-            onStatusFilterChange={(val) => {
-                setStatusFilter(val);
+            aiFilter={aiFilter}
+            onAiFilterChange={(value) => {
+                setAiFilter(current => current === value ? '' : value);
+                setVisibleCount(ITEMS_PER_PAGE);
+            }}
+            chatFilter={chatFilter}
+            onChatFilterChange={(value) => {
+                setChatFilter(current => current === value ? '' : value);
                 setVisibleCount(ITEMS_PER_PAGE);
             }}
             statusCounts={statusCounts}

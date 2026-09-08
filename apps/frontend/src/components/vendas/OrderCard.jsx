@@ -49,9 +49,6 @@ function getStatusBadge(order) {
   ) {
     return { label: 'Sem nome', className: 'bg-slate-100 text-slate-800 border-slate-300' }
   }
-  if (!order.has_chat_messages) {
-    return { label: 'Sem chat', className: 'bg-zinc-100 text-zinc-700 border-zinc-300' }
-  }
   return { label: 'Sem processamento', className: 'bg-gray-100 text-gray-700 border-gray-300' }
 }
 
@@ -68,6 +65,7 @@ function getStatusBadge(order) {
 function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProblem }) {
   const [isProcessing, setIsProcessing] = useState(false)
   const statusBadge = getStatusBadge(order)
+  const buyerMessage = String(order.shopee?.message ?? '').trim()
 
   const handleCopy = async name => {
     try {
@@ -199,10 +197,13 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
 
         {/* Mensagem do comprador no ato da compra: costuma conter o nome, entao
             fica no corpo e nao escondida atras de um clique. */}
-        {order.shopee?.message && (
+        {buyerMessage && (
           <div className='flex items-start gap-2 rounded border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs text-blue-800'>
             <MessageCircleMore className='mt-0.5 h-3.5 w-3.5 flex-shrink-0' />
-            <span>{order.shopee.message}</span>
+            <div className='min-w-0'>
+              <span className='font-semibold'>Mensagem do comprador:</span>{' '}
+              <span className='whitespace-pre-wrap break-words'>{buyerMessage}</span>
+            </div>
           </div>
         )}
 

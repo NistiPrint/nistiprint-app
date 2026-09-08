@@ -301,6 +301,11 @@ WITH parsed AS (
                CASE WHEN p.type = 'text' THEN p.content_json ->> 'text' END,
                CASE WHEN p.type = 'new_faq' THEN p.content_json ->> 'opening' END,
                CASE WHEN p.type = 'notification' THEN p.content_json ->> 'notification_for_sender' END,
+               -- O cartao de pedido e o comprador dizendo "e sobre este pedido".
+               -- Como texto cru ele entrava no prompt da IA como um JSON sem
+               -- sentido; assim ele vira a ancora que de fato e.
+               CASE WHEN p.type = 'order' AND p.content_json ? 'order_sn'
+                    THEN '[pedido ' || (p.content_json ->> 'order_sn') || ']' END,
                CASE
                    WHEN p.type = 'bundle_message'
                     AND jsonb_typeof(p.content_json -> 'messages') = 'array'
@@ -314,10 +319,12 @@ WITH parsed AS (
                        LEFT JOIN public.mensagem_chat_shopee f ON f.id = ref
                    )
                END,
-               CASE WHEN p.type = 'bundle_message' THEN NULL ELSE p.content_json ->> 'text' END,
-               CASE WHEN p.type = 'bundle_message' THEN NULL ELSE p.content_json ->> 'url' END,
+               CASE WHEN p.type IN ('bundle_message', 'order') THEN NULL
+                    ELSE p.content_json ->> 'text' END,
+               CASE WHEN p.type IN ('bundle_message', 'order') THEN NULL
+                    ELSE p.content_json ->> 'url' END,
                CASE WHEN p.content_json ? 'sticker_id' THEN '[figurinha]' END,
-               CASE WHEN p.type = 'bundle_message' THEN NULL
+               CASE WHEN p.type IN ('bundle_message', 'order') THEN NULL
                     ELSE NULLIF(p.content_json::text, '{}') END
            )) AS display_content
       FROM parsed p

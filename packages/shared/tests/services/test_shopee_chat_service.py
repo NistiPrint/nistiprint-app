@@ -286,7 +286,7 @@ class ShopeeChatServiceTest(unittest.TestCase):
         self.assertEqual(rows[0]["webhook_event_id"], 88)
         self.assertEqual(
             db.table.return_value.upsert.call_args.kwargs["on_conflict"],
-            "installed_integration_id,provider_message_id",
+            "id",
         )
 
     def test_malformed_message_is_retryable_error(self):
