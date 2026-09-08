@@ -451,27 +451,46 @@ class ShopeeChatApiTest(unittest.TestCase):
         self.assertEqual(auth_result["error_type"], "authentication_error")
         self.assertFalse(auth_result["retryable"])
 
-    @patch("nistiprint_shared.services.shopee_chat_api.requests.get")
-    def test_lista_vai_separada_por_virgula(self, request_get):
-        """A Shopee recusa a chave repetida com `param_error` e HTTP 491.
-
-        O array vai como string separada por virgula, igual ao `order_sn_list` do
-        get_order_detail -- a chamada Shopee que ja funciona neste codigo.
-        """
+    def _resposta_ok(self, request_get):
         response = MagicMock(status_code=200)
         response.json.return_value = {"error": "", "response": {"messages": []}}
         request_get.return_value = response
+        return response
+
+    @patch("nistiprint_shared.services.shopee_chat_api.requests.get")
+    def test_lista_vai_como_int64_entre_colchetes(self, request_get):
+        """`int64[]` e literal: colchetes com inteiros sem aspas.
+
+        Medido contra a API: com aspas, separado por virgula sem colchete, ou como
+        chave repetida (o padrao do requests), a Shopee responde `param_error`.
+        """
+        self._resposta_ok(request_get)
         get_chat_messages(self.integration, "conversation-1",
                           message_id_list=["111", "222", "333"])
         params = request_get.call_args.kwargs["params"]
-        self.assertEqual(params["message_id_list"], "111,222,333")
+        self.assertEqual(params["message_id_list"], "[111,222,333]")
+
+    @patch("nistiprint_shared.services.shopee_chat_api.requests.get")
+    def test_page_size_nao_acompanha_message_id_list(self, request_get):
+        """A combinacao validada omite `page_size` -- os ids ja definem o conjunto."""
+        self._resposta_ok(request_get)
+        get_chat_messages(self.integration, "conversation-1", page_size=30,
+                          message_id_list=["111"])
+        self.assertNotIn("page_size", request_get.call_args.kwargs["params"])
+
+    @patch("nistiprint_shared.services.shopee_chat_api.requests.get")
+    def test_id_nao_numerico_falha_antes_de_gastar_chamada(self, request_get):
+        """Um id nao numerico quebraria o literal `int64[]` e viraria param_error."""
+        resultado = get_chat_messages(self.integration, "conversation-1",
+                                      message_id_list=["nao-numerico"])
+        request_get.assert_not_called()
+        self.assertEqual(resultado["error_type"], "parameter_error")
+        self.assertFalse(resultado["retryable"])
 
     @patch("nistiprint_shared.services.shopee_chat_api.requests.get")
     def test_page_size_respeita_o_teto_documentado_de_60(self, request_get):
         """`page_size` acima de 60 e `param_error`, nao truncamento silencioso."""
-        response = MagicMock(status_code=200)
-        response.json.return_value = {"error": "", "response": {"messages": []}}
-        request_get.return_value = response
+        self._resposta_ok(request_get)
         get_chat_messages(self.integration, "conversation-1", page_size=100)
         self.assertEqual(request_get.call_args.kwargs["params"]["page_size"], 60)
 

@@ -73,17 +73,30 @@ def get_chat_messages(integration: Dict, conversation_id: str, *, page_size: int
                                       resolved["access_token"], shop_id),
               "access_token": resolved["access_token"], "shop_id": shop_id,
               "conversation_id": str(conversation_id),
-              "page_size": max(1, min(int(page_size), PAGE_SIZE_MAXIMO)),
               "business_type": int(business_type)}
     if offset not in (None, ""):
         params["offset"] = str(offset)
+
     if message_id_list:
-        # Array vai separado por virgula, como em `order_sn_list` do
-        # get_order_detail -- que e a chamada Shopee que ja funciona em producao
-        # neste codigo. Passar a lista crua faz o `requests` repetir a chave
-        # (`message_id_list=a&message_id_list=b`), e a Shopee responde
-        # `param_error` com HTTP 491.
-        params["message_id_list"] = ",".join(str(item) for item in message_id_list)
+        # `int64[]` e literal: colchetes com inteiros SEM aspas, e sem `page_size`
+        # junto. Medido contra a API de producao -- todas as outras formas
+        # respondem `param_error` com HTTP 491:
+        #
+        #   [111,222]           -> 200 OK          <- esta
+        #   ["111","222"]       -> 491 param_error (aspas quebram)
+        #   111,222             -> 491 param_error (virgula sem colchete)
+        #   chave repetida      -> 491 param_error (o padrao do requests)
+        #
+        # Enviar `page_size` junto nao foi validado e nao serve para nada aqui:
+        # os ids ja definem o conjunto pedido.
+        ids = [str(item).strip() for item in message_id_list
+               if str(item).strip().isdigit()]
+        if not ids:
+            return {"error": "message_id_list sem ids numericos",
+                    "error_type": "parameter_error", "retryable": False}
+        params["message_id_list"] = "[" + ",".join(ids) + "]"
+    else:
+        params["page_size"] = max(1, min(int(page_size), PAGE_SIZE_MAXIMO))
     try:
         response = requests.get(f"{host}{path}", params=params, timeout=timeout_seconds)
     except requests.Timeout as exc:

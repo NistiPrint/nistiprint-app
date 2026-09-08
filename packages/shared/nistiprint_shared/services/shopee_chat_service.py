@@ -38,8 +38,9 @@ SHOPEE_CHAT_CODE = 10
 SHOPEE_ORDER_CODE = 3
 
 JANELA_DIAS = max(1, int(os.getenv("SELLERCHAT_JANELA_DIAS", "7")))
-# Teto de 60 vem do `page_size` do get_message, que derivamos do tamanho do lote.
-MAX_IDS_POR_CHAMADA = max(1, min(60, int(os.getenv("SELLERCHAT_MAX_IDS_POR_CHAMADA", "50"))))
+# A Shopee nao documenta teto para `message_id_list`. 50 e conservador: um bundle
+# real tem 3 a 10 mensagens, entao o lote quase nunca e dividido.
+MAX_IDS_POR_CHAMADA = max(1, int(os.getenv("SELLERCHAT_MAX_IDS_POR_CHAMADA", "50")))
 MAX_PAGINAS = max(1, int(os.getenv("SELLERCHAT_MAX_PAGINAS", "20")))
 CACHE_INTEGRACAO_SEGUNDOS = max(30, int(os.getenv("SELLERCHAT_CACHE_INTEGRACAO_SEGUNDOS", "300")))
 
@@ -384,7 +385,9 @@ class ShopeeChatIngestService:
 
         obtidas: list[dict] = []
         for lote in _lotes(faltantes, MAX_IDS_POR_CHAMADA):
-            pagina = get_chat_messages(integration, str(cid), page_size=len(lote),
+            # Sem `page_size`: os ids ja definem o conjunto, e manda-lo junto
+            # nao foi validado contra a API.
+            pagina = get_chat_messages(integration, str(cid),
                                        message_id_list=lote, business_type=business_type,
                                        timeout_seconds=timeout_seconds)
             if pagina.get("error"):
