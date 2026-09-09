@@ -45,6 +45,28 @@ zumbi nem estado para divergir. As colunas `prazo_postagem_*` guardam so o que
 a verdade nao sabe dizer — quantas vezes ja perguntamos e quando vale perguntar
 de novo.
 
+## Quando parar de perguntar
+
+Nao por idade — por situacao. O prazo deixa de ser perguntavel quando o pedido
+sai do atendimento: foi despachado (`Enviado`, `Entregue`) ou morreu
+(`Cancelado`, `Devolvido`). Enquanto ele ainda vai sair daqui, a pergunta
+continua valendo, e desistir por relogio era jogar fora justamente o dado de que
+a operacao precisa.
+
+Os dados sustentam o corte. Nos ultimos 10 dias, dos 334 pedidos que chegaram a
+`Pronto para Envio`, ZERO estava sem prazo. O prazo sempre chega antes do pedido
+evoluir — entao pedido que evoluiu ou ja tem o dado, ou nunca teria.
+
+`Em Aberto` fica de fora por outro motivo: sem pagamento nao existe prazo de
+postagem para o provider informar (32 de 32 medidos, sem excecao), e esses
+pedidos ocupavam metade do lote perguntando o que ninguem tem como responder.
+Eles voltam a fila sozinhos no instante em que o pagamento os move para
+`Em Andamento`.
+
+Nao desistir so e sustentavel se nao desistir for barato: o backoff cresce ate
+uma consulta por dia, entao o pedido esquecido pelo comprador vira ruido de
+fundo em vez de fila perdida.
+
 ## O que a task mede
 
 `preenchidos` — pedidos que ganharam prazo nesta rodada — e nao `reingeridos`.
@@ -75,11 +97,15 @@ logger = logging.getLogger(__name__)
 #: por falha de sincronizacao. Quando um canal ganhar observer, entra aqui.
 CANAIS_COM_DRIVER = ("shopee", "mercadolivre")
 
-#: Situacoes em que ainda faz sentido perguntar. Espelha
-#: `ressincronizacao_service.SITUACOES_NAO_FINALIZADAS`: pedido entregue,
-#: cancelado ou devolvido nao vai ser postado, e prazo de postagem para ele nao
-#: e dado faltando — e dado que nao existe.
-SITUACOES_ELEGIVEIS = (1, 2, 3, 4, 5)
+#: Situacoes em que o prazo ainda e util e ainda pode chegar: o pedido esta pago
+#: e ainda nao saiu daqui. `Enviado` e `Entregue` ja foram despachados — prazo de
+#: postagem para eles nao muda mais nada. `Em Aberto` ainda nao tem pagamento, e
+#: sem pagamento o provider nao tem prazo para informar.
+SITUACOES_ELEGIVEIS = (2, 3, 4)  # Em Andamento, Produzido, Pronto para Envio
+
+#: Situacoes que, quando o pedido chega nelas sem prazo, encerram o assunto.
+#: Existem para o log dizer *por que* o pedido saiu da fila, e nao so que saiu.
+SITUACOES_QUE_ENCERRAM = (5, 6, 7, 8)  # Enviado, Entregue, Cancelado, Devolvido
 
 #: Espera antes da proxima consulta, por numero de tentativas ja feitas.
 #:
@@ -87,14 +113,20 @@ SITUACOES_ELEGIVEIS = (1, 2, 3, 4, 5)
 #: de 4h, e a maior parte bem antes. Perguntar de 5 em 5 minutos nas primeiras
 #: rodadas cobre o caso comum; espacar depois evita gastar quota com o pedido
 #: que esta parado justamente porque nao andou.
-BACKOFF_MINUTOS = (5, 5, 10, 15, 30, 60, 120)
-
-#: Idade maxima do pedido para continuar perguntando.
 #:
-#: Prazo de postagem descoberto tarde demais nao serve para nada: a operacao
-#: precisa dele antes de despachar. Passado o horizonte, o pedido para de
-#: consumir quota e passa a ser reportado como problema — que e o que ele e.
-HORIZONTE_HORAS = int(os.getenv("DISPATCH_DEADLINE_HORIZON_HOURS", "48"))
+#: A cauda longa (4h, 8h, 24h) substitui o horizonte de idade que existia antes.
+#: Desistir de um pedido que ainda vai ser despachado e pior que perguntar
+#: devagar: uma consulta por dia e um custo que a operacao nem sente, e o pedido
+#: continua elegivel ate a situacao dele resolver a questao.
+BACKOFF_MINUTOS = (5, 5, 10, 15, 30, 60, 120, 240, 480, 1440)
+
+#: A partir de quando um pedido pago e sem prazo vira alerta.
+#:
+#: E limite de PACIENCIA, nao de desistencia: o pedido continua na fila. Serve
+#: para a operacao saber que vai despachar as cegas enquanto ainda da tempo de
+#: buscar o prazo na mao. Calibrado pela curva medida: praticamente todo pedido
+#: ganha prazo em ate 4h, entao passar de 6h e sinal, nao ruido.
+ALERTA_HORAS = int(os.getenv("DISPATCH_DEADLINE_ALERT_HOURS", "6"))
 
 #: Pedidos por rodada. Cada reingest custa chamadas de detalhe, envio e SLA no
 #: marketplace — medido em ~5s por pedido. Com a trava abaixo, um lote que passe
@@ -144,8 +176,8 @@ def _liberar_trava(token: str | None) -> None:
         logger.warning("Erro ao liberar trava da reconciliacao de prazo: %s", exc)
 
 
-def _horizonte_iso() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=HORIZONTE_HORAS)).isoformat()
+def _limite_de_paciencia_iso() -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=ALERTA_HORAS)).isoformat()
 
 
 def _proxima_tentativa_iso(tentativas: int) -> str:
@@ -157,31 +189,57 @@ def _proxima_tentativa_iso(tentativas: int) -> str:
 def _candidatos(limite: int) -> list[dict]:
     """Pedidos sem prazo que ainda vale perguntar.
 
-    Mais antigo primeiro: quem esta ha mais tempo sem prazo e quem esta mais
-    perto de ser despachado sem ele.
+    Sem recorte de idade: quem decide se ainda vale perguntar e a situacao do
+    pedido, nao o relogio.
+
+    Nunca-perguntados primeiro (`prazo_postagem_proxima_tentativa` nulo), depois
+    os mais antigos. Pedido recem-chegado e onde o prazo tem mais chance de estar
+    disponivel e mais valor para a operacao; pedido velho ja esta espacado pelo
+    backoff e nao precisa disputar a frente do lote.
     """
-    agora = get_now_iso()
-    return (
-        supabase_db.table("pedidos")
-        .select(CAMPOS)
-        .is_("data_limite_envio", "null")
-        .in_("situacao_pedido_id", list(SITUACOES_ELEGIVEIS))
-        .in_("marketplace_module_id", list(CANAIS_COM_DRIVER))
-        .gte("created_at", _horizonte_iso())
-        .or_(f"prazo_postagem_proxima_tentativa.is.null,prazo_postagem_proxima_tentativa.lte.{agora}")
+    def _base():
+        return (
+            supabase_db.table("pedidos")
+            .select(CAMPOS)
+            .is_("data_limite_envio", "null")
+            .in_("situacao_pedido_id", list(SITUACOES_ELEGIVEIS))
+            .in_("marketplace_module_id", list(CANAIS_COM_DRIVER))
+        )
+
+    # Duas consultas em vez de um `ORDER BY ... NULLS FIRST`: o nome do argumento
+    # de nulos mudou entre versoes do postgrest-py e `supabase` esta sem pin no
+    # requirements. Um TypeError aqui derrubaria a rodada inteira para economizar
+    # uma consulta de 20ms.
+    novos = (
+        _base()
+        .is_("prazo_postagem_proxima_tentativa", "null")
         .order("created_at")
         .limit(limite)
         .execute()
         .data
         or []
     )
+    if len(novos) >= limite:
+        return novos
+
+    reincidentes = (
+        _base()
+        .lte("prazo_postagem_proxima_tentativa", get_now_iso())
+        .order("prazo_postagem_proxima_tentativa")
+        .limit(limite - len(novos))
+        .execute()
+        .data
+        or []
+    )
+    return novos + reincidentes
 
 
-def _abandonados() -> list[int]:
-    """Pedidos que passaram do horizonte e seguem sem prazo.
+def _atrasados() -> list[int]:
+    """Pedidos pagos, ainda nao despachados, sem prazo ha tempo demais.
 
-    Nao sao mais reconsultados, entao precisam sair no log em voz alta: sao
-    pedidos que a producao vai despachar as cegas.
+    Continuam na fila — isto e alerta, nao desistencia. Sao pedidos que a
+    producao vai despachar as cegas se ninguem buscar o prazo na mao, e o unico
+    jeito de alguem saber disso a tempo e o log dizer em voz alta.
     """
     rows = (
         supabase_db.table("pedidos")
@@ -189,7 +247,7 @@ def _abandonados() -> list[int]:
         .is_("data_limite_envio", "null")
         .in_("situacao_pedido_id", list(SITUACOES_ELEGIVEIS))
         .in_("marketplace_module_id", list(CANAIS_COM_DRIVER))
-        .lt("created_at", _horizonte_iso())
+        .lt("created_at", _limite_de_paciencia_iso())
         .limit(200)
         .execute()
         .data
@@ -201,18 +259,18 @@ def _abandonados() -> list[int]:
 def reconcile_dispatch_deadlines(limite: int | None = None) -> dict:
     limite = int(limite or LOTE_PADRAO)
     candidatos = _candidatos(limite)
-    abandonados = _abandonados()
+    atrasados = _atrasados()
 
     if not candidatos:
-        if abandonados:
-            _alertar_abandonados(abandonados)
+        if atrasados:
+            _alertar_atrasados(atrasados)
         return {
             "status": "success",
             "candidatos": 0,
             "reingeridos": 0,
             "preenchidos": 0,
             "sem_resposta": 0,
-            "abandonados": len(abandonados),
+            "atrasados": len(atrasados),
         }
 
     ids = [int(row["id"]) for row in candidatos]
@@ -231,14 +289,27 @@ def reconcile_dispatch_deadlines(limite: int | None = None) -> dict:
     # estado depois do reingest e o unico jeito honesto de responder.
     depois = (
         supabase_db.table("pedidos")
-        .select("id,data_limite_envio")
+        .select("id,data_limite_envio,situacao_pedido_id")
         .in_("id", ids)
         .execute()
         .data
         or []
     )
-    preenchidos = [int(r["id"]) for r in depois if r.get("data_limite_envio")]
-    sem_resposta = [pedido_id for pedido_id in ids if pedido_id not in preenchidos]
+    preenchidos: list[int] = []
+    encerrados: list[int] = []
+    sem_resposta: list[int] = []
+    for row in depois:
+        pedido_id = int(row["id"])
+        if row.get("data_limite_envio"):
+            preenchidos.append(pedido_id)
+        elif row.get("situacao_pedido_id") in SITUACOES_QUE_ENCERRAM:
+            # O reingest trouxe situacao nova e o pedido saiu do atendimento:
+            # foi despachado ou morreu. Nao e falta de resposta, e assunto
+            # encerrado — contar junto com `sem_resposta` faria a fila parecer
+            # travada quando ela so andou.
+            encerrados.append(pedido_id)
+        else:
+            sem_resposta.append(pedido_id)
 
     if preenchidos:
         # Zera o estado de tentativa junto com o sucesso: se o prazo algum dia
@@ -255,6 +326,17 @@ def reconcile_dispatch_deadlines(limite: int | None = None) -> dict:
             .execute()
         )
 
+    if encerrados:
+        (
+            supabase_db.table("pedidos")
+            .update({
+                "prazo_postagem_proxima_tentativa": None,
+                "prazo_postagem_motivo": "pedido saiu do atendimento sem prazo informado",
+            })
+            .in_("id", encerrados)
+            .execute()
+        )
+
     for pedido_id in sem_resposta:
         tentativas = tentativas_antes.get(pedido_id, 0) + 1
         (
@@ -268,18 +350,19 @@ def reconcile_dispatch_deadlines(limite: int | None = None) -> dict:
             .execute()
         )
 
-    if abandonados:
-        _alertar_abandonados(abandonados)
+    if atrasados:
+        _alertar_atrasados(atrasados)
 
     logger.info(
-        "[prazo-postagem] candidatos=%s reingeridos=%s preenchidos=%s sem_resposta=%s "
-        "erros=%s abandonados=%s",
+        "[prazo-postagem] candidatos=%s reingeridos=%s preenchidos=%s encerrados=%s "
+        "sem_resposta=%s erros=%s atrasados=%s",
         len(ids),
         reingest.get("processados"),
         len(preenchidos),
+        len(encerrados),
         len(sem_resposta),
         reingest.get("total_erros"),
-        len(abandonados),
+        len(atrasados),
     )
 
     return {
@@ -287,19 +370,21 @@ def reconcile_dispatch_deadlines(limite: int | None = None) -> dict:
         "candidatos": len(ids),
         "reingeridos": reingest.get("processados", 0),
         "preenchidos": len(preenchidos),
+        "encerrados": len(encerrados),
         "sem_resposta": len(sem_resposta),
         "erros": reingest.get("total_erros", 0),
-        "abandonados": len(abandonados),
+        "atrasados": len(atrasados),
         "correlation_id": reingest.get("correlation_id"),
     }
 
 
-def _alertar_abandonados(ids: list[int]) -> None:
+def _alertar_atrasados(ids: list[int]) -> None:
     logger.error(
-        "[prazo-postagem] %s pedidos passaram de %sh sem prazo de postagem e nao serao "
-        "mais reconsultados (pedido_id: %s) — despacho sem prazo ate intervencao manual",
+        "[prazo-postagem] %s pedidos pagos estao ha mais de %sh sem prazo de postagem "
+        "(pedido_id: %s) — seguem na fila, mas serao despachados as cegas se o prazo "
+        "nao for buscado na mao",
         len(ids),
-        HORIZONTE_HORAS,
+        ALERTA_HORAS,
         ", ".join(str(i) for i in ids[:50]),
     )
 
