@@ -2,18 +2,32 @@
 
 ## Por que existe
 
-O prazo nao vem no primeiro evento do pedido. A Shopee devolve
-`ship_by_date = 0` enquanto o pedido esta em `LOGISTICS_NOT_START`; o Mercado
-Livre nem sempre tem SLA quando o pedido aparece. Medido em 09/09/2026, por
-faixa de idade do pedido Shopee:
+O prazo nao existe na origem no momento em que o pedido chega. A Shopee so
+publica `ship_by_date` depois que a solicitacao de envio e criada; antes disso
+o campo vem literalmente `0`, ainda que `days_to_ship` ja venha preenchido.
+Medido em 09/09/2026 sobre 7 dias de pedidos Shopee, o prazo acompanha o
+estagio logistico do pacote e nada mais:
 
-    0-1h  17/19 sem prazo   |  2-3h  10/19   |  4-5h  1/19   |  5h+  0
+    LOGISTICS_REQUEST_CREATED / PICKUP_DONE / DELIVERY_DONE   1346/1346 com prazo
+    LOGISTICS_READY                                             34/68   com prazo
+    LOGISTICS_NOT_START                                          0/39   com prazo
 
-Em todos os casos o campo estava vazio exatamente quando o provider devolveu
-zero — nunca perdemos um valor que ele tenha informado. O defeito nao era de
-gravacao: era que **so descobriamos o prazo quando chegava um evento novo
-daquele pedido**. Pedido parado no mesmo status nao gera evento, e ficava sem
-prazo indefinidamente.
+Isso foi verificado ate o fim, e nao por inferencia: o pedido e reconsultado na
+origem a cada rodada (o `enriched_at` do espelho anda), `ship_by_date` esta na
+lista de `response_optional_fields` do driver, e nos mesmos payloads em que ele
+volta zerado o `days_to_ship` volta com valor. Nunca perdemos um prazo que a
+Shopee tenha informado: em 14 dias, zero pedidos com valor util no espelho e
+`data_limite_envio` nulo em `pedidos`.
+
+**E nao da para derivar.** Entre os pedidos com `days_to_ship = 2`, a distancia
+entre pagamento e `ship_by_date` vai de 0 a 5 dias corridos — o prazo e ancorado
+no momento da solicitacao de envio, nao no pagamento. Calcular daria numero para
+todo mundo e numero errado para a maioria, que e pior que ausencia porque parece
+dado.
+
+O que era defeito nosso, e foi corrigido, e outra coisa: **so descobriamos o
+prazo quando chegava um evento novo daquele pedido**. Pedido parado no mesmo
+status nao gera evento, e ficava sem prazo indefinidamente.
 
 A varredura que existia (`ressincronizar_pendentes`) percorre a base inteira
 por cursor a 100 pedidos/hora, contra ~300 pedidos novos/hora. Ela nao poderia
@@ -256,6 +270,65 @@ def _atrasados() -> list[int]:
     return [row["id"] for row in rows]
 
 
+def _motivos(pedidos: list[dict], ids: list[int]) -> dict[int, str]:
+    """Por que cada pedido continua sem prazo, na lingua do provider.
+
+    Medido em 09/09/2026 sobre 7 dias de pedidos Shopee, o prazo acompanha
+    exatamente o estagio logistico do pacote:
+
+        LOGISTICS_REQUEST_CREATED / PICKUP_DONE / DELIVERY_DONE  1346/1346 com prazo
+        LOGISTICS_READY                                            34/68   com prazo
+        LOGISTICS_NOT_START                                         0/39   com prazo
+
+    Ou seja: a Shopee so publica `ship_by_date` quando a solicitacao de envio
+    existe. Antes disso o campo vem zerado — nao e falha de sincronizacao nossa,
+    e ausencia na origem, e nenhuma quantidade de reconsulta muda isso.
+
+    Registrar o estagio aqui e o que impede a proxima investigacao de comecar do
+    zero: "sem prazo" vira "esperando a Shopee criar a solicitacao de envio",
+    legivel na propria linha do pedido.
+    """
+    por_id = {int(row["id"]): row for row in pedidos if row.get("id") is not None}
+    alvo = [pedido_id for pedido_id in ids if pedido_id in por_id]
+    motivos: dict[int, str] = {}
+
+    externos_shopee = {
+        str(por_id[pedido_id].get("marketplace_order_id")): pedido_id
+        for pedido_id in alvo
+        if por_id[pedido_id].get("marketplace_module_id") == "shopee"
+        and por_id[pedido_id].get("marketplace_order_id")
+    }
+    if externos_shopee:
+        espelhos = (
+            supabase_db.table("pedidos_shopee")
+            .select("order_sn,raw_payload")
+            .in_("order_sn", list(externos_shopee))
+            .execute()
+            .data
+            or []
+        )
+        for espelho in espelhos:
+            pedido_id = externos_shopee.get(str(espelho.get("order_sn")))
+            if not pedido_id:
+                continue
+            pacotes = (espelho.get("raw_payload") or {}).get("package_list") or []
+            estagios = sorted({
+                str(pacote.get("logistics_status") or "").strip()
+                for pacote in pacotes
+                if pacote.get("logistics_status")
+            })
+            if not estagios:
+                motivos[pedido_id] = "Shopee: pedido ainda sem pacote; prazo so existe apos a solicitacao de envio"
+            elif estagios == ["LOGISTICS_NOT_START"]:
+                motivos[pedido_id] = "Shopee: LOGISTICS_NOT_START; prazo so existe apos a solicitacao de envio"
+            else:
+                motivos[pedido_id] = f"Shopee: {'+'.join(estagios)} sem ship_by_date"
+
+    for pedido_id in alvo:
+        motivos.setdefault(pedido_id, "provider ainda nao informou prazo de postagem")
+    return motivos
+
+
 def reconcile_dispatch_deadlines(limite: int | None = None) -> dict:
     limite = int(limite or LOTE_PADRAO)
     candidatos = _candidatos(limite)
@@ -337,6 +410,7 @@ def reconcile_dispatch_deadlines(limite: int | None = None) -> dict:
             .execute()
         )
 
+    motivos = _motivos(candidatos, sem_resposta) if sem_resposta else {}
     for pedido_id in sem_resposta:
         tentativas = tentativas_antes.get(pedido_id, 0) + 1
         (
@@ -344,7 +418,9 @@ def reconcile_dispatch_deadlines(limite: int | None = None) -> dict:
             .update({
                 "prazo_postagem_tentativas": tentativas,
                 "prazo_postagem_proxima_tentativa": _proxima_tentativa_iso(tentativas),
-                "prazo_postagem_motivo": "provider ainda nao informou prazo de postagem",
+                "prazo_postagem_motivo": motivos.get(
+                    pedido_id, "provider ainda nao informou prazo de postagem"
+                ),
             })
             .eq("id", pedido_id)
             .execute()
