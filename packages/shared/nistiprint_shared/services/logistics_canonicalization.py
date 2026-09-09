@@ -29,11 +29,33 @@ serve so de retaguarda.
 **Atencao ao formato:** o SLA aparece como objeto no ingest direto e como lista
 em `bling_order_processing_service`. Os dois existem em producao.
 
-**Quando o provider nao informa, nao se inventa.** O prazo fica nulo e a janela
-de coleta e resolvida por `logistica_coleta_service` a partir das regras
-cadastradas. Derivar de `date_created + handling` daria numero para 100% dos
-casos, mas `handling` vem zerado no ML e o resultado seria um prazo igual ao
-momento da compra — pior que ausencia, porque parece um dado.
+**Quando o provider nao informa nada, nao se inventa.** Derivar de
+`date_created + handling` no ML daria numero para 100% dos casos, mas `handling`
+vem zerado la e o resultado seria um prazo igual ao momento da compra — pior que
+ausencia, porque parece um dado.
+
+**A Shopee e a excecao, e ela e explicita.** `ship_by_date` volta `0` por um
+tempo depois que o pedido chega, mas `days_to_ship` volta preenchido no mesmo
+payload — e ele nao e um campo vazio interpretado com boa vontade, e o prazo
+contratual que a Shopee da ao vendedor. Enquanto o valor exato nao existe,
+usamos `date(pay_time) + days_to_ship` as 23:59:59 locais (as 3.657 amostras
+com valor real fecham em 23:59 sem excecao).
+
+O derivado e uma estimativa e esta anotado como tal em `dispatch_deadline_source`
+(`shopee.days_to_ship` em vez de `shopee.ship_by_date`). Medido sobre 3.657
+pedidos com os dois valores, comparando derivado menos real:
+
+    -4d ou menos  3,8%  |  -3d  8,9%  |  -2d  6,5%  |  -1d  19,9%
+    exato        15,4%  |  +1d 30,8%  |  +2d 14,6%
+
+Ou seja: em 45% dos casos o derivado cai DEPOIS do prazo real, que e o lado
+perigoso. Ele existe para a operacao nao planejar as cegas na janela em que a
+Shopee ainda nao publicou o valor — nao para substituir o valor. Quem precisa de
+precisao deve exigir `dispatch_deadline_source == "shopee.ship_by_date"`.
+
+O real sobrescreve o derivado sozinho: `upsert_canonical_order` grava
+`COALESCE(EXCLUDED.data_limite_envio, pedidos.data_limite_envio)`, entao o
+primeiro payload com `ship_by_date` de verdade toma o lugar da estimativa.
 
 ## Modalidade
 
@@ -61,7 +83,7 @@ from __future__ import annotations
 
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 Modalidade = Literal["STANDARD", "FLEX", "FULFILLMENT", "RETIRADA"]
@@ -185,13 +207,69 @@ def canonical_modalidade(value: Any) -> Modalidade | None:
 # --------------------------------------------------------------------------- #
 
 
+def _instante_base_shopee(detail: dict, raw: dict) -> datetime | None:
+    """Momento de onde o prazo derivado conta: pagamento, senao criacao."""
+    from nistiprint_shared.utils.date_utils import (
+        parse_datetime,
+        to_app_timezone,
+        unix_to_app_datetime,
+    )
+
+    for valor in (raw.get("pay_time"), raw.get("create_time")):
+        if valor in (None, "", 0, "0"):
+            continue
+        instante = unix_to_app_datetime(valor)
+        if instante:
+            return instante
+    # O payload normalizado do driver ja traz ISO; o cru traz epoch.
+    for valor in (detail.get("pay_time"), detail.get("create_time")):
+        if not valor:
+            continue
+        instante = parse_datetime(valor)
+        if instante:
+            return to_app_timezone(instante)
+    return None
+
+
+def _prazo_shopee_por_dias(detail: dict, raw: dict) -> str | None:
+    """Prazo derivado de `days_to_ship`, para quando `ship_by_date` vem zerado.
+
+    Ver a secao da Shopee no docstring do modulo: e estimativa, marcada como tal
+    em `dispatch_deadline_source`, e some sozinha quando o valor real chega.
+    """
+    dias = raw.get("days_to_ship")
+    if dias in (None, ""):
+        dias = detail.get("days_to_ship")
+    try:
+        dias = int(dias)
+    except (TypeError, ValueError):
+        return None
+    if dias <= 0:
+        return None
+    base = _instante_base_shopee(detail, raw)
+    if base is None:
+        return None
+    limite = (base + timedelta(days=dias)).replace(
+        hour=23, minute=59, second=59, microsecond=0
+    )
+    return limite.isoformat()
+
+
 def observe_shopee(detail: dict | None) -> LogisticsObservation:
     detail = detail or {}
     raw = detail.get("raw") or {}
+
+    prazo = detail.get("ship_by_date") or raw.get("ship_by_date")
+    campo = "shopee.ship_by_date"
+    if normalize_deadline(prazo) is None:
+        derivado = _prazo_shopee_por_dias(detail, raw)
+        if derivado:
+            prazo, campo = derivado, "shopee.days_to_ship"
+
     return LogisticsObservation(
         provider="shopee",
-        dispatch_deadline_raw=detail.get("ship_by_date") or raw.get("ship_by_date"),
-        dispatch_deadline_field="shopee.ship_by_date",
+        dispatch_deadline_raw=prazo,
+        dispatch_deadline_field=campo,
         carrier=detail.get("shipping_carrier"),
         fulfillment_flag=detail.get("fulfillment_flag") or raw.get("fulfillment_flag"),
         buyer_username=detail.get("buyer_username") or raw.get("buyer_username"),

@@ -189,7 +189,7 @@ def get_order_detail(integration: Dict, order_sn_list: List[str]) -> Dict:
     }
     
     # Optional fields to get more info (like buyer details, items, etc)
-    optional_fields = "buyer_user_id,buyer_username,recipient_address,item_list,create_time,update_time,pay_time,ship_time,total_amount,order_status,fulfillment_flag,package_list,shipping_carrier,message_to_seller,ship_by_date"
+    optional_fields = "buyer_user_id,buyer_username,recipient_address,item_list,create_time,update_time,pay_time,ship_time,total_amount,order_status,fulfillment_flag,package_list,shipping_carrier,message_to_seller,ship_by_date,days_to_ship"
     params["response_optional_fields"] = optional_fields
 
     logger.info(
@@ -262,6 +262,9 @@ def _normalize_order(order: Dict, shop_id: int) -> Dict:
         "update_time":        _ts_to_iso(order.get("update_time")),
         "ship_time":          _ts_to_iso(order.get("ship_time")),
         "ship_by_date":       _ts_to_iso(order.get("ship_by_date")),
+        # Prazo em dias de processamento. Retaguarda de `ship_by_date` quando a
+        # Shopee devolve o absoluto zerado — ver logistics_canonicalization.
+        "days_to_ship":       order.get("days_to_ship"),
         "return_status":      order.get("return_status"),
         "refund_status":      order.get("refund_status"),
         "total":              float(order.get("total_amount", 0)),
@@ -312,7 +315,7 @@ def get_order_details_batch(integration: Dict, order_sn_list: List[str]) -> Dict
     optional_fields = (
         "buyer_user_id,buyer_username,recipient_address,item_list,create_time,"
         "update_time,pay_time,ship_time,total_amount,order_status,fulfillment_flag,"
-        "package_list,shipping_carrier,message_to_seller,ship_by_date"
+        "package_list,shipping_carrier,message_to_seller,ship_by_date,days_to_ship"
     )
 
     for inicio in range(0, len(solicitados), ORDER_DETAIL_BATCH_SIZE):

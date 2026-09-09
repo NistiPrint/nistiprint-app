@@ -2,28 +2,26 @@
 
 ## Por que existe
 
-O prazo nao existe na origem no momento em que o pedido chega. A Shopee so
-publica `ship_by_date` depois que a solicitacao de envio e criada; antes disso
-o campo vem literalmente `0`, ainda que `days_to_ship` ja venha preenchido.
-Medido em 09/09/2026 sobre 7 dias de pedidos Shopee, o prazo acompanha o
-estagio logistico do pacote e nada mais:
+Parte dos pedidos chega sem `data_limite_envio` e o campo aparece minutos ou
+horas depois. O que esta ESTABELECIDO sobre isso, medido em 09/09/2026:
 
-    LOGISTICS_REQUEST_CREATED / PICKUP_DONE / DELIVERY_DONE   1346/1346 com prazo
-    LOGISTICS_READY                                             34/68   com prazo
-    LOGISTICS_NOT_START                                          0/39   com prazo
+- Em 40 dias, todo pedido Shopee pago e nao cancelado terminou com prazo. Zero
+  excecoes por dia. O pipeline preenche; a duvida e so *quando*.
+- Nunca perdemos um prazo que a origem tenha informado: em 14 dias, zero
+  pedidos com valor util no espelho `pedidos_shopee` e `data_limite_envio`
+  nulo em `pedidos`.
+- Nos payloads em que `ship_by_date` volta `0`, o `days_to_ship` volta com
+  valor, e `ship_by_date` esta na lista de `response_optional_fields` do
+  driver. A chamada acontece e a resposta vem completa.
+- Nao da para derivar: entre pedidos com `days_to_ship = 2`, a distancia entre
+  pagamento e `ship_by_date` real vai de 0 a 5 dias corridos.
 
-Isso foi verificado ate o fim, e nao por inferencia: o pedido e reconsultado na
-origem a cada rodada (o `enriched_at` do espelho anda), `ship_by_date` esta na
-lista de `response_optional_fields` do driver, e nos mesmos payloads em que ele
-volta zerado o `days_to_ship` volta com valor. Nunca perdemos um prazo que a
-Shopee tenha informado: em 14 dias, zero pedidos com valor util no espelho e
-`data_limite_envio` nulo em `pedidos`.
-
-**E nao da para derivar.** Entre os pedidos com `days_to_ship = 2`, a distancia
-entre pagamento e `ship_by_date` vai de 0 a 5 dias corridos — o prazo e ancorado
-no momento da solicitacao de envio, nao no pagamento. Calcular daria numero para
-todo mundo e numero errado para a maioria, que e pior que ausencia porque parece
-dado.
+O que NAO esta estabelecido, e por isso nao esta afirmado aqui: por que a
+origem devolve `0` em alguns momentos. Havia uma correlacao forte com o estagio
+logistico do pacote, mas ela nao se sustentou — no mesmo estagio
+(`LOGISTICS_READY`, `days_to_ship=2`) existem pedidos com e sem prazo no mesmo
+instante. Enquanto nao houver a resposta crua da API para um pedido sem prazo,
+qualquer mecanismo escrito aqui seria inferencia disfarcada de documentacao.
 
 O que era defeito nosso, e foi corrigido, e outra coisa: **so descobriamos o
 prazo quando chegava um evento novo daquele pedido**. Pedido parado no mesmo
@@ -273,20 +271,10 @@ def _atrasados() -> list[int]:
 def _motivos(pedidos: list[dict], ids: list[int]) -> dict[int, str]:
     """Por que cada pedido continua sem prazo, na lingua do provider.
 
-    Medido em 09/09/2026 sobre 7 dias de pedidos Shopee, o prazo acompanha
-    exatamente o estagio logistico do pacote:
-
-        LOGISTICS_REQUEST_CREATED / PICKUP_DONE / DELIVERY_DONE  1346/1346 com prazo
-        LOGISTICS_READY                                            34/68   com prazo
-        LOGISTICS_NOT_START                                         0/39   com prazo
-
-    Ou seja: a Shopee so publica `ship_by_date` quando a solicitacao de envio
-    existe. Antes disso o campo vem zerado — nao e falha de sincronizacao nossa,
-    e ausencia na origem, e nenhuma quantidade de reconsulta muda isso.
-
-    Registrar o estagio aqui e o que impede a proxima investigacao de comecar do
-    zero: "sem prazo" vira "esperando a Shopee criar a solicitacao de envio",
-    legivel na propria linha do pedido.
+    Registra o estagio logistico do pacote junto do "sem prazo". Nao porque ele
+    explique a ausencia — no mesmo estagio existem pedidos com e sem prazo — mas
+    porque e o dado que a proxima investigacao vai querer ter, ja gravado na
+    linha do pedido em vez de reconstruido a partir de payload.
     """
     por_id = {int(row["id"]): row for row in pedidos if row.get("id") is not None}
     alvo = [pedido_id for pedido_id in ids if pedido_id in por_id]
@@ -318,9 +306,9 @@ def _motivos(pedidos: list[dict], ids: list[int]) -> dict[int, str]:
                 if pacote.get("logistics_status")
             })
             if not estagios:
-                motivos[pedido_id] = "Shopee: pedido ainda sem pacote; prazo so existe apos a solicitacao de envio"
+                motivos[pedido_id] = "Shopee: pedido ainda sem pacote e sem ship_by_date"
             elif estagios == ["LOGISTICS_NOT_START"]:
-                motivos[pedido_id] = "Shopee: LOGISTICS_NOT_START; prazo so existe apos a solicitacao de envio"
+                motivos[pedido_id] = "Shopee: LOGISTICS_NOT_START sem ship_by_date"
             else:
                 motivos[pedido_id] = f"Shopee: {'+'.join(estagios)} sem ship_by_date"
 

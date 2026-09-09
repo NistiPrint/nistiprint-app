@@ -1550,6 +1550,23 @@ def _upsert_pedido_shopee(shopee_data: dict, marketplace_integration_id: int) ->
     }
     if message_to_seller is not None:
         row['mensagem'] = message_to_seller
+
+    # Prazo de postagem como coluna, nao so dentro do raw_payload. Foi preciso
+    # cavar jsonb para descobrir que `ship_by_date` vinha zerado enquanto
+    # `days_to_ship` vinha preenchido; com os dois em coluna, a mesma pergunta
+    # vira uma consulta. Gravados so quando ha valor: o upsert substitui a
+    # linha inteira, e um payload sem o campo apagaria o que ja sabiamos.
+    ship_by_date = shopee_data.get('ship_by_date')
+    if ship_by_date:
+        row['ship_by_date'] = ship_by_date
+    dias_para_envio = shopee_data.get('days_to_ship')
+    if dias_para_envio in (None, ''):
+        dias_para_envio = raw_payload.get('days_to_ship')
+    if dias_para_envio not in (None, ''):
+        try:
+            row['dias_para_envio'] = int(dias_para_envio)
+        except (TypeError, ValueError):
+            pass
     
     if not row.get('codigo_pedido'):
         logger.error("[upsert_pedido_shopee] codigo_pedido está null - shopee_data: %s", shopee_data)
