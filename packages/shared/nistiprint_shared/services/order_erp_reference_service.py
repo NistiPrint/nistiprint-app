@@ -204,6 +204,35 @@ class OrderErpReferenceService:
 
 
 
+def _encerrar_fila_ja_referenciada(pedido_id: int) -> None:
+    """Fecha a fila de um pedido que ja tem referencia de ERP.
+
+    Sem isto o item era reportado como `ready` e a linha continuava `pending`:
+    voltava no lote seguinte, e como a selecao e `ORDER BY updated_at LIMIT 50`,
+    linhas antigas assim ocupavam o lote inteiro indefinidamente. Em 09/09 eram
+    53 — a task rodou 480 vezes dizendo "processed 50, applied 50" enquanto
+    nenhum pedido novo chegava a ser consultado no Bling.
+
+    Nao gravamos `erp_order_id` aqui: a referencia mora em `pedidos`, e
+    `ux_pending_order_reconciliation_erp_order` admite uma unica linha por
+    (conta, pedido do ERP, status) — varios irmaos de pacote colidiriam.
+    """
+    agora = get_now_iso()
+    (
+        supabase_db.table("pending_order_reconciliations")
+        .update({
+            "status": "applied",
+            "resolved_at": agora,
+            "updated_at": agora,
+            "last_error": None,
+        })
+        .eq("pedido_id", pedido_id)
+        .eq("status", "pending")
+        .eq("reason", "erp_reference_pending")
+        .execute()
+    )
+
+
 def _resolve_pending_references_in_batch(rows: list[dict], *, allow_remote: bool = True) -> dict:
     """Consulta numeroLoja agrupando pedidos pela mesma conta Bling."""
     from nistiprint_shared.services.bling.bling_client import BlingClient
@@ -225,7 +254,8 @@ def _resolve_pending_references_in_batch(rows: list[dict], *, allow_remote: bool
         # pronto. Gastar uma consulta ao Bling para redescobrir o que ele ja tem
         # so serviria para ele reivindicar de novo o mesmo pedido do ERP.
         if pedido.get("erp_order_id"):
-            results.append({"status": "ready", "pedido_id": pedido["id"]})
+            _encerrar_fila_ja_referenciada(pedido["id"])
+            results.append({"status": "ready", "pedido_id": pedido["id"], "ja_referenciado": True})
             continue
         if not allow_remote:
             results.append({"status": "pending", "pedido_id": pedido["id"], "message": "Referencia ERP ainda nao disponivel"})
@@ -456,10 +486,17 @@ def reconcile_pending_erp_references(limit: int = 50):
             ", ".join(str(p) for p in esgotados_pedidos),
         )
 
+    # `applied` conta so quem ganhou referencia nesta rodada. Antes ele somava
+    # tambem os itens que ja chegavam referenciados, e o log dizia
+    # "processed 50, applied 50" justamente nas horas em que a fila estava
+    # parada. Um numero que nao sabe distinguir trabalho de inercia nao serve
+    # para vigiar fila nenhuma.
+    ja_referenciados = sum(1 for item in batch["ready"] if item.get("ja_referenciado"))
     return {
         "status": "success",
         "processed": len(rows),
-        "applied": len(batch["ready"]),
+        "applied": len(batch["ready"]) - ja_referenciados,
+        "already_referenced": ja_referenciados,
         "skipped_terminal": len(terminais),
         "exhausted": esgotados,
     }

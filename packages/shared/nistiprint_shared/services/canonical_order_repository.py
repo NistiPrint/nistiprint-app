@@ -13,6 +13,7 @@ from uuid import UUID
 from postgrest.exceptions import APIError
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.utils.date_utils import get_now_iso
 
 
 class CanonicalOrderIdentityError(ValueError):
@@ -429,9 +430,26 @@ class CanonicalOrderRepository:
             "reason": reason,
             "payload": self._json_safe(payload or {}),
             "status": "pending",
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": get_now_iso(),
         }
         query = supabase_db.table("pending_order_reconciliations")
+        # Pedido que ja tem referencia de ERP nao tem o que reconciliar. O
+        # webhook do marketplace chega varias vezes por pedido e o lookup local
+        # do Bling falha para irmao de pacote (o `numeroLoja` gravado e o de um
+        # so), entao sem esta guarda cada evento reenfileirava um item que a
+        # task nunca conseguiria fechar — foi assim que a fila entupiu em 09/09.
+        if pedido_id and reason == "erp_reference_pending":
+            ja_referenciado = (
+                supabase_db.table("pedidos")
+                .select("erp_order_id")
+                .eq("id", pedido_id)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            if ja_referenciado and ja_referenciado[0].get("erp_order_id"):
+                return
         if pedido_id:
             existing = (
                 query.select("id")
@@ -516,7 +534,7 @@ class CanonicalOrderRepository:
             "source_event_id": source_event_id,
             "payload": self._json_safe(payload or {}),
             "status": "pending",
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": get_now_iso(),
         }
         (
             supabase_db.table("pending_marketplace_enrichments")
