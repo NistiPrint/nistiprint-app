@@ -147,8 +147,11 @@ class TestAiPersonalizationService(unittest.TestCase):
             with patch.object(service, "_get_shopee_channel_ids", return_value=[1, 27]):
                 service._fetch_recent_personalized_orders(recent_days=None)
 
-        query.in_.assert_called_once_with("canal_venda_id", [1, 27])
-        query.eq.assert_called_once_with("situacao_pedido_id", service.STATUS_EM_ANDAMENTO)
+        query.in_.assert_has_calls([
+            unittest.mock.call("canal_venda_id", [1, 27]),
+            unittest.mock.call("situacao_pedido_id", [2, 4]),
+        ])
+        query.eq.assert_not_called()
 
 
 class _FakeQuery:
@@ -184,6 +187,13 @@ class _FakeQuery:
         self._filtros.append(lambda row, c=campo, v=valor: row.get(c) == v)
         return self
 
+    def in_(self, campo, valores):
+        self._filtros.append(lambda row, c=campo, v=valores: row.get(c) in v)
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
     def lt(self, campo, valor):
         self._filtros.append(lambda row, c=campo, v=valor: str(row.get(c)) < str(v))
         return self
@@ -213,6 +223,87 @@ class _FakeDb:
 
     def table(self, nome):
         return _FakeQuery(self._store, nome)
+
+
+class TestStatusPersonalizados(unittest.TestCase):
+    def setUp(self):
+        self.store = {
+            "pedidos": [{
+                "id": status,
+                "numero_pedido": str(status),
+                "codigo_pedido_externo": f"PEDIDO-{status}",
+                "situacao_pedido_id": status,
+                "canal_venda_id": 27,
+                "data_venda": "2026-09-16T10:00:00+00:00",
+                "message_to_seller": "Nome: Ana",
+                "buyer_username": f"comprador-{status}",
+            } for status in range(1, 9)],
+            "itens_pedido": [{
+                "id": status * 10,
+                "pedido_id": status,
+                "descricao": "Planner personalizado",
+                "personalizado": True,
+                "quantidade": 1,
+                "preco_unitario": 20,
+            } for status in range(1, 9)],
+        }
+        self.store["pedidos"].extend([
+            {**self.store["pedidos"][3], "id": 9, "canal_venda_id": 99},
+            {**self.store["pedidos"][3], "id": 10},
+        ])
+        self.store["itens_pedido"].extend([
+            {**self.store["itens_pedido"][3], "id": 90, "pedido_id": 9},
+            {**self.store["itens_pedido"][3], "id": 100, "pedido_id": 10, "personalizado": False},
+        ])
+        self.enterContext(patch.object(service, "supabase_db", _FakeDb(self.store)))
+        self.enterContext(patch.object(service, "_get_shopee_channel_ids", return_value=[1, 27]))
+        self.enterContext(patch.object(service, "_fetch_chat_stats_for_orders", return_value={}))
+
+    def test_lista_apenas_em_andamento_e_pronto_envio_com_item_personalizado(self):
+        rows = service.get_orders_with_chats()
+
+        self.assertEqual({row["id"] for row in rows}, {2, 4})
+        self.assertTrue(all(row["needs_ai_processing"] for row in rows))
+
+    def test_lista_da_pagina_preserva_os_dois_status_e_o_contrato(self):
+        from nistiprint_shared.services.orders_query_service import OrdersQueryService
+
+        rows = OrdersQueryService().get_personalized_orders_v2()
+
+        self.assertEqual({row["id"] for row in rows}, {2, 4})
+        ready = next(row for row in rows if row["id"] == 4)
+        self.assertEqual(ready["numero"], "4")
+        self.assertEqual(ready["numeroLoja"], "PEDIDO-4")
+        self.assertEqual(ready["itens"][0]["descricao"], "Planner personalizado")
+        self.assertTrue(ready["needs_ai_processing"])
+
+    def test_processamento_inclui_pronto_envio(self):
+        to_process, skipped = service.select_orders_for_processing(order_sn="PEDIDO-4")
+
+        self.assertEqual([row["id"] for row in to_process], [4])
+        self.assertEqual(skipped, [])
+
+    def test_reprocessamento_preserva_elegibilidade_e_permite_forcar(self):
+        self.store["logs_execucao_ia"] = [{
+            "id": 1,
+            "order_sn": "PEDIDO-4",
+            "executed_at": "2026-09-16T12:00:00+00:00",
+            "status": "success",
+        }]
+
+        to_process, skipped = service.select_orders_for_processing(order_sn="PEDIDO-4")
+        self.assertEqual(to_process, [])
+        self.assertEqual([row["id"] for row in skipped], [4])
+
+        to_process, skipped = service.select_orders_for_processing(order_sn="PEDIDO-4", force=True)
+        self.assertEqual([row["id"] for row in to_process], [4])
+        self.assertEqual(skipped, [])
+
+    def test_forcar_nao_inclui_status_excluido(self):
+        to_process, skipped = service.select_orders_for_processing(order_sn="PEDIDO-3", force=True)
+
+        self.assertEqual(to_process, [])
+        self.assertEqual(skipped, [])
 
 
 def _lote(batch_id, status, idade_segundos, total=3, processados=0):

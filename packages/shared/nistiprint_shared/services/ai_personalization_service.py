@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from celery import shared_task
 
+from nistiprint_shared.constants import STATUS_PEDIDO_PRONTO_ENVIO
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.app_config_service import app_config_service
 from nistiprint_shared.services.ai import (
@@ -40,6 +41,7 @@ CHAT_LOOKBACK_DAYS = 7
 CHAT_GATE_TIMEOUT_SEGUNDOS = float(os.getenv("AI_CHAT_GATE_TIMEOUT_SEGUNDOS", "3"))
 CHAT_GATE_ATIVO = os.getenv("AI_CHAT_GATE_ATIVO", "1").strip().lower() not in ("0", "false", "off")
 STATUS_EM_ANDAMENTO = 2
+STATUS_PERSONALIZACAO = [STATUS_EM_ANDAMENTO, STATUS_PEDIDO_PRONTO_ENVIO]
 PROMPT_FALLBACK_PATH = Path(get_prompt_template_path())
 
 _httpx_client = httpx.Client(
@@ -334,7 +336,7 @@ def _fetch_recent_personalized_orders(
             "shipping_carrier,contact_marketplace_id,buyer_user_id,marketplace_integration_id"
         )
         .in_("canal_venda_id", _get_shopee_channel_ids())
-        .eq("situacao_pedido_id", STATUS_EM_ANDAMENTO)
+        .in_("situacao_pedido_id", STATUS_PERSONALIZACAO)
         .order("data_venda", desc=True)
     )
 

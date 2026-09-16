@@ -86,6 +86,12 @@ Terceiro nivel de agrupamento. Usa `pedidos.data_limite_envio`, o prazo
 canonico informado pela origem. Nunca derivar de `created_at`, porque a
 derivacao quebra exatamente nos casos de excecao que importam.
 
+As abas Hoje, Amanha e Proximos dias usam o dia desse prazo no fuso
+`America/Sao_Paulo`, em todos os marketplaces. A coleta prevista e o compromisso
+logistico continuam informacoes operacionais e nao definem a aba. Atrasados e
+pedidos sem prazo informado ficam em Hoje. Arvore e escopos compartilham a
+classificacao de `despacho_bucket_prazo`.
+
 Buckets: `atrasado`, `hoje`, `amanha`, `depois`.
 
 ### Escopo de despacho
