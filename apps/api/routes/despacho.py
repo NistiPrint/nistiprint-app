@@ -1130,37 +1130,11 @@ def get_esteira():
         if not user:
             return jsonify({"success": False, "error": "Nao autorizado"}), 401
 
-        # Duas consultas simples em vez de embedded-resource-filter: menos
-        # dependencia de sintaxe especifica de versao do client PostgREST.
-        modalidades_relativo = (
-            supabase_db.table("modalidades_logisticas")
-            .select("id,codigo,nome,tipo_prazo,offset_etiqueta_min,offset_coleta_min,nivel_interrupcao")
-            .eq("tipo_prazo", "RELATIVO")
-            .execute()
-        ).data or []
-        modalidade_ids = [m["id"] for m in modalidades_relativo]
-        modalidade_by_id = {m["id"]: m for m in modalidades_relativo}
-
-        if not modalidade_ids:
-            return jsonify({"success": True, "data": {"pedidos": []}})
-
-        result = (
-            supabase_db.table("pedidos")
-            .select(
-                "id,numero_pedido,codigo_pedido_externo,cliente_nome,"
-                "marketplace_integration_id,compromisso_logistico_em,"
-                "metodo_envio_rotulo,modalidade_logistica_id"
-            )
-            .is_("despachado_em", None)
-            .in_("modalidade_logistica_id", modalidade_ids)
-            .order("compromisso_logistico_em", desc=False)
-            .limit(200)
-            .execute()
-        )
-
+        # A RPC e a fonte canonica da esteira: alem do shape consumido pela
+        # faixa, ela aplica as mesmas regras de situacao e demanda publicada
+        # usadas pelo dominio de despacho.
+        result = supabase_db.rpc("despacho_esteira_relativo").execute()
         pedidos = result.data or []
-        for pedido in pedidos:
-            pedido["modalidade"] = modalidade_by_id.get(pedido.get("modalidade_logistica_id"))
 
         return jsonify({"success": True, "data": {"pedidos": pedidos}})
     except Exception as exc:
