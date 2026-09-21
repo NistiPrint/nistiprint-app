@@ -1044,7 +1044,10 @@ def post_publicar():
             return jsonify({"success": False, "error": "Esta demanda ja foi publicada."}), 409
         if "nao tem pedidos" in message:
             return jsonify({"success": False, "error": "Rascunho sem pedidos."}), 409
-        if "versao" in message.lower() or "escopo mudou" in message.lower():
+        # Nao procure apenas por "versao": o erro do PostgREST para uma RPC
+        # ausente lista o parametro `p_previsao_versao` e acabava mascarado
+        # como conflito de escopo. So a excecao de negocio da RPC e um 409.
+        if "escopo mudou desde a previsao" in message.lower():
             return jsonify({"success": False, "error": "O escopo mudou desde a prévia. Recarregue e confira a tabela novamente."}), 409
         logger.error("Erro ao publicar demanda: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": message}), 500

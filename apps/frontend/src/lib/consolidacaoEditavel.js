@@ -46,6 +46,14 @@ export function prepararLinhasParaEnvio(linhas = []) {
     }));
 }
 
+export function assinaturaLinhas(linhas = []) {
+  return JSON.stringify(prepararLinhasParaEnvio(linhas));
+}
+
+export function linhasForamEditadas(linhas = [], baseline = []) {
+  return assinaturaLinhas(linhas) !== assinaturaLinhas(baseline);
+}
+
 export function linhasParaTsv(linhas = []) {
   const conteudo = prepararLinhasParaEnvio(linhas);
   if (!conteudo.length) return '';

@@ -6,7 +6,7 @@ import AcoesDoLote from '@/components/despacho/AcoesDoLote';
 import ConferenciaDoArquivo from '@/components/despacho/ConferenciaDoArquivo';
 import LinhasConsolidadas from '@/components/despacho/LinhasConsolidadas';
 import { dataOperacionalHoje } from '@/lib/dataOperacional';
-import { prepararLinhasParaEnvio, totalizarLinhas, linhasParaTsv } from '@/lib/consolidacaoEditavel';
+import { linhasForamEditadas, prepararLinhasParaEnvio, totalizarLinhas, linhasParaTsv } from '@/lib/consolidacaoEditavel';
 import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
 import { AlertTriangle, ArrowLeft, ChevronRight, Copy, MoreHorizontal } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -77,7 +77,7 @@ export default function EscopoDespachoPage() {
   const [erro, setErro] = useState(null);
   const [linhasEditadas, setLinhasEditadas] = useState([]);
   const [previsaoVersao, setPrevisaoVersao] = useState(null);
-  const baselineRef = useRef('');
+  const baselineRef = useRef([]);
   const horizonte = useMemo(() => { const passos = HORIZONTE_STEPS.slice(0, horizonteAte + 1); return incluirSemPrazo ? [...passos, 'sem_prazo'] : passos; }, [horizonteAte, incluirSemPrazo]);
   const chaveDoEscopo = useMemo(() => origemArquivo ? { conferencia_id: conferenciaId } : { integration_id: integrationId ?? undefined, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? undefined, horizonte, data: dataOperacionalHoje() }, [origemArquivo, conferenciaId, integrationId, modalidadeIds, horizonte]);
   const carregar = useCallback(async () => {
@@ -91,8 +91,8 @@ export default function EscopoDespachoPage() {
       const lancamento = await fetch('/api/v2/despacho/lancar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ integration_id: integrationId, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? null, horizonte, data: dataOperacionalHoje(), ...(origemArquivo ? { conferencia_id: conferenciaId } : {}), previsao_versao: previsaoVersao }) });
       const criado = await lancamento.json(); if (!criado.success) throw new Error(criado.error || 'Não foi possível montar a demanda');
       setConflitos(criado.data.ja_em_rascunho || []);
-      const linhas = prepararLinhasParaEnvio(linhasEditadas);
-      const publicado = await fetch('/api/v2/despacho/publicar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ demanda_id: criado.data.demanda_id, linhas, previsao_versao: previsaoVersao }) });
+      const linhas = temAlteracoes ? prepararLinhasParaEnvio(linhasEditadas) : undefined;
+      const publicado = await fetch('/api/v2/despacho/publicar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ demanda_id: criado.data.demanda_id, ...(linhas ? { linhas, previsao_versao: previsaoVersao } : {}) }) });
       const json = await publicado.json(); if (!json.success) throw new Error(json.error || 'Não foi possível publicar');
       toast.success(`${json.data.demanda_codigo} publicada — ${json.data.total_pedidos} pedidos foram para produção`); navigate('/despacho');
     } catch (err) { toast.error(err.message || 'Não foi possível publicar a demanda'); } finally { setPublicando(false); }
@@ -107,9 +107,9 @@ export default function EscopoDespachoPage() {
   const foraDoHorizonte = Math.max(0, totalNo - total);
   const qtdSemPrazo = dados?.buckets?.sem_prazo ?? 0;
   const onBaseline = useCallback((valor) => { setPrevisaoVersao(valor?.previsao_versao || null); setLinhasEditadas(valor?.itens || []); }, []);
-  const temAlteracoes = baselineRef.current && JSON.stringify(linhasEditadas) !== baselineRef.current;
+  const temAlteracoes = linhasForamEditadas(linhasEditadas, baselineRef.current);
   const confirmarDescarte = useCallback(() => !temAlteracoes || window.confirm('Existem alterações não publicadas. Deseja descartá-las?'), [temAlteracoes]);
-  const registrarBaseline = useCallback((valor) => { baselineRef.current = JSON.stringify(valor?.itens || []); onBaseline(valor); }, [onBaseline]);
+  const registrarBaseline = useCallback((valor) => { baselineRef.current = valor?.itens || []; onBaseline(valor); }, [onBaseline]);
   return <div className="p-6">
     <button type="button" onClick={() => confirmarDescarte() && navigate('/despacho')} className="mb-4 flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Voltar para a torre de despacho</button>
     <div className="mb-6 flex items-center gap-2 text-sm text-muted-foreground">{origemArquivo && <><span>📄 conferência de arquivo</span><ChevronRight className="h-3.5 w-3.5" /></>}<span>{marketplaceNome}</span><ChevronRight className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{modalidadeNome}</span></div>
