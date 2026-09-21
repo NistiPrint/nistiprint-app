@@ -92,6 +92,7 @@ function DemandaDashboardPage() {
   const [nfeSidebarOpen, setNfeSidebarOpen] = useState(false)
   const [nfeResults, setNfeResults] = useState([])
   const [nfeGenerating, setNfeGenerating] = useState(false)
+  const [progressoImpressao, setProgressoImpressao] = useState(null)
   const nfeEventSourceRef = useRef(null)
 
   const debouncedSearchQuery = useDebounce(searchQuery, 300)
@@ -472,8 +473,11 @@ function DemandaDashboardPage() {
       return
     }
 
+    setProgressoImpressao({ processados: 0, total: orderIds.length })
     try {
-      const { total, blocked } = await imprimirPapeisDePedido(orderIds)
+      const { total, blocked } = await imprimirPapeisDePedido(orderIds, {
+        onProgress: setProgressoImpressao,
+      })
       if (total === 0) {
         toast.warning('Nenhum papel de pedido encontrado para impressao.')
       } else if (blocked.length > 0) {
@@ -483,6 +487,8 @@ function DemandaDashboardPage() {
       }
     } catch (error) {
       toast.error(error.message || 'Erro ao imprimir papeis dos pedidos.')
+    } finally {
+      setProgressoImpressao(null)
     }
   }
 
@@ -995,8 +1001,11 @@ function DemandaDashboardPage() {
           <Button variant='outline' onClick={() => setShowPedidosOrigem(true)} className='gap-2'>
             <List className='h-4 w-4' /> Ver Pedidos Relacionados
           </Button>
-          <Button variant='outline' onClick={handlePrintOrderPapers} className='gap-2'>
-            <FileText className='h-4 w-4' /> Imprimir Papeis dos Pedidos
+          <Button variant='outline' onClick={handlePrintOrderPapers} className='gap-2' disabled={progressoImpressao !== null}>
+            {progressoImpressao ? <Loader2 className='h-4 w-4 animate-spin' /> : <FileText className='h-4 w-4' />}
+            {progressoImpressao
+              ? `Preparando ${progressoImpressao.processados}/${progressoImpressao.total}…`
+              : 'Imprimir Papeis dos Pedidos'}
           </Button>
           <Button variant='outline' onClick={() => handleGenerateDemandNfe()} disabled={nfeGenerating} className='gap-2'>
             {nfeGenerating ? <Loader2 className='h-4 w-4 animate-spin' /> : <Receipt className='h-4 w-4' />}
@@ -1214,8 +1223,11 @@ function DemandaDashboardPage() {
           {demanda.pedidos_origem && demanda.pedidos_origem.length > 0 ? (
             <div className="space-y-4">
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={handlePrintOrderPapers} className="gap-2">
-                  <FileText className="h-4 w-4" /> Imprimir Papeis dos Pedidos
+                <Button variant="outline" size="sm" onClick={handlePrintOrderPapers} className="gap-2" disabled={progressoImpressao !== null}>
+                  {progressoImpressao ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                  {progressoImpressao
+                    ? `Preparando ${progressoImpressao.processados}/${progressoImpressao.total}…`
+                    : 'Imprimir Papeis dos Pedidos'}
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => handleGenerateDemandNfe()} disabled={nfeGenerating} className="gap-2">
                   {nfeGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Receipt className="h-4 w-4" />}

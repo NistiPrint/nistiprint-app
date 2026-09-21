@@ -11,8 +11,8 @@
 // personalizados juntos e agrupados por modelo; MercadoLivre usa o numero
 // externo numerico crescente. Nao reordene no cliente.
 
-// O backend monta os dados de um pedido por vez; alem disso a lista de ids vai
-// na URL. Em lote grande as duas coisas doem, entao a busca vai em fatias.
+// O backend monta os dados de um pedido por vez. Para manter cada requisicao
+// abaixo do timeout, a lista segue em fatias no corpo JSON de chamadas POST.
 const PEDIDOS_POR_REQUISICAO = 120;
 
 function escaparHtml(valor) {
@@ -28,22 +28,34 @@ function moeda(valor) {
   return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-/** Busca os dados de impressao de uma lista de pedidos, em fatias. */
-export async function buscarPapeisDePedido(pedidoIds) {
+/**
+ * Busca os dados de impressao em fatias.
+ * `onProgress` recebe { processados, total } ao iniciar e ao concluir cada fatia.
+ */
+export async function buscarPapeisDePedido(pedidoIds, { onProgress, plataforma } = {}) {
   const ids = (pedidoIds || []).filter(Boolean);
   if (ids.length === 0) return { orders: [], blocked: [] };
 
   const orders = [];
   const blocked = [];
+  onProgress?.({ processados: 0, total: ids.length });
   for (let i = 0; i < ids.length; i += PEDIDOS_POR_REQUISICAO) {
     const fatia = ids.slice(i, i + PEDIDOS_POR_REQUISICAO);
-    const res = await fetch(`/api/v2/pedidos/impressao?order_ids=${fatia.join(',')}`);
+    const res = await fetch('/api/v2/pedidos/impressao', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        order_ids: fatia,
+        ...(plataforma ? { plataforma } : {}),
+      }),
+    });
     const json = await res.json();
     if (!res.ok || !json.success) {
       throw new Error(json.message || json.error || 'Falha ao carregar os papeis dos pedidos.');
     }
     orders.push(...(json.data?.orders || []));
     blocked.push(...(json.data?.blocked_orders || []));
+    onProgress?.({ processados: Math.min(i + fatia.length, ids.length), total: ids.length });
   }
   return { orders, blocked };
 }
@@ -195,8 +207,8 @@ export function montarDocumentoDePapeis(orders) {
  * Busca e manda para a impressora os papeis dos pedidos informados.
  * Retorna { total, blocked } para a tela avisar o que ficou de fora.
  */
-export async function imprimirPapeisDePedido(pedidoIds) {
-  const { orders, blocked } = await buscarPapeisDePedido(pedidoIds);
+export async function imprimirPapeisDePedido(pedidoIds, options) {
+  const { orders, blocked } = await buscarPapeisDePedido(pedidoIds, options);
   if (orders.length === 0) return { total: 0, blocked };
 
   const iframe = document.createElement('iframe');

@@ -2,7 +2,7 @@
 Endpoints para geração do template de impressão (papéis de pedido).
 
 Fluxo:
-1. Frontend chama GET /api/v2/pedidos/impressao?order_ids=1,2,3
+1. Frontend chama POST /api/v2/pedidos/impressao com os IDs no corpo JSON
 2. Backend monta dados completos de cada pedido (cliente, itens, personalizações, custom_tags)
 3. Frontend renderiza componente React com CSS @media print e dispara window.print()
 """
@@ -34,27 +34,53 @@ MARKETPLACE_DISPLAY_NAMES = {
 }
 
 
-@impressao_api_bp.route('', methods=['GET'])
+def _parse_order_ids(payload):
+    """Valida e normaliza a lista de IDs recebida no corpo JSON."""
+    if not isinstance(payload, dict):
+        return None, 'O corpo da requisição deve ser um objeto JSON'
+
+    raw_order_ids = payload.get('order_ids')
+    if not isinstance(raw_order_ids, list) or not raw_order_ids:
+        return None, 'order_ids deve ser uma lista não vazia'
+
+    order_ids = []
+    for value in raw_order_ids:
+        if isinstance(value, bool):
+            return None, 'order_ids deve conter apenas IDs numéricos inteiros'
+
+        if isinstance(value, int):
+            order_id = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            order_id = int(value.strip())
+        else:
+            return None, 'order_ids deve conter apenas IDs numéricos inteiros'
+
+        if order_id <= 0:
+            return None, 'order_ids deve conter apenas IDs numéricos inteiros positivos'
+        order_ids.append(order_id)
+
+    return order_ids, None
+
+
+@impressao_api_bp.route('', methods=['POST'])
 @login_required
-def get_impressao_data():
+def post_impressao_data():
     """
     Retorna dados formatados para o template de impressão.
 
-    Query params:
-    - order_ids: str (lista de IDs separados por vírgula)
-    - plataforma: str (filtrar por plataforma: BLING, SHOPEE)
+    Corpo JSON:
+    - order_ids: list[int] (lista de IDs dos pedidos)
+    - plataforma: str opcional (filtrar por plataforma: BLING, SHOPEE)
 
     Retorna:
     - orders: lista de pedidos formatados para impressão
     """
     try:
-        order_ids_param = request.args.get('order_ids')
-        plataforma = request.args.get('plataforma')
-
-        if not order_ids_param:
-            return ApiResponse.error('order_ids é obrigatório', 400)
-
-        order_ids = [int(id.strip()) for id in order_ids_param.split(',') if id.strip()]
+        payload = request.get_json(silent=True)
+        order_ids, validation_error = _parse_order_ids(payload)
+        if validation_error:
+            return ApiResponse.error(validation_error, 400)
+        plataforma = payload.get('plataforma')
 
         orders_data = []
         blocked_orders = []

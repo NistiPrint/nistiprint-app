@@ -49,6 +49,7 @@ export default function AcoesDoLote({ params, titulo = 'Ações do lote', classN
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
   const [imprimindo, setImprimindo] = useState(false);
+  const [progressoImpressao, setProgressoImpressao] = useState(null);
   const [emitindo, setEmitindo] = useState(false);
   const [resultadosNf, setResultadosNf] = useState([]);
   const fonteNf = useRef(null);
@@ -83,8 +84,11 @@ export default function AcoesDoLote({ params, titulo = 'Ações do lote', classN
       return;
     }
     setImprimindo(true);
+    setProgressoImpressao({ processados: 0, total: ids.length });
     try {
-      const { total, blocked } = await imprimirPapeisDePedido(ids);
+      const { total, blocked } = await imprimirPapeisDePedido(ids, {
+        onProgress: setProgressoImpressao,
+      });
       if (total === 0) {
         toast.warning('Nenhum papel pôde ser montado — os pedidos ainda não têm número no ERP.');
       } else if (blocked.length > 0) {
@@ -96,6 +100,7 @@ export default function AcoesDoLote({ params, titulo = 'Ações do lote', classN
       toast.error(err.message || 'Erro ao imprimir os papéis dos pedidos.');
     } finally {
       setImprimindo(false);
+      setProgressoImpressao(null);
     }
   };
 
@@ -180,7 +185,9 @@ export default function AcoesDoLote({ params, titulo = 'Ações do lote', classN
             <Button variant="outline" size="sm" className="gap-2" onClick={imprimir}
               disabled={carregando || imprimindo || !dados?.total}>
               {imprimindo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
-              Imprimir papéis
+              {imprimindo
+                ? `Preparando ${progressoImpressao?.processados ?? 0}/${progressoImpressao?.total ?? dados?.total ?? 0}…`
+                : 'Imprimir papéis'}
             </Button>
 
             <DropdownMenu>
