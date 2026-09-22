@@ -132,6 +132,63 @@ def _primeiro_valor_preenchido(*valores):
     return ''
 
 
+def _indexar_personalizacoes(personalizacoes: list[dict]):
+    """Indexa personalizacoes pelos vinculos direto e legado."""
+    por_item_id = {}
+    por_descricao = {}
+    for personalizacao in personalizacoes:
+        item_pedido_id = personalizacao.get('item_pedido_id')
+        if item_pedido_id is not None:
+            por_item_id.setdefault(item_pedido_id, []).append(personalizacao)
+
+        descricao = str(personalizacao.get('item_description') or '').strip()
+        if descricao:
+            por_descricao.setdefault(descricao, []).append(personalizacao)
+
+    return por_item_id, por_descricao
+
+
+def _personalizacoes_do_item(
+    item: dict,
+    personalizacoes_por_item_id: dict,
+    personalizacoes_por_descricao: dict,
+    item_ids_validos: set,
+) -> list[dict]:
+    """Prioriza o vinculo direto e usa a descricao quando ele ficou obsoleto."""
+    vinculadas = personalizacoes_por_item_id.get(item.get('id'))
+    if vinculadas:
+        return vinculadas
+
+    descricao = str(item.get('descricao') or '').strip()
+    if not descricao:
+        return []
+    return [
+        personalizacao
+        for personalizacao in personalizacoes_por_descricao.get(descricao, [])
+        if personalizacao.get('item_pedido_id') not in item_ids_validos
+    ]
+
+
+def _nome_identificado(valor) -> bool:
+    """Nome da IA precisa ser textual e conter ao menos um caractere util."""
+    return isinstance(valor, str) and bool(valor.strip())
+
+
+def _tem_nome_identificado(itens: list[dict]) -> bool:
+    return any(
+        _nome_identificado(personalizacao.get('customization_name'))
+        for item in itens
+        for personalizacao in (item.get('personalizations') or [])
+    )
+
+
+def _deve_usar_mensagem_comprador(itens: list[dict]) -> bool:
+    return (
+        any(item.get('personalizado') for item in itens)
+        and not _tem_nome_identificado(itens)
+    )
+
+
 def _normalizar_plataforma_slug(valor) -> str:
     """Normaliza aliases de plataforma usados nos pedidos legados."""
     slug = str(valor or '').strip().lower()
@@ -341,6 +398,12 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
         # 4. Buscar personalizações
         personalizations_result = supabase_db.table('personalizacoes_pedido').select('*').eq('shopee_order_sn', pedido.get('codigo_pedido_externo')).execute()
         personalizations_raw = personalizations_result.data or []
+        personalizacoes_por_item_id, personalizacoes_por_descricao = (
+            _indexar_personalizacoes(personalizations_raw)
+        )
+        item_ids_validos = {
+            item.get('id') for item in itens_raw if item.get('id') is not None
+        }
 
         # 5. Montar estrutura de itens formatada
         itens_formatted = []
@@ -352,19 +415,23 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             
             # Buscar personalizações associadas a este item
             item_pers = []
-            for p in personalizations_raw:
-                # Match por item_pedido_id (prioridade) ou descricao (fallback)
-                if (p.get('item_pedido_id') == item.get('id')) or \
-                   (p.get('item_pedido_id') is None and p.get('item_description') == item.get('descricao')):
-                    detalhes = p.get('detalhes_personalizacao') or {}
-                    metadata = p.get('metadata') or {}
-                    item_pers.append({
-                        'customization_name': p.get('customization_name'),
-                        'customization_initial': p.get('customization_initial'),
-                        'quantity_to_personalize': detalhes.get('quantity_to_personalize')
-                            or metadata.get('quantity_to_personalize', 1),
-                        'status': p.get('status'),
-                    })
+            personalizacoes_selecionadas = _personalizacoes_do_item(
+                item,
+                personalizacoes_por_item_id,
+                personalizacoes_por_descricao,
+                item_ids_validos,
+            )
+            for p in personalizacoes_selecionadas:
+                detalhes = p.get('detalhes_personalizacao') or {}
+                metadata = p.get('metadata') or {}
+                nome = p.get('customization_name')
+                item_pers.append({
+                    'customization_name': nome.strip() if isinstance(nome, str) else None,
+                    'customization_initial': p.get('customization_initial'),
+                    'quantity_to_personalize': detalhes.get('quantity_to_personalize')
+                        or metadata.get('quantity_to_personalize', 1),
+                    'status': p.get('status'),
+                })
 
             # A variacao do anuncio ("CAPA 1", "Cabelo 6") vem do snapshot do
             # marketplace e ja esta gravada no item. Ela e o nome que o modelo
@@ -425,25 +492,16 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
 
         # 5b. Mensagem do comprador.
         #
-        # O nome a ser gravado nao chega estruturado: na Shopee ele vem no
-        # `message_to_seller` ("Nome na capa sera: Melissa Pereira"), e o legado
-        # tinha uma ferramenta de IA so para extrair o nome dali para
-        # `personalizacoes_pedido` — tabela que hoje tem uma linha no banco
-        # inteiro. Enquanto essa extracao nao existir de novo, imprimir a
-        # mensagem crua e melhor que imprimir nada: sem ela o operador teria que
-        # abrir o painel da Shopee pedido a pedido para saber o que gravar.
+        # Na Shopee, o nome pode vir identificado pela IA em
+        # `personalizacoes_pedido` ou ainda existir apenas no `message_to_seller`
+        # ("Nome na capa sera: Melissa Pereira"). A mensagem crua e usada somente
+        # como fallback quando nenhum nome estruturado foi encontrado.
         #
         # No Mercado Livre a personalizacao chega pela thread de mensagens do
         # pacote, que e outra chamada de API — nao esta no pedido e por isso nao
         # aparece aqui.
         mensagem_comprador = ''
-        tem_personalizado = any(i.get('personalizado') for i in itens_formatted)
-        tem_nome_estruturado = any(
-            p.get('customization_name')
-            for i in itens_formatted
-            for p in (i.get('personalizations') or [])
-        )
-        if tem_personalizado and not tem_nome_estruturado:
+        if _deve_usar_mensagem_comprador(itens_formatted):
             try:
                 snap = (
                     supabase_db.table('pedido_snapshots')

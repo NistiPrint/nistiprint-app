@@ -58,6 +58,10 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
+O Gunicorn carrega automaticamente `apps/api/gunicorn.conf.py`. O timeout de
+requisição é 180 segundos por padrão e pode ser alterado com
+`GUNICORN_TIMEOUT_SECONDS` no `.env` sem editar a unit do systemd.
+
 ### `nistiprint-worker.service`
 ```ini
 [Unit]
