@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   buscarPapeisDePedido,
   imprimirPapeisDePedido,
+  montarDocumentoDePapeis,
 } from './papeisDePedido.js';
 
 
@@ -25,7 +26,7 @@ test('envia lotes por POST no corpo e agrega o resultado com progresso', async (
     }),
     jsonResponse({
       success: true,
-      data: { orders: [{ id: 121 }], blocked_orders: [] },
+      data: { orders: [{ id: 26 }], blocked_orders: [] },
     }),
   ];
   globalThis.fetch = async (...args) => {
@@ -35,7 +36,7 @@ test('envia lotes por POST no corpo e agrega o resultado com progresso', async (
 
   try {
     const progress = [];
-    const ids = Array.from({ length: 121 }, (_, index) => index + 1);
+    const ids = Array.from({ length: 26 }, (_, index) => index + 1);
     const result = await buscarPapeisDePedido(ids, {
       onProgress: (value) => progress.push(value),
     });
@@ -46,19 +47,19 @@ test('envia lotes por POST no corpo e agrega o resultado com progresso', async (
     assert.equal(calls[0][1].method, 'POST');
     assert.deepEqual(calls[0][1].headers, { 'Content-Type': 'application/json' });
     assert.deepEqual(JSON.parse(calls[0][1].body), {
-      order_ids: ids.slice(0, 120),
+      order_ids: ids.slice(0, 25),
     });
     assert.deepEqual(JSON.parse(calls[1][1].body), {
-      order_ids: [121],
+      order_ids: [26],
     });
     assert.deepEqual(result, {
-      orders: [{ id: 1 }, { id: 121 }],
+      orders: [{ id: 1 }, { id: 26 }],
       blocked: [{ pedido_id: 2 }],
     });
     assert.deepEqual(progress, [
-      { processados: 0, total: 121 },
-      { processados: 120, total: 121 },
-      { processados: 121, total: 121 },
+      { processados: 0, total: 26 },
+      { processados: 25, total: 26 },
+      { processados: 26, total: 26 },
     ]);
   } finally {
     globalThis.fetch = originalFetch;
@@ -78,7 +79,7 @@ test('interrompe os lotes seguintes quando a API retorna erro', async () => {
   };
 
   try {
-    const ids = Array.from({ length: 121 }, (_, index) => index + 1);
+    const ids = Array.from({ length: 26 }, (_, index) => index + 1);
     await assert.rejects(
       buscarPapeisDePedido(ids),
       /Falha ao preparar o lote/,
@@ -111,7 +112,7 @@ test('agrega todos os lotes em um unico documento de impressao', async () => {
     }),
     jsonResponse({
       success: true,
-      data: { orders: [{ id: 121, itens: [] }], blocked_orders: [] },
+      data: { orders: [{ id: 26, itens: [] }], blocked_orders: [] },
     }),
   ];
   globalThis.fetch = async () => responses.shift();
@@ -123,16 +124,48 @@ test('agrega todos os lotes em um unico documento de impressao', async () => {
   };
 
   try {
-    const ids = Array.from({ length: 121 }, (_, index) => index + 1);
+    const ids = Array.from({ length: 26 }, (_, index) => index + 1);
     const result = await imprimirPapeisDePedido(ids);
 
     assert.equal(result.total, 2);
     assert.equal(appendedIframes, 1);
     assert.match(writtenHtml, /Pedido 1/);
-    assert.match(writtenHtml, /Pedido 121/);
+    assert.match(writtenHtml, /Pedido 26/);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalDocument === undefined) delete globalThis.document;
     else globalThis.document = originalDocument;
   }
+});
+
+
+test('prioriza nome identificado e omite mensagem do comprador', () => {
+  const html = montarDocumentoDePapeis([{
+    id: 1,
+    itens: [{
+      descricao: 'Capa personalizada',
+      personalizations: [{ customization_name: '  Maria  ' }],
+    }],
+    mensagem_comprador: 'Gravar outro texto',
+  }]);
+
+  assert.match(html, />Maria</);
+  assert.doesNotMatch(html, /Mensagem do comprador/);
+  assert.doesNotMatch(html, /Gravar outro texto/);
+});
+
+
+test('usa mensagem do comprador quando nao existe nome identificado', () => {
+  const html = montarDocumentoDePapeis([{
+    id: 2,
+    itens: [{
+      descricao: 'Capa personalizada',
+      personalizations: [{ customization_name: '   ' }],
+    }],
+    mensagem_comprador: 'Nome ainda nao identificado',
+  }]);
+
+  assert.match(html, /Mensagem do comprador/);
+  assert.match(html, /Nome ainda nao identificado/);
+  assert.doesNotMatch(html, /custom-name-display">\s+</);
 });

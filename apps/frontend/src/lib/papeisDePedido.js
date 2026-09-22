@@ -11,9 +11,11 @@
 // personalizados juntos e agrupados por modelo; MercadoLivre usa o numero
 // externo numerico crescente. Nao reordene no cliente.
 
-// O backend monta os dados de um pedido por vez. Para manter cada requisicao
-// abaixo do timeout, a lista segue em fatias no corpo JSON de chamadas POST.
-const PEDIDOS_POR_REQUISICAO = 120;
+// O backend monta os dados de um pedido por vez e consulta mais de uma tabela
+// para cada um. Em producao a latencia ate o banco e maior do que localmente;
+// fatias pequenas mantem cada resposta abaixo do timeout do proxy, sem dividir
+// o documento final que sera enviado para impressao.
+const PEDIDOS_POR_REQUISICAO = 25;
 
 function escaparHtml(valor) {
   return String(valor ?? '')
@@ -26,6 +28,18 @@ function escaparHtml(valor) {
 
 function moeda(valor) {
   return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+function nomePersonalizacao(personalizacao) {
+  return typeof personalizacao?.customization_name === 'string'
+    ? personalizacao.customization_name.trim()
+    : '';
+}
+
+function pedidoTemNomeIdentificado(order) {
+  return (order.itens || []).some((item) =>
+    (item.personalizations || []).some((personalizacao) => nomePersonalizacao(personalizacao)),
+  );
 }
 
 /**
@@ -62,11 +76,11 @@ export async function buscarPapeisDePedido(pedidoIds, { onProgress, plataforma }
 
 function personalizacoesHtml(item) {
   return (item.personalizations || [])
-    .filter((p) => p.customization_name)
+    .filter((p) => nomePersonalizacao(p))
     .map((p) => {
       const inicial = p.customization_initial ? ` (${escaparHtml(p.customization_initial)})` : '';
       const vezes = p.quantity_to_personalize > 1 ? ` x${escaparHtml(p.quantity_to_personalize)}` : '';
-      return `<div class="custom-name-display">${escaparHtml(p.customization_name)}${inicial}${vezes}</div>`;
+      return `<div class="custom-name-display">${escaparHtml(nomePersonalizacao(p))}${inicial}${vezes}</div>`;
     })
     .join('');
 }
@@ -112,6 +126,7 @@ function mensagemHtml(order) {
   // So aparece quando o pedido e personalizado e nao veio nome estruturado: e
   // o texto cru do comprador ("Nome na capa sera: ..."), que sem isto obrigaria
   // o operador a abrir o painel do marketplace pedido a pedido.
+  if (pedidoTemNomeIdentificado(order)) return '';
   const mensagem = (order.mensagem_comprador || '').trim();
   if (!mensagem) return '';
   return `<div class="mensagem-comprador">

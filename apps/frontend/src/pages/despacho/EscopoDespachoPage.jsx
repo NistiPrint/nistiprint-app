@@ -16,6 +16,7 @@ import { toast } from 'sonner';
 const HORIZONTE_STEPS = ['atrasado', 'hoje', 'amanha', 'depois'];
 const HORIZONTE_LABEL = { atrasado: 'Atrasado', hoje: 'Hoje', amanha: 'Amanhã', depois: 'Depois' };
 const ABA_PARA_DEGRAU = { hoje: 1, amanha: 2, proximos: 3 };
+const IDS_POR_BLOCO = 100;
 
 function parseIntOrNull(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -25,18 +26,29 @@ function parseIntOrNull(value) {
 
 function PedidosAssociados({ pedidos = [] }) {
   const ids = pedidos.map((pedido) => pedido.marketplace_order_id || pedido.codigo_pedido_externo).filter(Boolean);
-  const copiarIds = async () => {
-    if (!ids.length) return;
-    await navigator.clipboard.writeText(ids.join(';'));
-    toast.success('IDs dos pedidos copiados.');
+  const blocosIds = [];
+  for (let inicio = 0; inicio < ids.length; inicio += IDS_POR_BLOCO) {
+    const idsDoBloco = ids.slice(inicio, inicio + IDS_POR_BLOCO);
+    blocosIds.push({
+      inicio: inicio + 1,
+      fim: inicio + idsDoBloco.length,
+      texto: idsDoBloco.join(';'),
+    });
+  }
+  const copiarIds = async (bloco) => {
+    try {
+      await navigator.clipboard.writeText(bloco.texto);
+      toast.success(`IDs ${bloco.inicio} a ${bloco.fim} copiados.`);
+    } catch {
+      toast.error('Não foi possível copiar os IDs.');
+    }
   };
   return (
     <Sheet>
       <SheetTrigger asChild><Button type="button" variant="outline" size="icon" aria-label="Mais ações"><MoreHorizontal className="h-4 w-4" /></Button></SheetTrigger>
       <SheetContent side="right" className="w-[96vw] overflow-y-auto sm:max-w-3xl">
         <SheetHeader><SheetTitle>Pedidos associados ({pedidos.length})</SheetTitle></SheetHeader>
-        <Button type="button" variant="outline" size="sm" className="mt-5 gap-2" onClick={copiarIds}><Copy className="h-4 w-4" /> Copiar todos os IDs</Button>
-        {ids.length > 0 && <div className="mt-3 rounded-md border bg-muted/30 p-3"><div className="mb-1 text-xs font-medium">IDs do Bling/marketplace</div><div className="break-all font-mono text-xs text-muted-foreground">{ids.join(';')}</div></div>}
+        {blocosIds.length > 0 && <div className="mt-5 space-y-2 rounded-md border bg-muted/30 p-3"><div className="text-xs font-medium">IDs do Bling/marketplace, em blocos de até {IDS_POR_BLOCO}</div>{blocosIds.map((bloco) => <div key={bloco.inicio} className="flex items-center gap-2"><div className="min-w-0 flex-1"><div className="mb-1 text-xs text-muted-foreground">IDs {bloco.inicio} a {bloco.fim}</div><div className="truncate font-mono text-xs text-muted-foreground" title={bloco.texto}>{bloco.texto}</div></div><Button type="button" variant="outline" size="sm" className="shrink-0 gap-2" onClick={() => copiarIds(bloco)}><Copy className="h-4 w-4" /> Copiar</Button></div>)}</div>}
         {pedidos.length === 0 ? <p className="py-8 text-center text-sm text-muted-foreground">Nenhum pedido associado.</p> : <div className="mt-4 overflow-x-auto rounded-md border"><table className="w-full min-w-[680px] text-sm"><thead className="bg-muted/50 text-left text-xs text-muted-foreground"><tr><th className="px-3 py-2">Pedido</th><th className="px-3 py-2">ID no marketplace</th><th className="px-3 py-2">Cliente</th><th className="px-3 py-2">Total</th><th className="px-3 py-2">Prazo</th><th className="px-3 py-2">Envio</th></tr></thead><tbody>{pedidos.map((pedido) => <tr key={pedido.id} className="border-t"><td className="px-3 py-2"><div className="flex items-center gap-2"><span>{pedido.numero_pedido || pedido.codigo_pedido_externo}</span><PacoteBadge variant="inline" irmaos={pedido.pack_irmaos} irmaosIds={pedido.pack_irmaos_ids} /></div></td><td className="px-3 py-2 font-mono text-xs">{pedido.marketplace_order_id || pedido.codigo_pedido_externo || '—'}</td><td className="px-3 py-2">{pedido.cliente_nome || '—'}</td><td className="px-3 py-2">{pedido.total_pedido == null ? '—' : Number(pedido.total_pedido).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td><td className="px-3 py-2">{pedido.data_limite_envio ? new Date(pedido.data_limite_envio).toLocaleDateString('pt-BR') : 'não informado'}</td><td className="px-3 py-2">{pedido.metodo_envio_rotulo || 'não classificado'}</td></tr>)}</tbody></table></div>}
       </SheetContent>
     </Sheet>
