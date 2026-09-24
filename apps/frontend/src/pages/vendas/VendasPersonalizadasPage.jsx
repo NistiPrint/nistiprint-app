@@ -13,6 +13,17 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 const ITEMS_PER_PAGE = 20;
+const ACTIVE_AI_BATCH_STORAGE_KEY = 'vendas-personalizadas:active-ai-batch';
+const TERMINAL_AI_BATCH_STATUSES = new Set(['CONCLUIDO', 'ERRO']);
+
+const readActiveAIBatch = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ACTIVE_AI_BATCH_STORAGE_KEY) || 'null');
+    return saved?.batchId ? saved : null;
+  } catch {
+    return null;
+  }
+};
 
 const hasIdentifiedName = (order) =>
   order.itens?.some(item =>
@@ -64,21 +75,85 @@ function VendasPersonalizadasPage() {
   const [opMode, setOpMode] = useState(null); // null = ainda não carregou
   const [updatingMode, setUpdatingMode] = useState(false);
 
-  // Polling ref for batch processing
-  const lotePollRef = useRef(null);
+  const [activeAIBatch, setActiveAIBatch] = useState(readActiveAIBatch);
+  const [batchProgress, setBatchProgress] = useState(null);
+  const [batchTrackingError, setBatchTrackingError] = useState(false);
+  const batchPollRef = useRef(null);
+  const processToastRef = useRef(null);
+  const fetchOrdersRef = useRef(null);
 
   useEffect(() => {
     fetchMode();
     // Cleanup polling on unmount
     return () => {
-      if (lotePollRef.current) clearInterval(lotePollRef.current);
+      if (batchPollRef.current) clearTimeout(batchPollRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!activeAIBatch?.batchId) return undefined;
+
+    let cancelled = false;
+    const pollBatch = async () => {
+      let nextPollDelay = 2500;
+      try {
+        const response = await personalizadosService.statusBatch(activeAIBatch.batchId);
+        if (!response.success || !response.data) {
+          throw new Error(response.message || 'Não foi possível consultar o lote.');
+        }
+
+        const batch = response.data;
+        if (cancelled) return;
+        setBatchTrackingError(false);
+        setBatchProgress(batch);
+
+        if (TERMINAL_AI_BATCH_STATUSES.has(batch.status)) {
+          localStorage.removeItem(ACTIVE_AI_BATCH_STORAGE_KEY);
+          setActiveAIBatch(null);
+          fetchOrdersRef.current?.();
+
+          const successCount = Number(batch.sucesso || 0);
+          const errorCount = Number(batch.falha || 0);
+          if (batch.status === 'ERRO') {
+            toast.error(`Lote encerrado com erro: ${successCount} concluído(s), ${errorCount} falha(s).`, {
+              id: processToastRef.current || undefined,
+            });
+          } else if (errorCount > 0) {
+            toast.warning(`Extração concluída: ${successCount} OK, ${errorCount} com erro.`, {
+              id: processToastRef.current || undefined,
+            });
+          } else {
+            toast.success(`Extração concluída: ${successCount} pedido(s) processado(s).`, {
+              id: processToastRef.current || undefined,
+            });
+          }
+          processToastRef.current = null;
+          return;
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setBatchTrackingError(true);
+          nextPollDelay = 5000;
+          console.warn('Falha temporária ao consultar progresso do lote de IA:', e);
+        }
+      }
+
+      if (!cancelled) {
+        batchPollRef.current = setTimeout(pollBatch, nextPollDelay);
+      }
+    };
+
+    pollBatch();
+    return () => {
+      cancelled = true;
+      if (batchPollRef.current) clearTimeout(batchPollRef.current);
+    };
+  }, [activeAIBatch?.batchId]);
 
   // Só carrega pedidos DEPOIS de saber o modo correto
   useEffect(() => {
     if (opMode !== null) {
-      fetchOrders();
+      fetchOrdersRef.current?.();
     }
   }, [opMode]);
 
@@ -153,6 +228,7 @@ function VendasPersonalizadasPage() {
       setLoading(false);
     }
   };
+  fetchOrdersRef.current = fetchOrders;
 
   // Memoized filtered orders
   const filteredOrders = useMemo(() => {
@@ -238,110 +314,69 @@ function VendasPersonalizadasPage() {
     }
   };
 
-  const [isProcessingLote, setIsProcessingLote] = useState(false);
-  const [loteProgress, setLoteProgress] = useState('');
-
   const handleProcessarLote = async () => {
+    if (activeAIBatch?.batchId) return;
     const confirm = window.confirm(
       'Processar agora os pedidos pendentes (nunca processados ou com mensagem nova do comprador)? '
       + 'Esse mesmo lote roda sozinho todo dia as 12h; use isto para antecipar. Pode demorar alguns minutos.',
     );
     if (!confirm) return;
 
-    setIsProcessingLote(true);
-    setLoteProgress('Iniciando...');
-    const toastId = toast.loading('Processando lote com IA...');
+    processToastRef.current = toast.loading('Preparando pedidos para extração...');
 
     try {
       const data = await personalizadosService.processar({ limit: 0 });
       if (!data.success) {
-        toast.error(data.message || 'Erro ao processar lote', { id: toastId });
-        setIsProcessingLote(false);
-        setLoteProgress('');
+        toast.error(data.message || 'Erro ao iniciar extração', { id: processToastRef.current });
+        processToastRef.current = null;
         return;
       }
 
-      if (data.data?.enfileirado === false) {
-        // O lote esta registrado, mas a fila ainda nao o pegou. Entrar no
-        // polling aqui prenderia a tela por 30s esperando logs que so vao
-        // aparecer quando a varredura periodica retomar o lote.
-        toast.warning(data.message, { id: toastId, duration: 8000 });
-        setIsProcessingLote(false);
-        setLoteProgress('');
-        return;
-      }
-
-      setLoteProgress('IA processando...');
-
-      // Polling com heartbeat detection (3s intervals)
-      let pollCount = 0;
-      const HEARTBEAT_TIMEOUT = 30_000; // 30s sem atividade = concluído
-      const MAX_POLL_TIME = 10 * 60 * 1000; // 10 min
-
-      if (lotePollRef.current) clearInterval(lotePollRef.current);
-
-      lotePollRef.current = setInterval(() => {
-        pollCount++;
-
-        personalizadosService.getAllLogs({ limit: 5 })
-          .then(logData => {
-            if (logData.success && logData.data.logs && logData.data.logs.length > 0) {
-              // Pegar o log mais recente
-              const sorted = logData.data.logs.sort((a, b) =>
-                new Date(b.executed_at) - new Date(a.executed_at)
-              );
-              const latest = sorted[0];
-              const logTime = new Date(latest.executed_at).getTime();
-              const timeSinceLastLog = Date.now() - logTime;
-
-              // Atualizar progresso visual
-              const statusCounts = {};
-              logData.data.logs.forEach(log => {
-                statusCounts[log.status] = (statusCounts[log.status] || 0) + 1;
-              });
-              const successCount = statusCounts.success || 0;
-              const errorCount = (statusCounts.error || 0) + (statusCounts.db_error || 0);
-              const totalProcessed = successCount + errorCount;
-              setLoteProgress(`${totalProcessed} processados (${successCount} OK, ${errorCount} erro)`);
-
-              if (timeSinceLastLog > HEARTBEAT_TIMEOUT) {
-                // Sem atividade por 30s = concluído
-                if (lotePollRef.current) clearInterval(lotePollRef.current);
-                setIsProcessingLote(false);
-                setLoteProgress('');
-                fetchOrders();
-                if (successCount > 0) {
-                  toast.success(`${successCount} pedido(s) processado(s) com sucesso!`, { id: toastId });
-                } else {
-                  toast.warning('Processamento concluído sem resultados.', { id: toastId });
-                }
-              }
-            } else if (pollCount > 10) {
-              // 30s sem nenhum log = provavelmente nada para processar
-              if (lotePollRef.current) clearInterval(lotePollRef.current);
-              setIsProcessingLote(false);
-              setLoteProgress('');
-              fetchOrders();
-            }
-          })
-          .catch(() => {});
-
-        // Timeout absoluto de 10 minutos
-        if (pollCount * 3000 >= MAX_POLL_TIME) {
-          if (lotePollRef.current) clearInterval(lotePollRef.current);
-          setIsProcessingLote(false);
-          setLoteProgress('');
-          fetchOrders();
-          toast.warning('Timeout: processamento pode ainda estar em andamento.', { id: toastId });
+      const batchId = data.data?.batch_id;
+      if (!batchId) {
+        const isEmpty = data.data?.status === 'empty' || data.data?.total === 0;
+        if (isEmpty) {
+          toast.success(data.message || 'Não há pedidos pendentes para extrair.', {
+            id: processToastRef.current,
+          });
+        } else {
+          toast.error(data.message || 'A API não retornou o identificador do lote.', {
+            id: processToastRef.current,
+          });
         }
-      }, 3000); // Poll a cada 3s
+        processToastRef.current = null;
+        return;
+      }
 
-    } catch (e) {
-      toast.error('Erro de rede ao processar lote', { id: toastId });
-      setIsProcessingLote(false);
-      setLoteProgress('');
+      const nextBatch = { batchId, enfileirado: data.data.enfileirado !== false };
+      localStorage.setItem(ACTIVE_AI_BATCH_STORAGE_KEY, JSON.stringify(nextBatch));
+      setBatchProgress(null);
+      setBatchTrackingError(false);
+      setActiveAIBatch(nextBatch);
+      toast.loading(
+        nextBatch.enfileirado
+          ? `Lote de ${data.data.total ?? '...'} pedido(s) iniciado.`
+          : 'Lote registrado. Aguardando a fila iniciar o processamento.',
+        { id: processToastRef.current },
+      );
+    } catch {
+      toast.error('Erro de rede ao iniciar extração', { id: processToastRef.current });
+      processToastRef.current = null;
     }
   };
+
+  const isProcessingLote = Boolean(activeAIBatch?.batchId);
+  const loteProgress = batchTrackingError
+    ? 'Falha ao consultar progresso — tentando novamente'
+    : batchProgress?.status === 'PENDENTE' && activeAIBatch?.enfileirado === false
+      ? 'Lote registrado — aguardando retomada automática'
+      : batchProgress?.status === 'PENDENTE'
+      ? 'Aguardando início da IA'
+      : batchProgress?.status === 'RODANDO'
+        ? `${batchProgress.processados || 0}/${batchProgress.total || 0} processados (${batchProgress.sucesso || 0} OK, ${batchProgress.falha || 0} erro)`
+        : activeAIBatch?.enfileirado === false
+          ? 'Lote registrado — aguardando a fila'
+          : 'Consultando progresso...';
 
   const handleOpenChat = async (username, orderId, orderData) => {
     if (!username) {

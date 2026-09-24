@@ -7,6 +7,58 @@ from nistiprint_shared.services import ai_personalization_service as service
 
 
 class TestAiPersonalizationService(unittest.TestCase):
+    def test_processing_selection_pages_orders_and_uses_only_pending_signals(self):
+        orders = [
+            {"id": 1, "codigo_pedido_externo": "sn-1", "message_to_seller": "", "data_venda": "4"},
+            {"id": 2, "codigo_pedido_externo": "sn-2", "message_to_seller": "Nome: Ana", "data_venda": "3"},
+            {"id": 3, "codigo_pedido_externo": "sn-3", "message_to_seller": "Nome: Bia", "data_venda": "2"},
+            {"id": 4, "codigo_pedido_externo": "sn-4", "message_to_seller": "", "data_venda": "1"},
+        ]
+
+        class Query:
+            def __init__(self, table_name):
+                self.table_name = table_name
+                self.offset = 0
+
+            def __getattr__(self, _name):
+                return lambda *_args, **_kwargs: self
+
+            def range(self, start, _end):
+                self.offset = start
+                return self
+
+            def execute(self):
+                if self.table_name == "pedidos":
+                    data = orders[self.offset:self.offset + 2]
+                elif self.table_name == "itens_pedido":
+                    data = [{"pedido_id": order["id"]} for order in orders][self.offset:self.offset + 2]
+                elif self.table_name == "logs_execucao_ia":
+                    data = [
+                        {"order_sn": "sn-2", "executed_at": "2026-09-24T11:00:00+00:00", "status": "success"},
+                        {"order_sn": "sn-3", "executed_at": "2026-09-24T11:00:00+00:00", "status": "success"},
+                    ][self.offset:self.offset + 2]
+                else:
+                    data = []
+                return SimpleNamespace(data=data)
+
+        chat_stats = {
+            1: {"has_chat_messages": False, "last_buyer_message_at": None},
+            2: {"has_chat_messages": True, "last_buyer_message_at": datetime(2026, 9, 24, 10, tzinfo=timezone.utc)},
+            3: {"has_chat_messages": True, "last_buyer_message_at": datetime(2026, 9, 24, 12, tzinfo=timezone.utc)},
+            4: {"has_chat_messages": True, "last_buyer_message_at": None},
+        }
+        with (
+            patch.object(service, "SELECTION_PAGE_SIZE", 2),
+            patch.object(service, "_get_shopee_channel_ids", return_value=[7]),
+            patch.object(service, "_fetch_shopee_messages_for_orders", return_value={}),
+            patch.object(service, "_fetch_chat_stats_for_orders", return_value=chat_stats),
+            patch.object(service.supabase_db, "table", side_effect=Query),
+        ):
+            selected, skipped = service.select_orders_for_processing()
+
+        self.assertEqual([order["id"] for order in selected], [3, 4])
+        self.assertEqual([order["id"] for order in skipped], [1, 2])
+
     def test_message_from_shopee_mirror_uses_explicit_message(self):
         message = service._message_from_shopee_mirror({
             "mensagem": " Nome: Maria ",
@@ -168,6 +220,7 @@ class _FakeQuery:
         self._filtros = []
         self._modo = None
         self._payload = None
+        self._range = None
 
     # -- verbos --
     def select(self, *_args, **_kwargs):
@@ -191,6 +244,14 @@ class _FakeQuery:
         self._filtros.append(lambda row, c=campo, v=valores: row.get(c) in v)
         return self
 
+    def gte(self, campo, valor):
+        self._filtros.append(lambda row, c=campo, v=valor: str(row.get(c)) >= str(v))
+        return self
+
+    def range(self, inicio, fim):
+        self._range = (inicio, fim)
+        return self
+
     def order(self, *_args, **_kwargs):
         return self
 
@@ -211,6 +272,9 @@ class _FakeQuery:
             return SimpleNamespace(data=[registro])
 
         alvos = [row for row in linhas if self._casa(row)]
+        if self._range is not None:
+            inicio, fim = self._range
+            alvos = alvos[inicio:fim + 1]
         if self._modo == "update":
             for row in alvos:
                 row.update(self._payload)

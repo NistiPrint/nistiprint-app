@@ -53,6 +53,14 @@ export const personalizadosService = {
     return res.json();
   },
 
+  /** Obtém o progresso persistido de um lote de extração. */
+  statusBatch: async (batchId) => {
+    const res = await fetch(`${BASE}/processar/${encodeURIComponent(batchId)}`, {
+      headers: { Accept: 'application/json' },
+    });
+    return res.json();
+  },
+
   reclassificarPersonalizados: async (data = {}) => {
     const res = await fetch(`${BASE}/reclassificar-personalizado`, {
       method: 'POST',

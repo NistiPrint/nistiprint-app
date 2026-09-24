@@ -35,6 +35,8 @@ DEFAULT_MODEL = DEFAULT_MODEL_BY_PROVIDER[DEFAULT_PROVIDER]
 DEFAULT_MAX_PROCESSING = 50
 CHAT_CONTEXT_LIMIT = 60
 CHAT_LOOKBACK_DAYS = 7
+SELECTION_PAGE_SIZE = 500
+SELECTION_ID_CHUNK_SIZE = 200
 # Uma tentativa sincrona de fechar a conversa antes de desistir do pedido. O
 # orcamento e curto de proposito: o caminho normal e a conversa ja estar completa
 # porque o bundle foi resolvido no ingest. Isto aqui e excecao, nao rotina.
@@ -732,11 +734,10 @@ def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, for
     if limit not in (None, 0):
         normalized_limit = max(1, int(limit))
 
-    rows = _assemble_orders(
+    rows = _select_orders_for_processing(
         order_sn=order_sn,
         pedido_ids=pedido_ids,
         limit=normalized_limit,
-        recent_days=None,
     )
     to_process = []
     skipped = []
@@ -760,6 +761,116 @@ def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, for
         to_process = to_process[:normalized_limit]
 
     return to_process, skipped
+
+
+def _select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None):
+    """Carrega apenas sinais de elegibilidade, sem montar detalhes da listagem.
+
+    A montagem completa de pedidos também consulta itens, personalizacoes,
+    pedidos Bling e logs para renderizar a pagina. A fila so precisa saber se
+    cada pedido tem item personalizado e se recebeu mensagem nova.
+    """
+    channel_ids = _get_shopee_channel_ids()
+    query = (
+        supabase_db.table("pedidos")
+        .select(
+            "id,codigo_pedido_externo,data_venda,pedido_shopee_id,situacao_pedido_id,buyer_username,"
+            "message_to_seller,contact_marketplace_id,buyer_user_id,marketplace_integration_id"
+        )
+        .in_("canal_venda_id", channel_ids)
+        .in_("situacao_pedido_id", STATUS_PERSONALIZACAO)
+        .order("data_venda", desc=True)
+    )
+    if order_sn:
+        query = query.eq("codigo_pedido_externo", str(order_sn))
+    elif pedido_ids:
+        query = query.in_("id", pedido_ids)
+    elif limit:
+        # Mantem o mesmo conjunto de candidatos usado pela selecao anterior;
+        # o limite final e aplicado depois de avaliar quais precisam de IA.
+        query = query.limit(max(limit * 4, limit, 150))
+
+    base_orders = []
+    offset = 0
+    while True:
+        page = query.range(offset, offset + SELECTION_PAGE_SIZE - 1).execute().data or []
+        base_orders.extend(page)
+        if len(page) < SELECTION_PAGE_SIZE:
+            break
+        offset += SELECTION_PAGE_SIZE
+
+    if not base_orders:
+        return []
+
+    order_ids = [row["id"] for row in base_orders]
+    personalized_order_ids = set()
+    for start in range(0, len(order_ids), SELECTION_ID_CHUNK_SIZE):
+        chunk = order_ids[start:start + SELECTION_ID_CHUNK_SIZE]
+        items_query = (
+            supabase_db.table("itens_pedido")
+            .select("pedido_id")
+            .in_("pedido_id", chunk)
+            .eq("personalizado", True)
+        )
+        item_offset = 0
+        while True:
+            items = items_query.range(
+                item_offset, item_offset + SELECTION_PAGE_SIZE - 1
+            ).execute().data or []
+            personalized_order_ids.update(item["pedido_id"] for item in items)
+            if len(items) < SELECTION_PAGE_SIZE:
+                break
+            item_offset += SELECTION_PAGE_SIZE
+
+    orders = [row for row in base_orders if row["id"] in personalized_order_ids]
+    if not orders:
+        return []
+
+    messages_by_order = _fetch_shopee_messages_for_orders(orders)
+    latest_logs = {}
+    order_sns = [str(row["codigo_pedido_externo"]) for row in orders if row.get("codigo_pedido_externo")]
+    for start in range(0, len(order_sns), SELECTION_ID_CHUNK_SIZE):
+        chunk = order_sns[start:start + SELECTION_ID_CHUNK_SIZE]
+        logs_query = (
+            supabase_db.table("logs_execucao_ia")
+            .select("order_sn,executed_at,status")
+            .in_("order_sn", chunk)
+            .order("executed_at", desc=True)
+        )
+        log_offset = 0
+        while True:
+            logs = logs_query.range(
+                log_offset, log_offset + SELECTION_PAGE_SIZE - 1
+            ).execute().data or []
+            for log in logs:
+                latest_logs.setdefault(str(log["order_sn"]), log)
+            if len(logs) < SELECTION_PAGE_SIZE:
+                break
+            log_offset += SELECTION_PAGE_SIZE
+
+    chat_stats = _fetch_chat_stats_for_orders(orders)
+
+    selected = []
+    for row in orders:
+        order_sn_value = str(row.get("codigo_pedido_externo") or "")
+        latest_log = latest_logs.get(order_sn_value, {})
+        stats = chat_stats.get(row["id"], {})
+        selected.append({
+            "id": row["id"],
+            "numero_loja": order_sn_value,
+            "shopee_message": (
+                str(row.get("message_to_seller") or "").strip()
+                or messages_by_order.get(row["id"], "")
+            ),
+            "has_chat_messages": bool(stats.get("has_chat_messages")),
+            "last_ai_executed_at": latest_log.get("executed_at"),
+            "last_buyer_message_at": (
+                stats["last_buyer_message_at"].isoformat()
+                if stats.get("last_buyer_message_at") else None
+            ),
+            "ai_status": latest_log.get("status") or "NOT_PROCESSED",
+        })
+    return selected
 
 
 def _pedidos_do_comprador(buyer_id, buyer_username, integration_id) -> List[Dict[str, Any]]:
