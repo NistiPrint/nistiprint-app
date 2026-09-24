@@ -32,14 +32,20 @@ import { toast } from 'sonner'
 function getStatusBadge(order) {
   const personalizations = (order.itens || []).flatMap(item => item.personalizations || [])
 
-  if (order.needs_ai_processing) {
-    return { label: 'Pendente IA', className: 'bg-amber-100 text-amber-900 border-amber-300' }
-  }
   if (personalizations.some(p => p.status === 'NEEDS_REVIEW')) {
     return { label: 'A revisar', className: 'bg-orange-100 text-orange-900 border-orange-300' }
   }
-  if (personalizations.some(p => p.customization_name)) {
-    return { label: 'Nome identificado', className: 'bg-green-100 text-green-900 border-green-300' }
+  if (personalizations.some(p => p.status === 'SUCCESS' && p.customization_name?.trim())) {
+    return {
+      label: 'Nome identificado',
+      className: 'bg-green-100 text-green-900 border-green-300',
+      title: order.needs_ai_processing
+        ? 'Nome já identificado. Há mensagem nova e o pedido será reprocessado pela IA.'
+        : 'Nome identificado pela IA',
+    }
+  }
+  if (order.needs_ai_processing) {
+    return { label: 'Pendente IA', className: 'bg-amber-100 text-amber-900 border-amber-300' }
   }
   if (
     personalizations.some(
@@ -85,45 +91,125 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
     }
   }
 
+  const orderDate = order.data ? String(order.data).slice(0, 10) : ''
+  const formattedOrderDate = /^\d{4}-\d{2}-\d{2}$/.test(orderDate)
+    ? orderDate.split('-').reverse().join('/')
+    : orderDate
+
   return (
     <Card className='border shadow-sm transition-shadow duration-200 hover:shadow-md'>
-      <CardContent className='space-y-2 px-4 py-3'>
-        {/* Identificacao */}
-        <div className='flex flex-wrap items-center gap-x-3 gap-y-1'>
-          <Link
-            to={`/vendas/pedidos/${order.id}`}
-            className='text-base font-semibold text-blue-600 transition-colors hover:text-blue-800 hover:underline'
-            title='Abrir a tela do pedido'>
-            #{order.numero}
-          </Link>
+      <CardContent className='p-3 sm:p-4'>
+        <div className='grid gap-3 md:grid-cols-[minmax(190px,1fr)_minmax(0,4fr)_auto] md:gap-4'>
+          <section className='space-y-2 md:border-r md:pr-4' aria-label='Dados do pedido'>
+            <div>
+              <Link
+                to={`/vendas/pedidos/${order.id}`}
+                className='text-lg font-semibold text-blue-700 transition-colors hover:text-blue-900 hover:underline'
+                title='Abrir a tela do pedido'>
+                #{order.numero}
+              </Link>
+              {order.numeroLoja && (
+                <div className='mt-0.5 break-all font-mono text-xs text-gray-500' title='Código do pedido na Shopee'>
+                  {order.numeroLoja}
+                </div>
+              )}
+            </div>
 
-          {order.numeroLoja && (
-            <span className='font-mono text-xs text-gray-500' title='Codigo do pedido na Shopee'>
-              {order.numeroLoja}
-            </span>
-          )}
+            <div className='space-y-1 text-sm text-gray-600'>
+              <div className='truncate font-medium text-gray-800' title={order.contato?.nome || order.nome_cliente || ''}>
+                {order.contato?.nome || order.nome_cliente || 'Cliente não identificado'}
+              </div>
+              {order.shopee?.username && <div className='truncate'>@{order.shopee.username}</div>}
+              {formattedOrderDate && <time className='block text-xs text-gray-500'>{formattedOrderDate}</time>}
+            </div>
 
-          {order.shopee?.username && (
-            <span className='text-sm text-gray-700'>@{order.shopee.username}</span>
-          )}
+            <div className='flex flex-wrap gap-1.5'>
+              <Badge variant='outline' title={statusBadge.title} className={`${statusBadge.className} text-xs`}>
+                {statusBadge.label}
+              </Badge>
+              {order.chat_context_ambiguous && (
+                <Badge variant='outline' className='border-amber-300 text-xs text-amber-700'>
+                  Contexto requer revisão
+                </Badge>
+              )}
+            </div>
+          </section>
 
-          <Badge variant='outline' className={`${statusBadge.className} text-xs`}>
-            {statusBadge.label}
-          </Badge>
+          <section className='min-w-0 space-y-2' aria-label='Produtos e personalizações'>
+            {buyerMessage && (
+              <div className='flex items-start gap-2 rounded border border-blue-200 bg-blue-50 px-2.5 py-2 text-sm text-blue-800'>
+                <MessageCircleMore className='mt-0.5 h-4 w-4 flex-shrink-0' />
+                <div className='min-w-0'>
+                  <span className='font-semibold'>Mensagem do comprador:</span>{' '}
+                  <span className='whitespace-pre-wrap break-words'>{buyerMessage}</span>
+                </div>
+              </div>
+            )}
 
-          {order.chat_context_ambiguous && (
-            <Badge variant='outline' className='border-amber-300 text-xs text-amber-700'>
-              Contexto requer revisao
-            </Badge>
-          )}
+            <div className='space-y-2'>
+              {(order.itens || []).map((item, idx) => (
+                <div
+                  key={item.id ?? idx}
+                  className={`rounded-md border p-3 ${
+                    item.personalizado
+                      ? 'border-amber-300 bg-amber-50/60'
+                      : 'border-gray-200 bg-white'
+                  }`}>
+                  <div className='flex items-start gap-2'>
+                    <span className='min-w-9 pt-0.5 text-right text-base font-bold tabular-nums text-gray-800'>
+                      {item.quantidade || 1}×
+                    </span>
+                    <div className='min-w-0 flex-1 space-y-1'>
+                      <div className='font-semibold leading-snug text-gray-900' title={item.descricao}>
+                        {item.descricao || 'Produto sem descrição'}
+                      </div>
+                      {item.codigo && <div className='text-xs text-gray-500'>{item.codigo}</div>}
 
-          <div className='ml-auto flex items-center gap-1'>
-            {/* O chat fica fora do menu porque e a acao que fecha o trabalho:
-                ler a conversa e o que produz o nome que falta. */}
+                      {item.personalizations?.length > 0 && (
+                        <div className='flex flex-wrap gap-2 pt-1'>
+                          {item.personalizations.map((personalization, pIdx) =>
+                            personalization.customization_name ? (
+                              <button
+                                key={personalization.id ?? pIdx}
+                                type='button'
+                                className='inline-flex max-w-full items-center gap-1.5 rounded-md border border-sky-300 bg-white px-3 py-1.5 text-left text-lg font-bold leading-snug text-sky-900 shadow-sm transition-colors hover:bg-sky-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600'
+                                onClick={() => handleCopy(personalization.customization_name)}
+                                title={`Clique para copiar ${personalization.customization_name}`}>
+                                <span className='break-words'>{personalization.customization_name}</span>
+                                {personalization.customization_initial && (
+                                  <span className='shrink-0 font-semibold text-sky-700'>
+                                    ({personalization.customization_initial})
+                                  </span>
+                                )}
+                                {personalization.quantity_to_personalize > 1 && (
+                                  <span className='shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-sm font-semibold text-amber-900'>
+                                    ×{personalization.quantity_to_personalize}
+                                  </span>
+                                )}
+                              </button>
+                            ) : (
+                              <Badge
+                                key={personalization.id ?? pIdx}
+                                variant='outline'
+                                className='border-slate-300 text-slate-600'>
+                                Sem nome
+                              </Badge>
+                            ),
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <div className='flex items-center gap-1 md:flex-col md:items-stretch md:justify-start'>
             <Button
               size='sm'
               variant={order.has_chat_messages ? 'outline' : 'ghost'}
-              className='h-8 gap-1.5 px-2.5'
+              className='h-9 gap-1.5 px-2.5'
               disabled={!order.shopee?.username}
               onClick={() => onOpenChat(order.shopee?.username, order.numero, order)}
               title={
@@ -131,17 +217,17 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
                   ? order.has_chat_messages
                     ? 'Abrir chat do comprador'
                     : 'Sem mensagens registradas para este comprador'
-                  : 'Comprador nao identificado'
+                  : 'Comprador não identificado'
               }>
               <MessageCircleMore
                 className={`h-4 w-4 ${order.has_chat_messages ? '' : 'text-gray-400'}`}
               />
-              <span className='hidden sm:inline'>Chat</span>
+              <span>Chat</span>
             </Button>
 
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button size='sm' variant='ghost' className='h-8 w-8 p-0' title='Mais acoes'>
+                <Button size='sm' variant='ghost' className='h-9 w-9 p-0' title='Mais ações' aria-label='Mais ações'>
                   {isProcessing ? (
                     <Loader2 className='h-4 w-4 animate-spin' />
                   ) : (
@@ -160,7 +246,7 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
                   disabled={!order.numeroLoja || isProcessing}
                   onSelect={() => handleProcessClick(true)}>
                   <RefreshCw className='mr-2 h-4 w-4' />
-                  Forcar reprocessamento
+                  Forçar reprocessamento
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   disabled={!order.numeroLoja}
@@ -193,58 +279,6 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
-        </div>
-
-        {/* Mensagem do comprador no ato da compra: costuma conter o nome, entao
-            fica no corpo e nao escondida atras de um clique. */}
-        {buyerMessage && (
-          <div className='flex items-start gap-2 rounded border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs text-blue-800'>
-            <MessageCircleMore className='mt-0.5 h-3.5 w-3.5 flex-shrink-0' />
-            <div className='min-w-0'>
-              <span className='font-semibold'>Mensagem do comprador:</span>{' '}
-              <span className='whitespace-pre-wrap break-words'>{buyerMessage}</span>
-            </div>
-          </div>
-        )}
-
-        {/* Itens e personalizacao */}
-        <div className='space-y-1'>
-          {(order.itens || []).map((item, idx) => (
-            <div
-              key={idx}
-              className={`flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded px-2 py-1 text-sm ${
-                item.personalizado ? 'bg-yellow-50' : ''
-              }`}>
-              <span className='font-semibold text-gray-700'>{item.quantidade}x</span>
-              <span className='min-w-0 flex-1 truncate text-gray-900' title={item.descricao}>
-                {item.descricao || 'Produto sem descricao'}
-              </span>
-
-              {item.personalizations?.length > 0 &&
-                item.personalizations.map((p, pIdx) =>
-                  p.customization_name ? (
-                    <Badge
-                      key={pIdx}
-                      variant='outline'
-                      className='cursor-pointer border-blue-200 transition-colors hover:bg-blue-50'
-                      onClick={() => handleCopy(p.customization_name)}
-                      title='Clique para copiar'>
-                      <span className='font-semibold text-blue-700'>{p.customization_name}</span>
-                      {p.customization_initial && (
-                        <span className='ml-1 text-blue-600'>({p.customization_initial})</span>
-                      )}
-                      {p.quantity_to_personalize > 1 && (
-                        <span className='ml-1 text-orange-700'>x{p.quantity_to_personalize}</span>
-                      )}
-                    </Badge>
-                  ) : (
-                    <Badge key={pIdx} variant='outline' className='border-slate-300 text-slate-600'>
-                      Sem nome
-                    </Badge>
-                  ),
-                )}
-            </div>
-          ))}
         </div>
       </CardContent>
     </Card>
