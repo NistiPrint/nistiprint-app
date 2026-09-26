@@ -666,19 +666,26 @@ def test_integration(instance_id):
     if not inst:
         return jsonify({"error": "Not found"}), 404
     payload = _auth_payload_for_test(inst)
-    module = integration_module_service.get_module_by_id(inst.module_id)
-    test_path = module.data_mapping_spec.get("test_endpoint") if module else None
-    driver_result = platform_api_service.test_connection(
-        payload, module_id=inst.module_id, path=test_path
+    if str(inst.module_id or "").lower() == "bling":
+        result = platform_auth_service.call_test_endpoint(inst.module_id, payload)
+    else:
+        module = integration_module_service.get_module_by_id(inst.module_id)
+        test_path = module.data_mapping_spec.get("test_endpoint") if module else None
+        driver_result = platform_api_service.test_connection(
+            payload, module_id=inst.module_id, path=test_path
+        )
+        result = (
+            driver_result
+            if not driver_result.get("error")
+            else platform_auth_service.call_test_endpoint(inst.module_id, payload)
+        )
+
+    success = not (
+        result.get("success") is False
+        or result.get("error")
+        or result.get("err_code")
     )
-    if not driver_result.get("error"):
-        return jsonify({"success": True, "result": driver_result})
-    return jsonify(
-        {
-            "success": True,
-            "result": platform_auth_service.call_test_endpoint(inst.module_id, payload),
-        }
-    )
+    return jsonify({"success": success, "result": result})
 
 
 @marketplace_api_bp.route("/installed/<instance_id>/sync", methods=["POST"])

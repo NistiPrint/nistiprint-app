@@ -644,13 +644,37 @@ class PlatformAuthService:
         return {"error": "Platform testing not implemented yet"}
 
     def _test_bling(self, path: str, access_token: str) -> Dict:
-        url = f"https://www.bling.com.br/Api/v3{path}"
+        url = f"https://api.bling.com.br/Api/v3{path}"
         headers = {
             "Authorization": f"Bearer {access_token}",
             BLING_JWT_HEADER: BLING_JWT_HEADER_VALUE,
         }
-        resp = requests.get(url, headers=headers)
-        return resp.json()
+        resp = requests.get(url, headers=headers, timeout=30)
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+
+        if resp.status_code < 200 or resp.status_code >= 300:
+            details = data.get("error") if isinstance(data, dict) else None
+            if not isinstance(details, dict):
+                details = data if isinstance(data, dict) else {}
+            return {
+                "success": False,
+                "error": (
+                    details.get("type")
+                    or details.get("code")
+                    or f"http_{resp.status_code}"
+                ),
+                "message": details.get("message")
+                or "Falha ao testar conexao com o Bling.",
+                "description": details.get("description"),
+                "status_code": resp.status_code,
+            }
+
+        if isinstance(data, dict):
+            return {**data, "success": data.get("success", True)}
+        return {"success": True, "data": data}
 
     def _test_shopee(self, integration: Dict, path: str, access_token: str) -> Dict:
         config = integration.get("config") or {}

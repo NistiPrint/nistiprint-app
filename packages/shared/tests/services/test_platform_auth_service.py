@@ -62,13 +62,38 @@ class PlatformAuthServiceTest(unittest.TestCase):
 
     @patch("nistiprint_shared.services.platform_auth_service.requests.get")
     def test_bling_test_endpoint_sends_jwt_header(self, mock_get):
+        mock_get.return_value.status_code = 200
         mock_get.return_value.json.return_value = {"data": {}}
 
-        platform_auth_service._test_bling("/empresas/me/dados-basicos", "jwt")
+        result = platform_auth_service._test_bling(
+            "/empresas/me/dados-basicos", "jwt"
+        )
 
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            mock_get.call_args.args[0],
+            "https://api.bling.com.br/Api/v3/empresas/me/dados-basicos",
+        )
         headers = mock_get.call_args.kwargs["headers"]
         self.assertEqual(headers["Authorization"], "Bearer jwt")
         self.assertEqual(headers["enable-jwt"], "1")
+
+    @patch("nistiprint_shared.services.platform_auth_service.requests.get")
+    def test_bling_test_endpoint_returns_failure_for_http_errors(self, mock_get):
+        mock_get.return_value.status_code = 403
+        mock_get.return_value.json.return_value = {
+            "type": "FORBIDDEN",
+            "message": "Acesso nao permitido",
+            "description": "Host bloqueado",
+        }
+
+        result = platform_auth_service._test_bling(
+            "/empresas/me/dados-basicos", "jwt"
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "FORBIDDEN")
+        self.assertEqual(result["message"], "Acesso nao permitido")
 
     @patch("nistiprint_shared.services.platform_auth_service.requests.get")
     def test_shopee_test_accepts_legacy_top_level_credentials(self, mock_get):
