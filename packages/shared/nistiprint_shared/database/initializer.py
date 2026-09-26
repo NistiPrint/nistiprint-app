@@ -75,7 +75,7 @@ def setup_mock_query_interface():
             if model_cls:
                 model_cls.query = SupabaseQueryInterface(model_cls)
                 
-        logging.info(f"✓ {len(models_to_init)} modelos inicializados com sucesso.")
+        logging.info("%s modelos inicializados com sucesso.", len(models_to_init))
         return True
         
     except Exception as e:

@@ -24,5 +24,6 @@ def load_nistiprint_env():
         # print(f"✓ Ambiente carregado de: {env_path}")
         return True
     
-    logging.warning("Arquivo .env não localizado. Certifique-se de que as variáveis de ambiente estão configuradas no sistema.")
+    if not (os.environ.get('SUPABASE_URL') and os.environ.get('SUPABASE_SERVICE_KEY')):
+        logging.warning("Arquivo .env nao localizado e variaveis Supabase ausentes no ambiente.")
     return False

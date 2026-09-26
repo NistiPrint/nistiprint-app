@@ -16,14 +16,14 @@ try:
     # Configura a interface de compatibilidade (Mock SQLAlchemy/Supabase)
     setup_mock_query_interface()
     
-    print("✓ V3 Infrastructure Initialized (Shared Package)")
+    print("V3 Infrastructure Initialized (Shared Package)")
 except ImportError as e:
-    print(f"❌ Erro: Pacote nistiprint-shared não localizado ou incompleto: {e}")
+    print(f"Erro: Pacote nistiprint-shared nao localizado ou incompleto: {e}")
     # Fallback para load_dotenv local caso o shared falhe (útil durante migração)
     from dotenv import load_dotenv
     load_dotenv()
 except Exception as e:
-    print(f"❌ Erro inesperado na inicialização: {e}")
+    print(f"Erro inesperado na inicializacao: {e}")
 
 from nistiprint_shared.database.database import db, cleanup_session
 from nistiprint_shared.database.supabase_db_service import init_app_with_supabase_db
@@ -103,7 +103,7 @@ def create_app():
     # Prioridade para variável de ambiente, fallback para string fixa
     secret = os.environ.get('SECRET_KEY')
     if not secret:
-        app.logger.warning("⚠️ SECRET_KEY não encontrada no ambiente! Usando chave de fallback.")
+        app.logger.warning("SECRET_KEY nao encontrada no ambiente! Usando chave de fallback.")
         secret = 'dev_secret_key_fixed_for_stability'
     
     app.secret_key = secret
@@ -120,7 +120,12 @@ def create_app():
     
     if supabase_url and supabase_key:
         # Use Supabase (PostgreSQL)
-        app.config['SQLALCHEMY_DATABASE_URI'] = supabase_url.replace("http://", "postgresql://").replace("https://", "postgresql://")
+        # SUPABASE_URL is the HTTP API endpoint; SQLAlchemy needs the separate
+        # direct PostgreSQL URL when the application runs outside Docker.
+        app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+            'SUPABASE_DB_URL',
+            supabase_url.replace("http://", "postgresql://").replace("https://", "postgresql://")
+        )
         app.logger.info("Using Supabase (PostgreSQL) as main database.")
         
         # Configure Binds for Legacy MySQL
@@ -269,8 +274,6 @@ if __name__ == "__main__":
     # In production, debug should be False.
     debug_mode = os.environ.get('FLASK_ENV') == 'development'
     app.run(host='127.0.0.1', port=port, debug=debug_mode)
-
-
 
 
 

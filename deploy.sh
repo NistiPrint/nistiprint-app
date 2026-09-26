@@ -56,6 +56,18 @@ if not m.__file__.startswith(esperado):
 print(f'  ok: {m.__file__}')
 PY
 
+if [ "${SKIP_FRONTEND:-0}" != "1" ]; then
+    /opt/nistiprint/.venv/bin/python - <<'PY'
+from pathlib import Path
+from dotenv import dotenv_values
+
+values = dotenv_values(Path('/opt/nistiprint/.env'))
+missing = [name for name in ('VITE_SUPABASE_URL', 'SUPABASE_ANON_KEY') if not values.get(name)]
+if missing:
+    raise SystemExit('Frontend build blocked; configure in /opt/nistiprint/.env: ' + ', '.join(missing))
+PY
+fi
+
 # O backend sobe ANTES do frontend de proposito. O build do frontend e a etapa
 # mais fragil do deploy (memoria, rede, lockfile) e ja impediu correcao de
 # backend de chegar em producao por dias. Se ele falhar agora, o backend ja
@@ -98,7 +110,24 @@ else
         npm ci --no-audit --no-fund
         # Vite/Rollup estouram o heap padrao do Node em VPS pequena; o teto
         # explicito evita o kill silencioso no meio do bundle.
-        NODE_OPTIONS="--max-old-space-size=${NODE_HEAP_MB:-2048}" npm run build
+        NODE_OPTIONS="--max-old-space-size=${NODE_HEAP_MB:-2048}" /opt/nistiprint/.venv/bin/python - <<'PY'
+import os
+import subprocess
+from pathlib import Path
+from dotenv import dotenv_values
+
+env_file = Path('/opt/nistiprint/.env')
+values = dotenv_values(env_file)
+url = values.get('VITE_SUPABASE_URL')
+anon_key = values.get('SUPABASE_ANON_KEY')
+if not url or not anon_key:
+    raise SystemExit('VITE_SUPABASE_URL e SUPABASE_ANON_KEY precisam estar em /opt/nistiprint/.env para compilar o frontend')
+
+build_env = os.environ.copy()
+build_env['VITE_SUPABASE_URL'] = url
+build_env['VITE_SUPABASE_ANON_KEY'] = anon_key
+subprocess.run(['npm', 'run', 'build'], env=build_env, check=True)
+PY
     )
 fi
 

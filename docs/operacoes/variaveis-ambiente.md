@@ -21,15 +21,13 @@ Este documento descreve todas as variáveis de ambiente necessárias para operar
 
 | Variável | Descrição | Exemplo |
 |----------|-----------|---------|
-| `SUPABASE_URL` | URL do projeto Supabase | `https://xxxxxxxxxxxxx.supabase.co` |
+| `SUPABASE_URL` | URL interna do gateway para serviços systemd no mesmo host | `http://127.0.0.1:8000` |
+| `SUPABASE_DB_URL` | Conexão PostgreSQL direta para SQLAlchemy em serviços systemd no host | `postgresql://postgres:SENHA@127.0.0.1:5432/postgres` |
 | `SUPABASE_SERVICE_KEY` | Service Role Key (backend) | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` |
-| `SUPABASE_ANON_KEY` | Anon Key (frontend) | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` |
-| `DATABASE_URL` | Connection string com PGBouncer | `postgresql://postgres.xxxxx:SENHA@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?pgbouncer=true` |
+| `SUPABASE_ANON_KEY` | Anon Key pública usada pelo backend e pelo build de produção | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` |
+| `DATABASE_URL` | URL do banco MySQL legado para o bind da aplicação, se utilizado | `mysql+pymysql://usuario:SENHA@host:3306/banco` |
 
-**⚠️ Importante:** O `DATABASE_URL` deve usar:
-- Porta **6543** (PGBouncer)
-- Parâmetro `?pgbouncer=true`
-- Formato: `postgresql://` (não `https://`)
+Na VPS, `SUPABASE_URL` aponta ao gateway HTTP; `SUPABASE_DB_URL` aponta ao Postgres no loopback. Codifique caracteres reservados da senha como URL encoding.
 
 ### Flask (API)
 
@@ -43,8 +41,8 @@ Este documento descreve todas as variáveis de ambiente necessárias para operar
 | Variável | Descrição | Exemplo |
 |----------|-----------|---------|
 | `VITE_API_URL` | URL da API backend | `http://localhost:8080` |
-| `VITE_SUPABASE_URL` | URL do Supabase (frontend) | `https://xxxxx.supabase.co` |
-| `VITE_SUPABASE_ANON_KEY` | Anon Key (frontend) | `eyJhbGci...` |
+| `VITE_SUPABASE_URL` | URL pública usada pelo navegador; NPM encaminha os caminhos da API no domínio existente do app | `https://app.nistiprint.neolabs.com.br` |
+| `VITE_SUPABASE_ANON_KEY` | Chave pública no build local; no deploy vem de `SUPABASE_ANON_KEY` em `/opt/nistiprint/.env` | `eyJhbGci...` |
 
 ---
 
@@ -125,16 +123,16 @@ WEBHOOK_TOKEN=test_token_123
 BLING_ID_LOJA=12345
 ```
 
-### Produção - Portainer (.env)
+### Produção - serviços systemd no host (.env)
 
 ```env
 # ===========================================
 # SUPABASE
 # ===========================================
-SUPABASE_URL=https://abcdefghij.supabase.co
+SUPABASE_URL=http://127.0.0.1:8000
 SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-DATABASE_URL=postgresql://postgres.abcdefghij:SenhaForte456@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?pgbouncer=true
+VITE_SUPABASE_URL=https://app.nistiprint.neolabs.com.br
 
 # ===========================================
 # FLASK
@@ -147,7 +145,8 @@ FLASK_DEBUG=0
 # FRONTEND
 # ===========================================
 VITE_API_URL=http://localhost:8080
-VITE_SUPABASE_URL=https://abcdefghij.supabase.co
+# URL pública do app; o NPM encaminha os caminhos da API Supabase no mesmo domínio.
+VITE_SUPABASE_URL=https://app.nistiprint.neolabs.com.br
 VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 # ===========================================
@@ -194,22 +193,13 @@ WORKER_LOG_BACKUP_COUNT=30
 
 ## Como Configurar
 
-### 1. Obter credenciais do Supabase
+### 1. Obter credenciais do Supabase self-hosted
 
-1. Acesse https://supabase.com
-2. Selecione seu projeto
-3. Vá em **Settings** → **API**
-4. Copie:
-   - **Project URL** → `SUPABASE_URL`
-   - **service_role secret** → `SUPABASE_SERVICE_KEY`
-   - **anon public secret** → `SUPABASE_ANON_KEY`
-
-5. Para `DATABASE_URL`:
-   - Vá em **Settings** → **Database**
-   - Copie **Connection string** (URI)
-   - Modifique para usar PGBouncer:
-     - Troque a porta para **6543**
-     - Adicione `?pgbouncer=true` no final
+1. Gere as chaves novas com `apps/ops/supabase/utils/generate-keys.sh` no host confiável e configure-as como variáveis privadas da stack no Portainer.
+2. Copie `SERVICE_ROLE_KEY` para `SUPABASE_SERVICE_KEY` e `ANON_KEY` para `SUPABASE_ANON_KEY` no arquivo seguro `/opt/nistiprint/.env`.
+3. Defina `SUPABASE_URL=http://127.0.0.1:8000` para os clientes HTTP no host e `VITE_SUPABASE_URL=https://app.nistiprint.neolabs.com.br` para o navegador.
+4. Para SQLAlchemy, defina `SUPABASE_DB_URL` com a senha do Postgres codificada para URL e a porta de loopback configurada em `POSTGRES_HOST_PORT`.
+5. `DATABASE_URL` fica reservado ao bind legado MySQL. Não use a string de conexão Cloud nem a porta do pooler na aplicação migrada.
 
 ### 2. Gerar SECRET_KEY
 
@@ -307,17 +297,16 @@ else:
 
 ## Troubleshooting
 
-### Erro: "Connection refused" no banco
+### Erro: "Connection refused" no Supabase local
 
-**Causa:** DATABASE_URL incorreta ou porta errada
+**Causa:** gateway ou porta local do Postgres indisponível/ocupada.
 
-**Solução:**
+**Solução:** confira se o gateway responde em `http://127.0.0.1:8000`, se `POSTGRES_HOST_PORT` está publicado em loopback e se `SUPABASE_DB_URL` usa essa mesma porta. Não use o alias Docker `supabase-api` a partir do processo systemd.
+
+Para a configuração antiga com Cloud/PGBouncer, os exemplos históricos abaixo não se aplicam ao self-hosted atual:
 ```env
-# Errado (porta 5432 - conexão direta)
+# Exemplo histórico Cloud, não usar na VPS self-hosted
 DATABASE_URL=postgresql://user:pass@host:5432/postgres
-
-# Correto (porta 6543 - PGBouncer)
-DATABASE_URL=postgresql://user:pass@host:6543/postgres?pgbouncer=true
 ```
 
 ### Erro: "Invalid API key" no Supabase
