@@ -11,6 +11,8 @@
 # Standard Node/React ignores
 **/node_modules/
 **/dist/
+**/.dist-next/
+**/.dist-previous/
 **/build/
 .eslintcache
 **/package-lock.json

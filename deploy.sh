@@ -112,10 +112,12 @@ else
         # explicito evita o kill silencioso no meio do bundle.
         NODE_OPTIONS="--max-old-space-size=${NODE_HEAP_MB:-2048}" /opt/nistiprint/.venv/bin/python - <<'PY'
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from dotenv import dotenv_values
 
+frontend = Path('/opt/nistiprint/apps/frontend')
 env_file = Path('/opt/nistiprint/.env')
 values = dotenv_values(env_file)
 url = values.get('VITE_SUPABASE_URL')
@@ -126,7 +128,33 @@ if not url or not anon_key:
 build_env = os.environ.copy()
 build_env['VITE_SUPABASE_URL'] = url
 build_env['VITE_SUPABASE_ANON_KEY'] = anon_key
-subprocess.run(['npm', 'run', 'build'], env=build_env, check=True)
+
+# Build away from the directory served by Caddy. A successful Vite exit alone
+# does not prove that it embedded the Supabase settings in the client bundle.
+staged = frontend / '.dist-next'
+current = frontend / 'dist'
+previous = frontend / '.dist-previous'
+subprocess.run(['npm', 'run', 'build', '--', '--outDir', str(staged)],
+               cwd=frontend, env=build_env, check=True)
+
+scripts = list((staged / 'assets').glob('*.js'))
+if not (staged / 'index.html').is_file() or not scripts:
+    raise SystemExit('Frontend build incomplete; current published build preserved')
+if not any(url in script.read_text(encoding='utf-8') and
+           anon_key in script.read_text(encoding='utf-8') for script in scripts):
+    raise SystemExit('Frontend build lacks Supabase URL or anon key; current published build preserved')
+
+if previous.exists():
+    shutil.rmtree(previous)
+if current.exists():
+    current.rename(previous)
+try:
+    staged.rename(current)
+except Exception:
+    if previous.exists():
+        previous.rename(current)
+    raise
+print('  frontend build validated and published')
 PY
     )
 fi
