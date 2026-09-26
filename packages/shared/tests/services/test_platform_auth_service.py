@@ -8,6 +8,68 @@ from nistiprint_shared.services.platform_drivers import shopee
 
 
 class PlatformAuthServiceTest(unittest.TestCase):
+    @patch("nistiprint_shared.services.platform_auth_service.requests.post")
+    def test_bling_oauth_exchange_requests_jwt_and_rejects_opaque_tokens(self, mock_post):
+        context = {
+            "config": {},
+            "app_secrets": {"client_id": "client", "client_secret": "secret"},
+        }
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln"
+        mock_post.return_value.json.return_value = {
+            "access_token": jwt,
+            "refresh_token": "refresh-1",
+            "expires_in": 21600,
+        }
+
+        tokens = platform_auth_service._exchange_bling_token(context, "auth-code")
+
+        self.assertEqual(tokens["access_token"], jwt)
+        self.assertEqual(
+            mock_post.call_args.kwargs["headers"]["enable-jwt"], "1"
+        )
+
+        mock_post.return_value.json.return_value["access_token"] = "opaque-token"
+        with self.assertRaisesRegex(ValueError, "access_token JWT"):
+            platform_auth_service._exchange_bling_token(context, "auth-code")
+
+    @patch("nistiprint_shared.services.platform_auth_service.requests.post")
+    def test_bling_refresh_requests_jwt_and_rejects_opaque_tokens(self, mock_post):
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln"
+        mock_post.return_value.json.return_value = {
+            "access_token": jwt,
+            "refresh_token": "refresh-2",
+            "expires_in": 21600,
+        }
+
+        tokens = platform_auth_service._refresh_bling_token(
+            {},
+            {"client_id": "client", "client_secret": "secret"},
+            "refresh-1",
+        )
+
+        self.assertEqual(tokens["access_token"], jwt)
+        self.assertEqual(
+            mock_post.call_args.kwargs["headers"]["enable-jwt"], "1"
+        )
+
+        mock_post.return_value.json.return_value["access_token"] = "opaque-token"
+        with self.assertRaisesRegex(ValueError, "access_token JWT"):
+            platform_auth_service._refresh_bling_token(
+                {},
+                {"client_id": "client", "client_secret": "secret"},
+                "refresh-1",
+            )
+
+    @patch("nistiprint_shared.services.platform_auth_service.requests.get")
+    def test_bling_test_endpoint_sends_jwt_header(self, mock_get):
+        mock_get.return_value.json.return_value = {"data": {}}
+
+        platform_auth_service._test_bling("/empresas/me/dados-basicos", "jwt")
+
+        headers = mock_get.call_args.kwargs["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer jwt")
+        self.assertEqual(headers["enable-jwt"], "1")
+
     @patch("nistiprint_shared.services.platform_auth_service.requests.get")
     def test_shopee_test_accepts_legacy_top_level_credentials(self, mock_get):
         mock_get.return_value.json.return_value = {"success": True}

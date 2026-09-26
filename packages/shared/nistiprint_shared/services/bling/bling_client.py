@@ -19,6 +19,11 @@ from nistiprint_shared.services.bling.rate_limit import (
 from nistiprint_shared.services.personalized_classification_service import (
     normalize_personalization_text,
 )
+from nistiprint_shared.services.bling.auth import (
+    BLING_JWT_HEADER,
+    BLING_JWT_HEADER_VALUE,
+    require_bling_jwt,
+)
 from ...constants import PLATFORM_X_CNPJ
 
 
@@ -460,6 +465,7 @@ class BlingClient:
         headers = {
             'Content-Type': 'application/x-www-form-urlencoded',
             'Authorization': f'Basic {base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()}',
+            BLING_JWT_HEADER: BLING_JWT_HEADER_VALUE,
         }
         data = {
             'grant_type': 'refresh_token',
@@ -474,14 +480,15 @@ class BlingClient:
             response_data = response.json()
 
             if 'access_token' in response_data:
+                access_token = require_bling_jwt(response_data.get('access_token'))
                 new_tokens = {
-                    'access_token': response_data['access_token'],
+                    'access_token': access_token,
                     'refresh_token': response_data['refresh_token'],
                     'expires_in': response_data['expires_in']
                 }
 
                 # Atualizar a instância com os novos tokens
-                self.access_token = response_data['access_token']
+                self.access_token = access_token
                 self.refresh_token = response_data['refresh_token']
                 # Garantir que expires_in seja um inteiro
                 expires_in_new = response_data['expires_in']
@@ -580,11 +587,12 @@ class BlingClient:
         url = f'https://api.bling.com.br/Api/v3/{endpoint}'
         headers = {
             'Accept': 'application/json',
-            'Authorization': f'Bearer {access_token}'
+            'Authorization': f'Bearer {access_token}',
+            BLING_JWT_HEADER: BLING_JWT_HEADER_VALUE,
         }
         headers.update(kwargs.pop('headers', {}))
+        headers[BLING_JWT_HEADER] = BLING_JWT_HEADER_VALUE
 
-        token_preview = f'...{access_token[-6:]}' if access_token and len(access_token) > 6 else 'INVALID'
         max_retries = 3
         integration_id = self._integration_id()
 
@@ -595,7 +603,7 @@ class BlingClient:
             self._acquire_rate_limit_slot(endpoint)
 
             try:
-                print(f'[BLING API] {method.upper()} {endpoint} | Auth: Bearer {token_preview}')
+                print(f'[BLING API] {method.upper()} {endpoint} | Auth: Bearer <redacted>')
                 response = requests.request(method.upper(), url, headers=headers, **kwargs)
 
                 if response.status_code in [200, 201]:
@@ -687,7 +695,8 @@ class BlingClient:
         url = f"https://api.bling.com.br/Api/v3/empresas/me/dados-basicos"
         headers = {
             'Accept': 'application/json',
-            'Authorization': f'Bearer {self.access_token}'
+            'Authorization': f'Bearer {self.access_token}',
+            BLING_JWT_HEADER: BLING_JWT_HEADER_VALUE,
         }
 
         try:

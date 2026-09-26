@@ -15,6 +15,11 @@ from urllib.parse import quote_plus
 import requests
 
 from nistiprint_shared.services.credential_resolver_service import CredentialContext
+from nistiprint_shared.services.bling.auth import (
+    BLING_JWT_HEADER,
+    BLING_JWT_HEADER_VALUE,
+    require_bling_jwt,
+)
 from nistiprint_shared.services.integration_provider_registry import (
     normalize_provider_module_id,
 )
@@ -203,6 +208,7 @@ class PlatformAuthService:
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Authorization": f"Basic {auth_b64}",
+            BLING_JWT_HEADER: BLING_JWT_HEADER_VALUE,
         }
 
         payload = {
@@ -222,8 +228,10 @@ class PlatformAuthService:
                 f"Bling Auth Error: {data.get('error_description', data.get('error'))}"
             )
 
+        access_token = require_bling_jwt(data.get("access_token"))
+
         return {
-            "access_token": data.get("access_token"),
+            "access_token": access_token,
             "refresh_token": data.get("refresh_token"),
             "expires_in": data.get("expires_in"),
             "user_id": data.get("user_id"),
@@ -576,6 +584,7 @@ class PlatformAuthService:
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Authorization": f"Basic {auth_b64}",
+            BLING_JWT_HEADER: BLING_JWT_HEADER_VALUE,
         }
 
         payload = {
@@ -591,8 +600,10 @@ class PlatformAuthService:
                 f"Bling Refresh Error: {data.get('error_description', data.get('error'))}"
             )
 
+        access_token = require_bling_jwt(data.get("access_token"))
+
         return {
-            "access_token": data.get("access_token"),
+            "access_token": access_token,
             "refresh_token": data.get("refresh_token"),
             "expires_in": data.get("expires_in"),
             "raw_response": data,
@@ -634,7 +645,10 @@ class PlatformAuthService:
 
     def _test_bling(self, path: str, access_token: str) -> Dict:
         url = f"https://www.bling.com.br/Api/v3{path}"
-        headers = {"Authorization": f"Bearer {access_token}"}
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            BLING_JWT_HEADER: BLING_JWT_HEADER_VALUE,
+        }
         resp = requests.get(url, headers=headers)
         return resp.json()
 

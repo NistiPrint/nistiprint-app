@@ -41,6 +41,23 @@ class TestBlingClientRateLimit(unittest.TestCase):
         self.assertEqual(ctx.exception.error_type, 'rate_limited')
         self.assertEqual(request_mock.call_count, 3)
         self.assertGreaterEqual(sleep_mock.call_count, 2)
+        self.assertEqual(request_mock.call_args.kwargs['headers']['enable-jwt'], '1')
+
+    @patch.object(BlingClient, '_get_valid_token', return_value='token-123456')
+    @patch('nistiprint_shared.services.bling.bling_client.bling_rate_limit_coordinator.acquire')
+    @patch('nistiprint_shared.services.bling.bling_client.requests.request')
+    def test_request_keeps_jwt_header_when_callers_supply_headers(
+        self, request_mock, acquire_mock, _token_mock
+    ):
+        client = self._make_client()
+        acquire_mock.return_value = {'granted': True}
+        response = MagicMock(status_code=200)
+        response.json.return_value = {'data': {}}
+        request_mock.return_value = response
+
+        client._request('GET', 'empresas/me/dados-basicos', headers={'enable-jwt': '0'})
+
+        self.assertEqual(request_mock.call_args.kwargs['headers']['enable-jwt'], '1')
 
     @patch.object(BlingClient, '_get_valid_token', return_value='token-123456')
     @patch('nistiprint_shared.services.bling.bling_client.bling_rate_limit_coordinator.acquire_order_lock')
