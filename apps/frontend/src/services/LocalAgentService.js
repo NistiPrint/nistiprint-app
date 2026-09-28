@@ -34,8 +34,8 @@ const LocalAgentService = {
   /**
    * Map a product ID to a local file path by opening a file dialog
    */
-  mapFile: async (sku) => {
-    const response = await axios.post(`${LOCAL_AGENT_BASE_URL}/map-file`, { sku });
+  mapFile: async (sku, artworkId = null) => {
+    const response = await axios.post(`${LOCAL_AGENT_BASE_URL}/map-file`, { sku, artwork_id: artworkId });
     return response.data;
   },
 
@@ -53,6 +53,11 @@ const LocalAgentService = {
     return response.data;
   },
 
+  getMappedArtwork: async (artworkId) => {
+    const response = await axios.get(`${LOCAL_AGENT_BASE_URL}/mappings/artwork/${encodeURIComponent(artworkId)}`);
+    return response.data;
+  },
+
   /**
    * Print the mapped file for a product ID
    */
@@ -61,16 +66,16 @@ const LocalAgentService = {
     return response.data;
   },
 
-  printWithDialog: async (sku, copies, requestId, productId) => {
+  printWithDialog: async (sku, copies, requestId, productId, artworkId = null) => {
     const response = await axios.post(`${LOCAL_AGENT_BASE_URL}/print-dialog`, {
-      sku: sku || '', product_id: productId, copies, request_id: requestId,
+      sku: sku || '', product_id: productId, artwork_id: artworkId, copies, request_id: requestId,
     });
     return response.data;
   },
 
-  openMappedPdf: async (sku, requestId, productId) => {
+  openMappedPdf: async (sku, requestId, productId, artworkId = null) => {
     const response = await axios.post(`${LOCAL_AGENT_BASE_URL}/open`, {
-      sku: sku || '', product_id: productId, request_id: requestId,
+      sku: sku || '', product_id: productId, artwork_id: artworkId, request_id: requestId,
     });
     return response.data;
   },

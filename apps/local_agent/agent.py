@@ -31,7 +31,8 @@ except ImportError:
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("NISTIPRINT_AGENT_PORT", "8181"))
-DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "NistiPrint"
+DATA_DIR = Path(os.environ.get("NISTIPRINT_AGENT_DATA_DIR") or
+                (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "NistiPrint"))
 MAP_FILE = DATA_DIR / "mappings.json"
 LOG_FILE = DATA_DIR / "agent.log"
 MAX_COPIES = 999
@@ -270,8 +271,10 @@ class MappingStore:
         with self.lock:
             return self._read()
 
-    def get(self, sku: str, product_id: str | int | None = None) -> dict | None:
+    def get(self, sku: str, product_id: str | int | None = None, artwork_id: str | None = None) -> dict | None:
         data = self.all()
+        if artwork_id:
+            return data.get(f"arte:{artwork_id}")
         mapping = data.get(sku)
         if mapping:
             return mapping
@@ -575,6 +578,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             return self._send(200, {"printers": list_printers()})
         if path == "/mappings":
             return self._send(200, {"mappings": STORE.all()})
+        if path.startswith("/mappings/artwork/"):
+            artwork_id = unquote(path.removeprefix("/mappings/artwork/"))
+            mapping = STORE.get("", artwork_id=artwork_id)
+            return self._send(200, mapping) if mapping else self._send(404, {"error": "Arte não mapeada"})
         if path.startswith("/mappings/"):
             sku = unquote(path.removeprefix("/mappings/"))
             product_id = parse_qs(urlparse(self.path).query).get("product_id", [None])[0]
@@ -632,25 +639,29 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             data = self._json()
             sku = str(data.get("sku", "")).strip()
+            artwork_id = str(data.get("artwork_id") or "").strip()
             if path == "/mappings":
                 file_path = str(data.get("file_path", "")).strip()
                 printer = str(data.get("printer_name", "")).strip()
-                if not sku or not file_path or not printer:
-                    return self._send(400, {"error": "sku, file_path e printer_name são obrigatórios"})
+                if not (sku or artwork_id) or not file_path or not printer:
+                    return self._send(400, {"error": "sku ou artwork_id, file_path e printer_name são obrigatórios"})
                 if not Path(file_path).is_file():
                     return self._send(400, {"error": "Arquivo não encontrado"})
-                mapping = {"sku": sku, "product_id": data.get("product_id"), "file_path": file_path,
+                if artwork_id and Path(file_path).suffix.lower() != ".pdf":
+                    return self._send(400, {"error": "A arte deve ser um PDF"})
+                key = f"arte:{artwork_id}" if artwork_id else sku
+                mapping = {"sku": sku, "artwork_id": artwork_id or None, "product_id": data.get("product_id"), "file_path": file_path,
                            "printer_name": printer, "updated_at": _now()}
-                return self._send(200, {"success": True, "mapping": STORE.save(sku, mapping)})
+                return self._send(200, {"success": True, "mapping": STORE.save(key, mapping)})
             if path == "/map-file":
-                if not sku:
-                    return self._send(400, {"error": "sku é obrigatório"})
+                if not (sku or artwork_id):
+                    return self._send(400, {"error": "sku ou artwork_id é obrigatório"})
                 selected = choose_file()
                 if not selected:
                     return self._send(200, {"success": False, "status": "cancelled"})
                 return self._send(200, {"success": True, "status": "file_selected", "file_path": selected})
             if path == "/print":
-                mapping = STORE.get(sku, data.get("product_id"))
+                mapping = STORE.get(sku, data.get("product_id"), artwork_id)
                 if not mapping:
                     return self._send(404, {"error": "SKU não mapeado"})
                 copies = max(1, min(int(data.get("copies", 1)), MAX_COPIES))
@@ -667,9 +678,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                 request_id = str(data.get("request_id") or "").strip()
                 if not request_id:
                     return self._send(400, {"error": "request_id é obrigatório"})
-                if not sku and not data.get("product_id"):
-                    return self._send(400, {"error": "sku ou product_id é obrigatório"})
-                mapping = STORE.get(sku, data.get("product_id"))
+                if not sku and not data.get("product_id") and not artwork_id:
+                    return self._send(400, {"error": "sku, product_id ou artwork_id é obrigatório"})
+                mapping = STORE.get(sku, data.get("product_id"), artwork_id)
                 if not mapping:
                     return self._send(404, {"error": "SKU não mapeado"})
                 with PRINT_LOCK:

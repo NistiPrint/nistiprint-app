@@ -7,6 +7,8 @@ import { Printer, Upload, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import LocalAgentService from '@/services/LocalAgentService'
 import ProductService from '@/services/ProductService'
+import printArtworkService from '@/services/printArtworkService'
+import ProductArtworkBindings from './ProductArtworkBindings'
 
 const findProductMapping = (mappingSet, targetSku, targetProductId) => (
   mappingSet?.[targetSku]
@@ -23,6 +25,7 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
   const [copies, setCopies] = useState(1)
   const [selectedPrinter, setSelectedPrinter] = useState('')
   const [componentPrinters, setComponentPrinters] = useState({})
+  const [bindingData, setBindingData] = useState(null)
 
   const productCategory = categories.find(category => String(category.id) === String(product?.categoria_id))
   const categoryAllowsArtwork = Boolean(product?.permite_arte || productCategory?.permite_arte)
@@ -67,6 +70,17 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
   useEffect(() => {
     loadLocalData()
   }, [productId, sku, categoryAllowsArtwork])
+
+  useEffect(() => {
+    if (!productId) return undefined
+    let active = true
+    printArtworkService.get(productId).then((result) => {
+      if (active) setBindingData(result)
+    }).catch(() => {
+      if (active) setBindingData(null)
+    })
+    return () => { active = false }
+  }, [productId])
 
   const selectAndSave = async (targetSku, productIdForMapping, currentPrinter = '') => {
     const selected = await LocalAgentService.mapFile(targetSku)
@@ -126,6 +140,10 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
 
   if (!productId) {
     return <p className='text-sm text-muted-foreground'>Salve o produto antes de configurar sua arte local.</p>
+  }
+
+  if ((product?.material_type || product?.tipo_material) === 'produto_acabado' && bindingData?.componentes?.length) {
+    return <ProductArtworkBindings productId={productId} initialData={bindingData} />
   }
 
   return (

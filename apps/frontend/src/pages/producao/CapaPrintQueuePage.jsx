@@ -79,13 +79,16 @@ export default function CapaPrintQueuePage() {
       {loading && <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin" /></div>}
       {!loading && plans.length === 0 && <Card><CardContent className="py-12 text-center text-sm text-muted-foreground">Ainda não há planos de impressão de capas.</CardContent></Card>}
       {!loading && plans.map((plan) => {
-        const items = plan.itens || []
+        const items = (plan.itens || []).filter((item) => Number(item.quantidade_planejada || 0) > 0)
         const staticItems = items.filter((item) => item.tipo === 'estatica')
         const customItems = items.filter((item) => item.tipo === 'personalizada')
         const pending = items.filter((item) => item.tipo === 'pendente')
         const sends = plan.envios || []
-        const sent = (plan.envios || []).filter((entry) => entry.tipo === 'estatica' && (entry.status !== 'erro' || entry.agent_job_id)).reduce((total, entry) => total + Number(entry.quantidade || 0), 0)
-        const confirmed = (plan.grupos || []).reduce((total, entry) => total + Number(entry.quantidade_confirmada || 0), 0) + customItems.reduce((total, entry) => total + Number(entry.quantidade_confirmada || 0), 0)
+        const activeKeys = new Set(items.map((item) => item.chave_grupo))
+        const activeGroups = (plan.grupos || []).filter((entry) => activeKeys.has(entry.chave_grupo))
+        const sent = sends.filter((entry) => activeKeys.has(entry.chave_grupo) && entry.tipo === 'estatica' && (entry.status !== 'erro' || entry.agent_job_id)).reduce((total, entry) => total + Number(entry.quantidade || 0), 0)
+          + activeGroups.reduce((total, entry) => total + Number(entry.quantidade_legada || 0), 0)
+        const confirmed = activeGroups.reduce((total, entry) => total + Number(entry.quantidade_confirmada || 0), 0) + customItems.reduce((total, entry) => total + Number(entry.quantidade_confirmada || 0), 0)
         return (
           <Card key={plan.id}>
             <CardContent className="flex flex-wrap items-center gap-4 py-4">

@@ -13,6 +13,10 @@ class MappingStoreTests(unittest.TestCase):
             mapping = {"sku": "ABC", "file_path": "C:\\a.pdf", "printer_name": "Printer"}
             store.save("ABC", mapping)
             self.assertEqual(store.get("ABC"), mapping)
+            artwork = {"artwork_id": "art-1", "file_path": "C:\\pair.pdf", "printer_name": "Printer"}
+            store.save("arte:art-1", artwork)
+            self.assertEqual(store.get("", artwork_id="art-1"), artwork)
+            self.assertIsNone(store.get("", artwork_id="missing"))
             self.assertTrue(store.delete("ABC"))
             self.assertIsNone(store.get("ABC"))
 
