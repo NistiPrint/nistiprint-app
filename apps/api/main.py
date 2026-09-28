@@ -80,6 +80,7 @@ from routes.webhooks import webhooks_bp
 from routes.producao_contexto import producao_contexto_bp
 from routes.erp_links import erp_links_bp
 from routes.impressao import impressao_api_bp
+from routes.impressao_capas import impressao_capas_bp
 from routes.order_reprocess import order_reprocess_bp
 from routes.pedidos_sync import pedidos_sync_bp
 from routes.personalizados import personalizados_bp
@@ -227,6 +228,9 @@ def create_app():
     app.register_blueprint(producao_contexto_bp, url_prefix='/api/v2/producao-contexto')
     app.register_blueprint(erp_links_bp)
     app.register_blueprint(impressao_api_bp)
+    app.register_blueprint(impressao_capas_bp)
+    from routes.local_agent_releases import local_agent_releases_bp
+    app.register_blueprint(local_agent_releases_bp)
     app.register_blueprint(order_reprocess_bp)
     app.register_blueprint(pedidos_sync_bp, url_prefix='/api/v2/pedidos')
     app.register_blueprint(personalizados_bp, url_prefix='/api/v2/personalizados')
@@ -274,6 +278,3 @@ if __name__ == "__main__":
     # In production, debug should be False.
     debug_mode = os.environ.get('FLASK_ENV') == 'development'
     app.run(host='127.0.0.1', port=port, debug=debug_mode)
-
-
-

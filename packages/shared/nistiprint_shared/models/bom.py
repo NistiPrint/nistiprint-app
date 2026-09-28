@@ -25,16 +25,25 @@ class BOMItem:
     """
     Representa um item componente dentro de uma Ficha Técnica (BOM).
     """
-    def __init__(self, componente_id, quantidade, unit='un', is_inherited=False):
+    def __init__(self, componente_id, quantidade, unit='un', is_inherited=False,
+                 group=None, line_id=None, produto_pai_id=None):
         self.componente_id = componente_id
         self.quantidade = quantidade
         self.unit = unit
         self.is_inherited = is_inherited
+        self.group = group
+        self.line_id = line_id
+        self.produto_pai_id = produto_pai_id
+        self.origin = 'herdada' if is_inherited else 'propria'
 
     def to_dict(self):
         return {
             "componente_id": self.componente_id,
             "quantidade": self.quantidade,
             "unit": self.unit,
-            "is_inherited": self.is_inherited
+            "is_inherited": self.is_inherited,
+            "group": self.group,
+            "line_id": self.line_id,
+            "produto_pai_id": self.produto_pai_id,
+            "origin": self.origin,
         }

@@ -8,6 +8,12 @@ import { toast } from 'sonner'
 import LocalAgentService from '@/services/LocalAgentService'
 import ProductService from '@/services/ProductService'
 
+const findProductMapping = (mappingSet, targetSku, targetProductId) => (
+  mappingSet?.[targetSku]
+  || Object.values(mappingSet || {}).find(mapping => String(mapping.product_id || '') === String(targetProductId || ''))
+  || null
+)
+
 function LocalArtworkSection({ productId, product, categories = [] }) {
   const [loading, setLoading] = useState(false)
   const [printers, setPrinters] = useState([])
@@ -35,14 +41,21 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
       const printerSelections = Object.fromEntries(
         Object.entries(availableMappings || {}).map(([mappingSku, mapping]) => [mappingSku, mapping.printer_name || '']),
       )
-      setComponentPrinters(printerSelections)
-
       if (categoryAllowsArtwork && sku) {
-        setDirectMapping(availableMappings?.[sku] || null)
-        setSelectedPrinter(availableMappings?.[sku]?.printer_name || '')
+        const mapping = findProductMapping(availableMappings, sku, productId)
+        setDirectMapping(mapping)
+        setSelectedPrinter(mapping?.printer_name || '')
       } else {
         const response = await ProductService.getRecursiveArtworks(productId)
-        setComponents(response.artes || [])
+        const artworks = response.artes || []
+        setComponents(artworks)
+        setComponentPrinters({
+          ...printerSelections,
+          ...Object.fromEntries(artworks.map(component => [
+            component.sku,
+            findProductMapping(availableMappings, component.sku, component.product_id)?.printer_name || '',
+          ])),
+        })
       }
     } catch (error) {
       toast.error(`Não foi possível carregar as artes locais: ${error.message}`)
@@ -77,7 +90,7 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
     }
     setLoading(true)
     try {
-      await LocalAgentService.saveMapping({ ...directMapping, printer_name: selectedPrinter })
+      await LocalAgentService.saveMapping({ ...directMapping, sku, product_id: productId, printer_name: selectedPrinter })
       await loadLocalData()
       toast.success('Impressora atualizada.')
     } catch (error) {
@@ -87,8 +100,8 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
     }
   }
 
-  const print = async (targetSku) => {
-    const result = await LocalAgentService.printFile(targetSku, copies)
+  const print = async (targetSku, targetProductId) => {
+    const result = await LocalAgentService.printFile(targetSku, copies, targetProductId)
     if (result.status === 'file_opened') {
       toast.warning('A impressão direta falhou. O arquivo foi aberto para impressão manual.')
     } else {
@@ -103,7 +116,7 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
       return
     }
     try {
-      await LocalAgentService.saveMapping({ ...mapping, printer_name: printerName })
+      await LocalAgentService.saveMapping({ ...mapping, sku: component.sku, product_id: component.product_id, printer_name: printerName })
       await loadLocalData()
       toast.success('Impressora atualizada.')
     } catch (error) {
@@ -151,7 +164,7 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
               <Upload className='mr-2 h-4 w-4' /> {directMapping ? 'Substituir arquivo' : 'Associar arquivo'}
             </Button>
             <Input className='w-24' type='number' min='1' value={copies} onChange={event => setCopies(Math.max(1, Number(event.target.value) || 1))} />
-            <Button onClick={() => print(sku)} disabled={loading || !directMapping}>
+            <Button onClick={() => print(sku, productId)} disabled={loading || !directMapping}>
               <Printer className='mr-2 h-4 w-4' /> Imprimir
             </Button>
           </div>
@@ -161,7 +174,7 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
           <p className='text-sm text-muted-foreground'>Artes dos componentes elegíveis da ficha técnica:</p>
           {components.length === 0 && <p className='rounded-lg border p-4 text-sm text-muted-foreground'>Nenhum componente com categoria que permita arte foi encontrado.</p>}
           {components.map(component => {
-            const mapping = mappings[component.sku]
+            const mapping = findProductMapping(mappings, component.sku, component.product_id)
             return <div key={component.product_id} className='rounded-lg border p-4'>
               <div className='flex flex-wrap items-center justify-between gap-3'>
                 <div>
@@ -190,7 +203,7 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
                 <Button size='sm' variant='outline' onClick={() => selectAndSave(component.sku, component.product_id, componentPrinters[component.sku])} disabled={loading || !componentPrinters[component.sku]}>
                   <Upload className='mr-2 h-4 w-4' /> {mapping ? 'Substituir' : 'Associar arquivo'}
                 </Button>
-                <Button size='sm' onClick={() => print(component.sku)} disabled={!mapping}>
+                <Button size='sm' onClick={() => print(component.sku, component.product_id)} disabled={!mapping}>
                   <Printer className='mr-2 h-4 w-4' /> Imprimir
                 </Button>
               </div>

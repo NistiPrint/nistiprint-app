@@ -216,7 +216,7 @@ class ProductService:
             'estoque_maximo': int(product_data.get('stock_max') or 0),
             'tipo_material': product_data.get('material_type'),
             'unidade_medida_id': product_data.get('unit_of_measure_id') or product_data.get('unidade_medida_id'),
-            'status': product_data.get('status', 'ativo'),
+            'status': product_data.get('status') or 'rascunho',
             'parent_id': product_data.get('parent_id'),
             'sku_pai': product_data.get('sku_pai'),
             'setor_responsavel_id': product_data.get('setor_responsavel_id'),
@@ -302,6 +302,12 @@ class ProductService:
         if 'unit_of_measure_id' in product_data or 'unidade_medida_id' in product_data:
             update_data['unidade_medida_id'] = product_data.get('unit_of_measure_id') or product_data.get('unidade_medida_id')
         if 'status' in product_data: update_data['status'] = product_data['status']
+
+        # A constraint in the database forbids active products at the RASCUNHO
+        # lifecycle stage. Keep legacy edits of such records in draft until
+        # their lifecycle stage advances.
+        if str(current.get('estagio') or '').upper() == 'RASCUNHO':
+            update_data['status'] = 'rascunho'
 
         # New fields for product formats and inheritance
         if 'formato' in product_data: update_data['formato'] = product_data['formato']
@@ -618,21 +624,31 @@ class ProductService:
 
         return product
 
+    def evaluate_readiness(self, product_id: str) -> Dict[str, Any]:
+        """Return the canonical SQL readiness assessment without changing status."""
+        if not str(product_id).isdigit():
+            return {'ready': False, 'role': None, 'structure': None, 'status': None,
+                    'issues': [{'code': 'PRODUCT_NOT_FOUND', 'message': 'Produto não encontrado.', 'blocking': True}]}
+        response = supabase_db.rpc('produto_dominio_prontidao', {
+            'p_produto_id': int(product_id),
+        }).execute()
+        result = response.data
+        if isinstance(result, list):
+            result = result[0] if result else None
+        if isinstance(result, str):
+            result = json.loads(result)
+        if not isinstance(result, dict):
+            raise RuntimeError('A avaliação de prontidão retornou uma resposta inválida.')
+        return result
+
     # --- BOM Methods ---
 
     def _product_is_composite(self, product_id: str) -> bool:
-        """
-        Verifica se um produto é composto (possui BOM).
-        """
+        """Return whether the canonical effective BOM has any components."""
         if not str(product_id).isdigit():
             return False
-        
         from nistiprint_shared.services.bom_service import bom_service
-        try:
-            response = bom_service.bom_table.select("id", count="exact").eq('produto_pai_id', int(product_id)).execute()
-            return (response.count or 0) > 0
-        except Exception:
-            return False
+        return bool(bom_service.get_bom_for_produto(int(product_id)))
 
     def get_parent_products_using_component(self, component_id: str) -> List[str]:
         """
@@ -669,27 +685,35 @@ class ProductService:
 
         components = bom_service.get_bom_for_produto(int(product['id']))
         deposito_id = kwargs.get('deposito_id')
-        
-        # Enrich components with details
+        component_products = self.get_by_ids([str(comp.componente_id) for comp in components])
+
+        # Load component products in one query instead of one product/category/unit/BOM
+        # lookup per component. The BOM response only needs these normalized fields.
         result = []
         for comp in components:
-            # comp is BOMItem object
-            comp_product = self.get_by_id(str(comp.componente_id))
+            comp_product = component_products.get(str(comp.componente_id))
             
             if comp_product:
-                comp_product = self.enrich_product_data(comp_product)
+                attributes = comp_product.get('atributos') or {}
+                pricing = comp_product.get('precificacao') or {}
+                cost_price = comp_product.get('preco_custo')
+                if cost_price is None:
+                    cost_price = pricing.get('cost_price', 0)
                 item = {
-                    'component_id': comp_product['id'], 
-                    'id': comp_product['id'], # For backward compatibility
+                    'component_id': str(comp_product['id']),
+                    'id': str(comp_product['id']), # For backward compatibility
                     'sku': comp_product.get('sku'),
                     'name': comp_product.get('nome'),
                     'quantity': comp.quantidade,
                     'bom_quantity': comp.quantidade, # For backward compatibility
                     'unit': comp.unit,
-                    'cost': comp_product.get('cost_price', 0),
-                    'material_type': comp_product.get('material_type'),
+                    'cost': float(cost_price or 0),
+                    'material_type': comp_product.get('tipo_material') or attributes.get('material_type', 'produto_acabado'),
                     'categoria_id': comp_product.get('categoria_id'),
-                    'is_inherited': comp.is_inherited
+                    'is_inherited': comp.is_inherited,
+                    'origin': comp.origin,
+                    'group': comp.group,
+                    'line_id': comp.line_id,
                     }
                 # Add stock info if deposit is provided
                 if deposito_id:
@@ -748,7 +772,7 @@ class ProductService:
             self.table.update(update_data).eq('id', int(product_id)).execute()
             self.clear_cache()
 
-    def update_composite_product_cost_cascade(self, product_id: str, visited: set = None):
+    def update_composite_product_cost_cascade(self, product_id: str, visited: list = None):
         """
         Atualiza o custo de um produto composto e propaga em cascata para todos
         os produtos pais que o utilizam como componente.
@@ -758,14 +782,15 @@ class ProductService:
             visited: Set de IDs já visitados para evitar ciclos infinitos
         """
         if visited is None:
-            visited = set()
+            visited = []
         
         # Evita ciclo infinito
+        product_id = str(product_id)
         if product_id in visited:
-            logging.warning(f"Ciclo detectado ao propagar custo do produto {product_id}")
-            return
+            cycle_path = visited[visited.index(product_id):] + [product_id]
+            raise ValueError('BOM_CYCLE: ' + ' -> '.join(cycle_path))
         
-        visited.add(product_id)
+        visited.append(product_id)
         
         # Atualiza custo deste produto
         self.update_composite_product_cost(product_id)
@@ -779,6 +804,13 @@ class ProductService:
             logging.info(f"Propagando custo de {product_id} para produto pai {parent_id}")
             self.update_composite_product_cost_cascade(parent_id, visited.copy())
 
+    def propagate_composite_cost_to_parents(self, product_id: str):
+        """Recalculate all ancestors after this product's own cost is current."""
+        product_id = str(product_id)
+        for parent_id in self.get_parent_products_using_component(product_id):
+            logging.info('Propagando custo de %s para produto pai %s', product_id, parent_id)
+            self.update_composite_product_cost_cascade(parent_id, [product_id])
+
     def calcular_custo_bom(self, product_id: str) -> float:
         """Calculates the total cost of BOM components."""
         components = self.get_bom_components(product_id)
@@ -789,7 +821,7 @@ class ProductService:
             total_cost += qty * unit_cost
         return total_cost
 
-    def calcular_custo_bom_recursivo(self, product_id: str, visited: set = None) -> float:
+    def calcular_custo_bom_recursivo(self, product_id: str, visited: list = None) -> float:
         """
         Calcula o custo total da BOM de forma recursiva, considerando que componentes
         podem ser produtos compostos (ter sua própria BOM).
@@ -802,14 +834,15 @@ class ProductService:
             Custo total calculado
         """
         if visited is None:
-            visited = set()
+            visited = []
         
         # Evita ciclo infinito
+        product_id = str(product_id)
         if product_id in visited:
-            logging.warning(f"Ciclo detectado ao calcular custo do produto {product_id}")
-            return 0.0
+            cycle_path = visited[visited.index(product_id):] + [product_id]
+            raise ValueError('BOM_CYCLE: ' + ' -> '.join(cycle_path))
         
-        visited.add(product_id)
+        visited.append(product_id)
         
         # Verifica se produto tem BOM
         if not self._product_is_composite(product_id):
@@ -845,106 +878,19 @@ class ProductService:
 
     # --- Clone Methods ---
 
-    def clone_product(self, product_id: str, new_sku: str, new_name: str = None) -> Dict[str, Any]:
-        """
-        Clona um produto copiando todos os dados, incluindo BOM, artworks e links externos.
-        
-        Args:
-            product_id: ID do produto original a ser clonado
-            new_sku: SKU do novo produto clonado
-            new_name: Nome do novo produto (opcional, usa o original se não fornecido)
-        
-        Returns:
-            Dados do produto clonado
-        
-        Raises:
-            ValueError: Se o SKU já existir ou produto original não for encontrado
-        """
-        # Verifica se produto original existe
-        original_product = self.get_by_id(product_id)
-        if not original_product:
-            raise ValueError(f"Produto {product_id} não encontrado")
-        
-        # Verifica se novo SKU já existe
-        existing = self.get_by_sku(new_sku)
-        if existing:
-            raise ValueError(f"SKU '{new_sku}' já está em uso")
-        
-        # Prepara dados do novo produto
-        new_product_data = {
-            'sku': new_sku,
-            'nome': new_name or f"{original_product.get('nome')} (CÓPIA)",
-            'descricao': original_product.get('descricao'),
-            'categoria_id': original_product.get('categoria_id'),
-            'tags': original_product.get('tags', []),
-            'preco_custo': original_product.get('preco_custo') or 0,
-            'preco_venda': original_product.get('preco_venda') or 0,
-            'estoque_minimo': original_product.get('estoque_minimo') or 0,
-            'estoque_maximo': original_product.get('estoque_maximo') or 0,
-            'tipo_material': original_product.get('tipo_material'),
-            'unidade_medida_id': original_product.get('unidade_medida_id'),
-            'status': 'rascunho',  # Novo produto começa como rascunho
-            'parent_id': original_product.get('parent_id'),
-            'sku_pai': original_product.get('sku_pai'),
-            'setor_responsavel_id': original_product.get('setor_responsavel_id'),
-            'formato': original_product.get('formato') or 'simples',
-            'herdar_dados_pai': original_product.get('herdar_dados_pai', True),
-            'herdar_bom_pai': original_product.get('herdar_bom_pai', True),
-            'atributos': original_product.get('atributos') or {},
-            'precificacao': original_product.get('precificacao') or {},
-        }
-        
-        # Cria o novo produto
-        created_product = self.create(new_product_data)
-        if not created_product:
-            raise ValueError("Erro ao criar produto clonado")
-        
-        new_product_id = str(created_product['id'])
-        
-        # Copia a BOM (lista de componentes)
-        try:
-            from nistiprint_shared.services.bom_service import bom_service
-            original_components = self.get_bom_components(product_id)
-            
-            if original_components:
-                components_data = []
-                for comp in original_components:
-                    components_data.append({
-                        'component_id': int(comp['component_id']),
-                        'quantity': float(comp['quantity']),
-                        'unit': comp.get('unit', 'un')
-                    })
-                
-                if components_data:
-                    bom_service.sync_bom_for_product(int(new_product_id), components_data)
-                    logging.info(f"BOM copiada para produto clonado {new_product_id}")
-        except Exception as e:
-            logging.error(f"Erro ao copiar BOM para produto clonado {new_product_id}: {e}")
-        
-        # Copia links externos (Bling, etc.)
-        try:
-            original_links = self.get_external_product_links(product_id)
-            for link in original_links:
-                try:
-                    self.add_external_product_link(
-                        int(new_product_id),
-                        link['codigo_externo'],
-                        link['plataforma'],
-                        link.get('metadados')
-                    )
-                except ValueError:
-                    # Link já existe, ignora
-                    pass
-            logging.info(f"Links externos copiados para produto clonado {new_product_id}")
-        except Exception as e:
-            logging.error(f"Erro ao copiar links externos para produto clonado {new_product_id}: {e}")
-        
-        # Limpa cache
+    def clone_product(self, product_id: str, new_sku: str, new_name: str = None,
+                      child_skus: Dict[str, str] = None) -> Dict[str, Any]:
+        """Clona dados internos e fichas via uma única transação no banco."""
+        response = supabase_db.rpc('clonar_produto_interno', {
+            'p_produto_id': int(product_id),
+            'p_novo_sku': new_sku,
+            'p_novo_nome': new_name,
+            'p_child_skus': {str(key): value.strip() for key, value in (child_skus or {}).items()},
+        }).execute()
+        if not response.data:
+            raise RuntimeError('A clonagem não retornou o novo produto')
         self.clear_cache()
-        
-        logging.info(f"Produto {product_id} clonado com sucesso para {new_product_id} (SKU: {new_sku})")
-        
-        return self.get_by_id(new_product_id)
+        return response.data
 
     # --- External Product Links Methods ---
 
@@ -1212,10 +1158,12 @@ class ProductService:
     def create_variant(self, parent_id: str, variant_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new product variant."""
         sku = variant_data.get('sku')
-        if sku:
-            existing = self.get_by_sku(sku)
-            if existing:
-                 raise ValueError(f"SKU '{sku}' já existe no sistema.")
+        if not isinstance(sku, str) or not sku.strip():
+            raise ValueError('Informe o SKU da variação.')
+        sku = sku.strip()
+        existing = self.get_by_sku(sku)
+        if existing:
+            raise ValueError(f"SKU '{sku}' já existe no sistema.")
 
         # Get parent to inherit properties
         parent = self.get_by_id(parent_id)
@@ -1245,6 +1193,7 @@ class ProductService:
 
             # New fields for product formats and inheritance
             'formato': 'variacao',  # Variants always have this formato
+            'status': variant_data.get('status') or 'rascunho',
             'herdar_dados_pai': variant_data.get('herdar_dados_pai', True),
             'herdar_bom_pai': variant_data.get('herdar_bom_pai', True),
 
@@ -1283,14 +1232,9 @@ class ProductService:
             result = dict(response.data[0])
             result['id'] = result.get('id')
             
-            # --- NORMALIZAÇÃO DE ATRIBUTOS (TASK 4.1) ---
-            if variation_values:
-                from nistiprint_shared.services.attribute_service import attribute_service
-                for attr_name, attr_value in variation_values.items():
-                    attr_id = attribute_service.get_or_create_attribute(attr_name)
-                    val_id = attribute_service.get_or_create_value(attr_id, str(attr_value))
-                    attribute_service.link_product_to_attribute_value(result['id'], val_id)
-
+            # Os atributos da combinação já são persistidos em
+            # produtos.atributos.variation_values. Não duplicar em tabelas
+            # relacionais legadas que não existem em todos os ambientes.
             # Clear cache since we've added a new product
             self.clear_cache()
             return result
@@ -1308,6 +1252,7 @@ class ProductService:
         if 'nome' in variant_data: update_data['nome'] = variant_data['nome']
         if 'description' in variant_data: update_data['descricao'] = variant_data['description']
         if 'descricao' in variant_data: update_data['descricao'] = variant_data['descricao']
+        if 'status' in variant_data: update_data['status'] = variant_data['status']
 
         # Support both names for category_id
         cat_id = variant_data.get('category_id') or variant_data.get('categoria_id')
@@ -1399,6 +1344,9 @@ class ProductService:
         # 4. Inactivate orphans
         for orphan_id in orphans_ids:
             # We use update instead of delete to preserve history (Soft Delete)
+            orphan = next(v for v in existing_variants if str(v['id']) == orphan_id)
+            if orphan.get('status') == 'rascunho' and not (orphan.get('atributos') or {}).get('variation_values'):
+                continue
             self.update(orphan_id, {'status': 'inativo'})
 
         # --- Create / Update Active Variations ---
@@ -1411,16 +1359,14 @@ class ProductService:
                 attrs_str = "; ".join([f"{k}:{v}" for k, v in variation_values.items()])
                 variation['nome'] = f"{parent_product.get('nome')} - {attrs_str}"
 
-            # Generate a unique SKU for the variation if not provided
-            if not variation.get('sku'):
-                variation_values_str = "-".join([f"{v}" for v in variation_values.values()])
-                variation['sku'] = f"{parent_product['sku']}-{variation_values_str}"
+            if not isinstance(variation.get('sku'), str) or not variation['sku'].strip():
+                raise ValueError('Informe o SKU para cada variação antes de salvar a grade.')
 
             # Set the parent ID for the variation
             variation['parent_id'] = parent_id
             
-            # Ensure status is active for sent variations
-            variation['status'] = 'ativo'
+            # New combinations remain drafts; existing status is preserved.
+            variation['status'] = variation.get('status') or 'rascunho'
 
             if variation.get('id'):
                 # Update existing variation
@@ -1660,4 +1606,3 @@ class ProductService:
 
 
 product_service = ProductService()
-

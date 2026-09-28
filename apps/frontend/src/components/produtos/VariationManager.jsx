@@ -26,6 +26,8 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
   const [selectedAttributeIndex, setSelectedAttributeIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [assigningVariantId, setAssigningVariantId] = useState(null);
+  const [assignedValues, setAssignedValues] = useState({});
 
   // Initialize from product data if available
   useEffect(() => {
@@ -62,7 +64,13 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
       // Re-generate table but preserve local changes if needed, 
       // or essentially map existing variants + potential new combinations
       if (!config || config.length === 0) {
-        setVariationsTable([]);
+        setVariationsTable(variants
+          .filter(variant => variant.status === 'rascunho' && !Object.keys(variant.atributos?.variation_values || {}).length)
+          .map(variant => ({
+            id: variant.id, isPersisted: true, isOrphan: true, needsAttributes: true,
+            attributes: {}, sku: variant.sku, price: variant.preco_venda || 0,
+            initialStock: variant.estoque_minimo || 0, variantData: variant,
+          })));
         return;
       }
 
@@ -105,8 +113,8 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
           isPersisted: !!existingVariant,
           isOrphan: false,
           attributes: comboObj,
-          // If persisted, use its SKU. If draft, generate a suggestion.
-          sku: existingVariant?.sku || `${product?.sku || 'PROD'}-${Object.values(comboObj).join('-')}`,
+          // SKU is a user supplied identifier; new combinations start empty.
+          sku: existingVariant?.sku || '',
           initialStock: existingVariant?.estoque_inicial || (existingVariant ? (existingVariant.stock_min || 0) : 0),
           price: existingVariant?.price || existingVariant?.preco_venda || 0,
           variantData: existingVariant || null
@@ -117,10 +125,11 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
       const orphanVariants = variants.filter(v => !matchedVariantIds.has(v.id));
       
       const orphanData = orphanVariants.map(v => ({
-          id: v.id,
-          isPersisted: true,
-          isOrphan: true,
-          attributes: v.atributos?.variation_values || {},
+        id: v.id,
+        isPersisted: true,
+        isOrphan: true,
+        needsAttributes: v.status === 'rascunho' && Object.keys(v.atributos?.variation_values || {}).length === 0,
+        attributes: v.atributos?.variation_values || {},
           sku: v.sku,
           initialStock: v.stock_min || 0,
           price: v.preco_venda || 0,
@@ -187,6 +196,25 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
     setVariationsTable(updatedTable);
   };
 
+  const assignAttributes = () => {
+    if (!variationsConfig.length || variationsConfig.some(config => !assignedValues[config.name])) {
+      toast.error('Selecione um valor para cada atributo.');
+      return;
+    }
+    const combination = Object.fromEntries(variationsConfig.map(config => [config.name, assignedValues[config.name]]));
+    const sameCombination = item => variationsConfig.every(config => item.attributes[config.name] === combination[config.name]);
+    if (variationsTable.some(item => item.id !== assigningVariantId && item.isPersisted && sameCombination(item))) {
+      toast.error('Essa combinação já pertence a outra variação.');
+      return;
+    }
+    setVariationsTable(current => current
+      .filter(item => item.id === assigningVariantId || item.isPersisted || !sameCombination(item))
+      .map(item => item.id === assigningVariantId
+        ? { ...item, attributes: combination, isOrphan: false, needsAttributes: false }
+        : item));
+    setAssigningVariantId(null);
+  };
+
   const startInlineEditing = (index) => {
     setEditingInlineIndex(index);
   };
@@ -235,7 +263,7 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
       // Usually we send everything and the backend figures it out,
       // creating new ones (drafts) and updating existing ones.
       
-      const variationsData = variationsTable.map(item => ({
+      const variationsData = variationsTable.filter(item => !item.needsAttributes).map(item => ({
         ...item.variantData, // Include existing data if available
         id: item.isPersisted ? item.id : undefined, // Send ID only if persisted
         sku: item.sku,
@@ -390,18 +418,22 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
                 <TableBody>
                   {variationsTable.map((variation, idx) => (
                     <TableRow key={idx} className={
-                        variation.isOrphan 
+                        variation.needsAttributes
+                        ? "bg-yellow-50/50"
+                        : variation.isOrphan
                         ? "bg-red-50/50 opacity-75" 
                         : (!variation.isPersisted ? "bg-yellow-50/50" : "")
                     }>
                       <TableCell>
-                          {variation.isOrphan ? (
+                          {variation.needsAttributes ? (
+                              <Badge variant="outline">Atributos pendentes</Badge>
+                          ) : variation.isOrphan ? (
                               <Badge variant="destructive" className="bg-red-100 text-red-700 border-red-200">
                                   <Trash2 className="w-3 h-3 mr-1" /> Será Inativado
                               </Badge>
                           ) : variation.isPersisted ? (
                               <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
-                                  <CheckCircle className="w-3 h-3 mr-1" /> Salvo
+                                  <CheckCircle className="w-3 h-3 mr-1" /> {variation.variantData?.status === 'rascunho' ? 'Rascunho' : 'Salvo'}
                               </Badge>
                           ) : (
                               <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200">
@@ -411,7 +443,7 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
                       </TableCell>
                       
                       {Object.entries(variation.attributes).map(([attrName, attrValue]) => (
-                        <TableCell key={attrName} className={variation.isOrphan ? "line-through text-muted-foreground" : ""}>
+                        <TableCell key={attrName} className={variation.isOrphan && !variation.needsAttributes ? "line-through text-muted-foreground" : ""}>
                             {attrValue}
                         </TableCell>
                       ))}
@@ -426,7 +458,7 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
                             className="h-8 w-[180px]"
                           />
                         ) : (
-                          <span className={`font-mono text-sm ${variation.isOrphan ? "line-through text-muted-foreground" : ""}`}>
+                          <span className={`font-mono text-sm ${variation.isOrphan && !variation.needsAttributes ? "line-through text-muted-foreground" : ""}`}>
                               {variation.sku}
                           </span>
                         )}
@@ -443,14 +475,21 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
                             className="h-8 w-[100px]"
                           />
                         ) : (
-                          <span className={variation.isOrphan ? "line-through text-muted-foreground" : ""}>
+                          <span className={variation.isOrphan && !variation.needsAttributes ? "line-through text-muted-foreground" : ""}>
                               {`R$ ${parseFloat(variation.price).toFixed(2)}`}
                           </span>
                         )}
                       </TableCell>
 
                       <TableCell className="text-right">
-                        {!variation.isOrphan && (
+                        {variation.needsAttributes ? (
+                            <Button size="sm" variant="secondary" disabled={!variationsConfig.length} onClick={() => {
+                              setAssigningVariantId(variation.id);
+                              setAssignedValues({});
+                            }}>
+                              Definir atributos
+                            </Button>
+                        ) : !variation.isOrphan && (
                             variation.isPersisted ? (
                             // Botão para abrir Modal de Edição Completa
                             <Button
@@ -488,6 +527,33 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
             )}
         </div>
       </CardContent>
+
+      <Dialog open={assigningVariantId !== null} onOpenChange={open => !open && setAssigningVariantId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Definir atributos da variação</DialogTitle>
+            <DialogDescription>Escolha uma combinação livre para ativar o rascunho ao sincronizar a grade.</DialogDescription>
+          </DialogHeader>
+          {variationsConfig.map(config => (
+            <div key={config.name} className="space-y-2">
+              <Label htmlFor={`clone-attribute-${config.name}`}>{config.name}</Label>
+              <select
+                id={`clone-attribute-${config.name}`}
+                className="flex h-10 w-full rounded-md border bg-background px-3"
+                value={assignedValues[config.name] || ''}
+                onChange={event => setAssignedValues(current => ({ ...current, [config.name]: event.target.value }))}
+              >
+                <option value="">Selecione...</option>
+                {config.options.map(option => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </div>
+          ))}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAssigningVariantId(null)}>Cancelar</Button>
+            <Button onClick={assignAttributes}>Usar combinação</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Attribute Modal */}
       <Dialog open={showAddAttributeModal} onOpenChange={setShowAddAttributeModal}>

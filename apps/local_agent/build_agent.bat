@@ -25,7 +25,7 @@ if not exist "icon.ico" (
 echo [NistiPrint] Gerando dist\NistiPrintAgent.exe...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name NistiPrintAgent --icon icon.ico --add-data "icon.ico;." --hidden-import tray --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image agent.py
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name NistiPrintAgent --icon icon.ico --add-data "icon.ico;." --add-data "install_update.ps1;." --hidden-import tray --hidden-import updater --hidden-import version --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --hidden-import win32print --hidden-import win32gui --collect-all pypdfium2 agent.py
 if errorlevel 1 goto :error
 
 echo.

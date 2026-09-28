@@ -11,6 +11,16 @@ const LocalAgentService = {
     return response.data;
   },
 
+  checkUpdates: async () => {
+    const response = await axios.get(`${LOCAL_AGENT_BASE_URL}/updates/check`, { timeout: 15000 });
+    return response.data;
+  },
+
+  installUpdate: async () => {
+    const response = await axios.post(`${LOCAL_AGENT_BASE_URL}/updates/install`, {}, { timeout: 120000 });
+    return response.data;
+  },
+
   getPrinters: async () => {
     const response = await axios.get(`${LOCAL_AGENT_BASE_URL}/printers`);
     return response.data;
@@ -37,16 +47,36 @@ const LocalAgentService = {
   /**
    * Get the mapped file path for a product ID
    */
-  getMappedFile: async (sku) => {
-    const response = await axios.get(`${LOCAL_AGENT_BASE_URL}/mappings/${encodeURIComponent(sku)}`);
+  getMappedFile: async (sku, productId) => {
+    const query = productId ? `?product_id=${encodeURIComponent(productId)}` : '';
+    const response = await axios.get(`${LOCAL_AGENT_BASE_URL}/mappings/${encodeURIComponent(sku)}${query}`);
     return response.data;
   },
 
   /**
    * Print the mapped file for a product ID
    */
-  printFile: async (sku, copies = 1) => {
-    const response = await axios.post(`${LOCAL_AGENT_BASE_URL}/print`, { sku, copies });
+  printFile: async (sku, copies = 1, productId) => {
+    const response = await axios.post(`${LOCAL_AGENT_BASE_URL}/print`, { sku, product_id: productId, copies });
+    return response.data;
+  },
+
+  printWithDialog: async (sku, copies, requestId, productId) => {
+    const response = await axios.post(`${LOCAL_AGENT_BASE_URL}/print-dialog`, {
+      sku: sku || '', product_id: productId, copies, request_id: requestId,
+    });
+    return response.data;
+  },
+
+  openMappedPdf: async (sku, requestId, productId) => {
+    const response = await axios.post(`${LOCAL_AGENT_BASE_URL}/open`, {
+      sku: sku || '', product_id: productId, request_id: requestId,
+    });
+    return response.data;
+  },
+
+  getPrintJob: async (jobId) => {
+    const response = await axios.get(`${LOCAL_AGENT_BASE_URL}/jobs/${encodeURIComponent(jobId)}`);
     return response.data;
   }
 };

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inserirLinha, linhasForamEditadas, linhasParaTsv, moverLinha, normalizarLinha, totalizarLinhas } from './consolidacaoEditavel.js';
+import { inserirLinha, linhasForamEditadas, linhasParaTsv, moverLinha, normalizarLinha, prepararLinhasParaEnvio, totalizarLinhas } from './consolidacaoEditavel.js';
 
 test('totaliza quantidades editadas', () => assert.equal(totalizarLinhas([{ quantidade: 2 }, { quantidade: '3' }, { quantidade: '' }]), 5));
 test('serializa cinco colunas TSV com quebra final', () => {
@@ -19,4 +19,8 @@ test('normalizacao visual nao conta como edicao', () => {
 test('detecta alteracao real na grade', () => {
   const baseline = [{ linha_chave: 'abc', descricao: 'Caneca', sku_externo: 'SKU1', variacao: '', miolo_nome: 'Branca', quantidade: 2 }];
   assert.equal(linhasForamEditadas([{ ...baseline[0], quantidade: 3 }], baseline), true);
+});
+test('preserva produto_id para resolver a ficha tecnica no plano de impressao', () => {
+  const linhas = prepararLinhasParaEnvio([{ descricao: 'Agenda', sku_externo: 'SKU-AGENDA', produto_id: 449, quantidade: 2 }]);
+  assert.equal(linhas[0].produto_id, 449);
 });
