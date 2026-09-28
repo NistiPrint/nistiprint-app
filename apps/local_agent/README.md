@@ -18,8 +18,10 @@ Execute `run_agent.bat`. As mensagens aparecem no console e também ficam em:
 Com o agente em execução, abra `http://127.0.0.1:8181/dashboard` no próprio
 computador ou use **Ver painel do agente** no ícone da bandeja. O painel mostra
 status, versão, estado da atualização, mapeamentos e as 200 linhas mais recentes
-do log. Os dados são atualizados a cada 10 segundos; o painel não oferece ações.
-Se `NISTIPRINT_AGENT_PORT` estiver configurada, use essa porta no endereço.
+do log. Os dados são atualizados a cada 10 segundos. O painel permite remover
+um mapeamento por vez ou limpar todos após confirmação digitando `APAGAR`; os
+arquivos associados não são apagados. Se `NISTIPRINT_AGENT_PORT` estiver
+configurada, use essa porta no endereço.
 
 ## Executar silenciosamente
 

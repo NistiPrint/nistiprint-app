@@ -1,3 +1,3 @@
 """Versão publicada do executável do agente."""
 
-VERSION = "1.1.5"
+VERSION = "1.1.6"

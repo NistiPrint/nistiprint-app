@@ -301,24 +301,35 @@ class MappingStore:
         with self.lock:
             data = self._read()
             data[sku] = mapping
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            fd, temporary = tempfile.mkstemp(prefix="mappings-", suffix=".json", dir=self.path.parent)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as output:
-                    json.dump(data, output, ensure_ascii=False, indent=2)
-                os.replace(temporary, self.path)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
+            self._write(data)
             return mapping
+
+    def _write(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix="mappings-", suffix=".json", dir=self.path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as output:
+                json.dump(data, output, ensure_ascii=False, indent=2)
+            os.replace(temporary, self.path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def delete(self, sku: str) -> bool:
         with self.lock:
             data = self._read()
             existed = data.pop(sku, None) is not None
             if existed:
-                self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                self._write(data)
             return existed
+
+    def clear(self) -> int:
+        with self.lock:
+            data = self._read()
+            removed = len(data)
+            if removed:
+                self._write({})
+            return removed
 
 
 def list_printers() -> list[str]:
@@ -567,13 +578,21 @@ class AgentHandler(BaseHTTPRequestHandler):
 
     def _origin_allowed(self):
         origin = self.headers.get("Origin")
-        return not origin or origin.rstrip("/") in ALLOWED_ORIGINS
+        return not origin or origin.rstrip("/") in ALLOWED_ORIGINS or self._local_dashboard_request()
 
     def _local_dashboard_host(self) -> bool:
-        return self.headers.get("Host", "").lower() in {
+        host = self.headers.get("Host", "").lower()
+        return host in {
             f"127.0.0.1:{self.server.server_port}",
             f"localhost:{self.server.server_port}",
-        } and not self.headers.get("Origin")
+        } and (not self.headers.get("Origin") or self._local_dashboard_request())
+
+    def _local_dashboard_request(self) -> bool:
+        host = self.headers.get("Host", "").lower()
+        if host not in {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}:
+            return False
+        origin = self.headers.get("Origin")
+        return not origin or origin.rstrip("/").lower() == f"http://{host}"
 
     def _send_dashboard(self):
         runtime_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
@@ -750,6 +769,11 @@ class AgentHandler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             return self._send(403, {"error": "Origem do navegador não autorizada"})
         path = urlparse(self.path).path
+        if path == "/mappings":
+            if not self._local_dashboard_request():
+                return self._send(403, {"error": "Limpeza permitida somente pelo painel local"})
+            removed = STORE.clear()
+            return self._send(200, {"success": True, "removed_count": removed})
         if path.startswith("/mappings/"):
             sku = unquote(path.removeprefix("/mappings/"))
             return self._send(200, {"success": STORE.delete(sku)})

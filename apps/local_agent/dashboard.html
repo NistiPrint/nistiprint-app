@@ -30,6 +30,15 @@
     .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 21px 22px 18px; }
     h2 { font-size: 18px; letter-spacing: -.02em; margin: 0; }
     .section-head p { margin: 0; font-size: 13px; color: #687b89; }
+    .section-actions { display: flex; align-items: center; gap: 12px; }
+    button { font: inherit; cursor: pointer; }
+    .button { border: 1px solid #d4dfe5; border-radius: 8px; padding: 8px 12px; color: #314b5c; background: white; font-size: 12px; font-weight: 650; }
+    .button:hover:not(:disabled) { background: #f3f6f8; }
+    .button:disabled { cursor: not-allowed; opacity: .48; }
+    .button-danger { color: #a53131; border-color: #ebcaca; }
+    .button-small { padding: 6px 9px; white-space: nowrap; }
+    .action-message { min-height: 18px; padding: 0 22px 12px; color: #a53131; font-size: 13px; }
+    .action-message:empty { display: none; }
     .table-wrap { overflow-x: auto; }
     table { border-collapse: collapse; width: 100%; text-align: left; font-size: 13px; }
     th { color: #687b89; background: #f7f9fa; font-size: 11px; letter-spacing: .07em; text-transform: uppercase; font-weight: 700; }
@@ -38,8 +47,15 @@
     td.path { font-family: Consolas, "Courier New", monospace; font-size: 12px; color: #435b6c; overflow-wrap: anywhere; min-width: 240px; }
     td.key { font-weight: 650; min-width: 145px; }
     .empty { padding: 24px 22px; color: #627485; border-top: 1px solid #edf1f3; }
+    dialog { width: min(430px, calc(100% - 32px)); border: 1px solid #dce5ea; border-radius: 14px; padding: 24px; color: #183047; box-shadow: 0 18px 60px rgba(18, 46, 62, .2); }
+    dialog::backdrop { background: rgba(13, 31, 43, .42); }
+    dialog h2 { margin-bottom: 10px; }
+    dialog p { color: #627485; font-size: 14px; line-height: 1.5; }
+    dialog label { display: block; margin-top: 18px; font-size: 13px; font-weight: 650; }
+    dialog input { width: 100%; margin-top: 8px; padding: 10px 12px; border: 1px solid #cbd7de; border-radius: 8px; font: inherit; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
     .log { margin: 0; padding: 20px 22px; border-top: 1px solid #edf1f3; color: #dce9ee; background: #142631; min-height: 150px; max-height: 400px; overflow: auto; font: 12px/1.6 Consolas, "Courier New", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-    @media (max-width: 750px) { .shell { padding: 24px 15px 40px; } .top { display: block; } .sync { text-align: left; } .grid { grid-template-columns: 1fr; } .card { min-height: 0; } th, td { padding-left: 14px; padding-right: 14px; } }
+    @media (max-width: 750px) { .shell { padding: 24px 15px 40px; } .top { display: block; } .sync { text-align: left; } .grid { grid-template-columns: 1fr; } .card { min-height: 0; } th, td { padding-left: 14px; padding-right: 14px; } .section-head { align-items: flex-start; flex-direction: column; } .section-actions { width: 100%; justify-content: space-between; } }
   </style>
 </head>
 <body>
@@ -72,15 +88,36 @@
     </section>
 
     <section class="section" aria-labelledby="mappings-title">
-      <div class="section-head"><h2 id="mappings-title">Mapeamentos</h2><p>Somente consulta</p></div>
+      <div class="section-head">
+        <h2 id="mappings-title">Mapeamentos</h2>
+        <div class="section-actions">
+          <p>Remover uma associação apaga apenas o vínculo com o arquivo.</p>
+          <button class="button button-danger" id="remove-all" type="button" disabled>Remover todos</button>
+        </div>
+      </div>
+      <p class="action-message" id="action-message" role="status" aria-live="polite"></p>
       <div class="table-wrap">
         <table id="mappings-table" hidden>
-          <thead><tr><th>Produto ou arte</th><th>Arquivo</th><th>Impressora</th><th>Atualizado em</th></tr></thead>
+          <thead><tr><th>Produto ou arte</th><th>Arquivo</th><th>Impressora</th><th>Atualizado em</th><th>Ação</th></tr></thead>
           <tbody id="mappings-body"></tbody>
         </table>
         <div class="empty" id="mappings-empty">Carregando mapeamentos…</div>
       </div>
     </section>
+
+    <dialog id="remove-all-dialog" aria-labelledby="remove-all-title">
+      <div>
+        <h2 id="remove-all-title">Remover todos os mapeamentos?</h2>
+        <p id="remove-all-description"></p>
+        <label for="remove-all-confirmation">Digite APAGAR para confirmar</label>
+        <input id="remove-all-confirmation" autocomplete="off" spellcheck="false" aria-describedby="remove-all-description">
+        <p class="action-message" id="dialog-message" role="status" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button class="button" id="cancel-remove-all" type="button">Cancelar</button>
+          <button class="button button-danger" id="confirm-remove-all" type="button" disabled>Remover todos</button>
+        </div>
+      </div>
+    </dialog>
 
     <section class="section" aria-labelledby="logs-title">
       <div class="section-head"><h2 id="logs-title">Logs recentes</h2><p>Últimas 200 linhas, atualização automática</p></div>
@@ -99,6 +136,8 @@
       available: 'Nova versão disponível', downloading: 'Baixando atualização',
       installing: 'Instalando atualização', error: 'Falha ao verificar atualização'
     };
+    let mutationInProgress = false;
+    let refreshSequence = 0;
     async function readJson(path) {
       const response = await fetch(path, { cache: 'no-store' });
       if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -107,6 +146,7 @@
     function renderMappings(mappings) {
       const rows = Object.entries(mappings || {}).sort(([a], [b]) => a.localeCompare(b, 'pt-BR'));
       $('mapping-count').textContent = String(rows.length);
+      $('remove-all').disabled = rows.length === 0 || mutationInProgress;
       $('mappings-body').replaceChildren();
       $('mappings-table').hidden = rows.length === 0;
       $('mappings-empty').hidden = rows.length !== 0;
@@ -121,13 +161,26 @@
           if (index === 1) cell.className = 'path';
           row.appendChild(cell);
         }
+        const actionCell = document.createElement('td');
+        const removeButton = document.createElement('button');
+        removeButton.className = 'button button-danger button-small';
+        removeButton.type = 'button';
+        removeButton.textContent = 'Remover';
+        removeButton.disabled = mutationInProgress;
+        removeButton.setAttribute('aria-label', 'Remover mapeamento ' + key);
+        removeButton.addEventListener('click', () => removeOne(key));
+        actionCell.appendChild(removeButton);
+        row.appendChild(actionCell);
         $('mappings-body').appendChild(row);
       }
     }
     async function refresh() {
+      if (mutationInProgress) return;
+      const sequence = ++refreshSequence;
       const [health, mappings, logs] = await Promise.allSettled([
         readJson('/health'), readJson('/mappings'), readJson('/logs')
       ]);
+      if (mutationInProgress || sequence !== refreshSequence) return;
       if (health.status === 'fulfilled') {
         const data = health.value;
         $('connection').textContent = data.status === 'online' ? 'Online' : (data.status || 'Indisponível');
@@ -155,6 +208,75 @@
         : 'Não foi possível carregar os logs.';
       $('sync').textContent = 'Atualizado em ' + new Date().toLocaleTimeString('pt-BR') + ' · a cada 10 s';
     }
+
+    async function deleteRequest(path, body) {
+      const response = await fetch(path, {
+        method: 'DELETE', cache: 'no-store',
+        headers: body ? { 'Content-Type': 'application/json' } : {},
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const result = await response.json();
+      if (!response.ok || result.success === false) throw new Error(result.error || 'Não foi possível remover.');
+      return result;
+    }
+    function setMutationState(active) {
+      mutationInProgress = active;
+      refreshSequence += 1;
+      $('remove-all').disabled = active || Number($('mapping-count').textContent) === 0;
+      $('mappings-body').querySelectorAll('button').forEach((button) => { button.disabled = active; });
+      $('confirm-remove-all').disabled = active || $('remove-all-confirmation').value !== 'APAGAR';
+      $('cancel-remove-all').disabled = active;
+    }
+    async function removeOne(key) {
+      if (!window.confirm('Remover o mapeamento "' + key + '"? O arquivo continuará no computador.')) return;
+      $('action-message').textContent = '';
+      setMutationState(true);
+      try {
+        await deleteRequest('/mappings/' + encodeURIComponent(key));
+        $('action-message').textContent = 'Mapeamento removido.';
+        setMutationState(false);
+        await refresh();
+      } catch (error) {
+        $('action-message').textContent = 'Falha ao remover: ' + error.message;
+        setMutationState(false);
+      }
+    }
+    function openRemoveAllDialog() {
+      const count = Number($('mapping-count').textContent);
+      $('remove-all-description').textContent = 'Esta ação removerá ' + count + (count === 1 ? ' mapeamento' : ' mapeamentos') + '. Os arquivos continuarão no computador.';
+      $('remove-all-confirmation').value = '';
+      $('dialog-message').textContent = '';
+      $('confirm-remove-all').disabled = true;
+      $('remove-all-dialog').showModal();
+      $('remove-all-confirmation').focus();
+    }
+    $('remove-all').addEventListener('click', openRemoveAllDialog);
+    $('cancel-remove-all').addEventListener('click', () => $('remove-all-dialog').close());
+    $('remove-all-confirmation').addEventListener('input', () => {
+      $('confirm-remove-all').disabled = mutationInProgress || $('remove-all-confirmation').value !== 'APAGAR';
+    });
+    async function removeAll() {
+      if (mutationInProgress || $('remove-all-confirmation').value !== 'APAGAR') return;
+      $('dialog-message').textContent = '';
+      setMutationState(true);
+      try {
+        const result = await deleteRequest('/mappings');
+        $('remove-all-dialog').close();
+        $('action-message').textContent = result.removed_count + (result.removed_count === 1 ? ' mapeamento removido.' : ' mapeamentos removidos.');
+        setMutationState(false);
+        await refresh();
+      } catch (error) {
+        $('dialog-message').textContent = 'Falha ao remover: ' + error.message;
+        setMutationState(false);
+      }
+    }
+    $('confirm-remove-all').addEventListener('click', removeAll);
+    $('remove-all-confirmation').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && $('remove-all-confirmation').value === 'APAGAR') {
+        event.preventDefault();
+        removeAll();
+      }
+    });
     refresh();
     setInterval(refresh, 10000);
   </script>
