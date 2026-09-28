@@ -38,6 +38,7 @@ def _key(sku, variation):
 def _bom_candidates(product_id):
     """Return reachable components and their quantities per finished product."""
     found = {}
+    category_allows_artwork = {}
 
     def walk(parent_id, multiplier, path):
         if len(path) >= 20:
@@ -50,12 +51,19 @@ def _bom_candidates(product_id):
             amount = multiplier * Decimal(str(component.quantidade or 1))
             label = str(product.get("nome") or product.get("name") or product.get("sku") or "")
             lowered = label.casefold()
-            role = "contra" if "contra" in lowered and "capa" in lowered else (
-                "capa" if "capa" in lowered else "miolo" if "miolo" in lowered else None
-            )
+            category_id = product.get("categoria_id")
+            if category_id not in category_allows_artwork:
+                from nistiprint_shared.services.category_service import category_service
+                category = category_service.get_by_id(str(category_id)) if category_id else None
+                category_allows_artwork[category_id] = bool(category and category.get("permite_arte"))
+            allows_artwork = category_allows_artwork[category_id]
+            role = ("contra" if "contra" in lowered else
+                    "capa" if "capa" in lowered else
+                    "miolo" if "miolo" in lowered else None) if allows_artwork else None
             row = found.setdefault(component_id, {
                 "componente_id": component_id, "nome": label, "sku": product.get("sku"),
-                "papel_sugerido": role, "quantidade": Decimal(0),
+                "papel_sugerido": role, "permite_arte": allows_artwork,
+                "quantidade": Decimal(0),
             })
             row["quantidade"] += amount
             walk(component_id, amount, path | {component_id})
@@ -137,6 +145,8 @@ def _save_artwork(product_id, art_id=None):
         ids = [int(link["componente_id"]) for link in links]
         if len(ids) != len(set(ids)) or any(component_id not in reachable for component_id in ids):
             raise ValueError("Selecione componentes distintos da ficha de materiais")
+        if any(not reachable[component_id]["permite_arte"] for component_id in ids):
+            raise ValueError("A arte só pode ser vinculada a componentes da categoria que permite arte")
         if any(link.get("papel") not in ("capa", "contra", "miolo") for link in links):
             raise ValueError("Papel de componente inválido")
         occupied = (supabase_db.table("impressao_arte_componentes").select("arte_id,componente_id")

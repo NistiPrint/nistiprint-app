@@ -16,9 +16,8 @@ export default function ProductArtworkBindings({ productId, initialData }) {
   const [selection, setSelection] = useState({})
   const [printerByArt, setPrinterByArt] = useState({})
   const [busy, setBusy] = useState(false)
-  const [showAll, setShowAll] = useState(false)
   const allComponents = data?.componentes || []
-  const candidates = allComponents.filter((item) => showAll || item.papel_sugerido ||
+  const candidates = allComponents.filter((item) => item.permite_arte ||
     (data?.artes || []).some((art) => art.componentes?.some((link) => Number(link.componente_id) === Number(item.componente_id))))
 
   const refresh = useCallback(async () => {
@@ -45,6 +44,10 @@ export default function ProductArtworkBindings({ productId, initialData }) {
       .map(([id, papel]) => ({ componente_id: Number(id), papel }))
     if (!name.trim() || !components.length) {
       toast.warning('Informe o nome da arte e marque ao menos um componente.')
+      return
+    }
+    if (components.some(({ componente_id }) => !allComponents.find((item) => Number(item.componente_id) === componente_id)?.permite_arte)) {
+      toast.warning('Selecione apenas componentes que permitem arte. Remova os vínculos com peças prontas.')
       return
     }
     setBusy(true)
@@ -137,13 +140,12 @@ export default function ProductArtworkBindings({ productId, initialData }) {
       })}
       {editing && <div className="space-y-3 rounded-lg border border-primary/40 bg-muted/20 p-4">
         <label className="block text-sm font-medium">Nome da arte<Input className="mt-1" value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex.: Capa e contracapa" maxLength={160} /></label>
-        <div className="text-sm font-medium">Componentes atendidos pelo mesmo PDF</div>
-        <button type="button" className="text-left text-xs text-primary underline" onClick={() => setShowAll((value) => !value)}>{showAll ? 'Mostrar apenas capa, contra e miolo' : 'Mostrar todos os componentes da ficha'}</button>
+        <div className="text-sm font-medium">Componentes imprimíveis atendidos pelo mesmo PDF</div>
         <div className="grid gap-2 sm:grid-cols-2">{candidates.map((component) => {
           const other = (data?.artes || []).find((art) => art.id !== editing && art.componentes?.some((link) => Number(link.componente_id) === Number(component.componente_id)))
           return <label key={component.componente_id} className="flex items-center gap-2 rounded-md border bg-background p-2 text-sm">
             <input type="checkbox" checked={Boolean(selection[component.componente_id])} disabled={Boolean(other)} onChange={(event) => setSelection((current) => ({ ...current, [component.componente_id]: event.target.checked ? (component.papel_sugerido || 'capa') : null }))} />
-            <span className="min-w-0 flex-1">{component.nome} <span className="text-muted-foreground">({component.quantidade} por produto)</span>{other && <span className="text-amber-700"> · {other.nome}</span>}</span>
+            <span className="min-w-0 flex-1">{component.nome} <span className="text-muted-foreground">({component.quantidade} por produto)</span>{!component.permite_arte && <span className="text-amber-700"> · vínculo antigo: remova para salvar</span>}{other && <span className="text-amber-700"> · {other.nome}</span>}</span>
             {selection[component.componente_id] && <select aria-label={'Papel de ' + component.nome} value={selection[component.componente_id]} onChange={(event) => setSelection((current) => ({ ...current, [component.componente_id]: event.target.value }))}>{Object.entries(ROLES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>}
           </label>
         })}</div>
