@@ -38,6 +38,7 @@ export function prepararLinhasParaEnvio(linhas = []) {
     .map((linha, indice) => ({
       linha_chave: linha.linha_chave || null,
       ordem: indice + 1,
+      produto_id: linha.produto_id ?? null,
       produto: String(linha.descricao ?? ''),
       sku: String(linha.sku_externo ?? ''),
       variacao: String(linha.variacao ?? ''),

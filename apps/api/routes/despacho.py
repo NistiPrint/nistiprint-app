@@ -1011,6 +1011,15 @@ def post_publicar():
 
         user_id = str((user or {}).get("id") or (user or {}).get("nome") or "System")
         linhas = body.get("linhas")
+        plano_impressao_id = body.get("plano_impressao_id")
+        if plano_impressao_id:
+            # Vincula o plano ao rascunho antes da RPC de publicação. Se a
+            # publicação retornar conflito, o plano continua acessível pelo
+            # escopo e poderá ser publicado novamente.
+            supabase_db.table("impressao_capas_planos").update({
+                "demanda_id": demanda_id,
+                "updated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+            }).eq("id", plano_impressao_id).execute()
         if isinstance(linhas, list) and linhas:
             result = supabase_db.rpc("despacho_publicar_demanda_editada", {
                 "p_demanda_id": demanda_id,
@@ -1034,6 +1043,7 @@ def post_publicar():
             "total_pedidos": row.get("out_total_pedidos"),
             "total_itens": row.get("out_total_itens"),
             "status": "AGUARDANDO",
+            "plano_impressao_id": plano_impressao_id,
         }})
     except Exception as exc:
         message = str(exc)

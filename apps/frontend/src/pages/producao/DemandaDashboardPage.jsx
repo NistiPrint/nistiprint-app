@@ -56,6 +56,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { imprimirPapeisDePedido } from '@/lib/papeisDePedido'
+import CapaPrintPlanner from '@/components/producao/CapaPrintPlanner'
 
 function DemandaDashboardPage() {
   const { id } = useParams()
@@ -1012,20 +1013,10 @@ function DemandaDashboardPage() {
             Gerar NFs dos Pedidos
           </Button>
           <Link to='/producao/impressao'>
-            <Button variant='outline' size='icon' title='Fila de arquivos de producao'>
-              <List className='h-4 w-4' />
+            <Button variant='outline' className='gap-2' title='Fila de impressão de capas'>
+              <List className='h-4 w-4' /> Fila de impressão
             </Button>
           </Link>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant='outline' title='Impressao de arquivos de producao'>
-                <Printer className='h-4 w-4 mr-2' /> Arquivos de Producao
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent>
-            </DropdownMenuContent>
-          </DropdownMenu>
 
           <Link to='/producao/demanda'>
             <Button variant='ghost' size='icon'>
@@ -1042,6 +1033,8 @@ function DemandaDashboardPage() {
             )}
         </div>
       </div>
+
+      <CapaPrintPlanner demandaId={demanda.id} />
 
       {/* Stats */}
       <div className='grid grid-cols-1 md:grid-cols-4 gap-4 mb-6'>

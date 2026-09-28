@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ProductLevelBadge } from '@/components/produtos/ProductLevelBadge';
 
-const BOMManager = ({ productId, formato }) => {
+const BOMManager = ({ productId, formato, inheritsBOM = false }) => {
   const [components, setComponents] = useState([]);
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -42,10 +42,9 @@ const BOMManager = ({ productId, formato }) => {
 
   useEffect(() => {
     if (productId) {
-      loadBOM();
-      loadRules();
+      Promise.all([loadBOM(), loadRules()]);
     }
-  }, [productId]);
+  }, [productId, inheritsBOM]);
 
   const loadBOM = async () => {
     setLoading(true);
@@ -54,31 +53,14 @@ const BOMManager = ({ productId, formato }) => {
       const comps = data.components || [];
       setComponents(comps);
       
-      // Check if any component is inherited (the backend now returns this)
+      // A variation may contain inherited lines and its own group overrides.
       if (comps.length > 0) {
-        setIsInherited(comps[0].is_inherited || false);
+        setIsInherited(comps.some(comp => comp.is_inherited));
       } else {
-        // If empty, check the product directly if it has herdar_bom_pai
-        const prodData = await ProductService.getById(productId);
-        setIsInherited(!!prodData.produto?.parent_id && !!prodData.produto?.herdar_bom_pai);
+        setIsInherited(inheritsBOM);
       }
     } catch (error) {
       console.error("Error loading BOM:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCustomize = async () => {
-    if (!confirm("Isso irá criar uma cópia da composição do pai para esta variação, permitindo edições independentes. Deseja continuar?")) return;
-    
-    try {
-      setLoading(true);
-      await ProductService.copyBOMFromParent(productId);
-      toast.success("Agora você pode customizar a composição desta variação.");
-      loadBOM();
-    } catch (error) {
-      toast.error("Erro ao customizar composição: " + error.message);
     } finally {
       setLoading(false);
     }
@@ -146,11 +128,35 @@ const BOMManager = ({ productId, formato }) => {
 
     try {
       await ProductService.addBOMComponent(productId, selectedProduct.id, parseFloat(quantity));
+      const addedQuantity = parseFloat(quantity);
+      setComponents((current) => {
+        const existing = current.find((component) => String(component.component_id) === String(selectedProduct.id));
+        if (existing) {
+          return current.map((component) => String(component.component_id) === String(selectedProduct.id)
+            ? { ...component, quantity: addedQuantity, bom_quantity: addedQuantity }
+            : component);
+        }
+        return [...current, {
+          component_id: selectedProduct.id,
+          id: selectedProduct.id,
+          sku: selectedProduct.sku,
+          name: selectedProduct.name,
+          quantity: addedQuantity,
+          bom_quantity: addedQuantity,
+          unit: selectedProduct.unit || 'un',
+          cost: Number(selectedProduct.cost ?? selectedProduct.cost_price ?? 0),
+          material_type: selectedProduct.material_type,
+          categoria_id: selectedProduct.categoria_id,
+          is_inherited: false,
+          origin: 'propria',
+          group: null,
+          line_id: null,
+        }];
+      });
       toast.success("Componente adicionado com sucesso!");
       setSearchTerm('');
       setSelectedProduct(null);
       setQuantity('');
-      loadBOM();
     } catch (error) {
       toast.error(`Erro ao adicionar componente: ${error.message}`);
     }
@@ -161,8 +167,8 @@ const BOMManager = ({ productId, formato }) => {
 
     try {
       await ProductService.removeBOMComponent(productId, componentId);
+      setComponents((current) => current.filter((component) => String(component.component_id) !== String(componentId)));
       toast.success("Componente removido.");
-      loadBOM();
     } catch (error) {
       toast.error(`Erro ao remover componente: ${error.message}`);
     }
@@ -186,9 +192,12 @@ const BOMManager = ({ productId, formato }) => {
 
     try {
       await ProductService.updateBOMComponent(productId, componentId, parseFloat(editQuantity));
+      const updatedQuantity = parseFloat(editQuantity);
+      setComponents((current) => current.map((component) => String(component.component_id) === String(componentId)
+        ? { ...component, quantity: updatedQuantity, bom_quantity: updatedQuantity }
+        : component));
       toast.success("Quantidade atualizada.");
       setEditingId(null);
-      loadBOM();
     } catch (error) {
       toast.error(`Erro ao atualizar quantidade: ${error.message}`);
     }
@@ -213,17 +222,14 @@ const BOMManager = ({ productId, formato }) => {
 
       {/* Inheritance Warning */}
       {isInherited && (
-        <div className="flex items-center justify-between gap-4 p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800">
+        <div className="flex items-center gap-4 p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800">
           <div className="flex items-center gap-3">
             <AlertTriangle className="h-5 w-5 text-amber-500" />
             <div>
-              <p className="font-semibold">Composição Herdada</p>
-              <p className="text-sm">Esta variação está utilizando a mesma estrutura do produto pai. Alterações no pai refletirão aqui.</p>
+              <p className="font-semibold">Ficha herdada por grupo</p>
+              <p className="text-sm">Adicione um componente próprio para substituir somente o grupo correspondente; os demais grupos continuam herdados.</p>
             </div>
           </div>
-          <Button variant="outline" size="sm" onClick={handleCustomize} className="bg-white border-amber-300 hover:bg-amber-100 text-amber-900">
-            Customizar Composição
-          </Button>
         </div>
       )}
 
@@ -297,7 +303,6 @@ const BOMManager = ({ productId, formato }) => {
       )}
 
       {/* Add Component Section */}
-      {!isInherited && (
         <Card>
           <CardContent className="pt-6">
             <div className="flex flex-col md:flex-row gap-4 items-end">
@@ -369,7 +374,6 @@ const BOMManager = ({ productId, formato }) => {
             </div>
           </CardContent>
         </Card>
-      )}
 
       {/* Components List */}
       <div className="border rounded-md">
@@ -378,6 +382,7 @@ const BOMManager = ({ productId, formato }) => {
             <TableRow>
               <TableHead>SKU</TableHead>
               <TableHead>Componente</TableHead>
+              <TableHead>Grupo / Origem</TableHead>
               <TableHead className="text-right">Custo Unit.</TableHead>
               <TableHead className="text-center">Qtd</TableHead>
               <TableHead className="text-right">Subtotal</TableHead>
@@ -387,7 +392,7 @@ const BOMManager = ({ productId, formato }) => {
           <TableBody>
             {components.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-6 text-muted-foreground">
+                <TableCell colSpan={7} className="text-center py-6 text-muted-foreground">
                   Nenhum componente adicionado.
                 </TableCell>
               </TableRow>
@@ -400,6 +405,14 @@ const BOMManager = ({ productId, formato }) => {
                     {comp.material_type && (
                       <ProductLevelBadge type={comp.material_type} />
                     )}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex flex-col gap-1">
+                      <span className="text-xs font-medium">{comp.group || 'Grupo pendente'}</span>
+                      <Badge variant="outline" className="w-fit text-xs">
+                        {comp.is_inherited ? 'Herdado' : 'Próprio'}
+                      </Badge>
+                    </div>
                   </TableCell>
                   <TableCell className="text-right">
                     R$ {comp.cost?.toFixed(4)}
@@ -422,7 +435,7 @@ const BOMManager = ({ productId, formato }) => {
                     R$ {(comp.quantity * comp.cost).toFixed(4)}
                   </TableCell>
                   <TableCell className="text-right">
-                    {!isInherited ? (
+                    {!comp.is_inherited ? (
                       editingId === comp.component_id ? (
                         <div className="flex justify-end gap-2">
                           <Button variant="ghost" size="icon" onClick={() => saveEdit(comp.component_id)}>
@@ -452,7 +465,7 @@ const BOMManager = ({ productId, formato }) => {
           </TableBody>
           <TableFooter>
             <TableRow>
-              <TableCell colSpan={4} className="text-right font-bold">Custo Total Calculado:</TableCell>
+          <TableCell colSpan={5} className="text-right font-bold">Custo Total Calculado:</TableCell>
               <TableCell className="text-right font-bold">R$ {totalCost.toFixed(4)}</TableCell>
               <TableCell />
             </TableRow>

@@ -4,14 +4,17 @@ import LocalAgentService from '../services/LocalAgentService';
 const useLocalAgent = () => {
   const [isAgentOnline, setIsAgentOnline] = useState(false);
   const [checkingAgent, setCheckingAgent] = useState(true);
+  const [agentHealth, setAgentHealth] = useState(null);
 
   // Function to check if the local agent is online
   const checkAgentStatus = async () => {
     try {
-      await LocalAgentService.checkHealth();
+      const health = await LocalAgentService.checkHealth();
       setIsAgentOnline(true);
+      setAgentHealth(health);
     } catch {
       setIsAgentOnline(false);
+      setAgentHealth(null);
     } finally {
       setCheckingAgent(false);
     }
@@ -46,13 +49,13 @@ const useLocalAgent = () => {
   };
 
   // Function to print a mapped file
-  const printMappedFile = async (sku, copies = 1) => {
+  const printMappedFile = async (sku, copies = 1, productId) => {
     if (!isAgentOnline) {
       throw new Error('Local agent is not running. Please start the local agent service.');
     }
 
     try {
-      const result = await LocalAgentService.printFile(sku, copies);
+      const result = await LocalAgentService.printFile(sku, copies, productId);
       return result;
     } catch (error) {
       console.error('Error printing mapped file:', error);
@@ -61,7 +64,7 @@ const useLocalAgent = () => {
   };
 
   // Function to get the mapped file for a product
-  const getMappedFileForProduct = async (sku) => {
+  const getMappedFileForProduct = async (sku, productId) => {
     if (!isAgentOnline) {
       // Even if agent is offline, we return null rather than throwing
       // to allow UI to handle gracefully
@@ -69,7 +72,7 @@ const useLocalAgent = () => {
     }
 
     try {
-      const result = await LocalAgentService.getMappedFile(sku);
+      const result = await LocalAgentService.getMappedFile(sku, productId);
       return result;
     } catch (error) {
       // If the product isn't mapped, the agent returns a 404, which is expected
@@ -84,6 +87,7 @@ const useLocalAgent = () => {
   return {
     isAgentOnline,
     checkingAgent,
+    agentHealth,
     checkAgentStatus,
     mapFileToProduct,
     printMappedFile,

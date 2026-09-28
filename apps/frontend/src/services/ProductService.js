@@ -13,6 +13,11 @@ const ProductService = {
     return response.data;
   },
 
+  getReadiness: async (id) => {
+    const response = await api.get(`/produtos/${id}/readiness`);
+    return response.data;
+  },
+
   create: async (data) => {
     const response = await api.post('/produtos', data);
     return response.data;
@@ -127,10 +132,11 @@ const ProductService = {
   },
 
   // Clone Product
-  cloneProduct: async (productId, newSku, newName = null) => {
+  cloneProduct: async (productId, newSku, newName = null, childSkus = {}) => {
     const response = await api.post(`/produtos/${productId}/clone`, {
       new_sku: newSku,
-      new_name: newName
+      new_name: newName,
+      child_skus: childSkus
     });
     return response.data;
   },

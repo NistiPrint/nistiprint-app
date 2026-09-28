@@ -318,7 +318,7 @@ A tabela projetada para resolver isso — `produtos_externos` (`produto_id`, `co
 
 Não há geração de PDF. O fluxo documentado no cabeçalho de `apps/api/routes/impressao.py` é:
 
-> 1. Frontend chama `GET /api/v2/pedidos/impressao?order_ids=1,2,3`
+> 1. Frontend chama `POST /api/v2/pedidos/impressao` com `order_ids` no corpo JSON
 > 2. Backend monta dados completos de cada pedido
 > 3. Frontend renderiza componente React com CSS `@media print` e dispara `window.print()`
 

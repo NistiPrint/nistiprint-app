@@ -16,10 +16,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useLayout } from '@/contexts/LayoutContext';
 import { productSchema } from '@/schemas/productSchema';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { FileText, Loader2, Lock, Package, Palette, Settings, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, FileText, Loader2, Lock, Package, Palette, Settings, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 import CategoryService from '@/services/CategoryService';
@@ -46,6 +46,8 @@ function ProdutoFormPage() {
   const [loadingSubmit, setLoadingSubmit] = useState(false);
   const [activeTab, setActiveTab] = useState("general");
   const [productData, setProductData] = useState(null);
+  const [readiness, setReadiness] = useState(null);
+  const [readinessError, setReadinessError] = useState(false);
   const [categorias, setCategorias] = useState([]);
   const [unidades, setUnidades] = useState([]);
   const [setores, setSetores] = useState([]);
@@ -67,7 +69,7 @@ function ProdutoFormPage() {
       stock_min: 0,
       stock_max: 0,
       requires_personalization: false,
-      status: 'ativo',
+      status: 'rascunho',
       formato: 'simples',
       herdar_dados_pai: true,
       herdar_bom_pai: true,
@@ -121,7 +123,7 @@ function ProdutoFormPage() {
                 {!produto_id && <Lock className="h-3 w-3 ml-auto text-muted-foreground" />}
               </button>
             </li>
-            {(!productData?.parent_id && form.watch('formato') !== 'composicao' && form.watch('formato') !== 'kit') && (
+            {(!productData?.parent_id) && (
               <li>
                 <button
                   onClick={() => handleTabChange("variations")}
@@ -195,34 +197,23 @@ function ProdutoFormPage() {
     const loadAuxData = async () => {
       try {
         // Carregar dados que não requerem permissões de administrador
-        let cats = [];
-        let units = [];
-        let tags = [];
-
         try {
-          [cats, units, tags] = await Promise.all([
+          const [cats, units, tags, sectors] = await Promise.all([
             CategoryService.getAll(),
             UnitService.getAll(),
-            TagService.getAll()
+            TagService.getAll(),
+            SectorService.getAll().catch((sectorError) => {
+              console.error("Erro ao carregar setores", sectorError);
+              return [];
+            })
           ]);
+          setCategorias(cats || []);
+          setUnidades(units || []);
+          setAvailableTags(tags || []);
+          setSetores(sectors || []);
         } catch (auxError) {
           console.error("Erro ao carregar dados auxiliares (categorias, unidades, tags)", auxError);
           toast.error("Erro ao carregar dados auxiliares. Algumas funcionalidades podem não funcionar corretamente.");
-        }
-
-        // Verificar se os dados retornaram corretamente
-        setCategorias(cats || []);
-        setUnidades(units || []);
-        setAvailableTags(tags || []);
-
-        // Carregar setores
-        try {
-          const sectors = await SectorService.getAll();
-          setSetores(sectors || []);
-        } catch (sectorError) {
-          // Registrar qualquer erro ao carregar setores
-          console.error("Erro ao carregar setores", sectorError);
-          setSetores([]); // Definir como vazio em vez de falhar
         }
 
         setAuxDataLoaded(true); // Indicar que os dados auxiliares foram carregados
@@ -254,6 +245,15 @@ function ProdutoFormPage() {
           permite_arte: product.permite_arte ?? productCategory?.permite_arte ?? false,
           categoria_nome: product.categoria_nome || productCategory?.nome,
         });
+        ProductService.getReadiness(produto_id)
+          .then((result) => {
+            setReadiness(result);
+            setReadinessError(false);
+          })
+          .catch((readinessLoadError) => {
+            console.error('Erro ao carregar prontidão do produto', readinessLoadError);
+            setReadinessError(true);
+          });
 
         // Certificar-se de que o formato do produto é mantido corretamente
         const formatoProduto = product.formato || 'simples';
@@ -321,12 +321,17 @@ function ProdutoFormPage() {
     if (loadingSubmit) return;
     setLoadingSubmit(true);
     try {
-      const productData = data;
+      const formData = data;
+      const isDraftStage = String(productData?.estagio || '').toUpperCase() === 'RASCUNHO';
       const payload = {
-        ...productData,
+        ...formData,
+        // A constraint do banco não permite ativar um produto ainda em
+        // RASCUNHO. O status comercial só pode avançar quando o cadastro
+        // estiver pronto.
+        ...(isDraftStage ? { status: 'rascunho' } : {}),
         tags: selectedTags, // Ensure tags are sent as array of IDs
         // Converter setor_responsavel_id para número se estiver presente, senão enviar null
-        setor_responsavel_id: productData.setor_responsavel_id ? Number(productData.setor_responsavel_id) : null
+        setor_responsavel_id: formData.setor_responsavel_id ? Number(formData.setor_responsavel_id) : null
       };
 
       if (produto_id) {
@@ -335,6 +340,15 @@ function ProdutoFormPage() {
         // Refresh product data to ensure consistency
         const updatedData = await ProductService.getById(produto_id);
         setProductData(updatedData.produto);
+        if (isDraftStage) {
+          form.setValue('status', updatedData.produto.status || 'rascunho');
+        }
+        try {
+          setReadiness(await ProductService.getReadiness(produto_id));
+          setReadinessError(false);
+        } catch (readinessLoadError) {
+          setReadinessError(true);
+        }
 
         // Atualizar o formato no formulário após o salvamento
         form.setValue('formato', updatedData.produto.formato || 'simples');
@@ -427,11 +441,19 @@ function ProdutoFormPage() {
       <div className="bg-white border-b py-6 px-6 mb-8 flex items-center justify-between rounded-lg shadow-sm">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">
-            {produto_id ? 'Editar Produto' : (cloneIdParam ? 'Clonar Produto' : 'Novo Produto')}
+            {produto_id ? 'Editar Produto' : 'Novo Produto'}
           </h1>
           {productData && (
             <div className="text-sm text-muted-foreground mt-2 font-medium">
               SKU: {productData.sku_mestre || productData.sku} | {productData.name}
+              {productData.parent_id && (
+                <Link
+                  className="ml-3 text-primary hover:underline"
+                  to={`/produtos/${productData.parent_id}/editar?variation_id=${productData.id}`}
+                >
+                  Ver família
+                </Link>
+              )}
             </div>
           )}
         </div>
@@ -443,6 +465,47 @@ function ProdutoFormPage() {
           </Button>
         </div>
       </div>
+
+      {produto_id && (
+        <Card className={`mb-6 ${readiness?.ready ? 'border-green-200' : 'border-amber-200'}`}>
+          <CardContent className="py-4">
+            {readinessError ? (
+              <p className="text-sm text-muted-foreground">Não foi possível carregar as pendências deste produto.</p>
+            ) : readiness ? (
+              <div className="flex items-start gap-3">
+                {readiness.ready
+                  ? <CheckCircle2 className="h-5 w-5 mt-0.5 text-green-600" />
+                  : <AlertCircle className="h-5 w-5 mt-0.5 text-amber-600" />}
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-semibold">Cadastro {readiness.status === 'PRONTO' ? 'pronto' : readiness.status === 'RASCUNHO' ? 'em rascunho' : 'em preparo'}</h2>
+                    <Badge variant={readiness.ready ? 'default' : 'secondary'}>
+                      {readiness.role === 'modelo' ? 'Modelo' : readiness.role === 'variacao' ? 'Variação' : 'Individual'}
+                    </Badge>
+                    <Badge variant="outline">
+                      {readiness.structure === 'sem_ficha' ? 'Sem ficha' : readiness.structure === 'kit' ? 'Kit' : 'Manufaturado'}
+                    </Badge>
+                  </div>
+                  {readiness.issues?.length ? (
+                    <ul className="mt-2 space-y-1 text-sm">
+                      {readiness.issues.map((issue) => (
+                        <li key={issue.code} className={issue.blocking ? 'text-amber-800' : 'text-muted-foreground'}>
+                          {issue.blocking ? 'Obrigatório: ' : 'Aviso: '}{issue.message}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-sm text-muted-foreground">Requisitos de cadastro atendidos.</p>
+                  )}
+                  <p className="mt-2 text-xs text-muted-foreground">A prontidão informa o cadastro e ainda não altera a disponibilidade comercial.</p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Carregando situação do cadastro…</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Form {...form}>
         {/* Conditional rendering based on activeTab */}
@@ -508,7 +571,12 @@ function ProdutoFormPage() {
                         <FormItem className="mt-4">
                           <FormLabel>Formato do Produto *</FormLabel>
                           <Select
-                            onValueChange={field.onChange}
+                            onValueChange={(value) => {
+                              field.onChange(value);
+                              if (value === 'composicao' || value === 'kit') {
+                                form.setValue('status', 'rascunho', { shouldDirty: true });
+                              }
+                            }}
                             value={field.value || ''}
                           >
                             <FormControl>
@@ -700,7 +768,7 @@ function ProdutoFormPage() {
                                 </SelectTrigger>
                               </FormControl>
                               <SelectContent>
-                                <SelectItem value="ativo">Ativo</SelectItem>
+                                <SelectItem value="ativo" disabled={String(productData?.estagio || '').toUpperCase() === 'RASCUNHO'}>Ativo</SelectItem>
                                 <SelectItem value="rascunho">Rascunho</SelectItem>
                                 <SelectItem value="inativo">Inativo</SelectItem>
                               </SelectContent>
@@ -872,12 +940,16 @@ function ProdutoFormPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <BOMManager productId={produto_id} formato={form.watch('formato')} />
+              <BOMManager
+                productId={produto_id}
+                formato={form.watch('formato')}
+                inheritsBOM={!!productData?.parent_id && !!productData?.herdar_bom_pai}
+              />
             </CardContent>
           </Card>
         )}
 
-        {activeTab === "variations" && form.watch('formato') !== 'composicao' && form.watch('formato') !== 'kit' && (
+        {activeTab === "variations" && !productData?.parent_id && (
           <Card>
             <CardHeader>
               <CardTitle>Variações</CardTitle>

@@ -11,6 +11,22 @@ class BomService:
         # Using the standardized 'ficha_tecnica' table in Supabase
         self.bom_table = supabase_db.table('ficha_tecnica')
 
+    def _update_cost_and_enqueue_cascade(self, product_id: int) -> None:
+        """Update this product immediately and enqueue its dependent products."""
+        product_id = str(product_id)
+        product_service.update_composite_product_cost(product_id)
+        try:
+            from nistiprint_shared.services.celery_app import celery_app
+            celery_app.send_task(
+                'tasks.bom_cost_tasks.propagate_composite_cost_to_parents',
+                args=[product_id],
+            )
+        except Exception:
+            # The BOM is already persisted. Preserve cost consistency if the
+            # broker is temporarily unavailable, while surfacing the incident.
+            logging.exception('Falha ao enfileirar propagação de custo da BOM %s', product_id)
+            product_service.propagate_composite_cost_to_parents(product_id)
+
     def _validate_component_can_be_used(self, component_id: int) -> Dict[str, Any]:
         component = product_service.get_by_id(str(component_id))
         if not component:
@@ -52,58 +68,27 @@ class BomService:
                 raise ValueError(f"Invalid component data format: {item}. Error: {e}")
 
         # After updating the BOM, recalculate the product's cost with cascade propagation
-        product_service.update_composite_product_cost_cascade(str(product_id))
+        self._update_cost_and_enqueue_cascade(product_id)
 
     def get_bom_for_produto(self, product_id: int) -> List[BOMItem]:
-        """
-        Retrieves the Bill of Materials for a given product from the BOM table.
-        If the product is a variation and has herdar_bom_pai enabled, it retrieves the BOM from the parent product.
-        Also handles cases where produto_pai_id is empty by falling back to sku lookup.
-        """
-        from nistiprint_shared.services.product_service import product_service
-
-        # Get the product to check if it's a variation with inheritance enabled
-        product = product_service.get_by_id(str(product_id))
-        is_inherited = False
-
-        if product and product.get('parent_id') and product.get('herdar_bom_pai', False):
-            # This is a variation that inherits BOM from its parent
-            parent_id = product.get('parent_id')
-            response = self.bom_table.select("*").eq('produto_pai_id', parent_id).execute()
-            is_inherited = True
-        else:
-            # Regular product or variation without inheritance
-            response = self.bom_table.select("*").eq('produto_pai_id', product_id).execute()
-
-        # If no results found by ID, try to find by SKU
-        if not response.data:
-            # Get the product SKU to search by sku_produto_pai
-            product_sku = product.get('sku') if product else None
-            if product_sku:
-                response = self.bom_table.select("*").eq('sku_produto_pai', product_sku).execute()
-
-        components = []
-        for row in response.data:
-            # Prioritize componente_id if available, otherwise try to get by sku_componente
-            componente_id = row.get('componente_id')
-            if not componente_id:
-                # If componente_id is not set, try to find by sku_componente
-                sku_componente = row.get('sku_componente')
-                if sku_componente:
-                    from nistiprint_shared.services.product_service import product_service
-                    componente = product_service.get_by_sku(sku_componente)
-                    if componente:
-                        componente_id = componente.get('id')
-
-            # Only add to components if we have a valid componente_id
-            if componente_id:
-                components.append(BOMItem(
-                    componente_id=componente_id,
-                    quantidade=row.get('quantidade_necessaria'),
-                    unit=row.get('unidade_medida', 'un'),
-                    is_inherited=is_inherited
-                ))
-        return components
+        """Read the canonical effective BOM, including per-group inheritance."""
+        if not str(product_id).isdigit():
+            return []
+        try:
+            response = supabase_db.rpc('bom_efetiva_produto', {
+                'p_produto_id': int(product_id),
+            }).execute()
+        except Exception as exc:
+            raise RuntimeError(f'BOM_EFFECTIVE_READ_FAILED:{product_id}') from exc
+        return [BOMItem(
+            componente_id=row['componente_id'],
+            quantidade=row['quantidade_necessaria'],
+            unit=row.get('unidade_medida') or 'un',
+            is_inherited=bool(row.get('is_inherited')),
+            group=row.get('grupo'),
+            line_id=row.get('id'),
+            produto_pai_id=row.get('produto_pai_id'),
+        ) for row in (response.data or [])]
 
     def get_bom_for_multiple_products(self, product_ids: List[int]) -> Dict[int, List[BOMItem]]:
         """
@@ -118,44 +103,31 @@ class BomService:
         if not product_ids:
             return {}
         
-        # Remove duplicatas
+        # SQL is the canonical source for inherited/group-overridden BOMs.
         unique_ids = list(set([int(pid) for pid in product_ids if str(pid).isdigit()]))
         
         if not unique_ids:
             return {}
         
         result = {pid: [] for pid in unique_ids}
-        
         try:
-            # Busca todos os componentes de uma vez
-            response = self.bom_table.select("*").in_('produto_pai_id', unique_ids).execute()
-            
-            if response.data:
-                # Agrupa por produto_pai_id
-                for row in response.data:
-                    produto_pai_id = row.get('produto_pai_id')
-                    if produto_pai_id in result:
-                        componente_id = row.get('componente_id')
-                        
-                        # Se não tem componente_id, tenta buscar por SKU
-                        if not componente_id:
-                            sku_componente = row.get('sku_componente')
-                            if sku_componente:
-                                componente = product_service.get_by_sku(sku_componente)
-                                if componente:
-                                    componente_id = componente.get('id')
-                        
-                        if componente_id:
-                            result[produto_pai_id].append(BOMItem(
-                                componente_id=componente_id,
-                                quantidade=row.get('quantidade_necessaria'),
-                                unit=row.get('unidade_medida', 'un'),
-                                is_inherited=False
-                            ))
-                            
-        except Exception as e:
-            logging.error(f"Erro no batch loading de BOM: {e}")
-        
+            response = supabase_db.rpc('bom_efetiva_produtos', {
+                'p_produto_ids': unique_ids,
+            }).execute()
+        except Exception as exc:
+            raise RuntimeError('BOM_EFFECTIVE_BATCH_READ_FAILED') from exc
+        for row in response.data or []:
+            pid = int(row['produto_id'])
+            if pid in result:
+                result[pid].append(BOMItem(
+                    componente_id=row['componente_id'],
+                    quantidade=row['quantidade_necessaria'],
+                    unit=row.get('unidade_medida') or 'un',
+                    is_inherited=bool(row.get('is_inherited')),
+                    group=row.get('grupo'),
+                    line_id=row.get('id'),
+                    produto_pai_id=row.get('produto_pai_id'),
+                ))
         return result
 
     def bulk_add_component_to_products(self, component_id: int, associations: List[Dict[str, Any]]) -> bool:
@@ -298,7 +270,7 @@ class BomService:
             self.bom_table.insert(bom_entry).execute()
 
         # Update the composite cost with cascade propagation
-        product_service.update_composite_product_cost_cascade(str(parent_product_id))
+        self._update_cost_and_enqueue_cascade(parent_product_id)
 
     def remove_bom_component(self, parent_product_id: int, component_product_id: int):
         """
@@ -307,63 +279,32 @@ class BomService:
         self.bom_table.delete().eq('produto_pai_id', parent_product_id).eq('componente_id', component_product_id).execute()
 
         # Update the composite cost with cascade propagation
-        product_service.update_composite_product_cost_cascade(str(parent_product_id))
+        self._update_cost_and_enqueue_cascade(parent_product_id)
 
     def copy_bom_from_parent(self, product_id: int) -> bool:
-        """
-        Copies the BOM from the parent product to the current product (variation)
-        and disables inheritance.
-        """
+        """Keep the parent BOM inherited; variation rows override their own groups."""
         product = product_service.get_by_id(str(product_id))
         if not product or not product.get('parent_id'):
             return False
-
-        parent_id = product.get('parent_id')
-        
-        # 1. Get parent's BOM
-        parent_bom_resp = self.bom_table.select("*").eq('produto_pai_id', parent_id).execute()
-        
-        if not parent_bom_resp.data:
-            # Parent has no BOM, just disable inheritance
-            product_service.update(str(product_id), {'herdar_bom_pai': False})
-            return True
-
-        # 2. Delete existing entries for this child (if any)
-        self.bom_table.delete().eq('produto_pai_id', product_id).execute()
-
-        # 3. Copy entries
-        new_entries = []
-        for item in parent_bom_resp.data:
-            self._validate_component_can_be_used(item['componente_id'])
-            new_entries.append({
-                'produto_pai_id': product_id,
-                'componente_id': item['componente_id'],
-                'quantidade_necessaria': item['quantidade_necessaria'],
-                'unidade_medida': item.get('unidade_medida', 'un'),
-                'sku_produto_pai': product.get('sku'),
-                'sku_componente': item.get('sku_componente')
-            })
-        
-        if new_entries:
-            self.bom_table.insert(new_entries).execute()
-
-        # 4. Disable inheritance
-        product_service.update(str(product_id), {'herdar_bom_pai': False})
-        
+        product_service.update(str(product_id), {'herdar_bom_pai': True})
         return True
 
-    def get_full_bom_explosion(self, product_id: int, quantity: float = 1.0, current_depth: int = 0, max_depth: int = 10) -> List[Dict[str, Any]]:
+    def get_full_bom_explosion(self, product_id: int, quantity: float = 1.0, current_depth: int = 0,
+                               max_depth: int = 100, _path: List[str] = None) -> List[Dict[str, Any]]:
         """
         Explode recursivamente a ficha técnica (BOM) de um produto até seus componentes básicos.
         Retorna uma lista de dicionários com 'componente_id', 'quantidade_total' e 'unidade'.
         """
-        if current_depth > max_depth:
-            import logging
-            logging.warning(f"BOM recursion limit reached for product {product_id}. Skipping deeper levels.")
-            return []
+        product_id = int(product_id)
+        path = list(_path or [])
+        product_key = str(product_id)
+        if product_key in path:
+            cycle = path[path.index(product_key):] + [product_key]
+            raise ValueError('BOM_CYCLE: ' + ' -> '.join(cycle))
+        if current_depth >= max_depth:
+            raise ValueError(f'BOM_DEPTH_LIMIT: {" -> ".join(path + [product_key])}')
+        path.append(product_key)
 
-        from nistiprint_shared.services.product_service import product_service
-        
         # 1. Obter componentes diretos do produto
         components = self.get_bom_for_produto(product_id)
         if not components:
@@ -376,16 +317,15 @@ class BomService:
             comp_id = comp.componente_id
             qtd_necessaria = comp.quantidade * quantity
             
-            # Obter o produto do componente para verificar se ele também é uma composição/kit
-            comp_product = product_service.get_by_id(str(comp_id))
-            
-            if comp_product and comp_product.get('formato') in ['composicao', 'kit']:
-                # Recursão: Explodir o sub-componente
+            # A estrutura é determinada pela ficha efetiva, não pelo formato legado.
+            sub_bom = self.get_bom_for_produto(int(comp_id))
+            if sub_bom:
                 sub_explosion = self.get_full_bom_explosion(
                     product_id=comp_id, 
                     quantity=qtd_necessaria, 
                     current_depth=current_depth + 1,
-                    max_depth=max_depth
+                    max_depth=max_depth,
+                    _path=path,
                 )
                 all_leaf_components.extend(sub_explosion)
             else:

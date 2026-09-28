@@ -9,6 +9,7 @@ import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import CadastrosPage from './pages/admin/CadastrosPage'
 import ConfiguracoesPage from './pages/admin/ConfiguracoesPage'
+import AgenteLocalPage from './pages/admin/configuracoes/AgenteLocalPage'
 import FerramentasPage from './pages/admin/FerramentasPage'
 import LogisticaIntegracaoPage from '@/pages/admin/configuracoes/LogisticaIntegracaoPage';
 import IntegracoesPage from './pages/admin/IntegracoesPage'
@@ -66,6 +67,7 @@ import MovimentacaoLotePage from './pages/estoque/MovimentacaoLotePage'
 import PedidoDetalhePage from './pages/pedidos/PedidoDetalhePage'
 import PedidosListPage from './pages/pedidos/PedidosListPageLotAware'
 import ControleProducaoPage from './pages/producao/ControleProducaoPage'
+import CapaPrintQueuePage from './pages/producao/CapaPrintQueuePage'
 import DemandaCalendarPage from './pages/producao/DemandaCalendarPage'
 import DemandaDashboardPage from './pages/producao/DemandaDashboardPage'
 import DemandaListPage from './pages/producao/DemandasPlanejamentoPage'
@@ -137,6 +139,7 @@ function App() {
                 temporaria e convida a recarregar. A demanda agora nasce so na
                 Torre de Despacho. */}
             <Route path='demanda/rascunhos' element={<Navigate to='/despacho' replace />} />
+            <Route path='impressao' element={<CapaPrintQueuePage />} />
             <Route path='demanda/nova' element={<NovaDemandaPage />} />
             <Route path='demanda/:id/editar' element={<NovaDemandaPage />} />
             <Route
@@ -295,6 +298,8 @@ function App() {
             <Route path='roteamento' element={<IntegrationRoutingPage />} />
             <Route path='bling' element={<ConfiguracoesBlingPage />} />
           </Route>
+
+          <Route path='configuracoes/agente-local' element={<AgenteLocalPage />} />
 
           {/* 7. Relatórios e Auditoria */}
           <Route

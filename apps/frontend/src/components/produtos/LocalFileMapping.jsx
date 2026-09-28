@@ -8,12 +8,14 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { RotateCcw, Upload, Printer, Wifi, WifiOff, MapPin } from 'lucide-react';
 import { toast } from 'sonner';
 import useLocalAgent from '@/hooks/useLocalAgent';
+import LocalAgentService from '@/services/LocalAgentService';
 
 const LocalFileMapping = ({ productId, sku }) => {
   const mapKey = sku || String(productId || '');
   const {
     isAgentOnline,
     checkingAgent,
+    agentHealth,
     checkAgentStatus,
     mapFileToProduct,
     getMappedFileForProduct,
@@ -27,6 +29,19 @@ const LocalFileMapping = ({ productId, sku }) => {
   const [printCopies, setPrintCopies] = useState(1);
   const [printers, setPrinters] = useState([]);
   const [printerName, setPrinterName] = useState('');
+  const [updatingAgent, setUpdatingAgent] = useState(false);
+
+  const handleAgentUpdate = async () => {
+    setUpdatingAgent(true);
+    try {
+      await LocalAgentService.installUpdate();
+      toast.success('Atualização iniciada. O agente será reiniciado.');
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Não foi possível atualizar o agente.');
+    } finally {
+      setUpdatingAgent(false);
+    }
+  };
 
   // Load mapped file when component mounts or agent status changes
   useEffect(() => {
@@ -43,7 +58,7 @@ const LocalFileMapping = ({ productId, sku }) => {
     if (!mapKey) return;
 
     try {
-      const result = await getMappedFileForProduct(mapKey);
+      const result = await getMappedFileForProduct(mapKey, productId);
       setMappedFile(result);
       setPrinterName(result?.printer_name || '');
     } catch (error) {
@@ -89,7 +104,7 @@ const LocalFileMapping = ({ productId, sku }) => {
 
     setLoading(true);
     try {
-      const result = await printMappedFile(mapKey, parseInt(printCopies));
+      const result = await printMappedFile(mapKey, parseInt(printCopies), productId);
       if (result.status === 'file_opened') {
         toast.warning('A impressão direta falhou. O arquivo foi aberto para impressão manual.');
       } else {
@@ -120,7 +135,7 @@ const LocalFileMapping = ({ productId, sku }) => {
               Impressão Local Híbrida
             </CardTitle>
             <CardDescription>
-              Imprima arquivos diretamente da sua máquina local
+              O vínculo usa o ID deste produto e fica salvo somente nesta máquina.
             </CardDescription>
           </div>
           
@@ -148,6 +163,16 @@ const LocalFileMapping = ({ productId, sku }) => {
       </CardHeader>
       
       <CardContent>
+        {isAgentOnline && agentHealth?.update?.status === 'available' && (
+          <Alert className="mb-4">
+            <AlertDescription className="flex items-center justify-between gap-3">
+              <span>Agente {agentHealth.version}: versão {agentHealth.update.available_version} disponível.</span>
+              <Button size="sm" onClick={handleAgentUpdate} disabled={updatingAgent}>
+                {updatingAgent ? 'Preparando...' : 'Atualizar agente'}
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
         {!isAgentOnline ? (
           <Alert>
             <AlertDescription>O agente local não está disponível. Verifique se ele está instalado e iniciado com o Windows.</AlertDescription>

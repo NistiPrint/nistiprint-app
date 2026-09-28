@@ -15,7 +15,7 @@
 
 import {
   Activity, BarChart3, Boxes, Building, CalendarClock, ClipboardList, Cog, Database, Factory,
-  HardDrive, Home, Layers, MapPin, Monitor, Package, Printer, Scale, ScrollText,
+  Download, HardDrive, Home, Layers, MapPin, Monitor, Package, Printer, Scale, ScrollText,
   Settings, Share2, ShieldCheck, ShoppingCart, Sparkles, Store, Tag, TowerControl,
   Trello, Truck, Users, Warehouse, Waypoints, Wrench,
 } from 'lucide-react';
@@ -90,6 +90,7 @@ export const TOP_NAV = [
     children: [
       { name: 'Acesso e Permissões', href: '/sistema', icon: Users, type: 'link', adminOnly: true },
       { name: 'Parâmetros de Produção', href: '/configuracoes/producao', icon: Settings, type: 'link', permission: { a: 'configuracoes', I: 'ler' } },
+      { name: 'Agente local', href: '/configuracoes/agente-local', icon: Download, type: 'link' },
       {
         name: 'Utilitários',
         icon: Wrench,
@@ -112,6 +113,14 @@ export const TOP_NAV = [
 // entre secoes irmas.
 // ---------------------------------------------------------------------------
 export const SECOES = [
+  {
+    id: 'agente-local',
+    titulo: 'Configurações: Agente local',
+    prefixos: ['/configuracoes/agente-local'],
+    grupos: [{ itens: [
+      { name: 'Baixar agente local', href: '/configuracoes/agente-local', icon: Download, description: 'Instalação do agente de impressão no Windows' },
+    ] }],
+  },
   {
     // A Torre de Despacho mora aqui, e nao em Producao: ela e o passo em que o
     // operador AGRUPA PEDIDOS. A demanda de producao e o que sai dela, nao o

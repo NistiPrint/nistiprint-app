@@ -72,7 +72,7 @@ def api_criar():
             'category_id': data.get('category_id'), 'unit_of_measure_id': data.get('unit_of_measure_id'),
             'material_type': data.get('material_type', 'produto_acabado'), 'cost_price': float(data.get('cost_price') or 0),
             'stock_min': data.get('stock_min'), 'stock_max': data.get('stock_max'),
-            'requires_personalization': data.get('requires_personalization'), 'status': data.get('status'),
+            'requires_personalization': data.get('requires_personalization'), 'status': data.get('status') or 'rascunho',
             'formato': data.get('formato', 'simples'), 'setor_responsavel_id': data.get('setor_responsavel_id'),
             'parent_id': data.get('parent_id'), 'herdar_dados_pai': data.get('herdar_dados_pai', True),
             'herdar_bom_pai': data.get('herdar_bom_pai', True), 'tags': [{'tag_id': tid} for tid in data.get('tags', []) if tid]
@@ -92,11 +92,58 @@ def api_get_produto(produto_id):
         return jsonify({
             **produto, 'produto': produto, 'categorias': category_service.get_all(),
             'unidades': unit_of_measure_service.get_all(), 'tags': tag_service.get_all(),
-            'bom_components': product_service.get_bom_components(produto_id) if produto.get('is_composite') else [],
             'bling_product_links': product_service.get_bling_product_links(produto_id),
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@produtos_api_bp.route('/<produto_id>/readiness', methods=['GET'])
+def api_product_readiness(produto_id):
+    """Expose the staged readiness assessment without changing commercial status."""
+    try:
+        result = product_service.evaluate_readiness(produto_id)
+        if result.get('role') is None:
+            return jsonify(result), 404
+        return jsonify(result)
+    except Exception as e:
+        logging.exception('Erro ao avaliar prontidão do produto %s', produto_id)
+        return jsonify({'error': str(e)}), 500
+
+@produtos_api_bp.route('/<produto_id>/clone', methods=['POST'])
+def api_clonar_produto(produto_id):
+    data = request.get_json(silent=True)
+    if not produto_id.isdigit():
+        return jsonify({'error': 'Produto não encontrado'}), 404
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Corpo JSON inválido'}), 400
+
+    sku = data.get('new_sku')
+    name = data.get('new_name')
+    child_skus = data.get('child_skus', {})
+    if not isinstance(sku, str) or not sku.strip() or len(sku.strip()) > 100:
+        return jsonify({'error': 'Novo SKU deve ter entre 1 e 100 caracteres'}), 400
+    if name is not None and not isinstance(name, str):
+        return jsonify({'error': 'Novo nome inválido'}), 400
+    name = name.strip() if name else None
+    if name and len(name) > 255:
+        return jsonify({'error': 'Novo nome deve ter até 255 caracteres'}), 400
+    if not isinstance(child_skus, dict) or any(
+        not str(key).isdigit() or not isinstance(value, str) or not value.strip() or len(value.strip()) > 100
+        for key, value in child_skus.items()
+    ):
+        return jsonify({'error': 'Informe um SKU válido para cada variação'}), 400
+
+    try:
+        product = product_service.clone_product(produto_id, sku.strip(), name, child_skus)
+        return jsonify({'success': True, 'product': product}), 201
+    except Exception as exc:
+        code = getattr(exc, 'code', None)
+        if code == 'P0002':
+            return jsonify({'error': 'Produto não encontrado'}), 404
+        if code in ('22023', '23505', '22001'):
+            return jsonify({'error': str(exc)}), 400
+        logging.exception('Erro ao clonar produto %s', produto_id)
+        return jsonify({'error': 'Não foi possível clonar o produto'}), 500
 
 @produtos_api_bp.route('/<produto_id>/artes-recursivas', methods=['GET'])
 def api_get_recursive_artworks(produto_id):
@@ -268,4 +315,3 @@ def api_create_product_with_variations(produto_id):
         return jsonify({'success': True, 'produto': res})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-

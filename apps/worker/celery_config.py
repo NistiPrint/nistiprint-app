@@ -299,6 +299,7 @@ celery_app = Celery(
         'tasks.consolidation_tasks',
         'tasks.pedidos_fetch_tasks',
         'tasks.token_renewal_tasks',
+        'tasks.bom_cost_tasks',
         'nistiprint_shared.services.bling_status_sync_service',
         'nistiprint_shared.services.ai_personalization_service',
         'nistiprint_shared.services.order_erp_reference_service',

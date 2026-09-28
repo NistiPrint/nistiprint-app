@@ -54,6 +54,7 @@ function ProdutoListPage() {
   const [productToClone, setProductToClone] = useState(null);
   const [newCloneSku, setNewCloneSku] = useState('');
   const [newCloneName, setNewCloneName] = useState('');
+  const [cloneVariationSkus, setCloneVariationSkus] = useState({});
   const [cloneLoading, setCloneLoading] = useState(false);
 
   // Bulk Update Setor State
@@ -299,23 +300,31 @@ function ProdutoListPage() {
 
   const confirmClone = (produto) => {
     setProductToClone(produto);
-    setNewCloneSku(`${produto.sku_mestre || ''}-CLONE`);
+    setNewCloneSku('');
     setNewCloneName(`${produto.name || ''} (Cópia)`);
+    setCloneVariationSkus(Object.fromEntries((produto.variants || []).map(variant => [String(variant.id), ''])));
     setCloneDialogOpen(true);
   };
 
   const handleClone = async () => {
-    if (!productToClone || !newCloneSku) return;
+    const variants = productToClone?.variants || [];
+    if (!productToClone || !newCloneSku.trim() || variants.some(variant => !cloneVariationSkus[String(variant.id)]?.trim())) return;
 
     setCloneLoading(true);
     try {
-      const result = await ProductService.cloneProduct(productToClone.id, newCloneSku, newCloneName);
+      const result = await ProductService.cloneProduct(productToClone.id, newCloneSku.trim(), newCloneName,
+        Object.fromEntries(variants.map(variant => [String(variant.id), cloneVariationSkus[String(variant.id)].trim()])));
       toast.success("Produto clonado com sucesso!");
       setCloneDialogOpen(false);
       
       // Redireciona para a página de edição do novo produto
       if (result.product && result.product.id) {
-        navigate(`/produtos/${result.product.id}/editar`);
+        if (productToClone.parent_id) {
+          toast.info('Defina uma combinação de atributos para ativar a nova variação.');
+          navigate(`/produtos/${productToClone.parent_id}/editar`, { state: { activeTab: 'variations' } });
+        } else {
+          navigate(`/produtos/${result.product.id}/editar`);
+        }
       } else {
         fetchProdutos();
       }
@@ -548,7 +557,7 @@ function ProdutoListPage() {
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
                         {produto.parent_id ? (
-                          <Link to={`/produtos/${produto.parent_id}/editar?variation_id=${produto.id}`}>
+                          <Link to={`/produtos/${produto.id}/editar`}>
                             <Button variant="ghost" size="icon" title="Editar Variação">
                               <Edit className="h-4 w-4 text-blue-600" />
                             </Button>
@@ -754,8 +763,8 @@ function ProdutoListPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Clonar Produto</AlertDialogTitle>
             <AlertDialogDescription>
-              Isso criará uma cópia completa do produto <strong>{productToClone?.name}</strong>,
-              incluindo sua composição (BOM), artes e links.
+              Informe os SKUs da cópia de <strong>{productToClone?.name}</strong>. O clone e suas variações serão criados em rascunho.
+              Fichas são copiadas; artes e vínculos externos não.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid gap-4 py-4">
@@ -765,9 +774,22 @@ function ProdutoListPage() {
                 id="new-sku"
                 value={newCloneSku}
                 onChange={(e) => setNewCloneSku(e.target.value)}
-                placeholder="Digite o novo SKU"
+                placeholder="SKU do novo modelo"
               />
             </div>
+            {(productToClone?.variants || []).map((variant) => (
+              <div className="grid gap-2" key={variant.id}>
+                <Label htmlFor={`clone-variant-sku-${variant.id}`}>
+                  SKU da variação: {variant.sku} {variant.nome || variant.name ? `— ${variant.nome || variant.name}` : ''}
+                </Label>
+                <Input
+                  id={`clone-variant-sku-${variant.id}`}
+                  value={cloneVariationSkus[String(variant.id)] || ''}
+                  onChange={(e) => setCloneVariationSkus(current => ({ ...current, [String(variant.id)]: e.target.value }))}
+                  placeholder="Digite o SKU desta variação"
+                />
+              </div>
+            ))}
             <div className="grid gap-2">
               <Label htmlFor="new-name">Novo Nome (opcional)</Label>
               <Input
@@ -785,7 +807,7 @@ function ProdutoListPage() {
                 e.preventDefault();
                 handleClone();
               }} 
-              disabled={cloneLoading || !newCloneSku}
+              disabled={cloneLoading || !newCloneSku.trim() || (productToClone?.variants || []).some(variant => !cloneVariationSkus[String(variant.id)]?.trim())}
             >
               {cloneLoading && <RefreshCw className="mr-2 h-4 w-4 animate-spin" />}
               Clonar Agora

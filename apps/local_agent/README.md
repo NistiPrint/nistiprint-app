@@ -30,7 +30,15 @@ dist\NistiPrintAgent.exe
 ```
 
 Esse executável não abre janela de console e fica disponível na bandeja do
-Windows. O menu da bandeja permite verificar o agente e encerrá-lo.
+Windows. O menu da bandeja permite verificar o agente e encerrá-lo. Se uma
+instância já estiver aberta, iniciar o executável encerra a anterior e inicia
+uma única bandeja com a versão escolhida. O agente também substitui versões
+anteriores que ainda não implementam essa troca.
+
+O agente aceita impressão assistida de PDFs e consulta a fila local do Windows.
+O padrão permite `https://app.nistiprint.neolabs.com.br` e as origens locais de
+desenvolvimento. Para outro domínio, defina `NISTIPRINT_ALLOWED_ORIGINS` com a
+origem da aplicação web e reinicie o agente.
 
 O ícone usado pela bandeja e pelo executável é `icon.ico`. Para trocar a marca,
 substitua esse arquivo e execute `build_agent.bat` novamente. O arquivo deve
@@ -41,3 +49,35 @@ Para testar antes de gerar o executável:
 ```powershell
 .venv\Scripts\python.exe agent.py
 ```
+
+## Atualizações nas máquinas dos clientes
+
+O executável informa sua versão e o estado da atualização em `/health`.
+Ele consulta a cada hora o manifesto HTTPS em
+`https://app.nistiprint.neolabs.com.br/api/v2/local-agent/releases/latest.json`.
+Use `NISTIPRINT_AGENT_MANIFEST_URL` para apontar outro ambiente. A aplicação
+mostra um aviso de nova versão e a bandeja oferece **Verificar atualizações**
+e **Atualizar agente**. A instalação só começa após o clique do operador.
+
+No servidor, configure `NISTIPRINT_AGENT_RELEASE_DIR` com um diretório persistente
+e legível pela API. Após gerar o EXE, publique com:
+
+```powershell
+.\publish_release.ps1 -ReleaseDirectory C:\releases\nistiprint-agent -BaseUrl https://app.nistiprint.neolabs.com.br
+```
+
+Copie o conteúdo desse diretório para o servidor configurado. O script cria
+`NistiPrintAgent-<versão>.exe` e `latest.json` com URL e SHA-256. Publique o
+executável antes do manifesto. Aumente `VERSION` em `version.py` a cada release.
+Mantenha versões anteriores disponíveis enquanto houver clientes nelas.
+
+Para migrar uma instalação antiga feita por cópia do EXE, substitua o arquivo
+manualmente uma única vez pela primeira versão com atualizador. A pasta do EXE
+precisa permitir gravação pelo usuário que executa o agente. Os dados em
+`%LOCALAPPDATA%\NistiPrint` continuam na mesma pasta; a atualização não os move.
+Falhas e restaurações ficam registradas em `agent.log`. O arquivo
+`NistiPrintAgent.exe.previous` guarda a versão anterior após uma atualização
+bem-sucedida.
+
+O procedimento completo de configuração do servidor, publicação e teste está
+em `docs/operacoes/agente-local.md` na raiz do repositório.
