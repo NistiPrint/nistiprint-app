@@ -13,6 +13,14 @@ Execute `run_agent.bat`. As mensagens aparecem no console e também ficam em:
 %LOCALAPPDATA%\NistiPrint\agent.log
 ```
 
+## Consultar o agente
+
+Com o agente em execução, abra `http://127.0.0.1:8181/dashboard` no próprio
+computador ou use **Ver painel do agente** no ícone da bandeja. O painel mostra
+status, versão, estado da atualização, mapeamentos e as 200 linhas mais recentes
+do log. Os dados são atualizados a cada 10 segundos; o painel não oferece ações.
+Se `NISTIPRINT_AGENT_PORT` estiver configurada, use essa porta no endereço.
+
 ## Executar silenciosamente
 
 Para o uso normal, execute `start_agent_quiet.bat`. Ele usa o executável
@@ -78,6 +86,15 @@ precisa permitir gravação pelo usuário que executa o agente. Os dados em
 Falhas e restaurações ficam registradas em `agent.log`. O arquivo
 `NistiPrintAgent.exe.previous` guarda a versão anterior após uma atualização
 bem-sucedida.
+
+Se o agente encerrar durante a atualização e o novo EXE mostrar uma mensagem
+de segurança sobre processo pai, use a versão `1.1.5` ou superior. O auxiliar
+de instalação inicia o novo processo com o ambiente do PyInstaller reiniciado;
+releases novas são geradas com PyInstaller 6.22.3 ou superior.
+Como o auxiliar que executa a troca vem do EXE antigo, uma máquina que já
+apresentou esse erro precisa receber a `1.1.5` manualmente uma vez: encerre o
+agente, substitua `NistiPrintAgent.exe` pelo novo arquivo e execute-o. O mapa
+de impressoras e o log permanecem em `%LOCALAPPDATA%\NistiPrint`.
 
 O procedimento completo de configuração do servidor, publicação e teste está
 em `docs/operacoes/agente-local.md` na raiz do repositório.

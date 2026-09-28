@@ -9,6 +9,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $backup = "$Current.previous"
+# The helper inherits the onefile bootloader environment from the old agent.
+# A restarted EXE must unpack as an independent PyInstaller instance.
+$env:PYINSTALLER_RESET_ENVIRONMENT = '1'
 function Write-UpdateLog([string]$message) {
     Add-Content -LiteralPath $Log -Value "$(Get-Date -Format o) [UPDATE] $message"
 }
@@ -42,7 +45,10 @@ try {
                 $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 2
                 if ($health.version -eq $ExpectedVersion) { $healthy = $true; break }
             } catch { }
-            if ($new.HasExited) { break }
+            if ($new.HasExited) {
+                Write-UpdateLog "O novo agente saiu antes de responder em /health (código $($new.ExitCode))"
+                break
+            }
         }
         if (-not $healthy) { throw 'O novo agente não iniciou corretamente' }
         Write-UpdateLog "Atualização para $ExpectedVersion concluída"

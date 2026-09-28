@@ -86,6 +86,14 @@ class UpdaterTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows only")
     @patch("agent.subprocess.run")
     @patch("agent._local_agent_request")
+    def test_free_port_does_not_wait_for_health(self, request, run):
+        run.return_value = Mock(returncode=0, stderr="", stdout="")
+        self.assertEqual(agent._legacy_agent_processes(), [])
+        request.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    @patch("agent.subprocess.run")
+    @patch("agent._local_agent_request")
     def test_identifies_versioned_agent_executable_on_listener_port(self, opened, run):
         opened.return_value = (200, json.dumps({
             "status": "online", "port": 8181,
@@ -100,6 +108,15 @@ class UpdaterTests(unittest.TestCase):
         ]
         processes = agent._legacy_agent_processes()
         self.assertEqual(processes, [{"Id": 4321, "ProcessName": "NistiPrintAgent-1.1.1"}])
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    @patch("agent.subprocess.run")
+    @patch("agent._local_agent_request", side_effect=TimeoutError)
+    def test_occupied_port_without_health_is_not_replaced(self, _request, run):
+        run.return_value = Mock(returncode=0, stderr="", stdout=(
+            " TCP    127.0.0.1:8181         0.0.0.0:0              LISTENING       4321\n"
+        ))
+        self.assertIsNone(agent._legacy_agent_processes())
 
     @unittest.skipUnless(os.name == "nt", "Windows only")
     def test_installer_restores_previous_executable_when_new_one_fails(self):

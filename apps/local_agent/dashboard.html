@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Agente local · NistiPrint</title>
+  <style>
+    :root { font-family: "Segoe UI", Arial, sans-serif; color: #183047; background: #f3f6f8; }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; }
+    .shell { max-width: 1180px; margin: 0 auto; padding: 36px 24px 64px; }
+    .top { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 28px; }
+    .eyebrow { color: #276c85; font-size: 12px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; margin: 0 0 8px; }
+    h1 { font-size: clamp(28px, 4vw, 38px); letter-spacing: -.035em; line-height: 1.1; margin: 0 0 10px; }
+    .subtitle, .muted { color: #627485; }
+    .subtitle { margin: 0; font-size: 15px; }
+    .sync { font-size: 13px; color: #627485; text-align: right; white-space: nowrap; padding-top: 8px; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 28px; }
+    .card, .section { background: white; border: 1px solid #dce5ea; border-radius: 14px; box-shadow: 0 3px 14px rgba(18, 46, 62, .04); }
+    .card { padding: 21px 22px; min-height: 125px; }
+    .label { font-size: 12px; font-weight: 700; color: #687b89; letter-spacing: .07em; text-transform: uppercase; margin: 0 0 13px; }
+    .value { font-size: 23px; font-weight: 700; line-height: 1.25; margin: 0; overflow-wrap: anywhere; }
+    .detail { margin: 7px 0 0; color: #627485; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+    .status { display: inline-flex; align-items: center; gap: 9px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #bdc7ce; }
+    .dot.online { background: #18a36b; box-shadow: 0 0 0 4px #e3f6ed; }
+    .section { margin-top: 18px; overflow: hidden; }
+    .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; padding: 21px 22px 18px; }
+    h2 { font-size: 18px; letter-spacing: -.02em; margin: 0; }
+    .section-head p { margin: 0; font-size: 13px; color: #687b89; }
+    .table-wrap { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; text-align: left; font-size: 13px; }
+    th { color: #687b89; background: #f7f9fa; font-size: 11px; letter-spacing: .07em; text-transform: uppercase; font-weight: 700; }
+    th, td { padding: 12px 22px; border-top: 1px solid #edf1f3; vertical-align: top; }
+    td { line-height: 1.45; }
+    td.path { font-family: Consolas, "Courier New", monospace; font-size: 12px; color: #435b6c; overflow-wrap: anywhere; min-width: 240px; }
+    td.key { font-weight: 650; min-width: 145px; }
+    .empty { padding: 24px 22px; color: #627485; border-top: 1px solid #edf1f3; }
+    .log { margin: 0; padding: 20px 22px; border-top: 1px solid #edf1f3; color: #dce9ee; background: #142631; min-height: 150px; max-height: 400px; overflow: auto; font: 12px/1.6 Consolas, "Courier New", monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+    @media (max-width: 750px) { .shell { padding: 24px 15px 40px; } .top { display: block; } .sync { text-align: left; } .grid { grid-template-columns: 1fr; } .card { min-height: 0; } th, td { padding-left: 14px; padding-right: 14px; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <div>
+        <p class="eyebrow">NistiPrint · computador local</p>
+        <h1>Agente local</h1>
+        <p class="subtitle">Acompanhe o funcionamento, os mapeamentos e os registros recentes.</p>
+      </div>
+      <div class="sync" id="sync">Carregando dados…</div>
+    </header>
+
+    <section class="grid" aria-label="Resumo do agente">
+      <div class="card">
+        <p class="label">Conexão</p>
+        <p class="value status"><span class="dot" id="connection-dot"></span><span id="connection">Verificando</span></p>
+        <p class="detail" id="address">Neste computador</p>
+      </div>
+      <div class="card">
+        <p class="label">Versão instalada</p>
+        <p class="value" id="version">—</p>
+        <p class="detail" id="update">Consultando atualização…</p>
+      </div>
+      <div class="card">
+        <p class="label">Mapeamentos</p>
+        <p class="value" id="mapping-count">—</p>
+        <p class="detail">Arquivos associados a produtos ou artes</p>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="mappings-title">
+      <div class="section-head"><h2 id="mappings-title">Mapeamentos</h2><p>Somente consulta</p></div>
+      <div class="table-wrap">
+        <table id="mappings-table" hidden>
+          <thead><tr><th>Produto ou arte</th><th>Arquivo</th><th>Impressora</th><th>Atualizado em</th></tr></thead>
+          <tbody id="mappings-body"></tbody>
+        </table>
+        <div class="empty" id="mappings-empty">Carregando mapeamentos…</div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="logs-title">
+      <div class="section-head"><h2 id="logs-title">Logs recentes</h2><p>Últimas 200 linhas, atualização automática</p></div>
+      <pre class="log" id="logs">Carregando logs…</pre>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const date = (value) => {
+      if (!value) return '—';
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString('pt-BR');
+    };
+    const updateLabels = {
+      checking: 'Verificando atualizações', current: 'Versão atual',
+      available: 'Nova versão disponível', downloading: 'Baixando atualização',
+      installing: 'Instalando atualização', error: 'Falha ao verificar atualização'
+    };
+    async function readJson(path) {
+      const response = await fetch(path, { cache: 'no-store' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      return response.json();
+    }
+    function renderMappings(mappings) {
+      const rows = Object.entries(mappings || {}).sort(([a], [b]) => a.localeCompare(b, 'pt-BR'));
+      $('mapping-count').textContent = String(rows.length);
+      $('mappings-body').replaceChildren();
+      $('mappings-table').hidden = rows.length === 0;
+      $('mappings-empty').hidden = rows.length !== 0;
+      if (!rows.length) $('mappings-empty').textContent = 'Nenhum mapeamento cadastrado neste computador.';
+      for (const [key, mapping] of rows) {
+        const row = document.createElement('tr');
+        const values = [key, mapping.file_path || '—', mapping.printer_name || '—', date(mapping.updated_at)];
+        for (const [index, value] of values.entries()) {
+          const cell = document.createElement('td');
+          cell.textContent = value;
+          if (index === 0) cell.className = 'key';
+          if (index === 1) cell.className = 'path';
+          row.appendChild(cell);
+        }
+        $('mappings-body').appendChild(row);
+      }
+    }
+    async function refresh() {
+      const [health, mappings, logs] = await Promise.allSettled([
+        readJson('/health'), readJson('/mappings'), readJson('/logs')
+      ]);
+      if (health.status === 'fulfilled') {
+        const data = health.value;
+        $('connection').textContent = data.status === 'online' ? 'Online' : (data.status || 'Indisponível');
+        $('connection-dot').classList.toggle('online', data.status === 'online');
+        $('address').textContent = '127.0.0.1:' + data.port;
+        $('version').textContent = data.version || '—';
+        const update = data.update || {};
+        $('update').textContent = (updateLabels[update.status] || update.status || 'Estado desconhecido') +
+          (update.available_version ? ' · ' + update.available_version : '') +
+          (update.error ? ' · ' + update.error : '');
+      } else {
+        $('connection').textContent = 'Indisponível';
+        $('connection-dot').classList.remove('online');
+        $('address').textContent = 'Não foi possível consultar o agente.';
+      }
+      if (mappings.status === 'fulfilled') renderMappings(mappings.value.mappings);
+      else {
+        $('mapping-count').textContent = '—';
+        $('mappings-table').hidden = true;
+        $('mappings-empty').hidden = false;
+        $('mappings-empty').textContent = 'Não foi possível carregar os mapeamentos.';
+      }
+      $('logs').textContent = logs.status === 'fulfilled'
+        ? ((logs.value.lines || []).join('\n') || 'Ainda não há registros.')
+        : 'Não foi possível carregar os logs.';
+      $('sync').textContent = 'Atualizado em ' + new Date().toLocaleTimeString('pt-BR') + ' · a cada 10 s';
+    }
+    refresh();
+    setInterval(refresh, 10000);
+  </script>
+</body>
+</html>

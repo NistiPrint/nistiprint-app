@@ -106,3 +106,11 @@ e a presença do arquivo no diretório configurado. Reinicie
 `nistiprint-api.service` após alterar o `.env`.
 
 Uma instalação antiga, feita por simples cópia do EXE, exige a troca manual inicial pelo primeiro EXE que contém o atualizador. Depois disso, o cliente poderá confirmar as próximas atualizações no portal ou na bandeja do Windows.
+
+Se uma atualização anterior exibiu uma mensagem de segurança do PyInstaller
+sobre o processo pai e restaurou o EXE antigo, faça uma troca manual única
+para a versão 1.1.5 ou posterior. O instalador auxiliar usado nessa tentativa
+vem do EXE antigo; publicar apenas o EXE corrigido no servidor não altera o
+auxiliar já embutido. Encerre o agente, copie o novo arquivo para o mesmo local
+com o nome `NistiPrintAgent.exe` e inicie-o. Os dados locais não precisam ser
+copiados. As atualizações seguintes usarão o auxiliar corrigido.

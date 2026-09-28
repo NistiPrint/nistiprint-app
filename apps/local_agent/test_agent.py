@@ -1,9 +1,13 @@
+import json
 import tempfile
+import threading
 import unittest
+from http.client import HTTPConnection
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from agent import MappingStore, print_direct
+from agent import AgentHandler, MappingStore, print_direct
 
 
 class MappingStoreTests(unittest.TestCase):
@@ -30,6 +34,47 @@ class FallbackTests(unittest.TestCase):
         except FileNotFoundError:
             pass
         opened.assert_not_called()
+
+
+class DashboardTests(unittest.TestCase):
+    def setUp(self):
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), AgentHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+    def request(self, path, headers=None):
+        connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
+        try:
+            connection.request("GET", path, headers=headers or {})
+            response = connection.getresponse()
+            return response.status, response.read().decode("utf-8")
+        finally:
+            connection.close()
+
+    def test_dashboard_is_served_locally(self):
+        status, body = self.request("/dashboard")
+        self.assertEqual(status, 200)
+        self.assertIn("Agente local", body)
+        self.assertIn("/logs", body)
+        self.assertEqual(self.request("/dashboard", {"Host": "other.example"})[0], 403)
+
+    def test_logs_are_bounded_and_reject_cross_origin_reads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log_file = Path(directory) / "agent.log"
+            log_file.write_text("".join(f"linha {i}\n" for i in range(300)), encoding="utf-8")
+            with patch("agent.LOG_FILE", log_file):
+                status, body = self.request("/logs")
+                self.assertEqual(status, 200)
+                lines = json.loads(body)["lines"]
+                self.assertEqual(len(lines), 200)
+                self.assertEqual(lines[0], "linha 100")
+                self.assertEqual(lines[-1], "linha 299")
+                self.assertEqual(self.request("/logs", {"Origin": "https://app.nistiprint.neolabs.com.br"})[0], 403)
 
 
 if __name__ == "__main__":

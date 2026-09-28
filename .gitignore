@@ -17,6 +17,8 @@
 **/build/
 .eslintcache
 **/package-lock.json
+**/release*/
+**/build-*/
 
 # IDEs
 .vscode/

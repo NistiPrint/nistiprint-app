@@ -31,7 +31,7 @@ def start_tray(server) -> None:
         draw.text((15, 20), "NP", fill="white")
 
     def open_web(_icon, _item):
-        webbrowser.open(f"http://127.0.0.1:{server.server_port}/health")
+        webbrowser.open(f"http://127.0.0.1:{server.server_port}/dashboard")
 
     def quit_agent(icon, _item):
         icon.stop()
@@ -58,7 +58,7 @@ def start_tray(server) -> None:
         image,
         "NistiPrint - Agente local",
         menu=pystray.Menu(
-            pystray.MenuItem("Verificar agente", open_web),
+            pystray.MenuItem("Ver painel do agente", open_web),
             pystray.MenuItem("Verificar atualizações", check_updates),
             pystray.MenuItem("Atualizar agente", install_update,
                              enabled=lambda _item: updater.snapshot()["status"] == "available"),

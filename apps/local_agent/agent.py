@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import socket
+import sys
 import tempfile
 import threading
 import ctypes
@@ -35,6 +36,7 @@ DATA_DIR = Path(os.environ.get("NISTIPRINT_AGENT_DATA_DIR") or
                 (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "NistiPrint"))
 MAP_FILE = DATA_DIR / "mappings.json"
 LOG_FILE = DATA_DIR / "agent.log"
+MAX_LOG_BYTES = 64 * 1024
 MAX_COPIES = 999
 MAX_DIALOG_COPIES = 65535
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -68,6 +70,21 @@ logger = logging.getLogger("NistiPrintAgent")
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _recent_log_lines(limit: int = 200) -> list[str]:
+    """Read only the end of the log so the dashboard stays responsive."""
+    try:
+        with LOG_FILE.open("rb") as source:
+            source.seek(0, os.SEEK_END)
+            size = source.tell()
+            source.seek(max(0, size - MAX_LOG_BYTES))
+            data = source.read(MAX_LOG_BYTES)
+        if size > MAX_LOG_BYTES:
+            data = data.partition(b"\n")[2]
+        return data.decode("utf-8", errors="replace").splitlines()[-limit:]
+    except FileNotFoundError:
+        return []
 
 
 def _save_print_requests() -> None:
@@ -108,27 +125,6 @@ def _legacy_agent_processes() -> list[dict] | None:
     if os.name != "nt":
         return None
     try:
-        status, body = _local_agent_request("/health", timeout=2)
-        if status != 200:
-            return []
-        health = json.loads(body)
-    except (ConnectionRefusedError, ConnectionResetError):
-        return []
-    except (TimeoutError, socket.timeout):
-        logger.error("O agente local não respondeu em /health dentro do prazo")
-        return None
-    except OSError as error:
-        if getattr(error, "winerror", None) == 10061:
-            return []
-        logger.exception("Não foi possível consultar o agente local em /health")
-        return None
-    except Exception:
-        logger.exception("Resposta inválida do agente local em /health")
-        return None
-    if health.get("status") != "online" or int(health.get("port") or 0) != PORT:
-        return []
-
-    try:
         result = subprocess.run(
             ["netstat.exe", "-ano", "-p", "tcp"],
             capture_output=True, text=True, check=False, timeout=8, creationflags=NO_WINDOW,
@@ -147,9 +143,25 @@ def _legacy_agent_processes() -> list[dict] | None:
                 except ValueError:
                     continue
         if not process_ids:
-            logger.error("O agente respondeu em /health, mas o listener da porta %s não foi identificado", PORT)
-            return None
+            return []
+    except Exception:
+        logger.exception("Não foi possível consultar a porta do agente")
+        return None
 
+    try:
+        status, body = _local_agent_request("/health", timeout=2)
+        health = json.loads(body) if status == 200 else {}
+        if health.get("status") != "online" or int(health.get("port") or 0) != PORT:
+            logger.error("A porta %s está ocupada, mas não respondeu como agente NistiPrint", PORT)
+            return None
+    except (TimeoutError, socket.timeout):
+        logger.error("A porta %s está ocupada, mas /health não respondeu no prazo", PORT)
+        return None
+    except Exception:
+        logger.exception("Não foi possível validar o processo que ocupa a porta do agente")
+        return None
+
+    try:
         ids = ",".join(str(process_id) for process_id in sorted(process_ids))
         script = (
             f"$ids = @({ids}); Get-Process -Id $ids -ErrorAction SilentlyContinue "
@@ -544,6 +556,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         if origin in ALLOWED_ORIGINS:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
@@ -555,6 +568,24 @@ class AgentHandler(BaseHTTPRequestHandler):
     def _origin_allowed(self):
         origin = self.headers.get("Origin")
         return not origin or origin.rstrip("/") in ALLOWED_ORIGINS
+
+    def _local_dashboard_host(self) -> bool:
+        return self.headers.get("Host", "").lower() in {
+            f"127.0.0.1:{self.server.server_port}",
+            f"localhost:{self.server.server_port}",
+        } and not self.headers.get("Origin")
+
+    def _send_dashboard(self):
+        runtime_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+        body = (runtime_dir / "dashboard.html").read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'")
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_OPTIONS(self):
         if not self._origin_allowed():
@@ -569,6 +600,12 @@ class AgentHandler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             return self._send(403, {"error": "Origem do navegador não autorizada"})
         path = urlparse(self.path).path
+        if path in ("/", "/dashboard", "/logs"):
+            if not self._local_dashboard_host():
+                return self._send(403, {"error": "Painel disponível somente no endereço local"})
+            if path == "/logs":
+                return self._send(200, {"lines": _recent_log_lines()})
+            return self._send_dashboard()
         if path == "/health":
             return self._send(200, {"success": True, "status": "online", "port": PORT,
                                     "version": updater.VERSION, "update": updater.snapshot()})
