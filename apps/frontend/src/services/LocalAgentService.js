@@ -44,6 +44,11 @@ const LocalAgentService = {
     return response.data;
   },
 
+  removeArtworkMapping: async (artworkId) => {
+    const response = await axios.delete(`${LOCAL_AGENT_BASE_URL}/mappings/${encodeURIComponent(`arte:${artworkId}`)}`);
+    return response.data;
+  },
+
   /**
    * Get the mapped file path for a product ID
    */

@@ -9,8 +9,8 @@ from nistiprint_shared.services.print_artwork_logic import build_print_groups, l
 class TestArtworkGroups(unittest.TestCase):
     def setUp(self):
         self.components = {
-            10: {"componente_id": 10, "nome": "Capa impressa", "sku": "CAPA", "papel_sugerido": "capa", "quantidade": 1},
-            20: {"componente_id": 20, "nome": "Contra capa impressa", "sku": "CONTRA", "papel_sugerido": "contra", "quantidade": 1},
+            10: {"componente_id": 10, "nome": "Capa impressa", "sku": "CAPA", "papel_sugerido": "capa", "permite_arte": True, "quantidade": 1},
+            20: {"componente_id": 20, "nome": "Contra capa impressa", "sku": "CONTRA", "papel_sugerido": "contra", "permite_arte": True, "quantidade": 1},
         }
 
     def groups(self, arts, components=None):
@@ -50,6 +50,21 @@ class TestArtworkGroups(unittest.TestCase):
         }])
         self.assertEqual(len(groups), 2)
         self.assertIn("sem arte", groups[1]["pendencia_arte"])
+
+    def test_assembled_ancestors_do_not_become_extra_print_jobs(self):
+        components = {
+            **self.components,
+            30: {"componente_id": 30, "nome": "Capa pronta", "sku": "PRONTA", "papel_sugerido": "capa", "permite_arte": False, "quantidade": 1},
+            40: {"componente_id": 40, "nome": "Contra capa pronta", "sku": "CONTRA-PRONTA", "papel_sugerido": "contra", "permite_arte": False, "quantidade": 1},
+        }
+        groups = self.groups([{
+            "id": "art-1", "nome": "Capa e contra", "componentes": [
+                {"componente_id": 10, "papel": "capa"},
+                {"componente_id": 20, "papel": "contra"},
+            ],
+        }], components)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["arte_id"], "art-1")
 
     def test_mixed_miolo_is_not_printed_in_cover_flow(self):
         groups = self.groups([{

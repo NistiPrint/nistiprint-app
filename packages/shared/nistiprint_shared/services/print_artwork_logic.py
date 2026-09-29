@@ -29,7 +29,9 @@ def build_print_groups(product_id, arts, components, legacy_groups):
             "componentes_ids": ids, "papeis": [link["papel"] for link in links], "pendencia_arte": error,
         })
     for component_id, component in components.items():
-        if component["papel_sugerido"] not in ("capa", "contra") or component_id in covered:
+        if (not component.get("permite_arte") or
+                component["papel_sugerido"] not in ("capa", "contra") or
+                component_id in covered):
             continue
         groups.append({
             "produto_capa_id": component_id, "sku_capa": component["sku"],

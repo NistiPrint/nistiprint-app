@@ -26,6 +26,7 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
   const [selectedPrinter, setSelectedPrinter] = useState('')
   const [componentPrinters, setComponentPrinters] = useState({})
   const [bindingData, setBindingData] = useState(null)
+  const [bindingError, setBindingError] = useState(null)
 
   const productCategory = categories.find(category => String(category.id) === String(product?.categoria_id))
   const categoryAllowsArtwork = Boolean(product?.permite_arte || productCategory?.permite_arte)
@@ -75,9 +76,15 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
     if (!productId) return undefined
     let active = true
     printArtworkService.get(productId).then((result) => {
-      if (active) setBindingData(result)
-    }).catch(() => {
-      if (active) setBindingData(null)
+      if (active) {
+        setBindingData(result)
+        setBindingError(null)
+      }
+    }).catch((error) => {
+      if (active) {
+        setBindingData(null)
+        setBindingError(error.message)
+      }
     })
     return () => { active = false }
   }, [productId])
@@ -142,8 +149,13 @@ function LocalArtworkSection({ productId, product, categories = [] }) {
     return <p className='text-sm text-muted-foreground'>Salve o produto antes de configurar sua arte local.</p>
   }
 
-  if ((product?.material_type || product?.tipo_material) === 'produto_acabado' && bindingData?.componentes?.length) {
-    return <ProductArtworkBindings productId={productId} initialData={bindingData} />
+  if ((product?.material_type || product?.tipo_material) === 'produto_acabado' && bindingError) {
+    return <p className='rounded-lg border p-4 text-sm text-destructive'>Não foi possível carregar os componentes da ficha de materiais: {bindingError}</p>
+  }
+
+  if ((product?.material_type || product?.tipo_material) === 'produto_acabado' && bindingData &&
+      (bindingData.componentes?.length || bindingData.artes?.length || !categoryAllowsArtwork)) {
+    return <ProductArtworkBindings productId={productId} initialData={bindingData} categories={categories} />
   }
 
   return (

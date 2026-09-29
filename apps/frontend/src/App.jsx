@@ -55,6 +55,7 @@ import AuditoriaPage from './pages/auditoria/AuditoriaPage'
 import ConfiguracoesIA from './pages/configuracoes/ConfiguracoesIA'
 import TorreDespachoPage from './pages/despacho/TorreDespachoPage'
 import EscopoDespachoPage from './pages/despacho/EscopoDespachoPage'
+import PlanoImpressaoPage from './pages/despacho/PlanoImpressaoPage'
 import ArquivoDespachoPage from './pages/despacho/ArquivoDespachoPage'
 import EstoqueAjustePage from './pages/estoque/EstoqueAjustePage'
 import EstoqueDashboardPage from './pages/estoque/EstoqueDashboardPage'
@@ -122,6 +123,7 @@ function App() {
 
           <Route path='despacho' element={<TorreDespachoPage />} />
           <Route path='despacho/escopo' element={<EscopoDespachoPage />} />
+          <Route path='despacho/plano-impressao' element={<PlanoImpressaoPage />} />
           <Route path='despacho/arquivo' element={<ArquivoDespachoPage />} />
           <Route path='consolidar' element={<Navigate to='/despacho' replace />} />
           <Route path='consolidar/rascunhos' element={<Navigate to='/despacho' replace />} />

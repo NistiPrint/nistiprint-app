@@ -8,11 +8,11 @@ import LinhasConsolidadas from '@/components/despacho/LinhasConsolidadas';
 import { dataOperacionalHoje } from '@/lib/dataOperacional';
 import { linhasForamEditadas, prepararLinhasParaEnvio, totalizarLinhas, linhasParaTsv } from '@/lib/consolidacaoEditavel';
 import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
-import { AlertTriangle, ArrowLeft, ChevronRight, Copy, MoreHorizontal } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ChevronRight, Copy, ExternalLink, MoreHorizontal, Printer } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import CapaPrintPlanner from '@/components/producao/CapaPrintPlanner';
+import capaPrintService from '@/services/capaPrintService';
 
 const HORIZONTE_STEPS = ['atrasado', 'hoje', 'amanha', 'depois'];
 const HORIZONTE_LABEL = { atrasado: 'Atrasado', hoje: 'Hoje', amanha: 'Amanhã', depois: 'Depois' };
@@ -91,6 +91,7 @@ export default function EscopoDespachoPage() {
   const [linhasEditadas, setLinhasEditadas] = useState([]);
   const [previsaoVersao, setPrevisaoVersao] = useState(null);
   const [planoImpressao, setPlanoImpressao] = useState(null);
+  const [abrindoPlano, setAbrindoPlano] = useState(false);
   const baselineRef = useRef([]);
   const horizonte = useMemo(() => { const passos = HORIZONTE_STEPS.slice(0, horizonteAte + 1); return incluirSemPrazo ? [...passos, 'sem_prazo'] : passos; }, [horizonteAte, incluirSemPrazo]);
   const chaveDoEscopo = useMemo(() => origemArquivo ? { conferencia_id: conferenciaId } : { integration_id: integrationId ?? undefined, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? undefined, horizonte, data: dataOperacionalHoje() }, [origemArquivo, conferenciaId, integrationId, modalidadeIds, horizonte]);
@@ -102,11 +103,14 @@ export default function EscopoDespachoPage() {
   const publicar = async () => {
     setPublicando(true); setConflitos([]);
     try {
+      const planoAtual = planoImpressao?.id
+        ? await capaPrintService.savePlan({ pedido_ids: (dados?.pedidos || []).map((pedido) => pedido.id).filter(Boolean), linhas: prepararLinhasParaEnvio(linhasEditadas), previsao_versao: previsaoVersao })
+        : null;
       const lancamento = await fetch('/api/v2/despacho/lancar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ integration_id: integrationId, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? null, horizonte, data: dataOperacionalHoje(), ...(origemArquivo ? { conferencia_id: conferenciaId } : {}), previsao_versao: previsaoVersao }) });
       const criado = await lancamento.json(); if (!criado.success) throw new Error(criado.error || 'Não foi possível montar a demanda');
       setConflitos(criado.data.ja_em_rascunho || []);
       const linhas = temAlteracoes ? prepararLinhasParaEnvio(linhasEditadas) : undefined;
-      const publicado = await fetch('/api/v2/despacho/publicar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ demanda_id: criado.data.demanda_id, ...(planoImpressao?.id ? { plano_impressao_id: planoImpressao.id } : {}), ...(linhas ? { linhas, previsao_versao: previsaoVersao } : {}) }) });
+      const publicado = await fetch('/api/v2/despacho/publicar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ demanda_id: criado.data.demanda_id, ...(planoAtual?.id ? { plano_impressao_id: planoAtual.id } : {}), ...(linhas ? { linhas, previsao_versao: previsaoVersao } : {}) }) });
       const json = await publicado.json(); if (!json.success) throw new Error(json.error || 'Não foi possível publicar');
       toast.success(`${json.data.demanda_codigo} publicada — ${json.data.total_pedidos} pedidos foram para produção`); navigate('/despacho');
     } catch (err) { toast.error(err.message || 'Não foi possível publicar a demanda'); } finally { setPublicando(false); }
@@ -126,7 +130,22 @@ export default function EscopoDespachoPage() {
   const registrarBaseline = useCallback((valor) => { baselineRef.current = valor?.itens || []; onBaseline(valor); }, [onBaseline]);
   const pedidoIds = useMemo(() => (dados?.pedidos || []).map((pedido) => pedido.id).filter(Boolean), [dados?.pedidos]);
   const linhasParaImpressao = useMemo(() => prepararLinhasParaEnvio(linhasEditadas), [linhasEditadas]);
-  const atualizarPlanoImpressao = useCallback((valor) => setPlanoImpressao(valor), []);
+  const abrirPlano = async () => {
+    // A guia é criada no clique para que o bloqueador de pop-ups não interrompa a navegação.
+    const guia = window.open('', '_blank');
+    if (!guia) { toast.error('Permita a abertura de novas guias para ver o plano.'); return; }
+    guia.document.title = 'Preparando plano de impressão';
+    guia.document.body.textContent = 'Preparando plano de impressão…';
+    setAbrindoPlano(true);
+    try {
+      const plano = await capaPrintService.savePlan({ pedido_ids: pedidoIds, linhas: linhasParaImpressao, previsao_versao: previsaoVersao });
+      setPlanoImpressao(plano);
+      guia.location.replace(`/despacho/plano-impressao?plano_id=${encodeURIComponent(plano.id)}`);
+    } catch (error) {
+      guia.close();
+      toast.error('Plano de impressão: ' + error.message);
+    } finally { setAbrindoPlano(false); }
+  };
   return <div className="p-6">
     <button type="button" onClick={() => confirmarDescarte() && navigate('/despacho')} className="mb-4 flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Voltar para a torre de despacho</button>
     <div className="mb-6 flex items-center gap-2 text-sm text-muted-foreground">{origemArquivo && <><span>📄 conferência de arquivo</span><ChevronRight className="h-3.5 w-3.5" /></>}<span>{marketplaceNome}</span><ChevronRight className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{modalidadeNome}</span></div>
@@ -134,7 +153,7 @@ export default function EscopoDespachoPage() {
     {!origemArquivo && <Card className="mb-6"><CardContent className="py-5"><div className="mb-3 text-sm font-medium">Horizonte</div><div className="flex flex-wrap gap-2">{HORIZONTE_STEPS.map((step, indice) => <button key={step} type="button" onClick={() => confirmarDescarte() && setHorizonteAte(indice)} className={`rounded-full border px-3 py-1 text-xs ${indice <= horizonteAte ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>até {HORIZONTE_LABEL[step]} {dados?.buckets?.[step] ? <span className="ml-1.5 opacity-70">{dados.buckets[step]}</span> : null}</button>)}{qtdSemPrazo > 0 && <button type="button" onClick={() => confirmarDescarte() && setIncluirSemPrazo((valor) => !valor)} className={`rounded-full border px-3 py-1 text-xs ${incluirSemPrazo ? 'border-amber-500 bg-amber-100 text-amber-800' : 'border-border text-muted-foreground'}`}>+ Sem prazo {qtdSemPrazo}</button>}</div>{foraDoHorizonte > 0 && <p className="mt-2 text-xs text-amber-700">{foraDoHorizonte} pedido{foraDoHorizonte === 1 ? '' : 's'} deste card está fora do horizonte selecionado.</p>}</CardContent></Card>}
     {erro && <Card className="mb-4 border-destructive/50"><CardContent className="py-4 text-sm text-destructive">{erro}</CardContent></Card>}
     <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2"><Card><CardContent className="py-4"><div className="text-3xl font-semibold">{loading ? '—' : total}</div><div className="text-xs text-muted-foreground">pedidos neste lote</div></CardContent></Card><Card><CardContent className="py-4"><div className="text-3xl font-semibold">{loading ? '—' : Math.round(totalItens)}</div><div className="text-xs text-muted-foreground">itens na tabela</div></CardContent></Card></div>
-    {!loading && total > 0 && <AcoesDoLote className="mb-4" params={chaveDoEscopo} titulo="Ações dos pedidos associados" mostrarIds={false} acoesExtras={<><Button type="button" variant="outline" size="sm" className="gap-2" onClick={copiar}><Copy className="h-4 w-4" /> Copiar</Button><PedidosAssociados pedidos={dados?.pedidos || []} /><CapaPrintPlanner pedidoIds={pedidoIds} lines={linhasParaImpressao} previsaoVersao={previsaoVersao} onPlanChange={atualizarPlanoImpressao} /><Button type="button" size="sm" onClick={publicar} disabled={publicando || !previsaoVersao}>{publicando ? 'Publicando…' : `Publicar ${total}`}</Button></>} />}
+    {!loading && total > 0 && <AcoesDoLote className="mb-4" params={chaveDoEscopo} titulo="Ações dos pedidos associados" mostrarIds={false} acoesExtras={<><Button type="button" variant="outline" size="sm" className="gap-2" onClick={copiar}><Copy className="h-4 w-4" /> Copiar</Button><PedidosAssociados pedidos={dados?.pedidos || []} /><Button type="button" variant="outline" size="sm" className="gap-2" onClick={abrirPlano} disabled={abrindoPlano || !previsaoVersao} title="Abre o plano em uma nova guia"><Printer className="h-4 w-4" /> {abrindoPlano ? 'Preparando…' : 'Plano de impressão'} <ExternalLink className="h-3.5 w-3.5" /></Button><Button type="button" size="sm" onClick={publicar} disabled={publicando || !previsaoVersao}>{publicando ? 'Publicando…' : `Publicar ${total}`}</Button></>} />}
     {!loading && total > 0 && <PreviaConsolidacao params={chaveDoEscopo} onLinhasChange={setLinhasEditadas} onBaseline={registrarBaseline} />}
     {conflitos.length > 0 && <Card className="mb-6 border-amber-400 bg-amber-50/60"><CardContent className="py-4 text-sm text-amber-900"><AlertTriangle className="mr-2 inline h-4 w-4" />{conflitos.length} pedido{conflitos.length > 1 ? 's' : ''} já estava{conflitos.length > 1 ? 'm' : ''} em outra consolidação aberta.</CardContent></Card>}
   </div>;

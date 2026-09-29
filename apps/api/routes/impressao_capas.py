@@ -62,6 +62,7 @@ def _bom_candidates(product_id):
                     "miolo" if "miolo" in lowered else None) if allows_artwork else None
             row = found.setdefault(component_id, {
                 "componente_id": component_id, "nome": label, "sku": product.get("sku"),
+                "categoria_id": category_id,
                 "papel_sugerido": role, "permite_arte": allows_artwork,
                 "quantidade": Decimal(0),
             })
@@ -87,7 +88,8 @@ def _product_artworks(product_id):
 def _print_groups(product_id, cover_category):
     arts = _product_artworks(product_id)
     if not arts:
-        return _cover_components(product_id, cover_category)
+        return [{**component, "produto_final_id": int(product_id)}
+                for component in _cover_components(product_id, cover_category)]
     components = _bom_candidates(product_id)
     return build_print_groups(product_id, arts, components, [])
 
@@ -196,25 +198,28 @@ def _cover_components(product_id, category_id=None):
     def walk(parent_id, multiplier, path):
         if not parent_id or str(parent_id) in path or len(path) >= 20:
             return
+        next_path = path | {str(parent_id)}
         for component in bom_service.get_bom_for_produto(int(parent_id)):
             component_id = int(component.componente_id)
-            if str(component_id) in path:
+            if str(component_id) in next_path:
                 continue
             product = product_service.get_by_id(str(component_id)) or {}
             quantity = multiplier * float(component.quantidade or 1)
             category_name = ""
+            category_allows_artwork = False
             if product.get("categoria_id"):
                 try:
                     from nistiprint_shared.services.category_service import category_service
                     category = category_service.get_by_id(str(product["categoria_id"])) or {}
                     category_name = str(category.get("nome") or category.get("name") or "")
+                    category_allows_artwork = bool(category.get("permite_arte"))
                 except Exception:
                     logger.debug("Não foi possível obter a categoria do produto %s", component_id, exc_info=True)
             label = " ".join((
                 str(product.get("nome") or product.get("name") or ""),
                 str(product.get("sku") or ""), category_name,
             )).casefold()
-            is_printed_cover = (
+            is_printed_cover = category_allows_artwork and (
                 (bool(category_id) and str(product.get("categoria_id")) == str(category_id))
                 or ("capa" in label and "impress" in label)
             )
@@ -227,9 +232,9 @@ def _cover_components(product_id, category_id=None):
                 })
                 row["quantidade_por_unidade"] += quantity
             else:
-                walk(component_id, quantity, path | {str(component_id)})
+                walk(component_id, quantity, next_path)
 
-    walk(product_id, 1, {str(product_id)})
+    walk(product_id, 1, set())
     return list(found.values())
 
 
@@ -248,6 +253,9 @@ def _serialize_plan(plan_id):
     plan["itens"] = items
     plan["envios"] = sends
     plan["grupos"] = groups
+    product_ids = sorted({item["produto_final_id"] for item in items if item.get("produto_final_id")})
+    products = (supabase_db.table("produtos").select("id,nome").in_("id", product_ids).execute().data or []) if product_ids else []
+    plan["produtos"] = {str(product["id"]): product["nome"] for product in products}
     return plan
 
 
@@ -375,17 +383,20 @@ def criar_ou_atualizar_plano():
                       .in_("shopee_order_sn", external_codes).execute().data or [])
             seen = {row.get("id") for row in custom_rows}
             custom_rows.extend(row for row in legacy if row.get("id") not in seen and not row.get("item_pedido_id"))
+        items_by_external_description = {}
+        for item in item_rows:
+            external_code = order_code_by_id.get(int(item.get("pedido_id") or 0))
+            description = str(item.get("descricao") or "").strip().casefold()
+            items_by_external_description.setdefault((str(external_code or ""), description), []).append(item.get("id"))
         custom_by_item = {}
         for personalization in custom_rows:
             item_id = personalization.get("item_pedido_id")
             if item_id is None:
                 description = str(personalization.get("item_description") or "").strip().casefold()
                 code = str(personalization.get("shopee_order_sn") or "")
-                candidates = [item for item in item_rows
-                              if order_code_by_id.get(int(item.get("pedido_id") or 0)) == code
-                              and str(item.get("descricao") or "").strip().casefold() == description]
+                candidates = items_by_external_description.get((code, description), [])
                 if len(candidates) == 1:
-                    item_id = candidates[0].get("id")
+                    item_id = candidates[0]
             if item_id is not None:
                 custom_by_item.setdefault(int(item_id), []).append(personalization)
 
@@ -418,6 +429,7 @@ def criar_ou_atualizar_plano():
         source_totals_by_sku = {}
         source_totals_by_product = {}
         resolved_product_ids = {}
+        products_by_sku = {}
         product_by_item = {}
         for item in item_rows:
             sku = item.get("sku_externo") or ""
@@ -434,7 +446,11 @@ def criar_ou_atualizar_plano():
                     resolved_product_ids[cache_key] = (identity or {}).get("produto_id")
                 base_product_id = resolved_product_ids[cache_key]
             if not base_product_id and sku:
-                base_product_id = (product_service.get_by_sku(sku) or {}).get("id")
+                sku_key = sku.strip().casefold()
+                if sku_key not in products_by_sku:
+                    products_by_sku[sku_key] = (product_service.get_by_sku(sku) or {}).get("id")
+                base_product_id = products_by_sku[sku_key]
+            base_product_id = int(base_product_id) if base_product_id else None
             product_by_item[int(item["id"])] = base_product_id
             if base_product_id:
                 product_key = int(base_product_id)
@@ -474,6 +490,8 @@ def criar_ou_atualizar_plano():
                     "chave_origem": source_key,
                     "chave_grupo": f"sem_capa|{key[0]}|{key[1]}",
                     "item_pedido_id": item_id,
+                    "produto_final_id": int(base_product_id) if base_product_id else None,
+                    "sku_capa": item_sku,
                     "variacao": variation,
                     "tipo": "pendente",
                     "quantidade_planejada": float(item_quantity * scale),
@@ -589,8 +607,13 @@ def criar_ou_atualizar_plano():
                     or (demanda_id and line.get("produto_id")
                         and int(line["produto_id"]) in source_totals_by_product)):
                 continue
-            product = {"id": line.get("produto_id")} if line.get("produto_id") else (product_service.get_by_sku(sku) or {})
-            product_id = product.get("id")
+            if line.get("produto_id"):
+                product_id = int(line["produto_id"])
+            else:
+                sku_key = sku.strip().casefold()
+                if sku_key not in products_by_sku:
+                    products_by_sku[sku_key] = (product_service.get_by_sku(sku) or {}).get("id")
+                product_id = int(products_by_sku[sku_key]) if products_by_sku[sku_key] else None
             if product_id and product_id not in print_group_cache:
                 print_group_cache[product_id] = _print_groups(product_id, cover_category)
             covers = print_group_cache.get(product_id, [])
@@ -619,7 +642,7 @@ def criar_ou_atualizar_plano():
             row["pedido_id"] = item_to_order.get(item_id)
             row["pedido_codigo"] = order_code_by_id.get(row["pedido_id"])
             row["arte_id"] = cover.get("arte_id") if cover else None
-            row["produto_final_id"] = cover.get("produto_final_id") if cover else None
+            row["produto_final_id"] = cover.get("produto_final_id") if cover else row.get("produto_final_id")
             row["componentes_ids"] = cover.get("componentes_ids", []) if cover else []
             row["papeis"] = cover.get("papeis", []) if cover else []
             row["quantidade_por_unidade"] = cover.get("quantidade_por_unidade") if cover else None
@@ -631,6 +654,10 @@ def criar_ou_atualizar_plano():
                               .select("id,chave_origem,quantidade_confirmada,personalizacao_id,produto_capa_id,tipo,arte_id,revisao_pendente")
                               .eq("plano_id", plan_id).execute().data or [])
             existing_by_key = {row.get("chave_origem"): row for row in existing_items}
+            legacy_by_personalization = {}
+            for existing in existing_items:
+                if not existing.get("arte_id") and existing.get("tipo") == "personalizada":
+                    legacy_by_personalization.setdefault(existing.get("personalizacao_id"), []).append(existing)
             for row in payload.values():
                 previous = existing_by_key.get(row["chave_origem"])
                 row["quantidade_confirmada"] = (previous or {}).get("quantidade_confirmada", 0)
@@ -639,10 +666,8 @@ def criar_ou_atualizar_plano():
                     row["pendencia"] = "Confirmações antigas divergentes; concilie este nome antes de reimprimir"
                 if (not previous and row.get("arte_id") and row.get("tipo") == "personalizada"
                         and row.get("personalizacao_id") and not row.get("pendencia")):
-                    old = [item for item in existing_items
-                           if not item.get("arte_id") and item.get("tipo") == "personalizada"
-                           and item.get("personalizacao_id") == row["personalizacao_id"]
-                           and item.get("produto_capa_id") in row["componentes_ids"]]
+                    old = [item for item in legacy_by_personalization.get(row["personalizacao_id"], [])
+                           if item.get("produto_capa_id") in row["componentes_ids"]]
                     old_ids = {item.get("produto_capa_id") for item in old}
                     values = [Decimal(str(item.get("quantidade_confirmada") or 0)) for item in old]
                     if old_ids == set(row["componentes_ids"]) and len(set(values)) == 1 and values[0] <= Decimal(str(row["quantidade_planejada"])):
@@ -656,22 +681,22 @@ def criar_ou_atualizar_plano():
             ).execute()
             active_keys = set(payload)
             stale_ids = [row["id"] for row in existing_items if row.get("chave_origem") not in active_keys]
-            for stale_id in stale_ids:
+            if stale_ids:
                 supabase_db.table("impressao_capas_itens").update({
                     "quantidade_planejada": 0,
                     "pendencia": "Item removido ou alterado na prévia atual",
                     "updated_at": datetime.now(timezone.utc).isoformat(),
-                }).eq("id", stale_id).execute()
+                }).in_("id", stale_ids).execute()
             _reconcile_legacy_groups(plan_id, payload)
         else:
             stale_items = (supabase_db.table("impressao_capas_itens").select("id")
                            .eq("plano_id", plan_id).execute().data or [])
-            for stale in stale_items:
+            if stale_items:
                 supabase_db.table("impressao_capas_itens").update({
                     "quantidade_planejada": 0,
                     "pendencia": "Item removido ou alterado na prévia atual",
                     "updated_at": datetime.now(timezone.utc).isoformat(),
-                }).eq("id", stale["id"]).execute()
+                }).in_("id", [stale["id"] for stale in stale_items]).execute()
         serialized = _serialize_plan(plan_id)
         return jsonify({"success": True, "data": serialized})
     except ValueError as exc:

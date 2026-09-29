@@ -3,11 +3,12 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import LocalAgentService from '@/services/LocalAgentService'
+import ProductService from '@/services/ProductService'
 import printArtworkService from '@/services/printArtworkService'
 
 const ROLES = { capa: 'Capa', contra: 'Contra', miolo: 'Miolo' }
 
-export default function ProductArtworkBindings({ productId, initialData }) {
+export default function ProductArtworkBindings({ productId, initialData, categories = [] }) {
   const [data, setData] = useState(initialData)
   const [mappings, setMappings] = useState({})
   const [printers, setPrinters] = useState([])
@@ -16,9 +17,33 @@ export default function ProductArtworkBindings({ productId, initialData }) {
   const [selection, setSelection] = useState({})
   const [printerByArt, setPrinterByArt] = useState({})
   const [busy, setBusy] = useState(false)
+  const [categoryIds, setCategoryIds] = useState({})
+  const [loadingCategories, setLoadingCategories] = useState(false)
   const allComponents = data?.componentes || []
-  const candidates = allComponents.filter((item) => item.permite_arte ||
+  const categoryById = Object.fromEntries(categories.map((category) => [String(category.id), category]))
+  const resolvedComponents = allComponents.map((item) => {
+    const categoryId = item.categoria_id ?? categoryIds[item.componente_id]
+    const category = categoryById[String(categoryId)]
+    return { ...item, permite_arte: category ? category.permite_arte === true : item.permite_arte }
+  })
+  const candidates = resolvedComponents.filter((item) => item.permite_arte ||
     (data?.artes || []).some((art) => art.componentes?.some((link) => Number(link.componente_id) === Number(item.componente_id))))
+
+  useEffect(() => {
+    const missing = allComponents.filter((item) => item.categoria_id == null && categoryIds[item.componente_id] === undefined)
+    if (!missing.length) return undefined
+    let active = true
+    setLoadingCategories(true)
+    Promise.allSettled(missing.map((item) => ProductService.getById(item.componente_id))).then((results) => {
+      if (!active) return
+      setCategoryIds((current) => ({ ...current, ...Object.fromEntries(results.map((result, index) => [
+        missing[index].componente_id,
+        result.status === 'fulfilled' ? result.value?.produto?.categoria_id ?? null : null,
+      ])) }))
+      setLoadingCategories(false)
+    })
+    return () => { active = false }
+  }, [data, categoryIds])
 
   const refresh = useCallback(async () => {
     try {
@@ -46,7 +71,7 @@ export default function ProductArtworkBindings({ productId, initialData }) {
       toast.warning('Informe o nome da arte e marque ao menos um componente.')
       return
     }
-    if (components.some(({ componente_id }) => !allComponents.find((item) => Number(item.componente_id) === componente_id)?.permite_arte)) {
+    if (components.some(({ componente_id }) => !resolvedComponents.find((item) => Number(item.componente_id) === componente_id)?.permite_arte)) {
       toast.warning('Selecione apenas componentes que permitem arte. Remova os vínculos com peças prontas.')
       return
     }
@@ -70,7 +95,15 @@ export default function ProductArtworkBindings({ productId, initialData }) {
     setBusy(true)
     try {
       await printArtworkService.remove(productId, art.id)
+      let localRemoved = true
+      try {
+        await LocalAgentService.removeArtworkMapping(art.id)
+      } catch (error) {
+        localRemoved = false
+        toast.warning(`Arte excluída, mas o vínculo no agente local não foi removido: ${error.message}`)
+      }
       await refresh()
+      if (localRemoved) toast.success('Arte excluída.')
     } catch (error) {
       toast.error(error.message)
     } finally {
@@ -141,11 +174,12 @@ export default function ProductArtworkBindings({ productId, initialData }) {
       {editing && <div className="space-y-3 rounded-lg border border-primary/40 bg-muted/20 p-4">
         <label className="block text-sm font-medium">Nome da arte<Input className="mt-1" value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex.: Capa e contracapa" maxLength={160} /></label>
         <div className="text-sm font-medium">Componentes imprimíveis atendidos pelo mesmo PDF</div>
+        {!candidates.length && <p className="text-sm text-muted-foreground">{loadingCategories ? 'Verificando categorias dos componentes...' : allComponents.length ? 'Nenhum componente da ficha está em uma categoria que permite arte.' : 'A ficha de materiais deste produto não contém componentes. Cadastre os componentes na Ficha Técnica e atualize esta tela.'}</p>}
         <div className="grid gap-2 sm:grid-cols-2">{candidates.map((component) => {
           const other = (data?.artes || []).find((art) => art.id !== editing && art.componentes?.some((link) => Number(link.componente_id) === Number(component.componente_id)))
           return <label key={component.componente_id} className="flex items-center gap-2 rounded-md border bg-background p-2 text-sm">
-            <input type="checkbox" checked={Boolean(selection[component.componente_id])} disabled={Boolean(other)} onChange={(event) => setSelection((current) => ({ ...current, [component.componente_id]: event.target.checked ? (component.papel_sugerido || 'capa') : null }))} />
-            <span className="min-w-0 flex-1">{component.nome} <span className="text-muted-foreground">({component.quantidade} por produto)</span>{!component.permite_arte && <span className="text-amber-700"> · vínculo antigo: remova para salvar</span>}{other && <span className="text-amber-700"> · {other.nome}</span>}</span>
+            <input type="checkbox" checked={Boolean(selection[component.componente_id])} disabled={Boolean(other) || !component.permite_arte} onChange={(event) => setSelection((current) => ({ ...current, [component.componente_id]: event.target.checked ? (component.papel_sugerido || 'capa') : null }))} />
+            <span className="min-w-0 flex-1">{component.nome} <span className="text-muted-foreground">({component.quantidade} por produto)</span>{!component.permite_arte && <span className="text-amber-700"> · vínculo antigo: categoria não permite arte</span>}{other && <span className="text-amber-700"> · {other.nome}</span>}</span>
             {selection[component.componente_id] && <select aria-label={'Papel de ' + component.nome} value={selection[component.componente_id]} onChange={(event) => setSelection((current) => ({ ...current, [component.componente_id]: event.target.value }))}>{Object.entries(ROLES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>}
           </label>
         })}</div>
