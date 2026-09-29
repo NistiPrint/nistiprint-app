@@ -1,7 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ChevronRight, Home } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import { rotulosDeRota } from '@/navigation';
 
 // Rotulos derivados do registro de navegacao. Antes havia uma lista
@@ -11,6 +10,13 @@ const rotulosDerivados = rotulosDeRota();
 
 // Segmentos que nao aparecem em nenhum menu e precisam de nome proprio.
 const rotulosExtras = {
+  configuracoes: 'Configurações',
+  estoque: 'Estoque',
+  cadastros: 'Cadastros',
+  sistema: 'Acesso e permissões',
+  relatorios: 'Relatórios',
+  vendas: 'Vendas',
+  producao: 'Produção',
   novo: 'Novo',
   nova: 'Nova',
   editar: 'Editar',
@@ -24,7 +30,7 @@ const rotulosExtras = {
   install: 'Instalação',
 };
 
-const routeLabels = { ...rotulosExtras, ...rotulosDerivados };
+const routeLabels = { ...rotulosDerivados, ...rotulosExtras };
 
 function Breadcrumbs() {
   const location = useLocation();

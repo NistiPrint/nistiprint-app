@@ -1,10 +1,9 @@
 import { cn } from '@/lib/utils';
 import { Link, useLocation } from 'react-router-dom';
-import { itensDaSecao } from '@/navigation';
 
 // Renderiza a barra lateral de uma secao do registro de navegacao.
 // Substitui as seis copias de renderMenuItems que existiam nos hubs.
-export default function SidebarNav({ secao, podeVer }) {
+export default function SidebarNav({ secao, podeVer = () => true, onNavigate }) {
   const location = useLocation();
   if (!secao) return null;
 
@@ -20,20 +19,15 @@ export default function SidebarNav({ secao, podeVer }) {
       <li key={item.href}>
         <Link
           to={item.href}
+          onClick={onNavigate}
           className={cn(
-            'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-all hover:bg-muted',
-            ativo && 'bg-muted text-primary font-medium'
+            'flex min-h-11 items-center gap-3 rounded-lg border-l-2 border-transparent px-3 py-2 text-sm transition-colors hover:bg-muted hover:text-foreground',
+            ativo && 'border-primary bg-primary/10 font-semibold text-primary'
           )}
+          aria-current={ativo ? 'page' : undefined}
         >
           {Icon && <Icon className="h-4 w-4 shrink-0" />}
-          <div className="min-w-0">
-            <div className="leading-tight truncate">{item.name}</div>
-            {item.description && (
-              <div className="text-[10px] text-muted-foreground leading-tight truncate">
-                {item.description}
-              </div>
-            )}
-          </div>
+          <span className="min-w-0 truncate leading-tight">{item.name}</span>
         </Link>
       </li>
     );
@@ -48,7 +42,7 @@ export default function SidebarNav({ secao, podeVer }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="px-3 py-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {secao.titulo}
         </h2>
       </div>
@@ -56,11 +50,11 @@ export default function SidebarNav({ secao, podeVer }) {
         {grupos.map((grupo, i) => (
           <div key={grupo.nome || i} className={grupo.nome ? 'mb-4' : undefined}>
             {grupo.nome && (
-              <div className="px-3 py-2 text-sm font-medium text-muted-foreground uppercase tracking-wider">
+              <div className="px-3 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                 {grupo.nome}
               </div>
             )}
-            <ul className={cn('space-y-1', grupo.nome && 'pl-4 py-2')}>
+            <ul className="space-y-1">
               {grupo.itens.map(renderItem)}
             </ul>
           </div>
@@ -69,5 +63,3 @@ export default function SidebarNav({ secao, podeVer }) {
     </div>
   );
 }
-
-export { itensDaSecao };

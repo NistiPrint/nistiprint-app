@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
+import PageHeader from '@/components/ui/PageHeader';
 import { Button } from '@/components/ui/button';
 import {
   Form,
@@ -15,7 +16,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import ProductService from '@/services/ProductService';
 import { Input } from '@/components/ui/input';
-import { Loader2, Settings, Package, Warehouse, Search, Check } from 'lucide-react';
+import { Loader2, Package, Warehouse, Search, Check } from 'lucide-react';
 import { toast } from 'sonner';
 
 // Assuming production config schema includes these fields
@@ -180,7 +181,7 @@ function ConfiguracoesProducaoPage() {
         let errorData = { message: 'Erro desconhecido ao salvar configurações.' };
         try {
           errorData = JSON.parse(responseText);
-        } catch (jsonError) {
+        } catch {
           errorData.message = responseText || errorData.message;
         }
         throw new Error(errorData.message);
@@ -199,12 +200,9 @@ function ConfiguracoesProducaoPage() {
   if (loadingInitialData) return <div className="text-center py-4">Carregando configurações de produção...</div>;
 
   return (
-    <Card className="max-w-xl mx-auto">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Settings className="h-5 w-5" /> Configurações de Produção
-        </CardTitle>
-      </CardHeader>
+    <div className="mx-auto max-w-3xl space-y-5">
+    <PageHeader title="Parâmetros de Produção" />
+    <Card>
       <CardContent>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
@@ -392,6 +390,7 @@ function ConfiguracoesProducaoPage() {
         </Form>
       </CardContent>
     </Card>
+    </div>
   );
 }
 

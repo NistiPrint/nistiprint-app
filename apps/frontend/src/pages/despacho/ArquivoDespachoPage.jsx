@@ -5,7 +5,6 @@ import { ArrowLeft, FileUp, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
 
 // Conferir arquivo — a porta de entrada do lote vindo de planilha.
 //
@@ -36,7 +35,6 @@ const padrao = (moduleId) => ({
 });
 
 export default function ArquivoDespachoPage() {
-  useSecaoSidebar();
   const navigate = useNavigate();
   const [moduleId, setModuleId] = useState('shopee');
   const [file, setFile] = useState(null);

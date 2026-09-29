@@ -28,7 +28,6 @@ import {
     TableRow,
 } from '@/components/ui/table'
 import { useAuth } from '@/contexts/AuthContext'
-import { useLayout } from '@/contexts/LayoutContext'
 import useLocalAgent from '@/hooks/useLocalAgent'
 import usePermissionsHook from '@/hooks/usePermissions'
 import useDebounce from '@/lib/hooks/useDebounce'
@@ -67,14 +66,6 @@ function DemandaDashboardPage() {
   const [demanda, setDemanda] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const { setIsLeftSidebarOpen } = useLayout()
-
-  // Collapse sidebar on mount for this specific page, restore on unmount
-  useEffect(() => {
-    setIsLeftSidebarOpen(false)
-    return () => setIsLeftSidebarOpen(true)
-  }, [setIsLeftSidebarOpen])
-
   // Batch Editing State
   const [pendingChanges, setPendingChanges] = useState({})
   const [isSaving, setIsSaving] = useState(false)

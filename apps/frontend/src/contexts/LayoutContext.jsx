@@ -1,14 +1,5 @@
-import { createContext, useContext, useState, useEffect } from 'react';
-
-const LayoutContext = createContext();
-
-export const useLayout = () => {
-  const context = useContext(LayoutContext);
-  if (!context) {
-    throw new Error('useLayout must be used within a LayoutProvider');
-  }
-  return context;
-};
+import { useState, useEffect } from 'react';
+import { LayoutContext } from './layout-context';
 
 export const LayoutProvider = ({ children }) => {
   // Initialize state from localStorage if available
@@ -16,8 +7,6 @@ export const LayoutProvider = ({ children }) => {
     const saved = localStorage.getItem('layout.sidebar.open');
     return saved !== null ? JSON.parse(saved) : true;
   });
-  const [leftSidebarContent, setLeftSidebarContent] = useState(null);
-  const [leftSidebarMenuItems, setLeftSidebarMenuItems] = useState([]);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
   const [rightSidebarContent, setRightSidebarContent] = useState(null);
 
@@ -42,12 +31,7 @@ export const LayoutProvider = ({ children }) => {
   return (
     <LayoutContext.Provider value={{
       isLeftSidebarOpen,
-      setIsLeftSidebarOpen,
       toggleLeftSidebar,
-      leftSidebarContent,
-      setLeftSidebarContent,
-      leftSidebarMenuItems,
-      setLeftSidebarMenuItems,
       isRightSidebarOpen,
       setIsRightSidebarOpen,
       toggleRightSidebar,

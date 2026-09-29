@@ -7,7 +7,6 @@ import ConferenciaDoArquivo from '@/components/despacho/ConferenciaDoArquivo';
 import LinhasConsolidadas from '@/components/despacho/LinhasConsolidadas';
 import { dataOperacionalHoje } from '@/lib/dataOperacional';
 import { linhasForamEditadas, prepararLinhasParaEnvio, totalizarLinhas, linhasParaTsv } from '@/lib/consolidacaoEditavel';
-import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
 import { AlertTriangle, ArrowLeft, ChevronRight, Copy, ExternalLink, MoreHorizontal, Printer } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -73,7 +72,6 @@ function PreviaConsolidacao({ params, onLinhasChange, onBaseline }) {
 export default function EscopoDespachoPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  useSecaoSidebar();
   const integrationId = parseIntOrNull(searchParams.get('integration_id'));
   const conferenciaId = parseIntOrNull(searchParams.get('conferencia_id'));
   const origemArquivo = conferenciaId !== null;

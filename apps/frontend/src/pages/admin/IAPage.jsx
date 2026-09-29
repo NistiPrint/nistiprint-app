@@ -1,8 +1,7 @@
-import { useLayout } from '@/contexts/LayoutContext';
 import { cn } from '@/lib/utils';
 import { Brain, Settings, Play, FileText } from 'lucide-react';
-import { useEffect, useState, useRef } from 'react';
-import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { createElement, useEffect, useState, useRef } from 'react';
+import { Outlet } from 'react-router-dom';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -16,15 +15,6 @@ import { toast } from 'sonner';
 import { personalizadosService } from '@/services/personalizadosService';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-
-const aiMenu = [
-  {
-    name: 'Personalizados',
-    href: '/ferramentas/ia',
-    icon: Brain,
-    description: 'Processamento de IA para personalizações'
-  },
-];
 
 const MODEL_OPTIONS = [
   { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (recomendado)' },
@@ -46,9 +36,6 @@ const STATUS_CONFIG = {
 };
 
 function IAPage() {
-  const location = useLocation();
-  const navigate = useNavigate();
-  const { setLeftSidebarContent, setLeftSidebarMenuItems } = useLayout();
 
   // Config state
   const [loadingConfig, setLoadingConfig] = useState(true);
@@ -99,53 +86,6 @@ function IAPage() {
     loadLogs();
   }, [page]);
 
-  useEffect(() => {
-    const sidebarContent = (
-      <div className="flex flex-col gap-4">
-        <div className="px-3 py-2">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">
-            IA
-          </h2>
-        </div>
-        <nav className="space-y-1">
-          <ul className="space-y-1">
-            {aiMenu.map((item) => {
-              const Icon = item.icon;
-              const isActive = location.pathname.startsWith(item.href);
-              return (
-                <li key={item.name}>
-                  <button
-                    onClick={() => navigate(item.href)}
-                    className={cn(
-                      "w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-all hover:bg-muted",
-                      isActive && "bg-muted text-primary font-medium"
-                    )}
-                  >
-                    <Icon className="h-4 w-4 shrink-0" />
-                    <div>
-                      <div className="leading-tight">{item.name}</div>
-                      <div className="text-[10px] text-muted-foreground leading-tight">{item.description}</div>
-                    </div>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </nav>
-      </div>
-    );
-
-    setLeftSidebarContent(sidebarContent);
-    setLeftSidebarMenuItems(aiMenu);
-
-    return () => {
-      if (!window.location.pathname.startsWith('/ferramentas/ia')) {
-        setLeftSidebarContent(null);
-        setLeftSidebarMenuItems([]);
-      }
-    };
-  }, [location.pathname, navigate]);
-
   const loadConfig = async () => {
     setLoadingConfig(true);
     try {
@@ -168,7 +108,7 @@ function IAPage() {
       } else {
         setPromptTemplate(DEFAULT_PROMPT);
       }
-    } catch (e) {
+    } catch {
       toast.error('Erro ao carregar configurações');
       setPromptTemplate(DEFAULT_PROMPT);
     } finally {
@@ -191,7 +131,7 @@ function IAPage() {
       } else {
         toast.error(data.message || 'Erro ao salvar');
       }
-    } catch (e) {
+    } catch {
       toast.error('Erro ao salvar configurações');
     } finally {
       setSavingConfig(false);
@@ -326,7 +266,8 @@ function IAPage() {
               }
             }
           }
-        } catch (err) {
+        } catch {
+          // Continue polling; transient request errors are handled by the timeout below.
         }
 
         if (pollCount >= maxPolls) {
@@ -379,7 +320,7 @@ function IAPage() {
     });
   };
 
-  const CollapsibleSection = ({ icon: Icon, title, content, defaultOpen = false }) => {
+  const CollapsibleSection = ({ icon, title, content, defaultOpen = false }) => {
     const [open, setOpen] = useState(defaultOpen);
 
     return (
@@ -389,7 +330,7 @@ function IAPage() {
           className="w-full flex items-center gap-2 px-3 py-2 bg-gray-50 hover:bg-gray-100 transition-colors text-sm font-medium"
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-          <Icon className="h-4 w-4 text-muted-foreground" />
+          {createElement(icon, { className: 'h-4 w-4 text-muted-foreground' })}
           {title}
         </button>
         {open && content && (

@@ -9,6 +9,7 @@ import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import CadastrosPage from './pages/admin/CadastrosPage'
 import ConfiguracoesPage from './pages/admin/ConfiguracoesPage'
+import ConfiguracoesHomePage from './pages/admin/ConfiguracoesHomePage'
 import AgenteLocalPage from './pages/admin/configuracoes/AgenteLocalPage'
 import FerramentasPage from './pages/admin/FerramentasPage'
 import LogisticaIntegracaoPage from '@/pages/admin/configuracoes/LogisticaIntegracaoPage';
@@ -276,10 +277,7 @@ function App() {
                 <ConfiguracoesPage />
               </ProtectedRoute>
             }>
-            <Route
-              index
-              element={<Navigate to='/configuracoes/producao' replace />}
-            />
+            <Route index element={<ConfiguracoesHomePage />} />
             <Route path='producao' element={<ConfiguracoesProducaoPage />} />
             <Route
               path='demanda-permissions'

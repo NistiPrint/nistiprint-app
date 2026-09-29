@@ -1,7 +1,6 @@
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { dataOperacionalHoje } from '@/lib/dataOperacional';
-import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
 import { AlertTriangle, Clock, FileText, FileUp, Package, RefreshCw, Truck, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -218,7 +217,6 @@ export default function TorreDespachoPage() {
   const [erro, setErro] = useState(null);
   const navigate = useNavigate();
 
-  useSecaoSidebar();
 
   const carregar = useCallback(async () => {
     setLoading(true);

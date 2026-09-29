@@ -9,7 +9,7 @@
 //
 // Quem consome:
 //   - Header.jsx           -> TOP_NAV
-//   - useSecaoSidebar.js   -> SECOES, via secaoParaRota()
+//   - MainLayout.jsx       -> SECOES, via secaoParaRota()
 //   - Breadcrumbs.jsx      -> rotulosDeRota()
 //   - scripts/verificar-rotas.mjs -> coletarHrefs()
 
@@ -67,8 +67,8 @@ export const TOP_NAV = [
     type: 'collapsible',
     children: [
       { name: 'Produtos', href: '/produtos', type: 'link', permission: { a: 'produtos', I: 'ler' } },
-      { name: 'Categorias', href: '/cadastros/categoria', type: 'link', permission: { a: 'cadastros', I: 'ler' } },
-      { name: 'Unidades de Medida', href: '/cadastros/unidade-medida', type: 'link', permission: { a: 'cadastros', I: 'ler' } },
+      { name: 'Categorias', href: '/cadastros/categoria', type: 'link', permission: { a: 'cadastros', I: 'ler' }, adminOnly: true },
+      { name: 'Unidades de Medida', href: '/cadastros/unidade-medida', type: 'link', permission: { a: 'cadastros', I: 'ler' }, adminOnly: true },
     ],
   },
   {
@@ -88,8 +88,8 @@ export const TOP_NAV = [
     icon: Settings,
     type: 'collapsible',
     children: [
+      { name: 'Visão geral', href: '/configuracoes', icon: Settings, type: 'link', adminOnly: true },
       { name: 'Acesso e Permissões', href: '/sistema', icon: Users, type: 'link', adminOnly: true },
-      { name: 'Parâmetros de Produção', href: '/configuracoes/producao', icon: Settings, type: 'link', permission: { a: 'configuracoes', I: 'ler' } },
       { name: 'Agente local', href: '/configuracoes/agente-local', icon: Download, type: 'link' },
       {
         name: 'Utilitários',
@@ -167,10 +167,10 @@ export const SECOES = [
     // Aqui fica so o que descreve O QUE a empresa vende.
     id: 'catalogo',
     titulo: 'Catálogo',
-    // Prefixos especificos de proposito: /cadastros se divide entre Catalogo e
-    // Configuracoes, e secaoParaRota resolve pelo prefixo mais longo.
-    // /produtos fica de fora porque ProdutoFormPage monta a propria lateral.
+    // Prefixos específicos: /cadastros se divide entre Catálogo e
+    // Configurações; o prefixo mais longo identifica a seção de cada rota.
     prefixos: [
+      '/produtos',
       '/cadastros/categoria', '/cadastros/tag',
       '/cadastros/unidade-medida', '/cadastros/uom-conversions',
     ],
@@ -178,17 +178,15 @@ export const SECOES = [
       {
         itens: [
           { name: 'Produtos', href: '/produtos', icon: Boxes, description: 'Catálogo de produtos e variações' },
-          { name: 'Categorias', href: '/cadastros/categoria', icon: Tag, description: 'Classificação de produtos' },
-          { name: 'Tags', href: '/cadastros/tag', icon: Tag, description: 'Marcadores livres' },
-          { name: 'Unidades de Medida', href: '/cadastros/unidade-medida', icon: Scale, description: 'Unidades usadas na ficha técnica' },
-          { name: 'Conversões de Unidade', href: '/cadastros/uom-conversions', icon: Scale, description: 'Equivalência entre unidades' },
+          { name: 'Categorias', href: '/cadastros/categoria', icon: Tag, description: 'Classificação de produtos', adminOnly: true },
+          { name: 'Tags', href: '/cadastros/tag', icon: Tag, description: 'Marcadores livres', adminOnly: true },
+          { name: 'Unidades de Medida', href: '/cadastros/unidade-medida', icon: Scale, description: 'Unidades usadas na ficha técnica', adminOnly: true },
+          { name: 'Conversões de Unidade', href: '/cadastros/uom-conversions', icon: Scale, description: 'Equivalência entre unidades', adminOnly: true },
         ],
       },
     ],
   },
   {
-    // U3: Configuracoes absorve Sistema e a parte de Cadastros Base que era
-    // configuracao, em sete blocos. Nenhuma rota mudou — so o agrupamento.
     id: 'configuracoes',
     titulo: 'Configurações',
     prefixos: [
@@ -198,63 +196,51 @@ export const SECOES = [
     ],
     grupos: [
       {
-        nome: 'Conexões',
+        nome: 'Conexões e canais',
+        description: 'Contas, integrações com marketplaces e canais de venda.',
         itens: [
-          { name: 'Hub de Integrações', href: '/configuracoes/integracoes', icon: Share2, description: 'Contas conectadas, marketplaces e apps OAuth' },
-          { name: 'Roteamento de Contas', href: '/configuracoes/roteamento', icon: Waypoints, description: 'Qual conta ERP atende cada marketplace' },
+          { name: 'Hub de Integrações', href: '/configuracoes/integracoes', icon: Share2, description: 'Contas conectadas, marketplaces e apps OAuth', adminOnly: true },
+          { name: 'Roteamento de Contas', href: '/configuracoes/roteamento', icon: Waypoints, description: 'Qual conta ERP atende cada marketplace', adminOnly: true },
+          { name: 'Padrões Bling', href: '/configuracoes/bling', icon: Waypoints, description: 'Regras de negócio e mapeamentos', adminOnly: true },
+          { name: 'Canais de Venda', href: '/cadastros/canal-venda', icon: Store, description: 'Derivado das integrações instaladas', adminOnly: true },
+          { name: 'Plataformas', href: '/cadastros/plataforma', icon: Share2, description: 'Marketplaces disponíveis', adminOnly: true },
         ],
       },
       {
-        nome: 'Logística e Despacho',
+        nome: 'Operação',
+        description: 'Regras de despacho, coleta, estoque e produção.',
         itens: [
-          // O horário de corte é a regra que decide qual pedido entra em qual
-          // lote — cadastro de rotina do galpão. Ficava numa aba dentro do hub
-          // de integrações, onde ninguém procuraria por ele.
-          { name: 'Janelas de Despacho', href: '/configuracoes/janelas-despacho', icon: CalendarClock, description: 'Horário de corte, coleta e canais de cada lote' },
-          { name: 'Pontos de Coleta', href: '/cadastros/ponto-coleta', icon: MapPin, description: 'Onde entregar e a hora em que cada ponto fecha' },
-          { name: 'Canais de Venda', href: '/cadastros/canal-venda', icon: Store, description: 'Derivado das integrações instaladas' },
-          { name: 'Plataformas', href: '/cadastros/plataforma', icon: Share2, description: 'Marketplaces disponíveis' },
+          { name: 'Janelas de Despacho', href: '/configuracoes/janelas-despacho', icon: CalendarClock, description: 'Horário de corte, coleta e canais de cada lote', adminOnly: true },
+          { name: 'Pontos de Coleta', href: '/cadastros/ponto-coleta', icon: MapPin, description: 'Onde entregar e a hora em que cada ponto fecha', adminOnly: true },
+          { name: 'Depósitos', href: '/cadastros/deposito', icon: Building, description: 'Locais de armazenamento', adminOnly: true },
+          { name: 'Fornecedores', href: '/cadastros/fornecedor', icon: Truck, description: 'Parceiros de suprimento', adminOnly: true },
+          { name: 'Parâmetros de Produção', href: '/configuracoes/producao', icon: Settings, description: 'Categorias de estágio, depósito padrão', adminOnly: true },
+          { name: 'Permissões de Demanda', href: '/configuracoes/demanda-permissions', icon: ShieldCheck, description: 'Quem acessa o dashboard', adminOnly: true },
         ],
       },
       {
-        nome: 'Armazém',
+        nome: 'Pessoas e acesso',
+        description: 'Usuários, setores e permissões de acesso.',
         itens: [
-          { name: 'Depósitos', href: '/cadastros/deposito', icon: Building, description: 'Locais de armazenamento' },
-          { name: 'Fornecedores', href: '/cadastros/fornecedor', icon: Truck, description: 'Parceiros de suprimento' },
+          { name: 'Usuários', href: '/sistema/usuarios', icon: Users, description: 'Contas e vínculos de setor', adminOnly: true },
+          { name: 'Setores', href: '/sistema/setores', icon: Building, description: 'Times da operação', adminOnly: true },
         ],
       },
       {
-        nome: 'Produção',
+        nome: 'IA',
+        description: 'Modelo, comportamento e ferramentas de IA.',
         itens: [
-          { name: 'Parâmetros de Produção', href: '/configuracoes/producao', icon: Settings, description: 'Categorias de estágio, depósito padrão' },
-          { name: 'Permissões de Demanda', href: '/configuracoes/demanda-permissions', icon: ShieldCheck, description: 'Quem acessa o dashboard' },
+          { name: 'Configuração da IA', href: '/configuracoes/ia', icon: Sparkles, description: 'Modelo, prompts e parâmetros', adminOnly: true },
+          { name: 'Ferramentas de IA', href: '/ferramentas/ia', icon: Sparkles, description: 'Execução e testes assistidos', adminOnly: true },
         ],
       },
       {
-        nome: 'Inteligência Artificial',
+        nome: 'Sistema e ferramentas',
+        description: 'Agente local, tarefas automáticas e manutenção.',
         itens: [
-          { name: 'Configuração da IA', href: '/configuracoes/ia', icon: Sparkles, description: 'Modelo, prompts e parâmetros' },
-          { name: 'Ferramentas de IA', href: '/ferramentas/ia', icon: Sparkles, description: 'Execução e testes assistidos' },
-        ],
-      },
-      {
-        nome: 'ERP',
-        itens: [
-          { name: 'Padrões Bling', href: '/configuracoes/bling', icon: Waypoints, description: 'Regras de negócio e mapeamentos' },
-        ],
-      },
-      {
-        nome: 'Acesso',
-        itens: [
-          { name: 'Usuários', href: '/sistema/usuarios', icon: Users, description: 'Contas e vínculos de setor' },
-          { name: 'Setores', href: '/sistema/setores', icon: Building, description: 'Times da operação' },
-        ],
-      },
-      {
-        nome: 'Utilitários',
-        itens: [
-          { name: 'Central de Tarefas', href: '/admin/utilitarios/tasks', icon: HardDrive, description: 'Agendamentos e execuções' },
-          { name: 'Ferramentas', href: '/ferramentas', icon: Wrench, description: 'Manutenção e reprocessamento' },
+          { name: 'Central de Tarefas', href: '/admin/utilitarios/tasks', icon: HardDrive, description: 'Agendamentos e execuções', adminOnly: true },
+          { name: 'Ferramentas', href: '/ferramentas', icon: Wrench, description: 'Manutenção e reprocessamento', adminOnly: true },
+          { name: 'Agente local', href: '/configuracoes/agente-local', icon: Download, description: 'Instalação do agente de impressão' },
         ],
       },
     ],
@@ -262,7 +248,7 @@ export const SECOES = [
   {
     id: 'monitoramento',
     titulo: 'Monitoramento',
-    prefixos: ['/relatorios'],
+    prefixos: ['/relatorios', '/ai/logs'],
     grupos: [
       {
         itens: [
@@ -273,9 +259,25 @@ export const SECOES = [
           { name: 'Webhooks', href: '/relatorios/webhooks', icon: Database, description: 'Entregas e reprocessamento de eventos' },
           { name: 'Auditoria', href: '/relatorios/auditoria', icon: Monitor, description: 'Relatórios de auditoria do sistema' },
           { name: 'Histórico Gerencial', href: '/relatorios/gerencial-historico', icon: Factory, description: 'Consolidado gerencial por período' },
+          { name: 'Logs de IA', href: '/ai/logs', icon: Database, description: 'Execuções e erros de IA', adminOnly: true, exato: true },
         ],
       },
     ],
+  },
+  {
+    id: 'estoque',
+    titulo: 'Estoque',
+    prefixos: ['/estoque'],
+    grupos: [{ itens: [
+      { name: 'Dashboard', href: '/estoque', icon: Activity, description: 'Resumo do estoque', exato: true, permission: { a: 'estoque', I: 'ler' } },
+      { name: 'Movimentar', href: '/estoque/movimentar', icon: Package, description: 'Registrar movimentações', permission: { a: 'estoque', I: 'ler' } },
+      { name: 'Movimentação em Lote', href: '/estoque/movimentacao-lote', icon: Boxes, description: 'Movimentar vários itens', permission: { a: 'estoque', I: 'ler' } },
+      { name: 'Posição', href: '/estoque/posicao', icon: Warehouse, description: 'Consultar saldo atual', permission: { a: 'estoque', I: 'ler' } },
+      { name: 'Histórico', href: '/estoque/historico', icon: ScrollText, description: 'Consultar movimentações', permission: { a: 'estoque', I: 'ler' } },
+      { name: 'Reservas', href: '/estoque/reservas', icon: ClipboardList, description: 'Acompanhar reservas', permission: { a: 'estoque', I: 'ler' } },
+      { name: 'Ajuste', href: '/estoque/ajuste', icon: Scale, description: 'Corrigir saldos', permission: { a: 'estoque', I: 'ler' } },
+      { name: 'Relatórios', href: '/estoque/relatorios', icon: BarChart3, description: 'Análises de estoque', permission: { a: 'estoque', I: 'ler' } },
+    ] }],
   },
 ];
 

@@ -1,4 +1,6 @@
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
+import { useAuth } from '@/contexts/AuthContext';
+import { secaoParaRota } from '@/navigation';
 import Header from './Header';
 import RightSidebar from './RightSidebar';
 import Sidebar from './Sidebar';
@@ -7,16 +9,25 @@ import AlertaTurbo from '@/components/despacho/AlertaTurbo';
 import AgentUpdateBanner from './AgentUpdateBanner';
 
 function MainLayout() {
+  const location = useLocation();
+  const { isAdmin, hasPermission } = useAuth();
+  const secao = secaoParaRota(location.pathname);
+  const podeVer = (item) => {
+    if (item.adminOnly && !isAdmin()) return false;
+    if (item.permission && !hasPermission(item.permission.a, item.permission.I)) return false;
+    return true;
+  };
+
   return (
-    <div className="flex flex-col h-screen bg-gray-50/50 overflow-hidden">
+    <div className="flex h-dvh min-h-screen flex-col overflow-hidden bg-background">
       {/* Acima do Header de propósito: o prazo do Turbo é de 40 minutos, e o
           alerta precisa alcançar o operador em qualquer tela. */}
       <AlertaTurbo />
       <AgentUpdateBanner />
       <Header />
       <div className="flex flex-1 overflow-hidden relative">
-        <Sidebar />
-        <main className="flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-6 bg-background/50">
+        <Sidebar secao={secao} podeVer={podeVer} />
+        <main id="main-content" className="min-w-0 flex-1 overflow-y-auto px-4 py-5 md:px-6 md:py-6">
           <Breadcrumbs />
           <Outlet />
         </main>

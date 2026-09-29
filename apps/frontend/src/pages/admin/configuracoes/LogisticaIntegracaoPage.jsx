@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import PageHeader from '@/components/ui/PageHeader';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -86,7 +87,7 @@ export default function LogisticaIntegracaoPage() {
       ]);
       setIntegracoes(ints || []);
       setPontos(pontosData || []);
-    } catch (e) {
+    } catch {
       toast.error('Falha ao carregar integrações e pontos de coleta');
     } finally {
       setLoading(false);
@@ -104,7 +105,7 @@ export default function LogisticaIntegracaoPage() {
       setRegras(regrasData || []);
       setCanais(canaisData || []);
       setModalidadesFiltro(modalidadesData || []);
-    } catch (e) {
+    } catch {
       toast.error('Falha ao carregar logística da integração');
     }
   }, []);
@@ -154,7 +155,7 @@ export default function LogisticaIntegracaoPage() {
           : `Canal associado · ${n} pedido(s) reclassificados`
       );
       await carregarPorIntegracao(selectedIntegration);
-    } catch (e) {
+    } catch {
       toast.error('Erro ao associar canal de envio');
     }
   };
@@ -229,7 +230,7 @@ export default function LogisticaIntegracaoPage() {
       await LogisticaIntegracaoService.removerRegra(id);
       toast.success('Janela removida');
       await carregarPorIntegracao(selectedIntegration);
-    } catch (e) {
+    } catch {
       toast.error('Erro ao remover janela');
     }
   };
@@ -240,6 +241,7 @@ export default function LogisticaIntegracaoPage() {
 
   return (
     <div className="space-y-6">
+      <PageHeader title="Janelas de Despacho" description="Associe os canais às modalidades e configure as janelas de coleta." />
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div>

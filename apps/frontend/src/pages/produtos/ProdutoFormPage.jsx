@@ -13,10 +13,9 @@ import {
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { useLayout } from '@/contexts/LayoutContext';
 import { productSchema } from '@/schemas/productSchema';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { AlertCircle, CheckCircle2, FileText, Loader2, Lock, Package, Palette, Settings, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Loader2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -37,7 +36,6 @@ import VariationManager from '@/components/produtos/VariationManager';
 function ProdutoFormPage() {
   const { id: produto_id } = useParams();
   const navigate = useNavigate();
-  const { setLeftSidebarContent } = useLayout();
   const [searchParams] = useSearchParams();
 
   const variationIdParam = searchParams.get('variation_id');
@@ -77,120 +75,6 @@ function ProdutoFormPage() {
       external_product_links: { skus: [], names: [], ids: [] },
     },
   });
-
-  // Setup sidebar navigation
-  useEffect(() => {
-    const sidebarContent = (
-      <div className="flex flex-col gap-4">
-        <div className="px-3 py-2">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">
-            Navegação do Produto
-          </h2>
-        </div>
-        <nav className="space-y-1">
-          <ul className="space-y-1">
-            <li>
-              <button
-                onClick={() => handleTabChange("general")}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-all w-full text-left ${
-                  activeTab === "general"
-                    ? "bg-muted text-primary font-medium"
-                    : "hover:bg-muted"
-                }`}
-              >
-                <Package className="h-4 w-4 shrink-0" />
-                <span>Dados Gerais</span>
-              </button>
-            </li>
-            <li>
-              <button
-                onClick={() => handleTabChange("bom")}
-                disabled={!produto_id}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-all w-full text-left ${
-                  activeTab === "bom"
-                    ? "bg-muted text-primary font-medium"
-                    : !produto_id
-                      ? "opacity-50 cursor-not-allowed"
-                      : "hover:bg-muted"
-                }`}
-                title={!produto_id ? "Salve as informações básicas para liberar esta seção" : ""}
-              >
-                {produto_id ? <FileText className="h-4 w-4 shrink-0" /> : <Lock className="h-4 w-4 shrink-0" />}
-                <span>
-                  {form.watch('formato') === 'composicao' ? 'Composição' :
-                   form.watch('formato') === 'kit' ? 'Itens do Kit' : 'Ficha Técnica'}
-                </span>
-                {!produto_id && <Lock className="h-3 w-3 ml-auto text-muted-foreground" />}
-              </button>
-            </li>
-            {(!productData?.parent_id) && (
-              <li>
-                <button
-                  onClick={() => handleTabChange("variations")}
-                  disabled={!produto_id}
-                  className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-all w-full text-left ${
-                    activeTab === "variations"
-                      ? "bg-muted text-primary font-medium"
-                      : !produto_id
-                        ? "opacity-50 cursor-not-allowed"
-                        : "hover:bg-muted"
-                  }`}
-                  title={!produto_id ? "Salve as informações básicas para liberar esta seção" : ""}
-                >
-                  {produto_id ? <Palette className="h-4 w-4 shrink-0" /> : <Lock className="h-4 w-4 shrink-0" />}
-                  <span>Variações</span>
-                  {!produto_id && <Lock className="h-3 w-3 ml-auto text-muted-foreground" />}
-                </button>
-              </li>
-            )}
-            <li>
-              <button
-                onClick={() => handleTabChange("artwork")}
-                disabled={!produto_id}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-all w-full text-left ${
-                  activeTab === "artwork"
-                    ? "bg-muted text-primary font-medium"
-                    : !produto_id
-                      ? "opacity-50 cursor-not-allowed"
-                      : "hover:bg-muted"
-                }`}
-                title={!produto_id ? "Salve as informações básicas para liberar esta seção" : ""}
-              >
-                {produto_id ? <Palette className="h-4 w-4 shrink-0" /> : <Lock className="h-4 w-4 shrink-0" />}
-                <span>Artes e Impressão</span>
-                {!produto_id && <Lock className="h-3 w-3 ml-auto text-muted-foreground" />}
-              </button>
-            </li>
-            <li>
-              <button
-                onClick={() => handleTabChange("integrations")}
-                disabled={!produto_id}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-all w-full text-left ${
-                  activeTab === "integrations"
-                    ? "bg-muted text-primary font-medium"
-                    : !produto_id
-                      ? "opacity-50 cursor-not-allowed"
-                      : "hover:bg-muted"
-                }`}
-                title={!produto_id ? "Salve as informações básicas para liberar esta seção" : ""}
-              >
-                {produto_id ? <Settings className="h-4 w-4 shrink-0" /> : <Lock className="h-4 w-4 shrink-0" />}
-                <span>Integrações</span>
-                {!produto_id && <Lock className="h-3 w-3 ml-auto text-muted-foreground" />}
-              </button>
-            </li>
-          </ul>
-        </nav>
-      </div>
-    );
-
-    setLeftSidebarContent(sidebarContent);
-
-    // Cleanup sidebar content when leaving the page
-    return () => {
-      setLeftSidebarContent(null);
-    };
-  }, [activeTab, produto_id, productData?.parent_id]);
 
   // Load auxiliary data
   useEffect(() => {
@@ -346,7 +230,7 @@ function ProdutoFormPage() {
         try {
           setReadiness(await ProductService.getReadiness(produto_id));
           setReadinessError(false);
-        } catch (readinessLoadError) {
+        } catch {
           setReadinessError(true);
         }
 
@@ -435,17 +319,24 @@ function ProdutoFormPage() {
 
   if (loadingProduct) return <div className="flex justify-center py-10"><Loader2 className="animate-spin h-8 w-8" /></div>;
 
+  const sectionItems = [
+    { id: 'general', label: 'Dados Gerais' },
+    { id: 'bom', label: 'Composição' },
+    ...(!productData?.parent_id ? [{ id: 'variations', label: 'Variações' }] : []),
+    { id: 'artwork', label: 'Artes e Impressão' },
+    { id: 'integrations', label: 'Integrações' },
+  ];
+
   return (
-    <div className="max-w-5xl mx-auto py-4">
-      {/* Header - Removed sticky behavior */}
-      <div className="bg-white border-b py-6 px-6 mb-8 flex items-center justify-between rounded-lg shadow-sm">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">
+    <div className="mx-auto max-w-5xl space-y-5 py-2">
+      <div className="sticky top-0 z-20 -mx-4 flex flex-col gap-4 border-b bg-background/95 px-4 py-4 backdrop-blur md:-mx-6 md:flex-row md:items-center md:justify-between md:px-6">
+        <div className="min-w-0">
+          <h1 className="page-title">
             {produto_id ? 'Editar Produto' : 'Novo Produto'}
           </h1>
           {productData && (
-            <div className="text-sm text-muted-foreground mt-2 font-medium">
-              SKU: {productData.sku_mestre || productData.sku} | {productData.name}
+            <div className="mt-1 truncate text-sm font-medium text-muted-foreground">
+              SKU: {productData.sku_mestre || productData.sku} · {productData.name}
               {productData.parent_id && (
                 <Link
                   className="ml-3 text-primary hover:underline"
@@ -457,7 +348,7 @@ function ProdutoFormPage() {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-2">
           <Button variant="outline" onClick={() => navigate('/produtos')}>Voltar</Button>
           <Button type="submit" form="product-form" disabled={loadingSubmit} className="shadow-md">
             {loadingSubmit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -465,6 +356,26 @@ function ProdutoFormPage() {
           </Button>
         </div>
       </div>
+
+      <nav aria-label="Seções do produto" className="-mx-1 overflow-x-auto px-1 pb-1">
+        <ul className="flex min-w-max gap-2">
+          {sectionItems.map(({ id, label }) => {
+            const disabled = id !== 'general' && !produto_id;
+            const active = activeTab === id;
+            return (
+              <li key={id}>
+                <button type="button" onClick={() => handleTabChange(id)} disabled={disabled}
+                  aria-current={active ? 'page' : undefined}
+                  title={disabled ? 'Salve os dados básicos para liberar esta seção' : undefined}
+                  className={`flex min-h-11 items-center gap-2 rounded-lg border px-4 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-55 ${active ? 'border-primary bg-primary text-primary-foreground' : 'border-border bg-card text-foreground hover:bg-muted'}`}>
+                  {label}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+      {!produto_id && <p className="text-sm text-muted-foreground">Salve os dados básicos para liberar composição, variações e integrações.</p>}
 
       {produto_id && (
         <Card className={`mb-6 ${readiness?.ready ? 'border-green-200' : 'border-amber-200'}`}>
@@ -497,7 +408,6 @@ function ProdutoFormPage() {
                   ) : (
                     <p className="mt-1 text-sm text-muted-foreground">Requisitos de cadastro atendidos.</p>
                   )}
-                  <p className="mt-2 text-xs text-muted-foreground">A prontidão informa o cadastro e ainda não altera a disponibilidade comercial.</p>
                 </div>
               </div>
             ) : (
@@ -821,10 +731,7 @@ function ProdutoFormPage() {
                                   checked={field.value}
                                   onCheckedChange={(checked) => {
                                     field.onChange(checked);
-                                    if (!checked) {
-                                      // If unchecking inheritance, populate with parent data (snapshot)
-                                      handleSnapshotFromParent();
-                                    }
+                                    // Os valores já estão no formulário e permanecem editáveis ao desativar a herança.
                                   }}
                                 />
                               </FormControl>
@@ -909,27 +816,10 @@ function ProdutoFormPage() {
                   </div>
                 </div>
 
-                {/* Footer with save button */}
-                <div className="bg-white py-6 border-t mt-8">
-                  <div className="flex justify-end">
-                    <Button type="submit" disabled={loadingSubmit} className="w-full md:w-auto shadow-sm">
-                      {loadingSubmit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                      {produto_id ? 'Salvar Alterações' : 'Criar Produto'}
-                    </Button>
-                  </div>
-                </div>
               </form>
             </CardContent>
           </Card>
         )}
-
-        {/* Hidden submit button at the bottom for accessibility */}
-        <div className="sr-only">
-          <Button type="submit" form="product-form" disabled={loadingSubmit}>
-            {loadingSubmit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {produto_id ? 'Salvar Alterações' : 'Criar Produto'}
-          </Button>
-        </div>
 
         {activeTab === "bom" && (
           <Card>
@@ -962,7 +852,7 @@ function ProdutoFormPage() {
                   if (produto_id) {
                     try {
                       // Call the backend to save variations
-                      const response = await ProductService.createProductWithVariations(
+                      await ProductService.createProductWithVariations(
                         produto_id,
                         variationsData.variations_config,
                         variationsData.variations_data

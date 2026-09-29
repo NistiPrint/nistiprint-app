@@ -30,14 +30,62 @@ import {
 } from 'lucide-react';
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { TOP_NAV } from '@/navigation';
+import { secaoParaRota, TOP_NAV } from '@/navigation';
+import SidebarNav from './SidebarNav';
 
 // O menu vive em src/navigation.js (registro unico de navegacao).
 const navigation = TOP_NAV;
 
+function MobileNavTree({ items, isVisible, isActive, onNavigate, depth = 0 }) {
+  return (
+    <ul className={cn('space-y-1', depth > 0 && 'ml-3 border-l pl-3')}>
+      {items.filter(isVisible).map((item) => {
+        const Icon = item.icon;
+        if (item.type === 'link') {
+          return (
+            <li key={item.href || item.name}>
+              <Link to={item.href} onClick={onNavigate}
+                className={cn('flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium',
+                  isActive(item) ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-muted')}>
+                {Icon && <Icon className="h-4 w-4 shrink-0" />}
+                <span>{item.name}</span>
+              </Link>
+            </li>
+          );
+        }
+        return (
+          <li key={item.href || item.name}>
+            <details open={isActive(item)}>
+              <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 rounded-lg px-3 py-2 text-sm font-semibold text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                {Icon && <Icon className="h-4 w-4 shrink-0" />}
+                <span>{item.name}</span>
+                <ChevronDown className="ml-auto h-4 w-4 text-muted-foreground" />
+              </summary>
+              <MobileNavTree items={item.children || []} isVisible={isVisible} isActive={isActive} onNavigate={onNavigate} depth={depth + 1} />
+            </details>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function Header() {
   const { user, logout, isAdmin, hasPermission } = useAuth();
   const location = useLocation();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const secao = secaoParaRota(location.pathname);
+  const topNavBySection = {
+    pedidos: 'Pedidos',
+    producao: 'Produção',
+    estoque: 'Estoque',
+    catalogo: 'Catálogo',
+    monitoramento: 'Monitoramento',
+    configuracoes: 'Configurações',
+  };
+  const mobileNavigation = secao
+    ? navigation.filter((item) => item.name !== topNavBySection[secao.id])
+    : navigation;
 
   const handleLogout = async () => {
     try {
@@ -58,7 +106,7 @@ function Header() {
   };
 
   const checkIsActive = (item) => {
-    if (item.href && location.pathname === item.href) return true;
+    if (item.href && (location.pathname === item.href || location.pathname.startsWith(`${item.href}/`))) return true;
     if (item.children) {
       return item.children.some(child => checkIsActive(child));
     }
@@ -176,15 +224,15 @@ function Header() {
 
   return (
     <header className="sticky top-0 z-50 flex h-16 items-center gap-4 border-b bg-background/80 backdrop-blur-xl px-4 md:px-6 shadow-sm">
-      <div className="flex items-center gap-4">
+      <div className="flex min-w-0 items-center gap-2 md:gap-4">
         <Link
           to="/"
-          className="flex items-center gap-2 font-semibold text-primary mr-4 transition-opacity hover:opacity-80"
+          className="mr-1 flex items-center gap-2 font-semibold text-primary transition-opacity hover:opacity-80 md:mr-4"
         >
           <img
             src="/logomarca.png"
             alt="Logo"
-            className="h-10 w-44 object-contain"
+            className="h-9 w-28 object-contain sm:w-36 md:h-10 md:w-44"
           />
         </Link>
 
@@ -195,55 +243,25 @@ function Header() {
 
       {/* Mobile Menu */}
       <div className="flex items-center gap-2 md:hidden">
-        <Sheet>
+        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
           <SheetTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg">
+            <Button variant="ghost" size="icon" aria-label="Abrir menu" className="h-11 w-11 rounded-lg">
               <Menu className="h-5 w-5" />
             </Button>
           </SheetTrigger>
-          <SheetContent side="left" className="w-[300px] sm:w-[350px]">
+          <SheetContent side="left" className="w-[320px] overflow-y-auto sm:w-[360px]">
             <SheetHeader>
               <SheetTitle className="text-left">Nisti Print</SheetTitle>
             </SheetHeader>
-            <div className="flex flex-col gap-4 mt-8">
-              {navigation
-                .filter(checkItemVisibility)
-                .map((item, index) => {
-                  const Icon = item.icon;
-                  if (item.type === 'link') {
-                    return (
-                      <Link
-                        key={item.name + index}
-                        to={item.href}
-                        className="flex items-center gap-3 text-lg font-medium hover:text-primary transition-colors py-2"
-                      >
-                        {Icon && <Icon className="h-5 w-5" />}
-                        {item.name}
-                      </Link>
-                    );
-                  }
-                  return (
-                    <div key={item.name + index} className="flex flex-col gap-2">
-                      <div className="flex items-center gap-3 text-lg font-bold text-muted-foreground py-2">
-                        {Icon && <Icon className="h-5 w-5" />}
-                        {item.name}
-                      </div>
-                      <div className="flex flex-col gap-2 pl-8 border-l ml-2.5">
-                        {item.children
-                          .filter(checkItemVisibility)
-                          .map((child, cIdx) => (
-                            <Link
-                              key={child.name + cIdx}
-                              to={child.href}
-                              className="text-base font-medium hover:text-primary transition-colors py-1"
-                            >
-                              {child.name}
-                            </Link>
-                          ))}
-                      </div>
-                    </div>
-                  );
-                })}
+            <div className="mt-6 space-y-5">
+              {secao && (
+                <div>
+                  <h3 className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Nesta seção</h3>
+                  <SidebarNav secao={secao} podeVer={(item) => checkItemVisibility(item)} onNavigate={() => setMobileOpen(false)} />
+                </div>
+              )}
+              {secao && <h3 className="border-t pt-4 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Outras áreas</h3>}
+              <MobileNavTree items={mobileNavigation} isVisible={checkItemVisibility} isActive={checkIsActive} onNavigate={() => setMobileOpen(false)} />
             </div>
           </SheetContent>
         </Sheet>
@@ -256,7 +274,7 @@ function Header() {
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
-              className="relative h-9 w-9 rounded-full transition-all hover:bg-muted/80"
+              className="relative h-11 w-11 rounded-full transition-all hover:bg-muted/80"
             >
               <Avatar className="h-9 w-9 border shadow-sm">
                 <AvatarImage src={user?.avatar_url} alt={user?.nome} />
@@ -316,4 +334,3 @@ function Header() {
 }
 
 export default Header;
-
