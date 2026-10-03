@@ -23,6 +23,7 @@ const ROTAS_SEM_MENU = new Set([
   '/perfil',
   '/despacho/arquivo',
   '/despacho/escopo',
+  '/despacho/plano-impressao',
   '/producao/foco',
   '/producao/resumo',
   '/producao/demanda/prioridade',

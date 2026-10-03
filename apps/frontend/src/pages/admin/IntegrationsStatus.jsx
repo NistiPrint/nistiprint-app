@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -14,11 +14,11 @@ export default function IntegrationsStatus({ onAddClick }) {
   const [syncingAction, setSyncingAction] = useState(null);
   const [syncingAccountIdentityId, setSyncingAccountIdentityId] = useState(null);
   const [moduleIcons, setModuleIcons] = useState({});
-
-  useEffect(() => {
-    fetchIntegrations();
-    fetchModules();
-  }, []);
+  const [erpLinksById, setErpLinksById] = useState({});
+  const [marketplaceLinksById, setMarketplaceLinksById] = useState({});
+  const [linkSummaryStatus, setLinkSummaryStatus] = useState('loading');
+  const integrationsRef = useRef(integrations);
+  integrationsRef.current = integrations;
 
   const erps = useMemo(
     () => integrations.filter((item) => item.module_id === 'bling'),
@@ -29,7 +29,41 @@ export default function IntegrationsStatus({ onAddClick }) {
     [integrations]
   );
 
-  async function fetchModules() {
+  const fetchLinkSummaries = useCallback(async (installations) => {
+    setLinkSummaryStatus('loading');
+    const erpIds = installations
+      .filter((item) => item.module_id === 'bling')
+      .map((item) => item.id);
+    const marketplaceIds = installations
+      .filter((item) => item.module_id !== 'bling')
+      .map((item) => item.id);
+
+    if (erpIds.length === 0 && marketplaceIds.length === 0) {
+      setErpLinksById({});
+      setMarketplaceLinksById({});
+      setLinkSummaryStatus('loaded');
+      return true;
+    }
+
+    try {
+      const result = await MarketplaceService.getIntegrationLinksBatch(erpIds, marketplaceIds);
+      setErpLinksById(result.erp || {});
+      setMarketplaceLinksById(result.marketplace || {});
+      setLinkSummaryStatus('loaded');
+      return true;
+    } catch (error) {
+      console.error('Erro ao carregar vínculos das integrações:', error);
+      setLinkSummaryStatus('error');
+      return false;
+    }
+  }, []);
+
+  const refreshLinkSummaries = useCallback(
+    () => fetchLinkSummaries(integrationsRef.current),
+    [fetchLinkSummaries]
+  );
+
+  const fetchModules = useCallback(async () => {
     try {
       const modules = await MarketplaceService.getAvailableModules();
       const icons = {};
@@ -40,20 +74,29 @@ export default function IntegrationsStatus({ onAddClick }) {
     } catch (error) {
       console.error('Erro ao carregar icones:', error);
     }
-  }
+  }, []);
 
-  async function fetchIntegrations() {
+  const fetchIntegrations = useCallback(async () => {
     try {
       setLoading(true);
       const data = await MarketplaceService.getInstalledIntegrations();
-      setIntegrations(data.success === false ? [] : data.installations || []);
+      const installations = data.success === false ? [] : data.installations || [];
+      integrationsRef.current = installations;
+      setIntegrations(installations);
+      setLoading(false);
+      await fetchLinkSummaries(installations);
     } catch (error) {
       console.error(error);
       toast.error('Erro ao carregar integracoes');
     } finally {
       setLoading(false);
     }
-  }
+  }, [fetchLinkSummaries]);
+
+  useEffect(() => {
+    fetchIntegrations();
+    fetchModules();
+  }, [fetchIntegrations, fetchModules]);
 
   async function handleTest(id) {
     try {
@@ -111,7 +154,7 @@ export default function IntegrationsStatus({ onAddClick }) {
       await MarketplaceService.uninstallModule(id);
       toast.success('Integracao removida com sucesso');
       await fetchIntegrations();
-    } catch (error) {
+    } catch {
       toast.error('Erro ao remover integracao');
     }
   }
@@ -129,7 +172,7 @@ export default function IntegrationsStatus({ onAddClick }) {
       } else {
         toast.error('Falha ao importar tokens do Firebase');
       }
-    } catch (error) {
+    } catch {
       toast.error('Falha ao importar tokens do Firebase');
     } finally {
       setSyncingAction(null);
@@ -147,7 +190,7 @@ export default function IntegrationsStatus({ onAddClick }) {
       } else {
         toast.error('Falha ao publicar tokens no Firebase');
       }
-    } catch (error) {
+    } catch {
       toast.error('Falha ao publicar tokens no Firebase');
     } finally {
       setSyncingAction(null);
@@ -168,19 +211,21 @@ export default function IntegrationsStatus({ onAddClick }) {
 
   function renderSection(title, icon, items, type) {
     return (
-      <section className="space-y-2">
+      <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            {icon}
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/70">{icon}</span>
+            <h3 className="text-sm font-semibold tracking-wide">{title}</h3>
           </div>
-          <span className="text-xs text-muted-foreground">{items.length}</span>
+          <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium tabular-nums text-muted-foreground">
+            {items.length}
+          </span>
         </div>
 
         {items.length === 0 ? (
           renderEmptyState(type)
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {items.map((integration) => (
               <IntegrationCard
                 key={integration.id}
@@ -195,6 +240,11 @@ export default function IntegrationsStatus({ onAddClick }) {
                 syncingAccountIdentityId={syncingAccountIdentityId}
                 onTest={handleTest}
                 testingId={testingId}
+                linksSummary={
+                  (type === 'erp' ? erpLinksById : marketplaceLinksById)[String(integration.id)] ?? null
+                }
+                linksSummaryStatus={linkSummaryStatus}
+                onRefreshLinks={refreshLinkSummaries}
               />
             ))}
           </div>
@@ -204,22 +254,22 @@ export default function IntegrationsStatus({ onAddClick }) {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="space-y-7">
+      <div className="flex flex-col gap-4 rounded-xl border bg-card p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
         <div>
-          <h2 className="text-xl font-semibold">Integracoes</h2>
-          <p className="text-sm text-muted-foreground">Contas, vinculos e rotas de NF.</p>
+          <h2 className="text-xl font-semibold tracking-tight">Integrações conectadas</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Contas, vínculos e emissão de notas fiscais.</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={handleImportFromFirebase} disabled={syncingAction !== null}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleImportFromFirebase} disabled={syncingAction !== null}>
             <RefreshCw className={`mr-2 h-4 w-4 ${syncingAction === 'import' ? 'animate-spin' : ''}`} />
             Baixar tokens do Firebase
           </Button>
-          <Button variant="outline" onClick={handlePublishToFirebase} disabled={syncingAction !== null}>
+          <Button variant="outline" size="sm" onClick={handlePublishToFirebase} disabled={syncingAction !== null}>
             <RefreshCw className={`mr-2 h-4 w-4 ${syncingAction === 'publish' ? 'animate-spin' : ''}`} />
             Publicar no Firebase
           </Button>
-          <Button onClick={onAddClick}>
+          <Button size="sm" onClick={onAddClick}>
             <Sparkles className="mr-2 h-4 w-4" />
             Nova integracao
           </Button>

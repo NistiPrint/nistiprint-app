@@ -351,6 +351,84 @@ class ErpMarketplaceLinksService:
             logger.error(f"Erro ao buscar vínculos por Marketplace: {e}", exc_info=True)
             return []
 
+    def get_links_for_integrations(
+        self,
+        erp_integration_ids: List[int],
+        marketplace_integration_ids: List[int],
+    ) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+        """Load link summaries for many integrations with at most two queries."""
+        erp_ids = list(dict.fromkeys(int(value) for value in erp_integration_ids))
+        marketplace_ids = list(
+            dict.fromkeys(int(value) for value in marketplace_integration_ids)
+        )
+        erp_links = {str(value): [] for value in erp_ids}
+        marketplace_links = {str(value): [] for value in marketplace_ids}
+
+        if erp_ids:
+            result = (
+                supabase_db.table(self.table_name)
+                .select("""
+                    id,
+                    erp_integration_id,
+                    marketplace_integration_id,
+                    marketplace_module_id,
+                    erp_store_id,
+                    store_name,
+                    nf_emission_mode,
+                    marketplace:installed_integrations!erp_marketplace_links_marketplace_integration_id_fkey (
+                        id,
+                        module_id,
+                        instance_name,
+                        is_active
+                    )
+                """)
+                .in_("erp_integration_id", erp_ids)
+                .execute()
+            )
+            for row in result.data or []:
+                link = dict(row)
+                link["id"] = str(link.get("id"))
+                if not link.get("marketplace") and link.get("marketplace_module_id"):
+                    metadata = self._module_metadata(link["marketplace_module_id"])
+                    link["marketplace"] = {
+                        "id": None,
+                        "module_id": link["marketplace_module_id"],
+                        "instance_name": metadata["name"],
+                        "is_active": False,
+                        "catalog_only": True,
+                    }
+                erp_links.setdefault(str(link.get("erp_integration_id")), []).append(link)
+
+        if marketplace_ids:
+            result = (
+                supabase_db.table(self.table_name)
+                .select("""
+                    id,
+                    erp_integration_id,
+                    marketplace_integration_id,
+                    marketplace_module_id,
+                    erp_store_id,
+                    store_name,
+                    nf_emission_mode,
+                    erp:installed_integrations!erp_marketplace_links_erp_integration_id_fkey (
+                        id,
+                        module_id,
+                        instance_name,
+                        is_active
+                    )
+                """)
+                .in_("marketplace_integration_id", marketplace_ids)
+                .execute()
+            )
+            for row in result.data or []:
+                link = dict(row)
+                link["id"] = str(link.get("id"))
+                marketplace_links.setdefault(
+                    str(link.get("marketplace_integration_id")), []
+                ).append(link)
+
+        return {"erp": erp_links, "marketplace": marketplace_links}
+
     def get_erp_store_for_marketplace(
         self,
         erp_integration_id: int,
