@@ -6,6 +6,7 @@ import RightSidebar from './RightSidebar';
 import Sidebar from './Sidebar';
 import Breadcrumbs from './Breadcrumbs';
 import AlertaTurbo from '@/components/despacho/AlertaTurbo';
+import AlertasLogisticos from '@/components/despacho/AlertasLogisticos';
 import AgentUpdateBanner from './AgentUpdateBanner';
 
 function MainLayout() {
@@ -23,6 +24,7 @@ function MainLayout() {
       {/* Acima do Header de propósito: o prazo do Turbo é de 40 minutos, e o
           alerta precisa alcançar o operador em qualquer tela. */}
       <AlertaTurbo />
+      <AlertasLogisticos />
       <AgentUpdateBanner />
       <Header />
       <div className="flex flex-1 overflow-hidden relative">

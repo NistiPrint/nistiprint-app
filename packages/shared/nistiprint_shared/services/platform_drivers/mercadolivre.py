@@ -1,5 +1,6 @@
 import requests
 import logging
+import re
 from typing import List, Dict, Optional
 
 from nistiprint_shared.services.marketplace_http import request_json
@@ -147,7 +148,7 @@ def get_shipment(integration: Dict, shipment_id: str) -> Dict:
     url = _ml_url(f"/shipments/{shipment_id}")
     logger.info(f"[ML Driver] Fetching shipment: {url}")
     
-    return request_json(
+    result = request_json(
         requests.get,
         url,
         provider="Mercado Livre",
@@ -155,6 +156,15 @@ def get_shipment(integration: Dict, shipment_id: str) -> Dict:
         resource_id=shipment_id,
         headers=headers,
     ).to_legacy()
+    if not result.get('error'):
+        from nistiprint_shared.services.marketplace_logistics_facts import meli_departed, meli_dispatch_timestamp
+        if meli_departed(result) and not meli_dispatch_timestamp({'shipment': result}):
+            history = get_shipment_history(integration, shipment_id)
+            if history.get('status_code') == 429:
+                return history
+            if not history.get('error'):
+                result['_history'] = history.get('history') or []
+    return result
 
 
 def get_shipment_items(integration: Dict, shipment_id: str) -> Dict:
@@ -194,14 +204,39 @@ def get_shipment_sla(integration: Dict, shipment_id: str) -> Dict:
     url = _ml_url(f"/shipments/{shipment_id}/sla")
     logger.info(f"[ML Driver] Fetching shipment SLA: {url}")
     
-    return request_json(
+    result = request_json(
         requests.get,
         url,
         provider="Mercado Livre",
         resource_type="shipment",
         resource_id=shipment_id,
         headers=headers,
+        list_key="sla",
     ).to_legacy()
+    if not result.get('error') and isinstance(result.get('sla'), list):
+        from nistiprint_shared.services.marketplace_logistics_facts import normalize_sla
+        return normalize_sla(result['sla'])
+    return result
+
+
+def get_shipping_schedule(integration: Dict, seller_id: str, logistic_type: str) -> Dict:
+    seller_id = _sanitize_resource_id(seller_id, resource_name="seller")
+    if not re.fullmatch(r"[a-zA-Z0-9_]+", logistic_type or ""):
+        raise ValueError("Tipo logistico invalido")
+    return request_json(requests.get, _ml_url(f"/users/{seller_id}/shipping/schedule/{logistic_type}"),
+        provider="Mercado Livre", resource_type="shipment", headers=_auth_headers(integration)).to_legacy()
+
+
+def get_shipping_user(integration: Dict) -> Dict:
+    return request_json(requests.get, _ml_url("/users/me"), provider="Mercado Livre",
+        resource_type="connection", headers=_auth_headers(integration)).to_legacy()
+
+
+def get_shipment_history(integration: Dict, shipment_id: str) -> Dict:
+    shipment_id = _sanitize_resource_id(shipment_id, resource_name="shipment")
+    return request_json(requests.get, _ml_url(f"/shipments/{shipment_id}/history"),
+        provider="Mercado Livre", resource_type="shipment", resource_id=shipment_id,
+        list_key="history", headers={**_auth_headers(integration), "x-format-new": "true"}).to_legacy()
 
 
 def get_pack(integration: Dict, pack_id: str) -> Dict:

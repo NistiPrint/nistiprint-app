@@ -11,6 +11,12 @@ import celery_config  # noqa: E402
 
 
 class CeleryConfigTest(TestCase):
+    def test_logistics_schedules_refresh_without_restarting_beat(self):
+        schedules = celery_config.get_default_schedules()
+        self.assertEqual(schedules['logistica-agendas']['schedule'], 900)
+        self.assertEqual(schedules['logistica-envios-ativos']['schedule'], 900)
+        self.assertEqual(schedules['logistica-janelas']['schedule'], 60)
+
     def test_default_schedules_use_unified_app_managed_renewal_task(self):
         schedules = celery_config.get_default_schedules()
 

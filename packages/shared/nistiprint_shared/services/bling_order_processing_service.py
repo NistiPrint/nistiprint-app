@@ -1,3 +1,4 @@
+from nistiprint_shared.services.marketplace_logistics_facts import normalize_sla, meli_dispatch_timestamp
 import logging
 import json
 import traceback
@@ -316,7 +317,7 @@ def _resolve_marketplace_timestamps(payload: dict, shopee_data=None, meli_data=N
         data_pagamento = _extract_meli_date_approved(order)
         if data_pagamento:
             payment_source = "mercadolivre.payments.date_approved"
-        data_envio = order.get("date_closed")
+        data_envio = meli_dispatch_timestamp(meli_data)
 
     if not data_compra:
         data_compra = _clean_date(payload.get("data"))
@@ -1372,7 +1373,7 @@ def _upsert_pedido_meli(meli_data: dict, marketplace_integration_id: int) -> int
 
     order = meli_data.get('order') or {}
     shipment = meli_data.get('shipment') or {}
-    sla = (meli_data.get('sla') or [])[0] if isinstance(meli_data.get('sla'), list) and meli_data.get('sla') else {}
+    sla = normalize_sla(meli_data.get('sla'))
     
     logger.info("[upsert_pedido_meli] Raw shipment flags - logistic_type: %s, shipping_type: %s", 
                 shipment.get('logistic_type'), shipment.get('shipping_type'))
@@ -1613,10 +1614,10 @@ def _upsert_pedido_master(payload, *,
     if shopee_data:
         data_limite_envio = _clean_shopee_ship_by_date(shopee_data.get('ship_by_date'))
     elif meli_data:
-        sla = (meli_data.get('sla') or [])[0] if isinstance(meli_data.get('sla'), list) and meli_data.get('sla') else {}
+        sla = normalize_sla(meli_data.get('sla'))
         data_limite_envio = sla.get('expected_date')
     
-    if not data_limite_envio:
+    if not data_limite_envio and not meli_data:
         data_limite_envio = _clean_date(payload.get('dataPrevista'))
 
     coleta_contexto = {}
@@ -1679,6 +1680,9 @@ def _upsert_pedido_master(payload, *,
         marketplace_integration_id = (
             marketplace_integration_id or link.get('marketplace_integration_id')
         )
+    if marketplace_module_id == 'mercadolivre':
+        # dataPrevista do ERP nao substitui o SLA oficial, mesmo sem detalhe ML.
+        data_limite_envio = normalize_sla((meli_data or {}).get('sla')).get('expected_date')
 
     if not marketplace_module_id or not codigo_externo:
         canonical_order_repository.defer_unresolved_erp_order(
@@ -1791,6 +1795,8 @@ def _upsert_pedido_master(payload, *,
             'is_fulfillment': is_fulfillment,
             'modalidade': modalidade,
             'deadline': data_limite_envio_iso,
+            'dispatch_deadline_source': 'mercadolivre.sla.expected_date' if meli_data and data_limite_envio_iso else None,
+            'deadline_checked_at': get_now_iso() if meli_data else None,
             'purchase_at': data_compra_marketplace_iso,
             'payment_at': data_pagamento_marketplace_iso,
             'collection_at': data_coleta_iso,
@@ -2234,5 +2240,3 @@ def _bling_client_for_config(cfg):
         channel_id=canal_venda_id,
         function_name="ORDER_IMPORT",
     )
-
-

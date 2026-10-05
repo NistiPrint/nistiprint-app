@@ -12,9 +12,8 @@ falhar ou nao rodar, os numeros da tela seguem certos.
 O que este job faz e o que calculo nenhum faz: agir no instante em que a
 janela vira.
 
-    CORTE   o lote fecha. Cria a demanda RASCUNHO com os pedidos daquele
-            momento, para o operador receber o lote pronto para conferir.
-    COLETA  a transportadora passou. Recalcula os compromissos, para os
+    CORTE   registra o fechamento do lote. A demanda nasce da acao do operador.
+    COLETA  a janela prevista venceu. Recalcula os compromissos, para os
             consumidores que leem `pedidos.compromisso_logistico_em` direto
             (painel de producao, ordenacao de demandas) nao ficarem com o
             valor do ciclo anterior.
@@ -29,15 +28,16 @@ hora certa. Consequencias praticas:
 - rodar duas vezes na mesma janela nao cria dois lotes;
 - beat reiniciado, worker fora do ar ou horario editado na aba Logistica nao
   fazem o lote ser pulado em silencio — a janela e recuperada na proxima
-  execucao, dentro da janela de catch-up.
+  execucao, desde a ultima consulta concluida no banco.
 
-Esse desenho e o que torna aceitavel a escolha de agendar uma entrada de cron
-por horario configurado: se o schedule sair de sincronia com o cadastro, o
-catch-up cobre a diferenca.
+A verificacao ocorre a cada minuto e le a agenda efetiva no SQL. Novos horarios
+nao exigem reiniciar o beat. A janela prevista nao confirma uma saida fisica;
+essa confirmacao vem do estado consultado no marketplace.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from celery import shared_task
@@ -49,9 +49,8 @@ logger = logging.getLogger(__name__)
 
 #: Ate onde olhar para tras atras de janela nao processada.
 #:
-#: 26h e mais que um ciclo diario completo: cobre o worker que passou a noite
-#: fora sem reprocessar a semana inteira. Uma janela mais larga tornaria um
-#: incidente longo em uma enxurrada de rascunhos retroativos.
+#: O SQL amplia este minimo ate a ultima consulta concluida, registrada no banco,
+#: recuperando tambem interrupcoes maiores sem criar demandas retroativas.
 CATCH_UP = "26 hours"
 
 
@@ -73,6 +72,8 @@ def fechar_janelas_despacho(catch_up: str = CATCH_UP) -> dict:
     enchia a lista de demandas com rascunho que ninguem abria.
     """
     resultado = {"cortes_registrados": 0, "cortes": [], "compromissos_recalculados": 0}
+    consulta_em = datetime.now(timezone.utc).isoformat()
+    houve_erro = False
 
     try:
         vencidas = _rows(
@@ -84,7 +85,6 @@ def fechar_janelas_despacho(catch_up: str = CATCH_UP) -> dict:
 
     if not vencidas:
         logger.info("[despacho-janela] nenhuma janela vencida pendente")
-        return resultado
 
     houve_coleta = False
 
@@ -103,10 +103,12 @@ def fechar_janelas_despacho(catch_up: str = CATCH_UP) -> dict:
                     "janela_em": janela["janela_em"],
                     "observacao": "Coleta registrada; compromissos recalculados",
                 }).execute()
-            except Exception:
+            except Exception as exc:
                 # Conflito aqui e corrida entre dois workers na mesma janela —
                 # exatamente o que o unique existe para resolver.
                 logger.debug("[despacho-janela] coleta ja registrada: %s", janela, exc_info=True)
+                if str(getattr(exc, 'code', '')) != '23505':
+                    houve_erro = True
             continue
 
         # Isolado por janela: um corte problematico nao pode impedir os outros
@@ -119,6 +121,7 @@ def fechar_janelas_despacho(catch_up: str = CATCH_UP) -> dict:
                 "p_user_id": "Sistema",
             }).execute())
         except Exception:
+            houve_erro = True
             logger.error(
                 "[despacho-janela] falha ao fechar corte integration=%s modalidade=%s janela=%s",
                 janela.get("integration_id"), janela.get("modalidade_id"),
@@ -160,11 +163,21 @@ def fechar_janelas_despacho(catch_up: str = CATCH_UP) -> dict:
     # Recalcula uma vez por execucao, e nao por janela: a funcao varre todos os
     # pedidos FIXO pendentes de uma vez, entao chamar N vezes so repetiria o
     # mesmo trabalho.
-    if houve_coleta or resultado["cortes_registrados"]:
+    # Repetir o recalculo tambem recupera a queda entre registrar uma janela e
+    # recalcular seus pedidos; o registro idempotente ja pode estar concluido.
+    if houve_coleta or resultado["cortes_registrados"] or not vencidas:
         try:
             res = supabase_db.rpc("despacho_recalcular_compromissos", {}).execute()
             resultado["compromissos_recalculados"] = getattr(res, "data", 0) or 0
         except Exception:
+            houve_erro = True
             logger.warning("[despacho-janela] falha ao recalcular compromissos", exc_info=True)
+
+    if not houve_erro:
+        try:
+            supabase_db.table('logistica_sync_cursores').update({'ultima_consulta_em': consulta_em}) \
+                .eq('nome', 'janelas-despacho').execute()
+        except Exception:
+            logger.warning('[despacho-janela] checkpoint nao registrado; janelas serao recuperadas', exc_info=True)
 
     return resultado

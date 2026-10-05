@@ -90,7 +90,7 @@ class CanonicalOrderSnapshotService:
 
         existing = (
             supabase_db.table("pedido_snapshots")
-            .select("id,source_history")
+            .select("id,source_history,logistics")
             .eq("pedido_id", pedido_id)
             .limit(1)
             .execute()
@@ -98,6 +98,12 @@ class CanonicalOrderSnapshotService:
             or []
         )
         if existing:
+            # Consultas incompletas preservam o fato oficial e sua origem.
+            previous = existing[0].get("logistics") or {}
+            if isinstance(previous, dict) and not any(logistics.get(k) for k in ("deadline", "ship_by_date", "expected_date")):
+                for key in ("deadline", "ship_by_date", "expected_date", "dispatch_deadline_source", "deadline_estimated"):
+                    if key in previous:
+                        snapshot["logistics"][key] = previous[key]
             history = existing[0].get("source_history") or []
             if not isinstance(history, list):
                 history = []
@@ -148,7 +154,6 @@ class CanonicalOrderSnapshotService:
             "data_limite_envio": logistics.get("deadline") or logistics.get("ship_by_date") or logistics.get("expected_date"),
             "data_compra_marketplace": logistics.get("purchase_at"),
             "data_pagamento_marketplace": logistics.get("payment_at"),
-            "data_coleta": logistics.get("collection_at"),
             "data_envio_marketplace": logistics.get("marketplace_shipped_at"),
             "regra_logistica_integracao_id": logistics.get("rule_id"),
             "servico_logistico": logistics.get("service") or logistics.get("servico_logistico"),

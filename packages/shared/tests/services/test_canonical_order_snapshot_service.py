@@ -5,6 +5,21 @@ from nistiprint_shared.services import canonical_order_snapshot_service as snaps
 
 
 class TestCanonicalOrderSnapshotService(unittest.TestCase):
+    def test_partial_snapshot_preserves_official_deadline_and_origin(self):
+        snapshots = MagicMock()
+        snapshots.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [{
+            'id': 1, 'source_history': [], 'logistics': {'expected_date': '2026-10-02T13:00:00-03:00',
+                'dispatch_deadline_source': 'mercadolivre.sla.expected_date'}}]
+        pedidos = MagicMock()
+        with patch.object(snapshot_module.supabase_db, 'table', side_effect=lambda name: snapshots if name=='pedido_snapshots' else pedidos):
+            snapshot_module.CanonicalOrderSnapshotService().upsert_snapshot(pedido_id=10, ingest_source='mercadolivre',
+                marketplace='mercadolivre', marketplace_order_id='100', marketplace_integration_id=1,
+                logistics={'expected_date': None, 'deadline_checked_at': '2026-10-02T12:00:00-03:00'})
+        logistics = snapshots.update.call_args.args[0]['logistics']
+        self.assertEqual(logistics['expected_date'], '2026-10-02T13:00:00-03:00')
+        self.assertEqual(logistics['dispatch_deadline_source'], 'mercadolivre.sla.expected_date')
+        self.assertNotIn('data_limite_envio', pedidos.update.call_args.args[0])
+
     def test_upsert_snapshot_creates_snapshot_updates_pedido_and_items(self):
         snapshots = MagicMock()
         snapshots.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []

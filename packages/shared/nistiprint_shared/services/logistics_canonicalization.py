@@ -19,12 +19,11 @@ Cada marketplace expoe isso com nome proprio:
 |---|---|---|
 | Shopee | `ship_by_date` | 1.314 de 1.397 snapshots (94%), ja em ISO |
 | Mercado Livre | `sla.expected_date` (de `/shipments/{id}/sla`) | 280 de 317 (88%) |
-| Mercado Livre | `shipment.lead_time.buffering.date` *(retaguarda)* | 60 de 317 (19%) |
 
 O ML tem endpoint dedicado para isso — `/shipments/{id}/sla` — e o driver ja o
 consulta (`meli_driver.get_shipment_sla`). O valor vem no formato do prazo de
-postagem (23:59:59 no fuso local). `buffering.date` traz o corte de coleta e
-serve so de retaguarda.
+postagem. `buffering.date` representa outra informacao logistica e nunca
+substitui o prazo oficial de despacho.
 
 **Atencao ao formato:** o SLA aparece como objeto no ingest direto e como lista
 em `bling_order_processing_service`. Os dois existem em producao.
@@ -303,15 +302,13 @@ def observe_mercadolivre(detail: dict | None) -> LogisticsObservation:
     # (19%) de `lead_time.buffering.date`. O formato tambem e o esperado
     # (23:59:59 no fuso local), enquanto `buffering` traz o corte de coleta.
     #
-    # `buffering` fica como retaguarda para os casos em que o SLA nao respondeu.
+    # SLA ausente nao inventa prazo; consultas incompletas preservam o fato salvo.
     # `estimated_delivery_*` nunca entra: e prazo de ENTREGA, que inclui
     # transporte e nao serve para decidir producao.
     sla = _meli_sla(detail)
     prazo = sla.get("expected_date")
     campo = "mercadolivre.sla.expected_date"
-    if not prazo:
-        prazo = (lead_time.get("buffering") or {}).get("date")
-        campo = "mercadolivre.shipment.lead_time.buffering.date"
+    # Buffering libera a etiqueta; nao informa o prazo oficial de despacho.
 
     # Compatibilidade com o formato antigo (`logistic_type` na raiz), que ainda
     # aparece em payloads de webhook mais enxutos.

@@ -48,14 +48,14 @@ class TestPrazoDePostagem(unittest.TestCase):
         r = L.resolve("mercadolivre", detalhe)
         self.assertTrue(r.data_limite_envio.startswith("2026-08-03"))
 
-    def test_meli_cai_para_buffering_sem_sla(self):
+    def test_meli_nao_usa_buffering_como_prazo_oficial(self):
         detalhe = {
             "sla": {},
             "shipment": {"lead_time": {"buffering": {"date": "2026-08-03T00:00:00.000Z"}}},
         }
         r = L.resolve("mercadolivre", detalhe)
-        self.assertTrue(r.data_limite_envio.startswith("2026-08-03"))
-        self.assertIn("buffering", r.dispatch_deadline_source)
+        self.assertIsNone(r.data_limite_envio)
+        self.assertIsNone(r.dispatch_deadline_source)
 
     def test_meli_nunca_usa_prazo_de_entrega(self):
         """`estimated_delivery_time` inclui transporte e nao serve."""

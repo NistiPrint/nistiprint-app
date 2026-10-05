@@ -2,14 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import PageHeader from '@/components/ui/PageHeader';
+import LogisticaManutencao from '@/components/logistica/LogisticaManutencao';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
-import { Trash2 } from 'lucide-react';
+import { Pencil, Power } from 'lucide-react';
 import * as integracaoCanalService from '@/services/integracaoCanalService';
 import PontoColetaService from '@/services/PontoColetaService';
 import LogisticaIntegracaoService from '@/services/LogisticaIntegracaoService';
@@ -18,6 +18,12 @@ const defaultForm = {
   marketplace_integration_id: '',
   modalidade_id: '',
   tipo_envio: 'COLETA_LOCAL',
+  fonte_agenda: 'MANUAL',
+  modo_corte: 'FIXO',
+  antecedencia_corte_min: 60,
+  antecedencia_alerta_min: 60,
+  logistic_type: '',
+  coleta_rapida: 'all',
   horario_corte: '',
   horario_coleta: '',
   offset_etiqueta_min: 40,
@@ -34,15 +40,18 @@ const defaultForm = {
 
 const diasLabel = { 1: 'Seg', 2: 'Ter', 3: 'Qua', 4: 'Qui', 5: 'Sex', 6: 'Sab', 7: 'Dom' };
 
-const NAO_ASSOCIADO = 'none';
+
 
 export default function LogisticaIntegracaoPage() {
+  return <LogisticaManutencao Janelas={JanelasLogisticas} />;
+}
+
+function JanelasLogisticas({ integrationId = 'all' }) {
+  const [editId, setEditId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [regras, setRegras] = useState([]);
-  const [canais, setCanais] = useState([]);
   const [modalidadesForm, setModalidadesForm] = useState([]);
-  const [modalidadesFiltro, setModalidadesFiltro] = useState([]);
   const [integracoes, setIntegracoes] = useState([]);
   const [pontos, setPontos] = useState([]);
   const [selectedIntegration, setSelectedIntegration] = useState('all');
@@ -97,14 +106,10 @@ export default function LogisticaIntegracaoPage() {
   const carregarPorIntegracao = useCallback(async (integrationId) => {
     const id = integrationId === 'all' ? null : Number(integrationId);
     try {
-      const [regrasData, canaisData, modalidadesData] = await Promise.all([
-        LogisticaIntegracaoService.listarRegras(id),
-        LogisticaIntegracaoService.listarCanais(id),
-        LogisticaIntegracaoService.listarModalidades(id)
+      const [regrasData] = await Promise.all([
+        LogisticaIntegracaoService.listarRegras(id)
       ]);
       setRegras(regrasData || []);
-      setCanais(canaisData || []);
-      setModalidadesFiltro(modalidadesData || []);
     } catch {
       toast.error('Falha ao carregar logística da integração');
     }
@@ -113,6 +118,11 @@ export default function LogisticaIntegracaoPage() {
   useEffect(() => {
     carregarDados();
   }, []);
+  useEffect(() => {
+    setSelectedIntegration(integrationId);
+    setEditId(null);
+    setForm({ ...defaultForm, marketplace_integration_id: integrationId === 'all' ? '' : integrationId });
+  }, [integrationId]);
 
   useEffect(() => {
     carregarPorIntegracao(selectedIntegration);
@@ -140,26 +150,6 @@ export default function LogisticaIntegracaoPage() {
     }));
   };
 
-  const onAssociarCanal = async (canal, modalidadeId) => {
-    try {
-      const res = await LogisticaIntegracaoService.associarCanal({
-        moduleId: canal.module_id,
-        chave: canal.chave,
-        modalidadeId: modalidadeId === NAO_ASSOCIADO ? null : Number(modalidadeId),
-        campoOrigem: canal.campo_origem
-      });
-      const n = res?.pedidos_reclassificados ?? 0;
-      toast.success(
-        modalidadeId === NAO_ASSOCIADO
-          ? `Canal desassociado · ${n} pedido(s) voltaram para não classificada`
-          : `Canal associado · ${n} pedido(s) reclassificados`
-      );
-      await carregarPorIntegracao(selectedIntegration);
-    } catch {
-      toast.error('Erro ao associar canal de envio');
-    }
-  };
-
   const onSubmit = async () => {
     if (!form.marketplace_integration_id || !form.modalidade_id) {
       toast.error('Integração e modalidade são obrigatórias');
@@ -177,13 +167,14 @@ export default function LogisticaIntegracaoPage() {
         return;
       }
     } else {
-      if (!form.horario_corte || (!form.horario_coleta && !isPonto)) {
-        toast.error('Hora de corte e hora de coleta são obrigatórias');
-        return;
+      if (form.modo_corte === 'FIXO' && !form.horario_corte) {
+        toast.error('Informe o corte fixo'); return;
       }
-      if (form.horario_coleta && form.horario_coleta < form.horario_corte) {
-        toast.error('Hora de coleta/entrega precisa ser maior ou igual à hora de corte');
-        return;
+      if (form.fonte_agenda === 'MANUAL' && !form.horario_coleta && !isPonto) {
+        toast.error('Informe a coleta'); return;
+      }
+      if (form.fonte_agenda === 'MARKETPLACE' && !form.logistic_type) {
+        toast.error('Informe o tipo logístico da agenda'); return;
       }
     }
 
@@ -196,9 +187,16 @@ export default function LogisticaIntegracaoPage() {
         ativo: form.ativo,
         prioridade_uso: form.prioridade_uso,
         descricao: form.descricao,
+        fonte_agenda: form.fonte_agenda,
+        modo_corte: form.modo_corte,
+        antecedencia_corte_min: form.modo_corte === 'ANTES_COLETA' ? Number(form.antecedencia_corte_min) : null,
+        antecedencia_alerta_min: Number(form.antecedencia_alerta_min),
+        logistic_type: form.logistic_type || null,
+        coleta_rapida: form.coleta_rapida === 'all' ? null : form.coleta_rapida === 'true',
         ponto_coleta_id: form.ponto_coleta_id === 'none' ? null : Number(form.ponto_coleta_id)
       };
-      await LogisticaIntegracaoService.criarRegra(
+      const salvar = editId ? (payload) => LogisticaIntegracaoService.atualizarRegra(editId, payload) : LogisticaIntegracaoService.criarRegra;
+      await salvar(
         isRelativo
           ? {
               ...base,
@@ -208,14 +206,15 @@ export default function LogisticaIntegracaoPage() {
           : {
               ...base,
               dias_semana: form.dias_semana,
-              horario_corte: form.horario_corte,
+              horario_corte: form.horario_corte || null,
               horario_coleta: form.horario_coleta || null,
               horario_limite: form.horario_coleta || null,
               modalidade_ids: [Number(form.modalidade_id), ...form.canais_extras.map(Number)]
             }
       );
-      toast.success('Janela de coleta criada');
-      setForm(defaultForm);
+      toast.success(editId ? 'Janela atualizada' : 'Janela criada');
+      setEditId(null);
+      setForm({ ...defaultForm, marketplace_integration_id: selectedIntegration === 'all' ? '' : selectedIntegration });
       await carregarPorIntegracao(selectedIntegration);
     } catch (e) {
       toast.error(e?.response?.data?.error || 'Erro ao criar janela de coleta');
@@ -224,125 +223,75 @@ export default function LogisticaIntegracaoPage() {
     }
   };
 
-  const onDelete = async (id) => {
-    if (!window.confirm('Remover esta janela de coleta?')) return;
+  const onEdit = (r) => {
+    setEditId(r.id);
+    setForm({ ...defaultForm, ...r, marketplace_integration_id: String(r.marketplace_integration_id),
+      modalidade_id: String(r.modalidade_id), ponto_coleta_id: r.ponto_coleta_id ? String(r.ponto_coleta_id) : 'none',
+      horario_corte: (r.horario_corte || '').slice(0, 5), horario_coleta: (r.horario_coleta || '').slice(0, 5),
+      canais_extras: (r.canais || []).filter((m) => m.id !== r.modalidade_id).map((m) => m.id),
+      coleta_rapida: r.coleta_rapida === null || r.coleta_rapida === undefined ? 'all' : String(r.coleta_rapida),
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const onToggle = async (r) => {
     try {
-      await LogisticaIntegracaoService.removerRegra(id);
-      toast.success('Janela removida');
+      await LogisticaIntegracaoService.atualizarRegra(r.id, { ativo: !r.ativo });
+      toast.success(r.ativo ? 'Janela desativada' : 'Janela ativada');
       await carregarPorIntegracao(selectedIntegration);
-    } catch {
-      toast.error('Erro ao remover janela');
-    }
+    } catch (e) { toast.error(e?.response?.data?.error || 'Erro ao atualizar janela'); }
   };
 
   if (loading) return <div className="text-center py-8">Carregando logística por integração...</div>;
 
-  const naoAssociados = canais.filter((c) => !c.modalidade_id);
+
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Janelas de Despacho" description="Associe os canais às modalidades e configure as janelas de coleta." />
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between gap-4">
-          <div>
-            <CardTitle>Canais de envio</CardTitle>
-            <CardDescription>
-              Canais que a origem realmente usou nos pedidos já importados, não um catálogo fixo.
-              Canal novo aparece aqui sozinho. Associe cada um a uma modalidade para os pedidos
-              serem agrupados na torre de despacho.
-            </CardDescription>
-          </div>
-          <Select value={selectedIntegration} onValueChange={setSelectedIntegration}>
-            <SelectTrigger className="w-72 shrink-0"><SelectValue placeholder="Filtrar integração" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todas as integrações</SelectItem>
-              {marketplaceIntegrations.map((i) => (
-                <SelectItem key={i.id} value={String(i.id)}>{i.optionLabel}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </CardHeader>
-        <CardContent>
-          {naoAssociados.length > 0 && (
-            <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-              {naoAssociados.length} canal(is) sem modalidade. Os pedidos deles ficam em
-              “Modalidade não classificada”, com prioridade máxima, até serem associados.
-            </div>
-          )}
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Canal</TableHead>
-                <TableHead>Identificador</TableHead>
-                <TableHead className="text-right">Pedidos</TableHead>
-                <TableHead className="text-right">Pendentes</TableHead>
-                <TableHead className="w-64">Modalidade</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {canais.map((c) => (
-                <TableRow key={`${c.module_id}-${c.chave}`} className={!c.modalidade_id ? 'bg-amber-50/50' : undefined}>
-                  <TableCell className="font-medium">
-                    {c.rotulo || <span className="text-muted-foreground">sem rótulo</span>}
-                    <div className="text-xs text-muted-foreground">{c.module_id}</div>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {c.chave}
-                    <div className="text-muted-foreground">{c.campo_origem}</div>
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">{c.ocorrencias}</TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {c.pedidos_pendentes > 0
-                      ? <span className="font-medium">{c.pedidos_pendentes}</span>
-                      : <span className="text-muted-foreground">0</span>}
-                  </TableCell>
-                  <TableCell>
-                    <Select
-                      value={c.modalidade_id ? String(c.modalidade_id) : NAO_ASSOCIADO}
-                      onValueChange={(v) => onAssociarCanal(c, v)}
-                    >
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NAO_ASSOCIADO}>Não classificada</SelectItem>
-                        {modalidadesFiltro
-                          .filter((m) => m.module_id === c.module_id)
-                          .map((m) => (
-                            <SelectItem key={m.id} value={String(m.id)}>
-                              {m.nome}{m.entra_na_torre === false ? ' · fora da torre' : ''}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {canais.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground py-6">
-                    Nenhum canal de envio observado ainda. Eles aparecem conforme os pedidos são importados.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
       <Card>
         <CardHeader>
           <CardTitle>Janela de coleta por modalidade</CardTitle>
           <CardDescription>
-            Corte e coleta de cada modalidade nesta conta. O corte define o compromisso
-            logístico, que é a ordem de toda a fila de produção.
+            Corte e coleta de cada modalidade nesta conta. O corte define o lote;
+            o prazo oficial de cada envio define sua urgência na produção.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!isRelativo && <div className="grid gap-3 md:grid-cols-3">
+            <label className="space-y-2">Agenda
+              <select className="h-9 w-full rounded-md border bg-background px-3" value={form.fonte_agenda} onChange={(e) => setForm((p) => ({ ...p, fonte_agenda: e.target.value, modo_corte: e.target.value === 'MANUAL' && p.modo_corte === 'MARKETPLACE' ? 'FIXO' : p.modo_corte }))}>
+                <option value="MANUAL">Manual</option>
+                {marketplaceIntegrations.find((i) => String(i.id) === String(form.marketplace_integration_id))?.module_id === 'mercadolivre' && <option value="MARKETPLACE">Sincronizar Mercado Livre</option>}
+              </select>
+            </label>
+            <label className="space-y-2">Cálculo do corte
+              <select className="h-9 w-full rounded-md border bg-background px-3" value={form.modo_corte} onChange={(e) => setForm((p) => ({ ...p, modo_corte: e.target.value }))}>
+                <option value="FIXO">Hora fixa</option><option value="ANTES_COLETA">Minutos antes da coleta</option>
+                {form.fonte_agenda === 'MARKETPLACE' && <option value="MARKETPLACE">Corte informado pelo marketplace</option>}
+              </select>
+            </label>
+            {form.fonte_agenda === 'MARKETPLACE' && <>
+              <label className="space-y-2">Tipo logístico da agenda
+                <Input placeholder="Ex.: cross_docking, xd_drop_off" value={form.logistic_type} onChange={(e) => setForm((p) => ({ ...p, logistic_type: e.target.value }))} />
+              </label>
+              <label className="space-y-2">Coletas atendidas
+                <select className="h-9 w-full rounded-md border bg-background px-3" value={form.coleta_rapida} onChange={(e) => setForm((p) => ({ ...p, coleta_rapida: e.target.value }))}>
+                  <option value="all">Todas</option><option value="true">Somente rápidas</option><option value="false">Somente regulares</option>
+                </select>
+              </label>
+              <p className="text-sm text-muted-foreground">Os horários manuais são contingência. Uma resposta explícita de dia sem coleta é respeitada.</p>
+            </>}
+          </div>}
+          <label className="block max-w-sm space-y-2">Alerta antes do prazo oficial (min)
+            <Input type="number" min={0} value={form.antecedencia_alerta_min} onChange={(e) => setForm((p) => ({ ...p, antecedencia_alerta_min: e.target.value }))} />
+          </label>
+
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div className="space-y-2">
               <Label>Integração instalada</Label>
               <Select
+                disabled={!!editId}
                 value={form.marketplace_integration_id}
-                onValueChange={(v) => setForm((p) => ({ ...p, marketplace_integration_id: v, modalidade_id: '' }))}
+                onValueChange={(v) => setForm((p) => ({ ...p, marketplace_integration_id: v, modalidade_id: '', canais_extras: [] }))}
               >
                 <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
                 <SelectContent>
@@ -380,7 +329,7 @@ export default function LogisticaIntegracaoPage() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>{isRelativo ? 'Etiqueta (min após a venda)' : 'Hora de corte'}</Label>
+              <Label>{isRelativo ? 'Etiqueta (min após a venda)' : form.modo_corte === 'ANTES_COLETA' ? 'Minutos antes da coleta' : 'Hora de corte fixa / contingência'}</Label>
               {isRelativo ? (
                 <Input
                   type="number"
@@ -389,6 +338,7 @@ export default function LogisticaIntegracaoPage() {
                   onChange={(e) => setForm((p) => ({ ...p, offset_etiqueta_min: e.target.value }))}
                 />
               ) : (
+                form.modo_corte === 'ANTES_COLETA' ? <Input type="number" min={0} value={form.antecedencia_corte_min} onChange={(e) => setForm((p) => ({ ...p, antecedencia_corte_min: e.target.value }))} /> :
                 <Input type="time" value={form.horario_corte} onChange={(e) => setForm((p) => ({ ...p, horario_corte: e.target.value }))} />
               )}
             </div>
@@ -531,7 +481,7 @@ export default function LogisticaIntegracaoPage() {
               <Checkbox checked={form.ativo} onCheckedChange={(v) => setForm((p) => ({ ...p, ativo: !!v }))} />
               Ativa
             </label>
-            <Button onClick={onSubmit} disabled={saving}>{saving ? 'Salvando...' : 'Adicionar janela'}</Button>
+            <div className="flex gap-2">{editId && <Button variant="outline" onClick={() => { setEditId(null); setForm(defaultForm); }}>Cancelar edição</Button>}<Button onClick={onSubmit} disabled={saving}>{saving ? 'Salvando...' : editId ? 'Salvar alterações' : 'Adicionar janela'}</Button></div>
           </div>
         </CardContent>
       </Card>
@@ -586,7 +536,8 @@ export default function LogisticaIntegracaoPage() {
                   </TableCell>
                   <TableCell>{r.ativo ? <Badge className="bg-green-600 text-white">Ativa</Badge> : <Badge variant="secondary">Inativa</Badge>}</TableCell>
                   <TableCell className="text-right">
-                    <Button variant="ghost" size="icon" onClick={() => onDelete(r.id)}>
+                    <Button size="icon" variant="ghost" title="Editar janela" aria-label="Editar janela" onClick={() => onEdit(r)}><Pencil className="h-4 w-4" /></Button>
+                    <Button variant="ghost" size="icon" onClick={() => onToggle(r)}>
                       <Trash2 className="w-4 h-4 text-red-600" />
                     </Button>
                   </TableCell>
