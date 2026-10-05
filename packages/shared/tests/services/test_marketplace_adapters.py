@@ -27,6 +27,40 @@ class TestMercadoLivreAdapter(unittest.TestCase):
     def setUp(self):
         self.adapter = MercadoLivreAdapter()
         self.integration = {"access_token": "redacted"}
+        items = patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment_items', return_value={'items': []})
+        items.start()
+        self.addCleanup(items.stop)
+
+    def test_empty_items_fallback_preserves_all_local_orders(self):
+        ref = self.adapter.parse_webhook({'topic': 'shipments', 'resource': '/shipments/555'}).primary_resource
+        with patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment',
+                   return_value={'id': 555, 'order_id': 101}):
+            result = self.adapter.resolve_order_ids(ref, self.integration,
+                shipment_lookup=lambda _: {'codigo_pedido': 101, 'order_ids': [101, 102, 102]})
+        self.assertEqual(result.resolved_order_ids, ('101', '102'))
+
+    def test_shared_shipment_fetches_sla_only_once(self):
+        cache = {'555': {'shipment': {'id': 555, 'status': 'ready_to_ship'}}}
+        with patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_order_detail',
+                   side_effect=[{'id': 101, 'shipping': {'id': 555}}, {'id': 102, 'shipping': {'id': 555}}]), \
+             patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment') as shipment, \
+             patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment_sla',
+                   return_value={'expected_date': '2026-10-02T13:00:00-03:00'}) as sla:
+            first = self.adapter.fetch_order_snapshot('101', self.integration, shipment_cache=cache)
+            second = self.adapter.fetch_order_snapshot('102', self.integration, shipment_cache=cache)
+        self.assertEqual(first.logistics['sla'], second.logistics['sla'])
+        sla.assert_called_once()
+        shipment.assert_not_called()
+
+    def test_sla_401_is_returned_for_oauth_renewal_without_caching_failure(self):
+        cache = {'555': {'shipment': {'id': 555}}}
+        error = {'error': 'Expired', 'status_code': 401, 'error_type': 'credential_action_required'}
+        with patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_order_detail',
+                   return_value={'id': 101, 'shipping': {'id': 555}}), \
+             patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment_sla', return_value=error):
+            result = self.adapter.fetch_order_snapshot('101', self.integration, shipment_cache=cache)
+        self.assertEqual(result, error)
+        self.assertNotIn('sla', cache['555'])
 
     def test_cashback_reference_never_becomes_order(self):
         ref = self.adapter.parse_webhook({
@@ -104,8 +138,8 @@ class TestMercadoLivreAdapter(unittest.TestCase):
             result = self.adapter.resolve_order_ids(ref, self.integration)
         self.assertEqual(result.resolved_order_ids, ("2000017477489446",))
 
-    def test_new_format_shipment_resolves_via_local_mirror_without_extra_call(self):
-        """Espelho local resolve o pedido sem gastar chamada em /items."""
+    def test_new_format_shipment_resolves_via_local_mirror_when_items_empty(self):
+        """O espelho e contingencia depois de consultar todos os pedidos do envio."""
         ref = self.adapter.parse_webhook({
             "topic": "shipments",
             "resource": "/shipments/47662370713",
@@ -117,7 +151,7 @@ class TestMercadoLivreAdapter(unittest.TestCase):
                 return_value={"id": 47662370713, "status": "shipped"},
             ),
             patch(
-                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment_items"
+                "nistiprint_shared.services.marketplace_adapters.meli_driver.get_shipment_items", return_value={'items': []}
             ) as get_items,
         ):
             result = self.adapter.resolve_order_ids(
@@ -126,7 +160,7 @@ class TestMercadoLivreAdapter(unittest.TestCase):
                 shipment_lookup=lambda _sid: {"codigo_pedido": "2000017477489446"},
             )
         self.assertEqual(result.resolved_order_ids, ("2000017477489446",))
-        get_items.assert_not_called()
+        get_items.assert_called_once()
 
     def test_shipment_falls_back_to_items_when_mirror_misses(self):
         ref = self.adapter.parse_webhook({

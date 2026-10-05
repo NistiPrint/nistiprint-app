@@ -28,8 +28,8 @@
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
+    --border: 214.3 24% 82%;
+    --input: 214.3 24% 78%;
     --ring: 222.2 84% 4.9%;
 
     --radius: 0.75rem;
@@ -123,4 +123,16 @@
     transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
     transition-duration: 200ms;
   }
+
+  .page-title {
+    @apply text-2xl font-bold leading-tight tracking-tight text-foreground md:text-3xl;
+  }
+}
+
+#main-content h1 {
+  color: hsl(var(--foreground));
+  font-size: clamp(1.5rem, 1.2rem + 0.75vw, 1.875rem);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
 }

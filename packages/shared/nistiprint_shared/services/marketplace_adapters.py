@@ -220,6 +220,19 @@ class MercadoLivreAdapter:
             shipment = meli_driver.get_shipment(integration, resource.resource_id)
             if shipment.get("error"):
                 return self._api_failure(base, shipment, "shipment_resolution_failed")
+            base.context['shipment_cache'] = {resource.resource_id: {'shipment': shipment}}
+            # /items e a relacao completa, inclusive packs com varios pedidos.
+            shipment_items = meli_driver.get_shipment_items(integration, resource.resource_id)
+            if shipment_items.get('error') and (shipment_items.get('retryable') or shipment_items.get('status_code') == 401):
+                return self._api_failure(base, shipment_items, 'shipment_items_resolution_failed')
+            all_orders = sorted({_numeric_id(row.get('order_id')) for row in shipment_items.get('items', [])
+                if isinstance(row, dict) and _numeric_id(row.get('order_id'))})
+            if all_orders:
+                return base.with_orders(all_orders, trace=[{'step': 'shipment_all_items', 'shipment_id': resource.resource_id}])
+            mirrored = shipment_lookup(resource.resource_id) if shipment_lookup else None
+            mirror_ids = sorted({value for value in (
+                _numeric_id(v) for v in ((mirrored or {}).get('order_ids') or
+                    [(mirrored or {}).get('codigo_pedido')])) if value})
             order_id = _numeric_id(
                 shipment.get("order_id")
                 or ((shipment.get("order") or {}).get("id")
@@ -227,7 +240,7 @@ class MercadoLivreAdapter:
             )
             if order_id:
                 return base.with_orders(
-                    [order_id],
+                    sorted(set([order_id, *mirror_ids])),
                     trace=[{"step": "shipment_order", "shipment_id": resource.resource_id}],
                 )
             pack_id = _numeric_id(
@@ -247,52 +260,20 @@ class MercadoLivreAdapter:
                 ]
                 if orders:
                     return base.with_orders(
-                        orders,
+                        sorted(set([*orders, *mirror_ids])),
                         trace=[{"step": "shipment_pack", "pack_id": pack_id}],
                     )
-            # O formato novo de /shipments/{id} (x-format-new) nao expoe
-            # order_id nem pack_id no root. Antes de gastar uma chamada extra
-            # na API, tentamos o espelho local, que guarda shipment_id ->
-            # codigo_pedido para todo pedido ja ingerido pelo orders_v2.
-            if shipment_lookup:
-                mirrored = shipment_lookup(resource.resource_id)
-                mirrored_order = _numeric_id((mirrored or {}).get("codigo_pedido"))
-                if mirrored_order:
-                    return base.with_orders(
-                        [mirrored_order],
-                        trace=[{
-                            "step": "shipment_mirror",
-                            "shipment_id": resource.resource_id,
-                        }],
-                    )
-
-            # Ultimo recurso: /shipments/{id}/items ainda carrega o order_id de
-            # cada item, inclusive em packs.
-            items_result = meli_driver.get_shipment_items(
-                integration, resource.resource_id
-            )
-            if items_result.get("error"):
-                return self._api_failure(
-                    base, items_result, "shipment_items_resolution_failed"
-                )
-            item_orders: list[str] = []
-            for row in items_result.get("items") or []:
-                if not isinstance(row, dict):
-                    continue
-                candidate = _numeric_id(row.get("order_id"))
-                if candidate and candidate not in item_orders:
-                    item_orders.append(candidate)
-            if item_orders:
+            if mirror_ids:
                 return base.with_orders(
-                    item_orders,
-                    trace=[
-                        {
-                            "step": "shipment_items",
-                            "shipment_id": resource.resource_id,
-                            "order_count": len(item_orders),
-                        }
-                    ],
+                    mirror_ids,
+                    trace=[{
+                        "step": "shipment_mirror",
+                        "shipment_id": resource.resource_id,
+                    }],
                 )
+
+            if shipment_items.get("error"):
+                return self._api_failure(base, shipment_items, "shipment_items_resolution_failed")
             return WebhookResolution(
                 self.provider,
                 "order_event",
@@ -379,7 +360,7 @@ class MercadoLivreAdapter:
             retry_after=result.get("retry_after"),
         )
 
-    def fetch_order_snapshot(self, order_id: str, integration: dict) -> CanonicalOrderSnapshot | dict:
+    def fetch_order_snapshot(self, order_id: str, integration: dict, *, shipment_cache=None) -> CanonicalOrderSnapshot | dict:
         requested_order_id = _numeric_id(order_id)
         if not requested_order_id:
             return {
@@ -400,12 +381,19 @@ class MercadoLivreAdapter:
         shipment, sla = {}, {}
         shipment_id = _numeric_id((order.get("shipping") or {}).get("id"))
         if shipment_id:
-            shipment_result = meli_driver.get_shipment(integration, shipment_id)
+            cached = (shipment_cache or {}).get(shipment_id) or {}
+            shipment_result = cached.get('shipment') or meli_driver.get_shipment(integration, shipment_id)
+            if shipment_result.get('error') and (shipment_result.get('retryable') or shipment_result.get('status_code') == 401):
+                return shipment_result
             if not shipment_result.get("error"):
                 shipment = shipment_result
-                sla_result = meli_driver.get_shipment_sla(integration, shipment_id)
+                sla_result = cached['sla'] if 'sla' in cached else meli_driver.get_shipment_sla(integration, shipment_id)
+                if sla_result.get('error') and (sla_result.get('retryable') or sla_result.get('status_code') == 401):
+                    return sla_result
                 if not sla_result.get("error"):
                     sla = sla_result
+                if shipment_cache is not None:
+                    shipment_cache[shipment_id] = {'shipment': shipment, 'sla': sla_result}
         payments = order.get("payments") if isinstance(order.get("payments"), list) else []
         payment_status = next(
             (str(row.get("status")) for row in payments if isinstance(row, dict) and row.get("status")),

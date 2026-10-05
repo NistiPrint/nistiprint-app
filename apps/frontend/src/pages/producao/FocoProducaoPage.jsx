@@ -3,7 +3,6 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAuth } from '@/contexts/AuthContext';
-import { useLayout } from '@/contexts/LayoutContext';
 import ProductionService from '@/services/ProductionService';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -14,15 +13,7 @@ const FocoProducaoPage = () => {
   const { user } = useAuth();
   const [painelData, setPainelData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [updating, setUpdating] = useState(false);
-  const { setIsLeftSidebarOpen } = useLayout()
-
-  // Collapse sidebar on mount for this specific page, restore on unmount
-  useEffect(() => {
-    setIsLeftSidebarOpen(false)
-    return () => setIsLeftSidebarOpen(true)
-  }, [setIsLeftSidebarOpen])
-
+  const [, setUpdating] = useState(false);
   const fetchPainelData = async () => {
     // Only set loading on initial load
     if (!painelData) setLoading(true);
@@ -157,7 +148,7 @@ const FocoProducaoPage = () => {
        } else {
          toast.error(result.error);
        }
-    } catch (error) {
+    } catch {
        toast.error('Erro ao atualizar.');
     } finally {
        setUpdating(false);

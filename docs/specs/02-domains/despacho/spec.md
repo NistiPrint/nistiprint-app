@@ -94,6 +94,13 @@ classificacao de `despacho_bucket_prazo`.
 
 Buckets: `atrasado`, `hoje`, `amanha`, `depois`.
 
+Para pedidos do Mercado Livre com `data_limite_envio`, o lote e associado a
+ultima coleta configurada cuja ultima saida nao ultrapasse o prazo e cujo
+corte ainda esteja aberto. Se o prazo venceu ou nao existe janela compativel,
+usa-se a proxima coleta viavel e o bucket continua refletindo o atraso. Sem
+prazo, vale o fallback atual. Shopee mantem sem alteracao a atribuicao baseada
+em pagamento e corte.
+
 ### Escopo de despacho
 
 Par (no da arvore, horizonte) que define o conjunto de pedidos de uma demanda.
@@ -258,10 +265,16 @@ coleta":
 Quem chega 13h05 nao esta atrasado — esta no proximo lote. Por isso o card diz
 "lote fecha as 13h", nunca "pronto ate as 13h".
 
-O pertencimento e resolvido por `coleta_do_pedido`, a partir de
+Para Shopee, o pertencimento e resolvido por `coleta_do_pedido`, a partir de
 `data_pagamento_marketplace`. Pedido cujo lote ja saiu inteiro (ultima janela
 vencida) cai no proximo — continua atrasado perante o marketplace, o que os
 buckets de prazo mostram, mas o caminhao dele agora e outro.
+
+Para o Mercado Livre, quando ha prazo de postagem, a coleta e escolhida a
+partir de `data_limite_envio`: a ultima janela futura e ainda aberta ate o SLA.
+Assim um pedido com prazo 06/10 nao entra no lote de 02/10 se houver coleta
+posterior compativel ate 06/10. Prazo vencido ou sem janela compativel cai na
+proxima coleta viavel. Essa excecao nao muda a regra da Shopee.
 
 ### Duas saidas para o mesmo lote
 

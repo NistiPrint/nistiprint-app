@@ -1,6 +1,7 @@
 import base64
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from nistiprint_shared.services.integration_secret_service import (
     IntegrationSecretService,
@@ -55,6 +56,36 @@ class IntegrationSecretServiceTest(unittest.TestCase):
 
         with self.assertRaises(SecretStorageError):
             service.decode_inline_secret("invalid-payload")
+
+    @patch("nistiprint_shared.services.integration_secret_service.supabase_db")
+    def test_secret_presence_batch_selects_metadata_only(self, db):
+        service = IntegrationSecretService()
+        query = MagicMock()
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.in_.return_value = query
+        query.execute.return_value = SimpleNamespace(
+            data=[
+                {"owner_id": "11", "secret_kind": "access_token"},
+                {"owner_id": "12", "secret_kind": "refresh_token"},
+                {"owner_id": "99", "secret_kind": "access_token"},
+            ]
+        )
+        db._ensure_client.return_value = True
+        db.client.schema.return_value.table.return_value = query
+
+        result = service.secret_kinds_for_owners(
+            "installed_integration",
+            [11, 12],
+            ["access_token", "refresh_token"],
+        )
+
+        self.assertEqual(
+            result,
+            {"11": {"access_token"}, "12": {"refresh_token"}},
+        )
+        query.select.assert_called_once_with("owner_id, secret_kind")
+        query.execute.assert_called_once_with()
 
 
 if __name__ == "__main__":

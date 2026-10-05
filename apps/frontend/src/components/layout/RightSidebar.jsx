@@ -1,6 +1,6 @@
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { useLayout } from '@/contexts/LayoutContext';
+import { useLayout } from '@/contexts/useLayout';
 import { cn } from '@/lib/utils';
 import { X } from 'lucide-react';
 

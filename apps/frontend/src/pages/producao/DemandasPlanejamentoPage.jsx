@@ -13,7 +13,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAuth } from '@/contexts/AuthContext'
-import { useLayout } from '@/contexts/LayoutContext'
 import { useRealtimeDemandas } from '@/lib/hooks/useRealtimeDemandas'
 import { deriveDemandFlow, DEMANDA_FLOW_OPTIONS } from '@/lib/demandaFlow'
 import {
@@ -47,7 +46,6 @@ function normalizeModalidade(value) {
 export default function DemandasPlanejamentoPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { user } = useAuth()
-  const { setIsLeftSidebarOpen } = useLayout()
 
   const userSetor = user?.setor_nome || (user?.is_admin ? 'Administrador' : null)
   const normalizedUserSetor = (userSetor || '').trim().toLowerCase()
@@ -80,11 +78,6 @@ export default function DemandasPlanejamentoPage() {
   const [selectedDemandIdForCollection, setSelectedDemandIdForCollection] = useState(null)
 
   const { demandas, setDemandas, loading, error, refresh } = useRealtimeDemandas(pendingChanges)
-
-  useEffect(() => {
-    setIsLeftSidebarOpen(false)
-    return () => setIsLeftSidebarOpen(true)
-  }, [setIsLeftSidebarOpen])
 
   const fetchTotals = useCallback(async () => {
     try {
@@ -545,5 +538,4 @@ export default function DemandasPlanejamentoPage() {
     </TooltipProvider>
   )
 }
-
 

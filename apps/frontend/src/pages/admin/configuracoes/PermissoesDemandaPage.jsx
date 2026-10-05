@@ -101,7 +101,7 @@ export default function PermissoesDemandaPage() {
         } else {
             toast.error('Erro ao salvar permissões.');
         }
-    } catch (e) {
+    } catch {
         toast.error('Ocorreu um erro ao salvar.');
     } finally {
         setSaving(false);
@@ -114,10 +114,10 @@ export default function PermissoesDemandaPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight">Permissões de Demanda</h2>
-          <p className="text-muted-foreground">Gerencie globalmente quais setores podem acessar campos e ações do dashboard de demandas.</p>
+          <h1 className="page-title">Permissões de Demanda</h1>
+          <p className="mt-1 text-sm leading-5 text-muted-foreground">Gerencie globalmente quais setores podem acessar campos e ações do dashboard de demandas.</p>
         </div>
         <Button onClick={handleSave} disabled={saving}>
           {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}

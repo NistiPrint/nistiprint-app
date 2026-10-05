@@ -81,7 +81,7 @@ function ConfiguracoesIA() {
       } else {
         setPromptTemplate(DEFAULT_PROMPT);
       }
-    } catch (e) {
+    } catch {
       toast.error('Erro ao carregar configurações');
       setPromptTemplate(DEFAULT_PROMPT);
     } finally {
@@ -114,7 +114,7 @@ function ConfiguracoesIA() {
       } else {
         toast.error(data.message || 'Erro ao salvar');
       }
-    } catch (e) {
+    } catch {
       toast.error('Erro ao salvar configurações');
     } finally {
       setSaving(false);
@@ -155,7 +155,7 @@ function ConfiguracoesIA() {
   }
 
   return (
-    <div className="container mx-auto py-8 px-2 max-w-4xl">
+    <div className="mx-auto max-w-4xl space-y-6">
       <div className="flex items-center gap-4 mb-6">
         <Button variant="outline" onClick={() => navigate('/vendas/personalizadas')}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Voltar

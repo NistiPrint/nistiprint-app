@@ -1,7 +1,6 @@
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { dataOperacionalHoje } from '@/lib/dataOperacional';
-import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
 import { AlertTriangle, Clock, FileText, FileUp, Package, RefreshCw, Truck, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -80,6 +79,22 @@ function ModalidadeCard({ marketplace, modalidade, aba, onAbrir }) {
   const coleta = formatCompromisso(modalidade.coleta_em);
   const corte = apenasHora(modalidade.corte_em);
   const janelas = modalidade.janelas || [];
+  const mercadoLivre = marketplace.module_id === 'mercadolivre';
+  const coletasDoBucket = (() => {
+    const agrupadas = new Map();
+    for (const item of buckets.flatMap((bucket) => bucket.coletas || [])) {
+      const chave = item.coleta_em || 'sem_coleta';
+      const existente = agrupadas.get(chave);
+      if (existente) existente.qtd_pedidos += item.qtd_pedidos || 0;
+      else agrupadas.set(chave, { ...item });
+    }
+    return [...agrupadas.values()].sort((a, b) => (a.coleta_em || '9999').localeCompare(b.coleta_em || '9999'));
+  })();
+  const coletasComHorario = coletasDoBucket.filter((item) => item.coleta_em);
+  const coletasLabel = coletasComHorario
+    .slice(0, 4)
+    .map((item) => `${formatCompromisso(item.coleta_em)} (${item.qtd_pedidos} ${item.qtd_pedidos === 1 ? 'pedido' : 'pedidos'})`)
+    .join(' · ');
 
   const destaque = naoClassificada
     ? 'border-l-4 border-l-amber-500'
@@ -117,6 +132,13 @@ function ModalidadeCard({ marketplace, modalidade, aba, onAbrir }) {
               <div className="mt-1 flex items-center gap-1 text-xs font-medium text-amber-700">
                 <AlertTriangle className="h-3.5 w-3.5" />
                 canal sem regra cadastrada — clique para cadastrar
+              </div>
+            ) : mercadoLivre ? (
+              <div className="mt-1 flex items-center gap-1 text-xs font-medium text-foreground">
+                <Truck className="h-3.5 w-3.5" />
+                {coletasLabel
+                  ? `coleta atribuída: ${coletasLabel}${coletasComHorario.length > 4 ? ' · +' + (coletasComHorario.length - 4) + ' datas' : ''}`
+                  : 'sem coleta configurada para este prazo'}
               </div>
             ) : coleta ? (
               <>
@@ -218,7 +240,6 @@ export default function TorreDespachoPage() {
   const [erro, setErro] = useState(null);
   const navigate = useNavigate();
 
-  useSecaoSidebar();
 
   const carregar = useCallback(async () => {
     setLoading(true);
@@ -265,6 +286,7 @@ export default function TorreDespachoPage() {
 
       saida.push({
         integration_id: mkt.integration_id,
+        module_id: mkt.module_id,
         nome: (mkt.nome || 'Origem não resolvida').trim(),
         total: mkt.qtd_pedidos ?? 0,
         composicao: mkt.composicao || [],
@@ -506,7 +528,13 @@ export default function TorreDespachoPage() {
           )}
 
           {comuns.length > 0 && (
-            <Banda titulo="Lote comum" ajuda="ordenado pela próxima coleta" icone={Truck}>
+            <Banda
+              titulo="Lote comum"
+              ajuda={atual.module_id === 'mercadolivre'
+                ? 'coletas agrupadas pela data limite de envio'
+                : 'ordenado pela próxima coleta'}
+              icone={Truck}
+            >
               {comuns.map((mod) => (
                 <ModalidadeCard key={mod.lote_chave} marketplace={atual} modalidade={mod} aba={aba} onAbrir={abrirEscopo} />
               ))}

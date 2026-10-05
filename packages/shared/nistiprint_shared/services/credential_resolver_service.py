@@ -247,9 +247,17 @@ class CredentialResolverService:
                 tokens["refresh_token"],
             )
 
-    def has_installation_token(self, installation: dict, secret_kind: str) -> bool:
+    def has_installation_token(
+        self,
+        installation: dict,
+        secret_kind: str,
+        *,
+        secret_is_present: bool | None = None,
+    ) -> bool:
         installation_id = installation.get("id")
-        if installation_id and integration_secret_service.has_secret(
+        if secret_is_present is True:
+            return True
+        if secret_is_present is None and installation_id and integration_secret_service.has_secret(
             "installed_integration", installation_id, secret_kind
         ):
             return True

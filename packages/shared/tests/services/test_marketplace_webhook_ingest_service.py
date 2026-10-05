@@ -1,6 +1,7 @@
 
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from nistiprint_shared.services.marketplace_webhook_ingest_service import (
     MarketplaceWebhookIngestService,
@@ -11,6 +12,21 @@ from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 
 
 class TestMarketplaceWebhookIngestService(unittest.TestCase):
+    def test_shipment_rate_limit_stops_remaining_pack_orders(self):
+        service = MarketplaceWebhookIngestService()
+        resource = SimpleNamespace(topic='shipments', resource_path='/shipments/555',
+            resource_type='shipment', resource_id='555', account_id='123')
+        parsed = SimpleNamespace(primary_resource=resource, primary_order_id=None, classification='order_event')
+        resolved = SimpleNamespace(status='resolved', error_type=None, resolved_order_ids=('101', '102'), context={})
+        error = {'status': 'error', 'error_type': 'provider_rate_limited', 'retry_after': 120}
+        with patch('nistiprint_shared.services.marketplace_webhook_ingest_service.mercadolivre_adapter.parse_webhook', return_value=parsed), \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.mercadolivre_adapter.resolve_order_ids', return_value=resolved), \
+             patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 1}, None)), \
+             patch.object(service, '_meli_integration', return_value={}), \
+             patch.object(service, '_process_meli_order', return_value=error) as process:
+            result = service._process_mercadolivre({'topic': 'shipments'}, correlation_id='test')
+        self.assertEqual(result['retry_after'], 120)
+        self.assertEqual(process.call_count, 1)
     def test_meli_customer_prefers_buyer_name_over_nickname(self):
         customer = MarketplaceWebhookIngestService()._meli_customer({
             "buyer": {
@@ -291,6 +307,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
              patch.object(service, '_customer_name', return_value='Cliente'), \
              patch('nistiprint_shared.services.marketplace_webhook_ingest_service.logistica_coleta_service.calcular_data_coleta', return_value={}), \
              patch('nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.apply_marketplace_event', return_value={"pedido_id": 55, "decision": "applied"}) as apply_event, \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.apply_pending_erp_reference_for_order'), \
              patch('nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.defer_unresolved_erp_order'), \
              patch('nistiprint_shared.services.marketplace_webhook_ingest_service.persist_classification_from_payload'), \
              patch.dict('os.environ', {'MARKETPLACE_LIFECYCLE_PROJECTION_ENABLED': 'true'}):
@@ -324,6 +341,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
              patch.object(service, '_customer_name', return_value='Cliente'), \
              patch('nistiprint_shared.services.marketplace_webhook_ingest_service.logistica_coleta_service.calcular_data_coleta', return_value={}), \
              patch('nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.upsert', return_value=55), \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.apply_pending_erp_reference_for_order'), \
              patch('nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.defer_unresolved_erp_order') as defer, \
              patch('nistiprint_shared.services.marketplace_webhook_ingest_service.persist_classification_from_payload'):
             pedido_id = service._upsert_pedido_status(
@@ -406,4 +424,3 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

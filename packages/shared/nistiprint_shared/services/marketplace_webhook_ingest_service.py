@@ -1,3 +1,4 @@
+from nistiprint_shared.services.marketplace_logistics_facts import normalize_sla, meli_dispatch_timestamp
 import logging
 import os
 import traceback
@@ -387,8 +388,9 @@ class MarketplaceWebhookIngestService:
                 "marketplace_integration_id": marketplace_inst.get("id"),
                 **metadata,
             }
-        results = [
-            self._process_meli_order(
+        results = []
+        for order_id in resolved.resolved_order_ids:
+            result = self._process_meli_order(
                 order_id,
                 marketplace_inst=marketplace_inst,
                 payload=payload,
@@ -397,11 +399,11 @@ class MarketplaceWebhookIngestService:
                 webhook_event_id=webhook_event_id,
                 resolution_context=resolved.context,
             )
-            for order_id in resolved.resolved_order_ids
-        ]
-        failure = next((row for row in results if row.get("status") not in {"success", "skipped"}), None)
-        if failure:
-            return {**failure, **metadata}
+            if result.get('status') not in {'success', 'skipped'}:
+                # Nao consultar os demais pedidos de um pack apos Retry-After.
+                # Os pedidos ja atualizados permanecem protegidos pela idempotencia.
+                return {**result, **metadata}
+            results.append(result)
         successes = [row for row in results if row.get("status") == "success"]
         if not successes:
             first = results[0] if results else {
@@ -438,8 +440,11 @@ class MarketplaceWebhookIngestService:
         )
         if inactive:
             return inactive
+        snapshot_options = {}
+        if resolution_context and 'shipment_cache' in resolution_context:
+            snapshot_options['shipment_cache'] = resolution_context['shipment_cache']
         snapshot = mercadolivre_adapter.fetch_order_snapshot(
-            order_id, self._meli_integration(marketplace_inst)
+            order_id, self._meli_integration(marketplace_inst), **snapshot_options
         )
         if (
             isinstance(snapshot, dict)
@@ -449,7 +454,7 @@ class MarketplaceWebhookIngestService:
             if refreshed:
                 marketplace_inst = refreshed
                 snapshot = mercadolivre_adapter.fetch_order_snapshot(
-                    order_id, self._meli_integration(refreshed)
+                    order_id, self._meli_integration(refreshed), **snapshot_options
                 )
         if isinstance(snapshot, dict):
             logger.warning(
@@ -936,12 +941,7 @@ class MarketplaceWebhookIngestService:
         marketplace_integration_id: int | None,
         shipment_id: str,
     ) -> dict | None:
-        """Resolve shipment -> pedido pelo espelho local.
-
-        O formato novo de /shipments/{id} nao devolve order_id nem pack_id,
-        entao o espelho (que grava shipment_id na ingestao via orders_v2) evita
-        uma chamada extra na API para descobrir o pedido do evento.
-        """
+        """Contingencia com todos os pedidos locais vinculados ao shipment."""
         if not marketplace_integration_id or not shipment_id:
             return None
         numeric_shipment_id = _as_int(shipment_id)
@@ -953,7 +953,6 @@ class MarketplaceWebhookIngestService:
                 .select("codigo_pedido")
                 .eq("marketplace_integration_id", marketplace_integration_id)
                 .eq("shipment_id", numeric_shipment_id)
-                .limit(1)
                 .execute()
                 .data
                 or []
@@ -968,7 +967,8 @@ class MarketplaceWebhookIngestService:
             return None
         if not rows:
             return None
-        return {"codigo_pedido": rows[0].get("codigo_pedido")}
+        return {"codigo_pedido": rows[0].get("codigo_pedido"),
+                "order_ids": [row.get("codigo_pedido") for row in rows]}
 
     def _fetch_meli_detail(self, marketplace_inst: dict, order_id: str) -> dict:
         integration = self._meli_integration(marketplace_inst)
@@ -1263,7 +1263,7 @@ class MarketplaceWebhookIngestService:
             if _meli_date_approved(order):
                 data_pagamento_marketplace = _meli_date_approved(order)
                 payment_time_source = "mercadolivre.payments.date_approved"
-            data_envio_marketplace = order.get("date_closed")
+            data_envio_marketplace = meli_dispatch_timestamp(details)
             logger.info(
                 "[marketplace-webhook] meli resolve timestamps order_id=%s status=%s source=%s resolved=%s",
                 external_order_id,
@@ -1542,7 +1542,7 @@ class MarketplaceWebhookIngestService:
         else:
             order = details.get("order") or {}
             shipment = details.get("shipment") or {}
-            sla = details.get("sla") or {}
+            sla = normalize_sla(details.get("sla"))
             items = self._normalize_meli_items(order)
             logistics = {
                 "shipment_id": (order.get("shipping") or {}).get("id") or shipment.get("id"),
@@ -1550,6 +1550,8 @@ class MarketplaceWebhookIngestService:
                 "shipping_carrier": shipment.get("mode"),
                 "service": shipment.get("shipping_option", {}).get("name") if isinstance(shipment.get("shipping_option"), dict) else None,
                 "expected_date": sla.get("expected_date"),
+                "dispatch_deadline_source": "mercadolivre.sla.expected_date" if sla.get("expected_date") else None,
+                "deadline_checked_at": get_now_iso(),
                 "purchase_at": mirror_fields.get("data_compra_marketplace"),
                 "payment_at": mirror_fields.get("data_pagamento_marketplace"),
                 "collection_at": mirror_fields.get("data_coleta"),

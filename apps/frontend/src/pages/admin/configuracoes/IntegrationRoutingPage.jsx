@@ -111,7 +111,7 @@ function IntegrationRoutingPage() {
   if (loading) return <div className="p-8 text-center text-muted-foreground font-medium animate-pulse">Carregando configurações de roteamento...</div>;
 
   return (
-    <div className="container mx-auto py-8 space-y-8 max-w-6xl">
+    <div className="mx-auto max-w-6xl space-y-8">
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold tracking-tight">Roteamento de Integrações</h1>
         <p className="text-muted-foreground">Defina qual conta ERP (Bling) deve ser usada para cada operação e canal.</p>

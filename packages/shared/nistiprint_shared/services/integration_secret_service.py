@@ -160,6 +160,33 @@ class IntegrationSecretService:
         )
         return bool(response.data)
 
+    def secret_kinds_for_owners(
+        self,
+        owner_type: str,
+        owner_ids: list[Any],
+        secret_kinds: list[str],
+    ) -> dict[str, set[str]]:
+        """Return secret-presence metadata for many owners without reading values."""
+        normalized_ids = list(dict.fromkeys(str(value) for value in owner_ids if value is not None))
+        normalized_kinds = list(dict.fromkeys(secret_kinds))
+        result = {owner_id: set() for owner_id in normalized_ids}
+        if not normalized_ids or not normalized_kinds:
+            return result
+
+        response = (
+            self._table()
+            .select("owner_id, secret_kind")
+            .eq("owner_type", owner_type)
+            .in_("owner_id", normalized_ids)
+            .in_("secret_kind", normalized_kinds)
+            .execute()
+        )
+        for row in response.data or []:
+            owner_id = str(row.get("owner_id"))
+            if owner_id in result and row.get("secret_kind") in normalized_kinds:
+                result[owner_id].add(row["secret_kind"])
+        return result
+
     def put_secret(
         self,
         owner_type: str,

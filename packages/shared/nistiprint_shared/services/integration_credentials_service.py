@@ -81,7 +81,11 @@ class IntegrationCredentialsService:
             identity_label=None,
         )
 
-    def public_view(self, installation: dict) -> dict:
+    def public_view(
+        self,
+        installation: dict,
+        installation_secret_kinds: set[str] | None = None,
+    ) -> dict:
         strategy = self.strategy_for(installation)
         credentials = installation.get("credentials") or {}
         config = installation.get("config") or {}
@@ -89,12 +93,24 @@ class IntegrationCredentialsService:
         last_sync = _parse_dt(installation.get("last_sync"))
         last_refresh_attempt = _parse_dt(installation.get("last_refresh_attempt"))
         last_updated = _parse_dt(installation.get("updated_at"))
-        has_access_token = credential_resolver_service.has_installation_token(
-            installation, "access_token"
-        )
-        has_refresh_token = credential_resolver_service.has_installation_token(
-            installation, "refresh_token"
-        )
+        if installation_secret_kinds is None:
+            has_access_token = credential_resolver_service.has_installation_token(
+                installation, "access_token"
+            )
+            has_refresh_token = credential_resolver_service.has_installation_token(
+                installation, "refresh_token"
+            )
+        else:
+            has_access_token = credential_resolver_service.has_installation_token(
+                installation,
+                "access_token",
+                secret_is_present="access_token" in installation_secret_kinds,
+            )
+            has_refresh_token = credential_resolver_service.has_installation_token(
+                installation,
+                "refresh_token",
+                secret_is_present="refresh_token" in installation_secret_kinds,
+            )
         token_status = self._token_status(
             strategy=strategy,
             has_access_token=has_access_token,
@@ -145,7 +161,11 @@ class IntegrationCredentialsService:
             },
         }
 
-    def sanitize_installation(self, installation: dict) -> dict:
+    def sanitize_installation(
+        self,
+        installation: dict,
+        installation_secret_kinds: set[str] | None = None,
+    ) -> dict:
         public = dict(installation)
         credentials = dict(public.get("credentials") or {})
         for key in (
@@ -160,7 +180,10 @@ class IntegrationCredentialsService:
         public.pop("access_token", None)
         public.pop("refresh_token", None)
         public["credentials"] = credentials
-        public["credential_status"] = self.public_view(installation)
+        public["credential_status"] = self.public_view(
+            installation,
+            installation_secret_kinds=installation_secret_kinds,
+        )
         return public
 
     def ensure_refresh_allowed(self, installation: dict) -> None:

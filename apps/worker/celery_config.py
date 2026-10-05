@@ -45,6 +45,7 @@ def get_default_schedules():
     e o beat faz outra.
     """
     return {
+        **logistica_schedules(),
         'reconcile-pending-erp-references': {
             'task': 'nistiprint_shared.services.order_erp_reference_service.reconcile_pending',
             'schedule': 60,
@@ -222,11 +223,19 @@ def load_dynamic_schedules():
             else:
                 logger.info(f"Task periódica desativada via banco: {task_name}")
                 
-        schedules.update(load_janela_despacho_schedules())
+        schedules.update(logistica_schedules())
         return schedules
     except Exception as e:
         logger.error(f"Erro ao carregar tasks dinâmicas: {e}. Usando padrões de código.")
         return get_default_schedules()
+
+
+def logistica_schedules():
+    return {
+        'logistica-agendas': {'task': 'nistiprint_shared.services.logistica_sync_service.sincronizar_agendas', 'schedule': 900},
+        'logistica-envios-ativos': {'task': 'nistiprint_shared.services.logistica_sync_service.reconciliar_envios', 'schedule': 900},
+        'logistica-janelas': {'task': 'nistiprint_shared.services.despacho_janela_service.fechar_janelas', 'schedule': 60},
+    }
 
 
 def load_janela_despacho_schedules():
@@ -308,6 +317,7 @@ celery_app = Celery(
         'nistiprint_shared.services.marketplace_payment_reprocess_service',
         'nistiprint_shared.services.ressincronizacao_service',
         'nistiprint_shared.services.despacho_janela_service',
+        'nistiprint_shared.services.logistica_sync_service',
     ]
 )
 celery_app.conf.update(

@@ -1,28 +1,14 @@
-import React from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { useLayout } from '@/contexts/LayoutContext';
 import {
   ArrowRightIcon,
   Boxes,
   TrendingUp,
   Warehouse,
   ShoppingCart,
-  BarChart3,
-  CheckCircle2,
-  Clock
 } from 'lucide-react';
 
 function HomePage() {
-  const { setLeftSidebarContent, setLeftSidebarMenuItems } = useLayout();
-
-  React.useEffect(() => {
-    // Garantir que a sidebar seja limpa ao voltar para a home
-    setLeftSidebarContent(null);
-    setLeftSidebarMenuItems([]);
-  }, [setLeftSidebarContent, setLeftSidebarMenuItems]);
-
   const quickActions = [
     {
       title: 'Produtos',
@@ -58,28 +44,11 @@ function HomePage() {
     }
   ];
 
-  const stats = [
-    {
-      label: 'Status do Sistema',
-      value: 'Operacional',
-      icon: CheckCircle2,
-      color: 'text-green-600',
-      bgColor: 'bg-green-50'
-    },
-    {
-      label: 'Última Atualização',
-      value: new Date().toLocaleDateString('pt-BR'),
-      icon: Clock,
-      color: 'text-blue-600',
-      bgColor: 'bg-blue-50'
-    }
-  ];
-
   return (
     <div className="container mx-auto py-8 px-4 md:px-6 max-w-6xl">
       {/* Welcome Section */}
       <div className="mb-8">
-        <h1 className="text-3xl md:text-4xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/70 bg-clip-text text-transparent">
+        <h1 className="page-title">
           Bem-vindo(a) ao Nisti Print!
         </h1>
         <p className="text-lg text-muted-foreground mt-2 max-w-2xl">
@@ -107,7 +76,7 @@ function HomePage() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="flex items-center text-sm font-medium text-primary opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                  <div className="flex items-center text-sm font-semibold text-primary">
                     Acessar
                     <ArrowRightIcon className="h-4 w-4 ml-1 group-hover:translate-x-1 transition-transform" />
                   </div>
@@ -118,48 +87,6 @@ function HomePage() {
         })}
       </div>
 
-      {/* Info Section */}
-      <Card className="border-muted/50 shadow-sm">
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <BarChart3 className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-xl">Visão Geral</CardTitle>
-          </div>
-          <CardDescription>
-            Navegue pelos módulos para gerenciar seus produtos, estoque, vendas e muito mais.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {stats.map((stat, index) => {
-              const Icon = stat.icon;
-              return (
-                <div
-                  key={index}
-                  className="flex items-center gap-3 p-4 rounded-lg bg-muted/30 border border-muted"
-                >
-                  <div
-                    className={`w-10 h-10 rounded-lg ${stat.bgColor} flex items-center justify-center`}
-                  >
-                    <Icon className={`h-5 w-5 ${stat.color}`} />
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">{stat.label}</p>
-                    <p className="text-base font-semibold">{stat.value}</p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Future metrics placeholder */}
-          <div className="mt-6 p-4 rounded-lg border border-dashed border-muted bg-muted/20">
-            <p className="text-sm text-muted-foreground text-center">
-              📊 Métricas em tempo real serão exibidas aqui em breve
-            </p>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }

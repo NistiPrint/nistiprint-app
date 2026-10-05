@@ -85,6 +85,22 @@ export const getInstalledIntegrations = async () => {
   }
 };
 
+/** Load link rows for every visible integration with a single API request. */
+export const getIntegrationLinksBatch = async (erpIds = [], marketplaceIds = []) => {
+  try {
+    const params = new URLSearchParams();
+    erpIds.forEach((id) => params.append('erp_ids', String(id)));
+    marketplaceIds.forEach((id) => params.append('marketplace_ids', String(id)));
+    const response = await api.get(`/erp-links/batch?${params.toString()}`);
+    if (response.data?.success === false) {
+      throw new Error(response.data.message || 'Falha ao carregar vínculos');
+    }
+    return response.data?.data || { erp: {}, marketplace: {} };
+  } catch (error) {
+    throw error.response?.data || error;
+  }
+};
+
 /**
  * Get one installed integration by ID
  */
@@ -329,6 +345,7 @@ const MarketplaceService = {
   initAuth,
   exchangeCode,
   getInstalledIntegrations,
+  getIntegrationLinksBatch,
   getInstallation,
   getMarketplaceOrderDetail,
   renewToken,

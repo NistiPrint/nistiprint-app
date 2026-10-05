@@ -274,6 +274,29 @@ def get_marketplace_links(marketplace_integration_id):
         return ApiResponse.error(message=str(e), status_code=500)
 
 
+@erp_links_bp.route('/batch', methods=['GET'])
+def get_links_batch():
+    """Return links grouped by ERP and marketplace integration IDs."""
+    try:
+        erp_ids = [int(value) for value in request.args.getlist('erp_ids')]
+        marketplace_ids = [
+            int(value) for value in request.args.getlist('marketplace_ids')
+        ]
+        if any(value <= 0 for value in erp_ids + marketplace_ids):
+            return ApiResponse.error(message="IDs de integração devem ser positivos", status_code=400)
+
+        data = erp_marketplace_links_service.get_links_for_integrations(
+            erp_ids,
+            marketplace_ids,
+        )
+        return ApiResponse.success(data=data)
+    except (TypeError, ValueError):
+        return ApiResponse.error(message="IDs de integração inválidos", status_code=400)
+    except Exception as e:
+        logger.error(f"Erro ao buscar vínculos em lote: {e}", exc_info=True)
+        return ApiResponse.error(message="Falha ao carregar vínculos", status_code=500)
+
+
 @erp_links_bp.route('/marketplace/<marketplace_integration_id>/links', methods=['POST'])
 def create_marketplace_link(marketplace_integration_id):
     """

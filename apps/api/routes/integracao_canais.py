@@ -10,8 +10,10 @@ Rotas:
     GET    /api/integracao-canais/resolver/bling-loja    - Resolver bling_loja_id por canal
 """
 
-from flask import request, Blueprint, jsonify
-from routes.auth import login_required
+from flask import request, Blueprint, jsonify, session
+from werkzeug.exceptions import HTTPException
+from routes.auth import login_required, admin_required
+from nistiprint_shared.services import logistica_manutencao_service as logistica
 from nistiprint_shared.services.integracao_canal_service import integracao_canal_service
 from nistiprint_shared.services.marketplace_account_identity import has_account_identity
 from nistiprint_shared.database.supabase_db_service import supabase_db
@@ -716,133 +718,23 @@ def listar_regras_logisticas_integracao():
 
 
 @integracao_canais_bp.route('/logistica/regras', methods=['POST'])
-@login_required
+@admin_required
 def criar_regra_logistica_integracao():
-    """Cria regra logística por integração."""
-    try:
-        data = request.get_json() or {}
-        # `modalidade_id` e a fonte de verdade; a coluna `modalidade` (texto) e
-        # projetada por trigger no banco. Aceitar apenas o id impede que a tela
-        # reintroduza o vocabulario paralelo que a unificacao acabou de fechar.
-        for field in ('marketplace_integration_id', 'modalidade_id', 'tipo_envio'):
-            if data.get(field) in (None, ''):
-                return jsonify({'success': False, 'error': f'Campo obrigatório: {field}'}), 400
-
-        dias_semana = data.get('dias_semana') or [1, 2, 3, 4, 5]
-        if any(int(d) < 1 or int(d) > 7 for d in dias_semana):
-            return jsonify({'success': False, 'error': 'dias_semana deve usar 1=segunda ... 7=domingo'}), 400
-
-        # A forma da janela segue o tipo de prazo da modalidade: hora de parede
-        # para FIXO, minutos após a venda para RELATIVO. O banco valida de novo
-        # no trigger — aqui é só para a mensagem chegar legível na tela.
-        modalidade = supabase_db.table('modalidades_logisticas').select(
-            'id, codigo, tipo_prazo'
-        ).eq('id', int(data['modalidade_id'])).limit(1).execute()
-        tipo_prazo = ((modalidade.data or [{}])[0]).get('tipo_prazo') or 'FIXO'
-
-        payload = {
-            'marketplace_integration_id': int(data['marketplace_integration_id']),
-            'modalidade_id': int(data['modalidade_id']),
-            # Placeholder: o trigger tg_regra_logistica_sync_modalidade
-            # sobrescreve com o codigo real da modalidade.
-            'modalidade': 'STANDARD',
-            'tipo_envio': str(data['tipo_envio']).upper(),
-            'ponto_coleta_id': data.get('ponto_coleta_id'),
-            'dias_semana': [int(d) for d in dias_semana],
-            'ativo': bool(data.get('ativo', True)),
-            'prioridade_uso': int(data.get('prioridade_uso', 100)),
-            'descricao': data.get('descricao'),
-            'created_at': datetime.utcnow().isoformat(),
-            'updated_at': datetime.utcnow().isoformat(),
-        }
-
-        if tipo_prazo == 'RELATIVO':
-            for field in ('offset_etiqueta_min', 'offset_coleta_min'):
-                if data.get(field) in (None, ''):
-                    return jsonify({'success': False, 'error': f'Modalidade de prazo relativo: {field} é obrigatório'}), 400
-            etiqueta = int(data['offset_etiqueta_min'])
-            coleta = int(data['offset_coleta_min'])
-            if etiqueta <= 0 or coleta <= 0:
-                return jsonify({'success': False, 'error': 'Os prazos em minutos devem ser maiores que zero'}), 400
-            if coleta < etiqueta:
-                return jsonify({'success': False, 'error': 'A coleta não pode vir antes da etiqueta'}), 400
-            payload['offset_etiqueta_min'] = etiqueta
-            payload['offset_coleta_min'] = coleta
-        else:
-            if data.get('horario_corte') in (None, ''):
-                return jsonify({'success': False, 'error': 'Informe a hora de corte: e ela que decide quais pedidos entram neste lote'}), 400
-            # Ponto de coleta nao tem hora propria no caso normal: a hora e o
-            # fechamento do ponto, cadastrado uma vez em pontos_coleta.
-            e_ponto = payload.get('tipo_envio') == 'PONTO_COLETA'
-            coleta = data.get('horario_coleta') or None
-            if not coleta and not e_ponto:
-                return jsonify({'success': False, 'error': 'Campo obrigatório: horario_coleta'}), 400
-            if coleta and str(coleta) < str(data['horario_corte']):
-                return jsonify({'success': False, 'error': 'A hora de saída deve ser maior ou igual à hora de corte'}), 400
-            payload['horario_corte'] = data['horario_corte']
-            payload['horario_coleta'] = coleta
-            payload['horario_limite'] = data.get('horario_limite') or coleta
-
-        result = supabase_db.table('regras_logisticas_integracao').insert(payload).execute()
-        criada = (result.data or [None])[0]
-        if criada:
-            _sincronizar_canais_da_regra(criada['id'], data.get('modalidade_ids'), criada.get('modalidade_id'))
-        return jsonify({'success': True, 'data': criada}), 201
-    except Exception as e:
-        logger.error(f"Erro ao criar regra logística por integração: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+    return _logistica_response(lambda: logistica.salvar_regra(request.get_json(), ator=str(session['user_id'])), 201)
 
 
 @integracao_canais_bp.route('/logistica/regras/<int:regra_id>', methods=['PUT'])
-@login_required
-def atualizar_regra_logistica_integracao(regra_id: int):
-    """Atualiza regra logística por integração."""
-    try:
-        data = request.get_json() or {}
-        # `modalidade` fora da lista de propósito: e coluna projetada.
-        allowed = {
-            'modalidade_id', 'tipo_envio', 'horario_corte', 'horario_coleta', 'horario_limite', 'ponto_coleta_id',
-            'dias_semana', 'ativo', 'prioridade_uso', 'descricao',
-            'offset_etiqueta_min', 'offset_coleta_min'
-        }
-        updates = {k: v for k, v in data.items() if k in allowed}
-        if 'modalidade_id' in updates:
-            updates['modalidade_id'] = int(updates['modalidade_id'])
-        if 'tipo_envio' in updates:
-            updates['tipo_envio'] = str(updates['tipo_envio']).upper()
-        if 'dias_semana' in updates:
-            if any(int(d) < 1 or int(d) > 7 for d in updates['dias_semana']):
-                return jsonify({'success': False, 'error': 'dias_semana deve usar 1=segunda ... 7=domingo'}), 400
-            updates['dias_semana'] = [int(d) for d in updates['dias_semana']]
-        if updates.get('horario_coleta') and updates.get('horario_corte') and str(updates['horario_coleta']) < str(updates['horario_corte']):
-            return jsonify({'success': False, 'error': 'horario_coleta deve ser maior ou igual a horario_corte'}), 400
-        if 'horario_coleta' in updates and 'horario_limite' not in updates:
-            updates['horario_limite'] = updates['horario_coleta']
-        updates['updated_at'] = datetime.utcnow().isoformat()
-
-        # Hora de saida em branco numa janela de ponto de coleta e o caso NORMAL:
-        # a hora vem do fechamento do ponto. So nao pode ficar em branco quando a
-        # saida e coleta local, que nao tem de onde herdar.
-        if updates.get('horario_coleta') in (None, ''):
-            updates['horario_coleta'] = None
-            updates['horario_limite'] = None
-
-        result = supabase_db.table('regras_logisticas_integracao').update(updates).eq('id', regra_id).execute()
-        atualizada = (result.data or [None])[0]
-        if atualizada:
-            _sincronizar_canais_da_regra(regra_id, data.get('modalidade_ids'), atualizada.get('modalidade_id'))
-        return jsonify({'success': True, 'data': atualizada})
-    except Exception as e:
-        logger.error(f"Erro ao atualizar regra logística por integração {regra_id}: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+@admin_required
+def atualizar_regra_logistica_integracao(regra_id):
+    return _logistica_response(lambda: logistica.salvar_regra(request.get_json(), regra_id, str(session['user_id'])))
 
 
 @integracao_canais_bp.route('/logistica/regras/<int:regra_id>', methods=['DELETE'])
-@login_required
+@admin_required
 def remover_regra_logistica_integracao(regra_id: int):
     """Remove regra logística por integração."""
     try:
-        supabase_db.table('regras_logisticas_integracao').delete().eq('id', regra_id).execute()
+        logistica.salvar_regra({'ativo': False}, regra_id, str(session['user_id']))
         return jsonify({'success': True})
     except Exception as e:
         logger.error(f"Erro ao remover regra logística por integração {regra_id}: {e}")
@@ -863,7 +755,9 @@ def listar_modalidades_logisticas():
             ).limit(1).execute()
             module_id = ((ii.data or [{}])[0]).get('module_id')
 
-        query = supabase_db.table('modalidades_logisticas').select('*').eq('ativo', True).order('ordem_exibicao')
+        query = supabase_db.table('modalidades_logisticas').select('*').order('ordem_exibicao')
+        if request.args.get('incluir_inativas') != 'true':
+            query = query.eq('ativo', True)
         if module_id:
             query = query.eq('module_id', module_id)
         result = query.execute()
@@ -883,47 +777,98 @@ def listar_canais_envio_observados():
     """
     try:
         marketplace_integration_id = request.args.get('marketplace_integration_id')
-        result = supabase_db.rpc('canais_envio_observados', {
+        result = logistica.rpc_data('logistica_identificadores_observados', {
             'p_integration_id': int(marketplace_integration_id) if marketplace_integration_id else None
-        }).execute()
-        return jsonify({'success': True, 'data': result.data or []})
+        })
+        return jsonify({'success': True, 'data': result or []})
     except Exception as e:
         logger.error(f"Erro ao listar canais de envio observados: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @integracao_canais_bp.route('/logistica/canais/associar', methods=['POST'])
-@login_required
+@admin_required
 def associar_canal_modalidade():
-    """Associa um canal de envio a uma modalidade e reclassifica os pendentes.
+    return _logistica_response(lambda: logistica.associar(request.get_json(), str(session['user_id'])))
 
-    `modalidade_id` nulo desassocia: a regra e desativada (não apagada, para o
-    histórico continuar auditável) e os pedidos pendentes voltam para
-    "Modalidade não classificada".
-    """
+
+def _logistica_response(call, status=200):
     try:
-        data = request.get_json() or {}
-        module_id = data.get('module_id')
-        chave = data.get('chave')
-        if not module_id or not chave:
-            return jsonify({'success': False, 'error': 'module_id e chave são obrigatórios'}), 400
+        return jsonify({'success': True, 'data': call()}), status
+    except (ValueError, TypeError) as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    except HTTPException as exc:
+        return jsonify({'success': False, 'error': 'Informe um JSON valido'}), exc.code
+    except Exception as exc:
+        code = str(getattr(exc, 'code', ''))
+        if code in {'22023', '23514', '23503', '23502', '22P02', '22007', '23505', 'P0002'}:
+            return jsonify({'success': False, 'error': getattr(exc, 'message', str(exc))}), (409 if code == '23505' else 404 if code == 'P0002' else 400)
+        logger.exception('Falha na manutencao logistica')
+        return jsonify({'success': False, 'error': 'Falha ao processar logistica'}), 500
 
-        modalidade_id = data.get('modalidade_id')
-        result = supabase_db.rpc('associar_canal_modalidade', {
-            'p_module_id': str(module_id),
-            'p_chave': str(chave),
-            'p_modalidade_id': int(modalidade_id) if modalidade_id not in (None, '', 'none') else None,
-            'p_campo_origem': data.get('campo_origem'),
-        }).execute()
 
-        row = (result.data or [{}])[0] if isinstance(result.data, list) else (result.data or {})
-        return jsonify({
-            'success': True,
-            'data': {
-                'regra_id': row.get('out_regra_id'),
-                'pedidos_reclassificados': row.get('out_pedidos_reclassificados', 0),
-            }
-        })
-    except Exception as e:
-        logger.error(f"Erro ao associar canal de envio à modalidade: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+@integracao_canais_bp.route('/logistica/modalidades', methods=['POST'])
+@admin_required
+def criar_modalidade_logistica():
+    return _logistica_response(lambda: logistica.salvar_modalidade(request.get_json(), ator=str(session['user_id'])), 201)
+
+
+@integracao_canais_bp.route('/logistica/modalidades/<int:modalidade_id>', methods=['PUT'])
+@admin_required
+def atualizar_modalidade_logistica(modalidade_id):
+    return _logistica_response(lambda: logistica.salvar_modalidade(request.get_json(), modalidade_id, str(session['user_id'])))
+
+
+@integracao_canais_bp.route('/logistica/associacoes', methods=['GET'])
+@login_required
+def listar_associacoes_logisticas():
+    def carregar():
+        query = supabase_db.table('regras_classificacao_modalidade').select('*,modalidades_logisticas(nome)') \
+            .eq('alvo', 'CHAVE').is_('integration_id', None).order('id')
+        if request.args.get('module_id'):
+            query = query.eq('module_id', request.args['module_id'])
+        return query.execute().data or []
+    return _logistica_response(carregar)
+
+
+@integracao_canais_bp.route('/logistica/agenda', methods=['GET'])
+@login_required
+def consultar_agenda_logistica():
+    def carregar():
+        inicio, fim = logistica.validar_periodo(request.args['inicio'], request.args['fim'])
+        return logistica.rpc_data('logistica_agenda_periodo', {'p_integration_id': int(request.args['marketplace_integration_id']),
+            'p_inicio': inicio, 'p_fim': fim})
+    if not all(request.args.get(k) for k in ('inicio', 'fim', 'marketplace_integration_id')):
+        return jsonify({'success': False, 'error': 'Informe integracao, inicio e fim'}), 400
+    return _logistica_response(carregar)
+
+
+@integracao_canais_bp.route('/logistica/sincronizar', methods=['POST'])
+@admin_required
+def sincronizar_agenda_logistica():
+    def enfileirar():
+        from nistiprint_shared.services.celery_app import celery_app
+        body = request.get_json() or {}
+        iid = int(body['marketplace_integration_id'])
+        rows = supabase_db.table('installed_integrations').select('id,module_id').eq('id', iid).execute().data or []
+        if not rows or rows[0]['module_id'] != 'mercadolivre':
+            raise ValueError('Selecione uma conta Mercado Livre')
+        task = celery_app.send_task('nistiprint_shared.services.logistica_sync_service.sincronizar_agendas', args=[iid])
+        return {'operation_id': task.id, 'status': 'ENFILEIRADO'}
+    if not (request.get_json(silent=True) or {}).get('marketplace_integration_id'):
+        return jsonify({'success': False, 'error': 'Informe a integracao'}), 400
+    return _logistica_response(enfileirar, 202)
+
+
+@integracao_canais_bp.route('/logistica/regras/<int:regra_id>/excecoes/<dia>', methods=['PUT', 'DELETE'])
+@admin_required
+def salvar_excecao_logistica(regra_id, dia):
+    def salvar():
+        from datetime import date
+        date.fromisoformat(dia)
+        dados = request.get_json(silent=True) if request.method == 'PUT' else None
+        if request.method == 'PUT' and not isinstance(dados, dict):
+            raise ValueError('Informe janelas e motivo em JSON')
+        return logistica.rpc_data('logistica_salvar_excecao', {'p_regra_id': regra_id, 'p_dia': dia,
+            'p_dados': dados, 'p_ator': str(session['user_id'])})
+    return _logistica_response(salvar)

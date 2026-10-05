@@ -1,104 +1,61 @@
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
-import { useLayout } from '@/contexts/LayoutContext';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { useLayout } from '@/contexts/useLayout';
 import { cn } from '@/lib/utils';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
+import SidebarNav from './SidebarNav';
+import { itensDaSecao } from '@/navigation';
 
-function Sidebar() {
-  const { isLeftSidebarOpen, toggleLeftSidebar, leftSidebarContent, leftSidebarMenuItems } = useLayout();
-  const navigate = useNavigate();
+function Sidebar({ secao, podeVer }) {
+  const { isLeftSidebarOpen, toggleLeftSidebar } = useLayout();
+  const location = useLocation();
+  if (!secao) return null;
 
-  // Se não houver conteúdo definido para a sidebar, não renderiza nada
-  if (!leftSidebarContent) return null;
+  const items = itensDaSecao(secao).filter(podeVer);
+  const isActive = (item) => item.exato
+    ? location.pathname === item.href
+    : location.pathname === item.href || location.pathname.startsWith(`${item.href}/`);
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div
-        className={cn(
-          "hidden border-r bg-gradient-to-b from-muted/30 to-muted/10 md:flex flex-col transition-all duration-300 ease-in-out h-full relative shadow-sm",
-          isLeftSidebarOpen ? "w-64" : "w-16"
-        )}
-      >
-        {/* Gradient overlay for modern look */}
-        <div className="absolute inset-0 bg-gradient-to-b from-primary/0 via-primary/0 to-primary/5 pointer-events-none" />
-
-        <ScrollArea className="flex-1 h-full w-full overflow-hidden scrollbar-thin">
-          <div
-            className={cn(
-              "p-3 transition-all duration-300 min-h-full",
-              !isLeftSidebarOpen && "opacity-0 overflow-hidden"
-            )}
-          >
-            {leftSidebarContent}
-          </div>
-
-          {!isLeftSidebarOpen && (
-            <div className="absolute inset-0 flex flex-col items-center pt-12 gap-2">
-              {leftSidebarMenuItems.map((item, index) => {
+      <aside className={cn(
+        'hidden md:flex h-full shrink-0 flex-col border-r bg-card transition-[width] duration-200',
+        isLeftSidebarOpen ? 'w-64' : 'w-16'
+      )} aria-label="Navegação da seção">
+        <ScrollArea className="h-full w-full scrollbar-thin">
+          {isLeftSidebarOpen ? (
+            <div className="p-3">
+              <SidebarNav secao={secao} podeVer={podeVer} />
+            </div>
+          ) : (
+            <nav className="flex flex-col items-center gap-2 p-2 pt-4">
+              {items.map((item) => {
                 const Icon = item.icon;
                 return (
-                  <Tooltip key={index}>
+                  <Tooltip key={item.href}>
                     <TooltipTrigger asChild>
-                      <div className="flex flex-col items-center">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className={cn(
-                            "h-9 w-9 p-0 rounded-lg transition-all duration-200",
-                            "hover:bg-primary/10 hover:text-primary"
-                          )}
-                          onClick={() => {
-                            if (item.href) {
-                              navigate(item.href);
-                            }
-                          }}
-                        >
-                          {Icon && <Icon className="h-4 w-4" />}
-                        </Button>
-                      </div>
+                      <Button asChild variant="ghost" size="icon" aria-label={item.name}
+                        className={cn('h-11 w-11 rounded-lg', isActive(item) && 'bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground')}>
+                        <Link to={item.href}>{Icon && <Icon className="h-5 w-5" />}</Link>
+                      </Button>
                     </TooltipTrigger>
-                    <TooltipContent side="right" className="font-medium">
-                      {item.name}
-                    </TooltipContent>
+                    <TooltipContent side="right">{item.name}</TooltipContent>
                   </Tooltip>
                 );
               })}
-            </div>
+            </nav>
           )}
         </ScrollArea>
-
-        {/* Collapse toggle button - Modern design */}
-        <div
-          className={cn(
-            "absolute -right-3 top-1/2 -translate-y-1/2 z-10 transition-opacity duration-200",
-            "opacity-0 hover:opacity-100"
-          )}
-        >
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={toggleLeftSidebar}
-            className={cn(
-              "h-6 w-6 rounded-full border-2 bg-background shadow-md",
-              "hover:bg-primary hover:text-primary-foreground hover:border-primary",
-              "transition-all duration-200"
-            )}
-          >
-            {isLeftSidebarOpen ? (
-              <ChevronLeft className="h-3 w-3" />
-            ) : (
-              <ChevronRight className="h-3 w-3" />
-            )}
+        <div className="border-t p-2">
+          <Button variant="ghost" size="icon" onClick={toggleLeftSidebar}
+            aria-label={isLeftSidebarOpen ? 'Recolher navegação' : 'Expandir navegação'}
+            className="h-11 w-11">
+            {isLeftSidebarOpen ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
           </Button>
         </div>
-      </div>
+      </aside>
     </TooltipProvider>
   );
 }

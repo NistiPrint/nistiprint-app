@@ -57,6 +57,9 @@ interface IntegrationCardProps {
   syncingAccountIdentityId?: number | null;
   onTest?: (id: number) => void;
   testingId?: number | null;
+  linksSummary?: ErpLink[] | null;
+  linksSummaryStatus?: 'loading' | 'loaded' | 'error';
+  onRefreshLinks?: () => Promise<boolean>;
 }
 
 interface AppProfile {
@@ -128,10 +131,16 @@ export default function IntegrationCard({
   syncingAccountIdentityId,
   onTest,
   testingId,
+  linksSummary = null,
+  linksSummaryStatus = 'loading',
+  onRefreshLinks,
 }: IntegrationCardProps) {
   const isErp = type === 'erp';
   const [open, setOpen] = useState(false);
   const [links, setLinks] = useState<ErpLink[]>([]);
+  const [linksLoaded, setLinksLoaded] = useState(false);
+  const [summaryLinks, setSummaryLinks] = useState<ErpLink[]>(linksSummary || []);
+  const [linkLoadError, setLinkLoadError] = useState(false);
   const [blingAccounts, setBlingAccounts] = useState<IntegrationInstance[]>(erpAccounts);
   const [loadingLinks, setLoadingLinks] = useState(false);
   const [showLinkForm, setShowLinkForm] = useState(false);
@@ -149,31 +158,55 @@ export default function IntegrationCard({
   );
   const [savingAppProfile, setSavingAppProfile] = useState(false);
 
+  const displayedLinks = linksSummary !== null || linksLoaded ? summaryLinks : links;
   const nfeLinks = useMemo(
-    () => links.filter((link) => (link.nf_emission_mode || 'bling') === 'bling'),
-    [links]
+    () => displayedLinks.filter((link) => (link.nf_emission_mode || 'bling') === 'bling'),
+    [displayedLinks]
   );
   const defaultNfeLink = useMemo(
     () => nfeLinks.find((link) => String(link.id) === defaultNfeLinkId) || null,
     [nfeLinks, defaultNfeLinkId]
   );
-  const firstLink = links[0];
-  const extraLinks = Math.max(links.length - 1, 0);
+  const firstLink = displayedLinks[0];
+  const visibleLinkCount = linksSummary !== null || linksSummaryStatus === 'loaded'
+    ? summaryLinks.length
+    : linksLoaded
+      ? links.length
+      : null;
+  const extraLinks = Math.max((visibleLinkCount || 0) - 1, 0);
   const alertToken = isTokenAlert(integration.credential_status);
   const accountIdentifier = getAccountIdentifier(integration);
 
-  const loadLinks = useCallback(async () => {
+  useEffect(() => {
+    if (Array.isArray(linksSummary)) {
+      setSummaryLinks(linksSummary);
+      setLinkLoadError(false);
+      if (!isErp) {
+        const savedDefault = integration.config?.default_nfe_link_id;
+        if (savedDefault) {
+          setDefaultNfeLinkId(String(savedDefault));
+        } else {
+          const onlyNfe = linksSummary.filter((link) => (link.nf_emission_mode || 'bling') === 'bling');
+          setDefaultNfeLinkId(onlyNfe.length === 1 ? String(onlyNfe[0].id) : 'none');
+        }
+      }
+    }
+  }, [linksSummary, isErp, integration.config?.default_nfe_link_id]);
+
+  const loadLinks = useCallback(async ({ refreshSummary = false } = {}) => {
     try {
       setLoadingLinks(true);
+      setLinkLoadError(false);
       const linksUrl = isErp
         ? `/api/v2/erp-links/erp/${integration.id}/links`
         : `/api/v2/erp-links/marketplace/${integration.id}/links`;
       const res = await fetch(linksUrl);
-      if (!res.ok) return;
+      if (!res.ok) throw new Error('Falha ao carregar vínculos');
       const data = await res.json();
       const loadedLinks: ErpLink[] = data.data || [];
       setLinks(loadedLinks);
-
+      setLinksLoaded(true);
+      setSummaryLinks(loadedLinks);
       if (!isErp) {
         const savedDefault = integration.config?.default_nfe_link_id;
         if (savedDefault) {
@@ -183,12 +216,16 @@ export default function IntegrationCard({
           setDefaultNfeLinkId(onlyNfe.length === 1 ? String(onlyNfe[0].id) : 'none');
         }
       }
+      if (refreshSummary) await onRefreshLinks?.();
+      return true;
     } catch (err) {
       console.error('Erro ao carregar vinculos:', err);
+      setLinkLoadError(true);
+      return false;
     } finally {
       setLoadingLinks(false);
     }
-  }, [integration.id, isErp, integration.config?.default_nfe_link_id]);
+  }, [integration.id, isErp, integration.config?.default_nfe_link_id, onRefreshLinks]);
 
   const loadBlingAccounts = useCallback(async () => {
     if (isErp) return;
@@ -206,11 +243,6 @@ export default function IntegrationCard({
       console.error('Erro ao carregar contas Bling:', err);
     }
   }, [isErp, erpAccounts]);
-
-  useEffect(() => {
-    loadLinks();
-    loadBlingAccounts();
-  }, [loadLinks, loadBlingAccounts]);
 
   useEffect(() => {
     if (isErp) {
@@ -237,10 +269,11 @@ export default function IntegrationCard({
   }, [integration.id]);
 
   useEffect(() => {
-    if (open) {
-      loadAppProfiles();
-    }
-  }, [open, loadAppProfiles]);
+    if (!open) return;
+    if (!linksLoaded && !loadingLinks && !linkLoadError) loadLinks();
+    loadBlingAccounts();
+    loadAppProfiles();
+  }, [open, linksLoaded, loadingLinks, linkLoadError, loadLinks, loadBlingAccounts, loadAppProfiles]);
 
   async function handleSaveParams() {
     try {
@@ -267,7 +300,7 @@ export default function IntegrationCard({
   }
 
   async function handleSaveDefaultNfe(linkId: string) {
-    const selected = links.find((link) => String(link.id) === linkId);
+    const selected = [...links, ...summaryLinks].find((link) => String(link.id) === linkId);
     try {
       setSavingNfe(true);
       const res = await fetch(`/api/v2/marketplace/installed/${integration.id}`, {
@@ -351,7 +384,7 @@ export default function IntegrationCard({
       toast.success('Vinculo salvo');
       setShowLinkForm(false);
       setEditingLink(null);
-      loadLinks();
+      await loadLinks({ refreshSummary: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Erro ao salvar vinculo');
     }
@@ -366,7 +399,7 @@ export default function IntegrationCard({
         await handleSaveDefaultNfe('none');
       }
       toast.success('Vinculo removido');
-      loadLinks();
+      await loadLinks({ refreshSummary: true });
     } catch {
       toast.error('Erro ao remover vinculo');
     }
@@ -386,52 +419,56 @@ export default function IntegrationCard({
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="rounded-lg border bg-background">
-        <div className="flex items-center gap-3 p-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-muted">
+      <div className="overflow-hidden rounded-xl border bg-card shadow-sm transition-shadow hover:shadow-md">
+        <div className="flex flex-wrap items-center gap-3 p-3.5 sm:flex-nowrap sm:p-4">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-muted/70">
             {moduleIcons[integration.module_id] ? (
-              <img src={moduleIcons[integration.module_id]} alt={integration.module_id} className="h-5 w-5 rounded" />
+              <img src={moduleIcons[integration.module_id]} alt="" className="h-5 w-5 rounded" />
             ) : (
               <Database className="h-4 w-4 text-muted-foreground" />
             )}
           </div>
 
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate font-medium">{integration.instance_name}</span>
-              <Badge variant="outline" className="h-5 px-1.5 text-[10px] uppercase">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="truncate text-sm font-semibold tracking-tight">{integration.instance_name}</span>
+              <Badge variant="outline" className="h-5 rounded-md px-1.5 text-[10px] uppercase tracking-wide">
                 {integration.module_id}
               </Badge>
-              <span className={`h-2 w-2 rounded-full ${integration.is_active ? 'bg-emerald-500' : 'bg-muted-foreground'}`} />
+              <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${integration.is_active ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-muted text-muted-foreground'}`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${integration.is_active ? 'bg-emerald-500' : 'bg-muted-foreground'}`} />
+                {integration.is_active ? 'Ativa' : 'Inativa'}
+              </span>
             </div>
-            <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <span className={alertToken ? 'text-destructive' : ''}>{tokenLabel(integration.credential_status)}</span>
-              <span>•</span>
-              <span>{links.length} vinculo{links.length === 1 ? '' : 's'}</span>
+            <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <Badge variant={alertToken ? 'destructive' : 'secondary'} className="h-5 rounded-full px-2 text-[10px] font-medium">
+                {tokenLabel(integration.credential_status)}
+              </Badge>
+              <Badge variant="outline" className="h-5 rounded-full px-2 text-[10px] font-medium tabular-nums">
+                {visibleLinkCount !== null
+                  ? `${visibleLinkCount} vínculo${visibleLinkCount === 1 ? '' : 's'}`
+                  : (linkLoadError || linksSummaryStatus === 'error')
+                    ? 'Vínculos indisponíveis'
+                    : 'Carregando vínculos…'}
+              </Badge>
               {firstLink && (
-                <>
-                  <span>•</span>
-                  <span className="truncate">{linkSummary(firstLink, isErp)}{extraLinks ? ` +${extraLinks}` : ''}</span>
-                </>
+                <span className="max-w-full truncate">{linkSummary(firstLink, isErp)}{extraLinks ? ` +${extraLinks}` : ''}</span>
               )}
               {!isErp && defaultNfeLink && (
-                <>
-                  <span>•</span>
-                  <span className="truncate">NF {defaultNfeLink.erp?.instance_name || `Bling ${defaultNfeLink.erp_integration_id}`}</span>
-                </>
+                <span className="max-w-full truncate">NF {defaultNfeLink.erp?.instance_name || `Bling ${defaultNfeLink.erp_integration_id}`}</span>
               )}
             </div>
           </div>
 
-          <div className="hidden items-center gap-1 sm:flex">
+          <div className="ml-auto hidden items-center gap-0.5 rounded-lg bg-muted/40 p-0.5 sm:flex">
             {onTest && (
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => onTest(integration.id)}
                 disabled={testingId === integration.id}
-                title="Testar conex?o"
-                aria-label="Testar conex?o"
+                title="Testar conexão"
+                aria-label="Testar conexão"
               >
                 <Zap className="h-4 w-4" />
               </Button>
@@ -465,8 +502,8 @@ export default function IntegrationCard({
                 variant="ghost"
                 size="sm"
                 onClick={startNewLink}
-                title="Criar v?nculo"
-                aria-label="Criar v?nculo"
+                title="Criar vínculo"
+                aria-label="Criar vínculo"
               >
                 <Plus className="h-4 w-4" />
               </Button>
@@ -477,7 +514,7 @@ export default function IntegrationCard({
             <Button
               variant="ghost"
               size="sm"
-              className="h-8 px-2"
+              className="h-9 shrink-0 px-2"
               title={open ? 'Recolher detalhes' : 'Expandir detalhes'}
               aria-label={open ? 'Recolher detalhes' : 'Expandir detalhes'}
             >
@@ -488,7 +525,7 @@ export default function IntegrationCard({
         </div>
 
         <CollapsibleContent>
-          <div className="space-y-3 border-t p-3">
+          <div className="space-y-5 border-t bg-muted/10 p-3.5 sm:p-5">
             {!isErp && (
               <NfEmitterBanner
                 defaultNfeLinkId={defaultNfeLinkId}
@@ -585,7 +622,14 @@ export default function IntegrationCard({
               />
             )}
 
-            {loadingLinks ? (
+            {linkLoadError && !loadingLinks ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm" role="alert">
+                <span className="text-muted-foreground">Não foi possível carregar os vínculos desta integração.</span>
+                <Button variant="outline" size="sm" onClick={() => loadLinks()}>
+                  Tentar novamente
+                </Button>
+              </div>
+            ) : loadingLinks ? (
               <div className="rounded-md border border-dashed py-5 text-center text-sm text-muted-foreground">
                 Carregando vinculos...
               </div>

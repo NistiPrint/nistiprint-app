@@ -49,9 +49,10 @@ from .marketplace_api_base import marketplace_api_bp
 from utils.api_response import ApiResponse
 
 
-def _public_installation(inst):
+def _public_installation(inst, installation_secret_kinds=None):
     return integration_credentials_service.sanitize_installation(
-        {**inst.to_dict(), "id": inst.id}
+        {**inst.to_dict(), "id": inst.id},
+        installation_secret_kinds=installation_secret_kinds,
     )
 
 
@@ -483,7 +484,23 @@ def get_installed_integrations():
             module_ids = [m.id for m in modules]
             insts = [i for i in insts if i.module_id in module_ids]
 
-        return jsonify({"installations": [_public_installation(i) for i in insts]})
+        secret_kinds_by_id = integration_secret_service.secret_kinds_for_owners(
+            "installed_integration",
+            [inst.id for inst in insts],
+            ["access_token", "refresh_token"],
+        )
+
+        return jsonify(
+            {
+                "installations": [
+                    _public_installation(
+                        installation,
+                        secret_kinds_by_id.get(str(installation.id), set()),
+                    )
+                    for installation in insts
+                ]
+            }
+        )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

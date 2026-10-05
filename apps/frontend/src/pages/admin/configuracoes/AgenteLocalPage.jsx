@@ -2,13 +2,11 @@ import { useEffect, useState } from 'react';
 import { Download, Monitor, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { useSecaoSidebar } from '@/lib/hooks/useSecaoSidebar';
 import LocalAgentService from '@/services/LocalAgentService';
 
 const RELEASES = '/api/v2/local-agent/releases';
 
 export default function AgenteLocalPage() {
-  useSecaoSidebar();
   const [release, setRelease] = useState(null);
   const [agent, setAgent] = useState(null);
   const [loading, setLoading] = useState(true);

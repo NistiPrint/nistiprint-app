@@ -33,6 +33,21 @@ logger = logging.getLogger("DespachoAPI")
 despacho_bp = Blueprint("despacho", __name__)
 
 
+@despacho_bp.route('/alertas-logisticos', methods=['GET'])
+def get_alertas_logisticos():
+    if not get_current_user():
+        return jsonify({'success': False, 'error': 'Nao autorizado'}), 401
+    try:
+        from nistiprint_shared.services.logistica_manutencao_service import rpc_data
+        pedidos = rpc_data('logistica_alertas') or []
+        divergencias = supabase_db.table('demandas_producao').select('id,demanda_id,logistica_divergencia') \
+            .not_.is_('logistica_divergencia', None).not_.in_('status', ['CONCLUIDO', 'CANCELADO']).execute().data or []
+        return jsonify({'success': True, 'data': {'pedidos': pedidos, 'divergencias': divergencias}})
+    except Exception:
+        logger.exception('Falha ao consultar alertas logisticos')
+        return jsonify({'success': False, 'error': 'Falha ao consultar alertas logisticos'}), 500
+
+
 def _json_request_value(value, default=None):
     if value in (None, ""):
         return default
@@ -212,6 +227,7 @@ def get_arvore():
                 "coleta_em": None,
                 "compromisso_mais_proximo": None,
                 "modalidades": {},
+                "module_id": None,
             })
 
             if row["nivel"] == 0:
@@ -235,6 +251,7 @@ def get_arvore():
                 "prazo_final_em": None,
                 "compromisso_mais_proximo": None,
                 "buckets": {},
+                "coletas_por_bucket": {},
                 "coletas": {},
                 "janelas": [],
             })
@@ -251,6 +268,17 @@ def get_arvore():
             # Níveis 2 e 3 são dois recortes do MESMO conjunto do nível 1, não
             # sub-níveis: prazo do marketplace (urgência) e coleta (qual
             # caminhão). Somar um com o outro conta cada pedido duas vezes.
+            if row["nivel"] == 4:
+                bucket = row.get("bucket_prazo")
+                if bucket is not None:
+                    coletas = mod["coletas_por_bucket"].setdefault(bucket, {})
+                    chave = row.get("coleta_grupo") or "sem_coleta"
+                    coletas[chave] = {
+                        "coleta_em": row.get("coleta_grupo"),
+                        "qtd_pedidos": row.get("qtd_pedidos") or 0,
+                    }
+                continue
+
             if row["nivel"] == 3:
                 mod["coletas"][row["coleta_grupo"]] = {
                     "coleta_em": row["coleta_grupo"],
@@ -263,6 +291,9 @@ def get_arvore():
                 "bucket": row["bucket_prazo"],
                 "qtd_pedidos": row["qtd_pedidos"],
                 "qtd_itens": row["qtd_itens"],
+                "corte_em": row.get("corte_em"),
+                "coleta_em": row.get("coleta_em"),
+                "prazo_final_em": row.get("prazo_final_em"),
             }
 
         # Entrega rapida e flag de cadastro (Shopee Flex/Turbo, ML Flex, Amazon
@@ -274,6 +305,20 @@ def get_arvore():
             rapidas = {m["id"]: bool(m.get("entrega_rapida")) for m in (cat.data or [])}
         except Exception:
             logger.warning("Falha ao carregar flag de entrega rapida", exc_info=True)
+
+        # O marketplace e a unidade de agrupamento, mas a regra de prazo e
+        # especifica por modulo. A tela usa isto apenas para apresentar a coleta
+        # por prazo no Mercado Livre; as demais origens preservam o card atual.
+        try:
+            ids = [integration_id for integration_id in marketplaces if integration_id is not None]
+            if ids:
+                integracoes = (supabase_db.table("installed_integrations")
+                    .select("id,module_id").in_("id", ids).execute().data or [])
+                modulos = {row["id"]: row.get("module_id") for row in integracoes}
+                for integration_id, marketplace in marketplaces.items():
+                    marketplace["module_id"] = modulos.get(integration_id)
+        except Exception:
+            logger.warning("Falha ao identificar modulos dos marketplaces", exc_info=True)
 
         # De que situacoes o total e feito. A tela de Pedidos filtrada por "Em
         # Andamento" mostra menos que a torre porque a torre tambem conta
@@ -379,9 +424,19 @@ def get_arvore():
                     aba = ABA_DO_BUCKET.get(bucket["bucket"], "proximos")
                     alvo = lote["buckets"].setdefault(bucket["bucket"], {
                         "bucket": bucket["bucket"], "aba": aba, "qtd_pedidos": 0, "qtd_itens": 0,
+                        "corte_em": bucket.get("corte_em"),
+                        "coleta_em": bucket.get("coleta_em"),
+                        "prazo_final_em": bucket.get("prazo_final_em"),
+                        "coletas": {},
                     })
                     alvo["qtd_pedidos"] += bucket["qtd_pedidos"] or 0
                     alvo["qtd_itens"] += bucket["qtd_itens"] or 0
+                    for coleta_key, coleta in mod["coletas_por_bucket"].get(bucket["bucket"], {}).items():
+                        existente = alvo["coletas"].get(coleta_key)
+                        if existente:
+                            existente["qtd_pedidos"] += coleta["qtd_pedidos"]
+                        else:
+                            alvo["coletas"][coleta_key] = dict(coleta)
                     lote["por_aba"][aba] += bucket["qtd_pedidos"] or 0
                     abas_totais[aba] += bucket["qtd_pedidos"] or 0
 
@@ -397,7 +452,13 @@ def get_arvore():
                     lote["rascunho"] = r
 
             mkt["modalidades"] = [
-                {**l, "buckets": list(l["buckets"].values()),
+                {**l, "buckets": [
+                    {**bucket, "coletas": sorted(
+                        bucket["coletas"].values(),
+                        key=lambda coleta: coleta.get("coleta_em") or "9999",
+                    )}
+                    for bucket in l["buckets"].values()
+                ],
                  "coletas": sorted(l["coletas"].values(), key=lambda c: c["coleta_em"] or "")}
                 for l in lotes.values()
             ]
@@ -471,7 +532,8 @@ def get_escopo():
                 "erp_integration_id,erp_order_id,erp_order_number"
             )
             .in_("id", pedido_ids)
-            .order("compromisso_logistico_em", desc=False)
+            .order("data_limite_envio", desc=False)
+            .order("id", desc=False)
             .execute()
         )
         pedidos = pedidos_result.data or []
