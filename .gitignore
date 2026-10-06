@@ -195,6 +195,7 @@ activemq-data/
 # Environments
 .env
 .envrc
+apps/worker/.env.mercadolivre.accounts
 .venv
 env/
 venv/

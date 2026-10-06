@@ -1557,7 +1557,7 @@ def _upsert_pedido_shopee(shopee_data: dict, marketplace_integration_id: int) ->
     # `days_to_ship` vinha preenchido; com os dois em coluna, a mesma pergunta
     # vira uma consulta. Gravados so quando ha valor: o upsert substitui a
     # linha inteira, e um payload sem o campo apagaria o que ja sabiamos.
-    ship_by_date = shopee_data.get('ship_by_date')
+    ship_by_date = logistics_canonicalization.observe_shopee(shopee_data).dispatch_deadline_raw
     if ship_by_date:
         row['ship_by_date'] = ship_by_date
     dias_para_envio = shopee_data.get('days_to_ship')
@@ -1612,12 +1612,12 @@ def _upsert_pedido_master(payload, *,
     # Resolver data limite de envio
     data_limite_envio = None
     if shopee_data:
-        data_limite_envio = _clean_shopee_ship_by_date(shopee_data.get('ship_by_date'))
+        data_limite_envio = logistics_canonicalization.observe_shopee(shopee_data).dispatch_deadline_raw
     elif meli_data:
         sla = normalize_sla(meli_data.get('sla'))
         data_limite_envio = sla.get('expected_date')
     
-    if not data_limite_envio and not meli_data:
+    if not data_limite_envio and not meli_data and not shopee_data:
         data_limite_envio = _clean_date(payload.get('dataPrevista'))
 
     coleta_contexto = {}
@@ -1680,9 +1680,16 @@ def _upsert_pedido_master(payload, *,
         marketplace_integration_id = (
             marketplace_integration_id or link.get('marketplace_integration_id')
         )
-    if marketplace_module_id == 'mercadolivre':
-        # dataPrevista do ERP nao substitui o SLA oficial, mesmo sem detalhe ML.
-        data_limite_envio = normalize_sla((meli_data or {}).get('sla')).get('expected_date')
+    if marketplace_module_id in ('shopee', 'mercadolivre'):
+        # A identidade pode ser resolvida pelo vinculo mesmo sem detalhe do
+        # marketplace. dataPrevista do ERP nunca substitui seu prazo oficial.
+        logistica = logistics_canonicalization.resolve(
+            marketplace_module_id, shopee_data if marketplace_module_id == 'shopee' else meli_data
+        )
+        data_limite_envio_iso = logistica.data_limite_envio
+        fonte_prazo = logistica.dispatch_deadline_source
+    else:
+        fonte_prazo = 'bling.dataPrevista' if data_limite_envio_iso else None
 
     if not marketplace_module_id or not codigo_externo:
         canonical_order_repository.defer_unresolved_erp_order(
@@ -1795,7 +1802,7 @@ def _upsert_pedido_master(payload, *,
             'is_fulfillment': is_fulfillment,
             'modalidade': modalidade,
             'deadline': data_limite_envio_iso,
-            'dispatch_deadline_source': 'mercadolivre.sla.expected_date' if meli_data and data_limite_envio_iso else None,
+            'dispatch_deadline_source': fonte_prazo,
             'deadline_checked_at': get_now_iso() if meli_data else None,
             'purchase_at': data_compra_marketplace_iso,
             'payment_at': data_pagamento_marketplace_iso,

@@ -17,6 +17,32 @@ behavior documented here is the expected contract for frontend and worker code.
 | Orders | `/api/v2/pedidos`, `/api/v2/orders`, `/api/v2/order` |
 | Integrations | `/api/v2/marketplace`, `/api/v2/integracoes`, `/api/v2/erp-links`, `/api/v2/integracao-canais` |
 | Webhooks | `/api/v2/webhooks` |
+| Mercado Livre personalization | `/api/v2/mercadolivre/integracoes` |
+
+### Mercado Livre private post-sale personalization
+
+Every account-scoped route carries `integration_id`; all database reads and
+mutations filter by it. Order, personalization, and batch IDs are revalidated
+against that account. Reads require login; configuration updates require admin.
+
+| Method | Route | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/v2/mercadolivre/integracoes/personalizacoes` | List connected accounts and per-account enablement. |
+| `GET` | `/api/v2/mercadolivre/integracoes/{integration_id}/personalizados/pedidos` | List personalized in-progress/ready orders and current-context results. |
+| `GET` | `.../pedidos/{pedido_id}/chat` | Read that account's conversation and messages. |
+| `GET` | `.../conversas-pendentes` | List stored conversations awaiting order import. |
+| `GET` | `.../webhooks-pendentes` | Audit message notifications whose account/application identity did not match. |
+| `GET` | `/api/v2/mercadolivre/personalizacoes/webhooks-sem-vinculo` | Admin-only audit list for unmatched notifications without a unique account. |
+| `GET` | `.../pedidos/{pedido_id}/logs` | Read account/order execution and manual-review history. |
+| `GET`, `PUT` | `.../config` | Read or admin-update account-specific capture, provider, model, prompt, and schedule. |
+| `POST` | `.../extrair` | Create an account-scoped extraction/reprocessing batch and enqueue it. |
+| `GET` | `.../lotes/{batch_id}` | Read progress after verifying batch ownership. |
+| `POST` | `.../pedidos/{pedido_id}/personalizacoes` | Add and confirm an operator-entered name/initial for an internal item. |
+| `POST` | `.../personalizacoes/{id}/confirmar` | Correct/confirm a result and record operator history. |
+
+The print API adds a Mercado Livre branch keyed by canonical order integration
+and internal item ID. It never reads Mercado Livre results from Shopee's
+`personalizacoes_pedido` table. Shopee keeps its existing print reader.
 
 ## Integration contracts
 

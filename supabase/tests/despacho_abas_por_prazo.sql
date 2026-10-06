@@ -58,9 +58,15 @@ BEGIN
            )
            OR a.qtd_pedidos <> (
                SELECT count(*) FROM public.vw_pedidos_pendentes_despacho p
+                LEFT JOIN LATERAL public.despacho_coleta_do_pedido(
+                    p.marketplace_module_id, p.modalidade_logistica_id,
+                    p.marketplace_integration_id,
+                    COALESCE(p.data_pagamento_marketplace, p.data_compra_marketplace, p.data_venda),
+                    p.data_limite_envio, now()) c ON true
                 WHERE p.marketplace_integration_id IS NOT DISTINCT FROM a.integration_id
                   AND p.modalidade_logistica_id IS NOT DISTINCT FROM a.modalidade_id
-                  AND public.despacho_bucket_prazo(p.data_limite_envio, DATE '2026-09-16') = a.bucket_prazo
+                  AND public.despacho_bucket_prazo(COALESCE(p.data_limite_envio,
+                      c.coleta_em, p.compromisso_logistico_em), DATE '2026-09-16') = a.bucket_prazo
            )
        );
     IF falhas > 0 THEN

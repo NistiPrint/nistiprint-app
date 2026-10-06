@@ -26,6 +26,18 @@ class TestPrazoDePostagem(unittest.TestCase):
         self.assertTrue(r.data_limite_envio.startswith("2026-08-05"))
         self.assertEqual(r.dispatch_deadline_source, "shopee.ship_by_date")
 
+    def test_shopee_nao_inventa_prazo_quando_api_retorna_zero(self):
+        for zero in (None, 0, '0'):
+            r = L.resolve('shopee', {'ship_by_date': zero, 'days_to_ship': 2,
+                                    'raw': {'pay_time': 1791204708, 'days_to_ship': 2}})
+            self.assertIsNone(r.data_limite_envio)
+            self.assertIsNone(r.dispatch_deadline_source)
+
+    def test_shopee_zero_no_topo_nao_oculta_prazo_oficial_no_raw(self):
+        r = L.resolve('shopee', {'ship_by_date': '0',
+                                'raw': {'ship_by_date': '2026-10-06T23:59:59-03:00'}})
+        self.assertEqual(r.data_limite_envio, '2026-10-06T23:59:59-03:00')
+
     def test_meli_prefere_o_endpoint_de_sla(self):
         """`/shipments/{id}/sla` e a fonte autoritativa do prazo de postagem.
 

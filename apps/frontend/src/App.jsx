@@ -84,6 +84,8 @@ import ProdutoFormPage from './pages/produtos/ProdutoFormPage'
 import ProdutoListPage from './pages/produtos/ProdutoListPage'
 import VendasPage from './pages/vendas/VendasPage'
 import VendasPersonalizadasPage from './pages/vendas/VendasPersonalizadasPage'
+import MercadoLivrePersonalizacoesPage from './pages/vendas/MercadoLivrePersonalizacoesPage'
+import MercadoLivrePersonalizacaoConfigPage from './pages/admin/configuracoes/MercadoLivrePersonalizacaoConfigPage'
 import PerfilPage from './pages/PerfilPage'
 
 function App() {
@@ -118,6 +120,8 @@ function App() {
               path='personalizadas'
               element={<VendasPersonalizadasPage />}
             />
+            <Route path='personalizadas/mercadolivre' element={<MercadoLivrePersonalizacoesPage />} />
+            <Route path='personalizadas/mercadolivre/:integration_id' element={<MercadoLivrePersonalizacoesPage />} />
             <Route path='pedidos' element={<PedidosListPage />} />
             <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
           </Route>
@@ -284,6 +288,8 @@ function App() {
               element={<PermissoesDemandaPage />}
             />
             <Route path='ia' element={<ConfiguracoesIA />} />
+            <Route path='personalizacao/mercadolivre' element={<MercadoLivrePersonalizacaoConfigPage />} />
+            <Route path='personalizacao/mercadolivre/:integration_id' element={<MercadoLivrePersonalizacaoConfigPage />} />
             {/* Janelas de despacho saiu de dentro do hub de integrações: é
                 cadastro operacional de rotina (corte, coleta, ponto), não
                 conexão de conta. Estava enterrada numa aba de um hub cujo nome

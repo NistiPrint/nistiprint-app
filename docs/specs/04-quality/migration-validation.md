@@ -42,3 +42,31 @@ where proname = 'list_pedidos_filtrados';
 No production deployment should depend on a local-only migration unless the PR
 explicitly includes migration application steps and validation evidence.
 
+## Mercado Livre personalization migration
+
+Target migration: `20261006100000_mercadolivre_personalization_isolated.sql`.
+
+The migration is additive. It creates seven account-scoped relations, enables
+RLS without client-role policies, grants service-role access, and adds one
+service-role-only transactional RPC. It does not replace Shopee tables, views,
+functions, or schedules.
+
+Before activation in the production Supabase project:
+
+1. Confirm the migration is absent/present in `schema_migrations` as expected and
+   apply it once through the approved migration pipeline.
+2. Check all seven tables, their account foreign keys, unique/index contracts,
+   and RLS flags. Verify the RPC has signature
+   `persist_mercadolivre_personalization_results(integer,text,text,text,boolean,jsonb,jsonb,uuid)`.
+3. Verify `anon` and `authenticated` cannot select or execute the new tables/RPC;
+   verify `service_role` can call the RPC and that a cross-account order/item
+   input is rejected transactionally.
+4. Run the domain integration smoke test with a real connected account, first
+   with extraction disabled. Compare Shopee table contents and print results
+   before/after to establish the regression baseline.
+5. Record the Supabase migration version, SQL advisor results, test run, and
+   pilot conversation before enabling daily extraction.
+
+Current validation state: migration and repository checks are prepared locally;
+the production database migration has not been applied or verified.
+

@@ -44,6 +44,7 @@ operational decisions.
 - [System as-is report](01-system/as-is-reverse-engineering.md)
 - [Spec process](00-governance/spec-process.md)
 - [Pedidos spec](02-domains/pedidos/spec.md)
+- [Mercado Livre personalization spec](02-domains/personalizacao-mercadolivre/spec.md)
 - [Supabase contracts](03-contracts/supabase-contracts.md)
 - [Migration validation](04-quality/migration-validation.md)
 

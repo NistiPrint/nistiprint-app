@@ -37,3 +37,20 @@ For each domain, specify:
 - Do not use user-editable metadata for authorization decisions.
 - Do not expose service-role keys to frontend code.
 
+## Mercado Livre personalization boundary
+
+- The seven `mercadolivre_*` personalization/chat relations are isolated from
+  the Shopee personalization schema and have RLS enabled with no client-role
+  policies. Only backend service-role code accesses them.
+- Authenticated APIs validate `integration_id` against the installed Mercado
+  Livre module on every request and filter orders, items, conversations, batches,
+  logs, and results by that same ID. Admin-only settings are also enforced by
+  the API decorator.
+- The result RPC is `SECURITY DEFINER` with a fixed `search_path=public`; execute
+  is revoked from `PUBLIC`, `anon`, and `authenticated`, and granted only to
+  `service_role`. It checks canonical order and item ownership before writes.
+- Webhook resolution requires both account identity and registered application
+  ID. Ambiguous identity remains unmatched and auditable; it never falls back
+  to credentials from another account.
+- Account-specific AI keys are not read from Shopee environment variables.
+

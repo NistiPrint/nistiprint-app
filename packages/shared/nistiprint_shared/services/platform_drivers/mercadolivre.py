@@ -255,6 +255,50 @@ def get_pack(integration: Dict, pack_id: str) -> Dict:
     ).to_legacy()
 
 
+def get_message(integration: Dict, message_id: str) -> Dict:
+    """Fetch a private post-sale message by its opaque provider ID."""
+    message_id = str(message_id or "").strip()
+    if not message_id or len(message_id) > 160 or not re.fullmatch(r"[a-zA-Z0-9_-]+", message_id):
+        raise ValueError("message id Mercado Livre invalido")
+    return request_json(
+        requests.get,
+        _ml_url(f"/messages/{message_id}"),
+        provider="Mercado Livre", resource_type="message", resource_id=message_id,
+        headers=_auth_headers(integration), params={"tag": "post_sale"},
+    ).to_legacy()
+
+
+def get_post_sale_messages(
+    integration: Dict, pack_id: str, seller_id: str, *, offset: int = 0,
+    limit: int = 50, mark_as_read: bool = False,
+) -> Dict:
+    """Read one page of a pack conversation without changing read state."""
+    pack_id = _sanitize_resource_id(pack_id, resource_name="pack")
+    seller_id = _sanitize_resource_id(seller_id, resource_name="seller")
+    limit = min(100, max(1, int(limit)))
+    offset = max(0, int(offset))
+    params = {"tag": "post_sale", "limit": limit, "offset": offset,
+              "mark_as_read": "true" if mark_as_read else "false"}
+    return request_json(
+        requests.get,
+        _ml_url(f"/messages/packs/{pack_id}/sellers/{seller_id}"),
+        provider="Mercado Livre", resource_type="messages", resource_id=pack_id,
+        headers=_auth_headers(integration), params=params,
+    ).to_legacy()
+
+
+def get_unread_post_sale_conversations(integration: Dict, *, role: str = "seller") -> Dict:
+    """Find post-sale conversations with unread messages as a recovery scan."""
+    if role not in {"seller", "buyer"}:
+        raise ValueError("Papel de mensageria invalido")
+    return request_json(
+        requests.get, _ml_url("/messages/unread"),
+        provider="Mercado Livre", resource_type="unread_messages",
+        headers=_auth_headers(integration),
+        params={"tag": "post_sale", "role": role}, list_key="results",
+    ).to_legacy()
+
+
 def get_claim(integration: Dict, claim_id: str) -> Dict:
     """Fetch a Post Purchase claim by its typed claim identifier."""
     headers = _auth_headers(integration)
@@ -371,4 +415,3 @@ def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[D
         normalized_orders.append(normalized_order)
 
     return normalized_orders
-

@@ -59,6 +59,11 @@ def _payload(item):
 
 
 def _is_chat(item):
+    if item.get("source") == "mercadolivre":
+        payload = _payload(item)
+        body = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        topic = body.get("topic") or payload.get("topic")
+        return str(topic or "").strip().lower() == "messages"
     if item.get("source") != "shopee":
         return False
     from nistiprint_shared.services.marketplace_adapters import shopee_adapter
@@ -166,6 +171,9 @@ def _process_order(item):
 
 
 def _process_chat(item):
+    if item.get("source") == "mercadolivre":
+        from nistiprint_shared.services.mercadolivre_personalization_service import enqueue_notification
+        return enqueue_notification(_payload(item), webhook_event_id=int(item["webhook_event_id"]))
     if item.get("source") != "shopee":
         return {"status": "error", "error_type": "unsupported_source",
                 "message": "somente chat Shopee entra nesta fila"}

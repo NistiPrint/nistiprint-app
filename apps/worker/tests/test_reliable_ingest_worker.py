@@ -14,6 +14,24 @@ class FakeRedis:
 
 
 class SignatureVerdictTest(unittest.TestCase):
+    def test_private_mercadolivre_message_topic_routes_to_chat_with_nested_payload(self):
+        item = {"source": "mercadolivre", "parsed_payload": {
+            "topic": "orders_v2", "data": {"topic": "messages"},
+        }}
+        self.assertTrue(worker._is_chat(item))
+
+    def test_mercadolivre_other_topic_stays_on_order_route(self):
+        item = {"source": "mercadolivre", "parsed_payload": {
+            "topic": "orders_v2", "data": {"id": "123"},
+        }}
+        self.assertFalse(worker._is_chat(item))
+
+    def test_shopee_chat_routing_still_uses_existing_adapter(self):
+        adapter = type("Adapter", (), {"parse_webhook": lambda _self, _payload:
+                                      type("Result", (), {"classification": "chat"})()})()
+        with patch("nistiprint_shared.services.marketplace_adapters.shopee_adapter", adapter):
+            self.assertTrue(worker._is_chat({"source": "shopee", "parsed_payload": {}}))
+
     def test_validated_404_retries_only_inside_short_window(self):
         recent = {
             "event_id": "recent-404",

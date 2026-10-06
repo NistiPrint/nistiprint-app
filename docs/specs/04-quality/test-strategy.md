@@ -29,6 +29,28 @@ Status: draft
 4. Stock reconciliation idempotency and no double consumption.
 5. Integration routing and token renewal failure visibility.
 6. Admin permission enforcement.
+7. Mercado Livre private-chat isolation from Shopee and between connected
+   accounts; provider-message deduplication, unread recovery, and context-bound
+   print confirmation.
+
+## Mercado Livre personalization checks
+
+- Unit: route classification for nested/direct Mercado Livre `messages` events;
+  opaque message IDs; sender role resolution using the order buyer ID; context
+  digest changes; exact account/order/item print filtering.
+- Integration: notification persistence precedes event finalization; duplicate
+  and out-of-order events; multi-page `post_sale` fetch with
+  `mark_as_read=false`; order-not-imported pending state; RPC rollback on
+  cross-account or invalid item writes.
+- Two accounts: same buyer and external order identifiers in A/B; verify that
+  messages, access tokens, prompt/schedule settings, task queues, batches, logs,
+  and print rows remain account-scoped.
+- Resilience: expired tokens, rate limit and retry, process termination with
+  expired inbox/batch lease, and concurrent manual/scheduled batches.
+- Regression: run reliable-ingest and Shopee chat tests, existing AI
+  personalization tests, and printing tests; compare Shopee output snapshots.
+- Manual pilot: validate read/unread conversations, agent-intermediated sender,
+  moderation, attachments, and delayed order import before enabling daily AI.
 
 ## Gaps
 

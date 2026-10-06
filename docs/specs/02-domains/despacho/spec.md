@@ -235,12 +235,16 @@ quando nenhum canal esta sem modalidade. E fila de trabalho, nao cadastro.
 A torre conta apenas pedido que ainda e trabalho do galpao:
 
 - `despachado_em IS NULL`, e
-- `situacao_pedido_id IN (2, 3, 4)` — Em Andamento, Produzido, Pronto para
-  Envio, e
+- `situacao_pedido_id = 2` — exclusivamente Em Andamento, e
 - modalidade com `entra_na_torre = true` (fallback `NOT is_fulfillment` para o
   pedido ainda nao classificado), e
 - nao pertence a demanda publicada (status diferente de `RASCUNHO` e nao
   cancelada).
+
+Os buckets usam o prazo oficial de envio. Sem prazo informado, usam a data da
+proxima coleta disponivel; somente pedidos sem prazo e sem coleta ficam em
+`sem_prazo`. Estimativas por `days_to_ship` ou `dataPrevista` do ERP nao
+substituem o prazo oficial do marketplace.
 
 Rascunho continua aparecendo na torre para permitir conferencia, mas o
 lancamento recusa pedidos que ja estejam em outro rascunho aberto e devolve a
@@ -386,8 +390,9 @@ Invariantes:
 O operador define o escopo com duas acoes, ambas de um clique:
 
 1. Selecionar o no: `Shopee > Comum`.
-2. Selecionar o horizonte: `atrasado + hoje` (default) ou estender para
-   `+ amanha`.
+2. O escopo abre com as datas da aba clicada: Hoje inclui atrasados e pedidos
+   sem prazo e sem coleta; Amanha inclui somente amanha; Proximos dias inclui somente depois.
+   O operador pode adicionar ou remover datas pelos filtros do escopo.
 
 Ao estender o horizonte, o total recalcula na hora (`122 -> 165`), para
 conferencia contra a tela do marketplace antes de lancar.

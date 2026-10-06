@@ -35,7 +35,7 @@ import { useNavigate } from 'react-router-dom';
 //    quando e o lote fechado sobre o qual o operador ja emitiu nota.)
 
 const ABAS = [
-  { id: 'hoje', rotulo: 'Hoje', ajuda: 'inclui atrasados e pedidos sem prazo informado' },
+  { id: 'hoje', rotulo: 'Hoje', ajuda: 'inclui atrasados e pedidos sem prazo e sem coleta disponível' },
   { id: 'amanha', rotulo: 'Amanhã', ajuda: 'prazo de postagem amanhã' },
   { id: 'proximos', rotulo: 'Próximos dias', ajuda: 'prazo mais adiante' },
 ];
@@ -166,11 +166,6 @@ function ModalidadeCard({ marketplace, modalidade, aba, onAbrir }) {
           <div className="shrink-0 text-right">
             <div className="text-2xl font-semibold leading-none">{qtd}</div>
             <div className="text-[11px] text-muted-foreground">{qtd === 1 ? 'pedido' : 'pedidos'}</div>
-            {modalidade.qtd_pedidos !== qtd && (
-              <div className="mt-0.5 text-[10px] text-muted-foreground">
-                {modalidade.qtd_pedidos} no total
-              </div>
-            )}
           </div>
         </div>
 
@@ -239,29 +234,38 @@ export default function TorreDespachoPage() {
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState(null);
   const navigate = useNavigate();
+  const requisicaoRef = useRef(null);
+  const emCursoRef = useRef(false);
 
 
   const carregar = useCallback(async () => {
+    requisicaoRef.current?.abort();
+    const controller = new AbortController();
+    requisicaoRef.current = controller;
+    emCursoRef.current = true;
     setLoading(true);
     setErro(null);
     try {
       const hoje = dataOperacionalHoje();
-      const res = await fetch(`/api/v2/despacho/arvore?data=${hoje}`);
+      const res = await fetch(`/api/v2/despacho/arvore?data=${hoje}`, { signal: controller.signal });
       const json = await res.json();
       if (!json.success) throw new Error(json.error || 'Falha ao carregar a torre de despacho');
-      setArvore(json.data);
+      if (!controller.signal.aborted) setArvore(json.data);
     } catch (err) {
+      if (controller.signal.aborted) return;
       setErro(err.message || 'Não foi possível carregar a torre. Tente atualizar.');
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) { emCursoRef.current = false; setLoading(false); }
     }
   }, []);
 
   useEffect(() => {
     carregar();
     // Pedido novo precisa aparecer sem o operador dar refresh.
-    const id = setInterval(carregar, 60_000);
-    return () => clearInterval(id);
+    const id = setInterval(() => {
+      if (!document.hidden && !emCursoRef.current) carregar();
+    }, 60_000);
+    return () => { clearInterval(id); requisicaoRef.current?.abort(); };
   }, [carregar]);
 
   // Tudo abaixo é derivado dos buckets da árvore. Nenhuma contagem própria.
@@ -453,11 +457,7 @@ export default function TorreDespachoPage() {
             })}
           </div>
 
-          {/* De onde vem o total. A tela de Pedidos filtrada por "Em Andamento"
-              mostra menos, porque a torre também conta o que já foi produzido e
-              ainda não saiu — continua sendo trabalho do galpão. Sem esta linha
-              a diferença parece erro, e o operador confere duas telas para
-              descobrir que nenhuma das duas está errada. */}
+          {/* A composição é informativa; a pendência considera só Em andamento. */}
           {atual.composicao.length > 1 && (
             <div className="-mt-3 mb-5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <span className="font-medium text-foreground tabular-nums">{atual.total}</span>

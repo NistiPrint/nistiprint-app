@@ -16,6 +16,7 @@ Operational project: `nistiprint-supabase` (`cfknrplrqvyirjxovuvi`)
 | ERP-marketplace routing | `erp_marketplace_links`, `channel_connections` |
 | Canonical order model | `pedidos`, `itens_pedido`, `pedido_snapshots` |
 | Mirror/audit | `pedidos_bling`, `pedidos_shopee`, `pedidos_mercadolivre`, `pedido_ingest_log`, `webhook_events` |
+| Mercado Livre private-chat personalization | `mercadolivre_chat_inbox`, `mercadolivre_chat_conversations`, `mercadolivre_chat_messages`, `mercadolivre_personalization_config`, `mercadolivre_personalization_batches`, `mercadolivre_personalization_logs`, `mercadolivre_personalizations` |
 | RPCs/views | `list_pedidos_filtrados` and supporting views/RPCs |
 
 ## Canonical ownership
@@ -116,6 +117,26 @@ Rule:
 
 - `platform_fields` is the canonical place for marketplace-specific data that
   does not belong in the generic order contract.
+
+## Mercado Livre personalization tables
+
+- All operational rows are scoped to `marketplace_integration_id`; inbox
+  notification identity additionally includes `application_id` and account
+  `user_id`.
+- `mercadolivre_chat_messages` uses opaque text `provider_message_id` as part
+  of its account-scoped primary key. Attachments, moderation state, participants,
+  timestamps, and provider JSON are retained.
+- `mercadolivre_personalizations` links to canonical integer `pedidos.id` and
+  `itens_pedido.id`. The context hash identifies the exact conversation version
+  used by AI. Manual results carry `confirmed_by`/`confirmed_at`.
+- The atomic RPC
+  `persist_mercadolivre_personalization_results(integer,text,text,text,boolean,jsonb,jsonb,uuid)`
+  verifies that each order/item belongs to the same Mercado Livre installation,
+  then stores result rows, conversation state, and log in one transaction.
+- New tables enable RLS and revoke direct access from `PUBLIC`, `anon`, and
+  `authenticated`; backend service-role operations are the only data path.
+- Shopee messages, batches, logs, configuration, and customizations stay in
+  their existing tables and are not copied into these relations.
 
 ## Drift and transition
 

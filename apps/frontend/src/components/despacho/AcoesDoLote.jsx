@@ -44,7 +44,7 @@ function paramsParaQuery(params) {
   return query;
 }
 
-export default function AcoesDoLote({ params, titulo = 'Ações do lote', className = '', mostrarIds = true, acoesExtras = null }) {
+export default function AcoesDoLote({ params, titulo = 'Ações do lote', className = '', mostrarIds = true, acoesExtras = null, dadosIniciais, onAtualizar }) {
   const [dados, setDados] = useState(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
@@ -73,7 +73,15 @@ export default function AcoesDoLote({ params, titulo = 'Ações do lote', classN
     }
   }, [chave]);
 
-  useEffect(() => { carregar(); }, [carregar]);
+  useEffect(() => {
+    if (dadosIniciais !== undefined) {
+      setDados(dadosIniciais);
+      setErro(null);
+      setCarregando(false);
+    } else {
+      carregar();
+    }
+  }, [carregar, dadosIniciais]);
 
   useEffect(() => () => { fonteNf.current?.close(); }, []);
 
@@ -133,7 +141,8 @@ export default function AcoesDoLote({ params, titulo = 'Ações do lote', classN
           toast.success('Emissão de notas concluída.');
         }
         // Emitir NF muda a situacao no marketplace: o lote encolhe.
-        carregar();
+        if (onAtualizar) onAtualizar();
+        else carregar();
         return;
       }
       setResultadosNf((anteriores) => [...anteriores, dado]);

@@ -21,6 +21,7 @@ Status: draft
 | Integracoes | Source resolution is traceable; token and sync failures are visible. |
 | Administracao | Admin-only behavior is enforced by API, not only frontend. |
 | Relatorios | High-volume logs paginate and expose enough debug context. |
+| Mercado Livre personalization | A message is durably stored by account; AI uses only that account's post-sale chat; output is linked to canonical order/item; manual review is auditable; printing blocks stale/incomplete names; Shopee behavior stays equivalent. |
 
 ## Definition Of Done For Spec-Driven Work
 

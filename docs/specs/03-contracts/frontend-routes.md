@@ -14,12 +14,13 @@ Primary route source: `apps/frontend/src/App.jsx`.
 | Home | `/` |
 | Products | `/produtos`, `/produtos/novo`, `/produtos/:id/editar` |
 | Production | `/producao`, `/producao/foco`, `/producao/resumo`, `/producao/demanda`, `/producao/demanda/rascunhos`, `/producao/demanda/nova`, `/producao/demanda/:id/editar`, `/producao/demanda/prioridade`, `/producao/demanda/calendario`, `/producao/demanda/:id/dashboard`, `/producao/miolos`, `/producao/capas`, `/producao/expedicao`, `/producao/impressao` |
-| Sales/orders | `/vendas/personalizadas`, `/vendas/pedidos`, `/vendas/pedidos/:id`, `/pedidos`, `/pedidos/:id` |
+| Sales/orders | `/vendas/personalizadas` (Shopee/current), `/vendas/personalizadas/mercadolivre`, `/vendas/personalizadas/mercadolivre/:integration_id`, `/vendas/pedidos`, `/vendas/pedidos/:id`, `/pedidos`, `/pedidos/:id` |
 | Consolidation | `/consolidar`, `/consolidar/revisao`, `/consolidar/rascunhos` |
 | Stock | `/estoque/dashboard`, `/estoque/historico`, `/estoque/movimentar`, `/estoque/posicao`, `/estoque/reservas`, `/estoque/ajuste`, `/estoque/relatorios`, `/estoque/movimentacao-lote` |
 | Admin catalog | `/cadastros/*` |
 | System admin | `/sistema/*` |
 | Config | `/configuracoes/*` |
+| Mercado Livre AI settings | `/configuracoes/personalizacao/mercadolivre`, `/configuracoes/personalizacao/mercadolivre/:integration_id` (admin-only) |
 | Reports | `/relatorios/*` |
 | Tools | `/ferramentas`, `/ferramentas/ia`, `/admin/utilitarios/tasks` |
 | AI logs | `/ai/logs` |

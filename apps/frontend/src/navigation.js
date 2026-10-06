@@ -33,6 +33,7 @@ export const TOP_NAV = [
       { name: 'Pedidos', href: '/vendas/pedidos', type: 'link', permission: { a: 'vendas', I: 'ler' } },
       { name: 'Torre de Despacho', href: '/despacho', type: 'link', permission: { a: 'vendas', I: 'ler' } },
       { name: 'Personalizados', href: '/vendas/personalizadas', type: 'link', permission: { a: 'vendas', I: 'ler' } },
+      { name: 'Personalizados Mercado Livre', href: '/vendas/personalizadas/mercadolivre', type: 'link', permission: { a: 'vendas', I: 'ler' } },
     ],
   },
   {
@@ -136,6 +137,7 @@ export const SECOES = [
           { name: 'Pedidos', href: '/vendas/pedidos', icon: ClipboardList, description: 'Gestão unificada de pedidos' },
           { name: 'Torre de Despacho', href: '/despacho', icon: TowerControl, description: 'Agrupar pedidos e publicar a demanda', exato: true },
           { name: 'Personalizados', href: '/vendas/personalizadas', icon: Users, description: 'Vendas de produtos personalizados' },
+          { name: 'Personalizados Mercado Livre', href: '/vendas/personalizadas/mercadolivre', icon: Users, description: 'Mensagens privadas e nomes por conta Mercado Livre' },
         ],
       },
     ],
@@ -231,6 +233,7 @@ export const SECOES = [
         description: 'Modelo, comportamento e ferramentas de IA.',
         itens: [
           { name: 'Configuração da IA', href: '/configuracoes/ia', icon: Sparkles, description: 'Modelo, prompts e parâmetros', adminOnly: true },
+          { name: 'IA Mercado Livre', href: '/configuracoes/personalizacao/mercadolivre', icon: Sparkles, description: 'Captura, modelo e agenda por conta Mercado Livre', adminOnly: true },
           { name: 'Ferramentas de IA', href: '/ferramentas/ia', icon: Sparkles, description: 'Execução e testes assistidos', adminOnly: true },
         ],
       },

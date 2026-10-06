@@ -196,6 +196,18 @@ ABA_DO_BUCKET = {
 }
 
 
+def _contexto_rpc(nome: str, params: dict) -> dict | None:
+    """Compatibilidade durante o deploy: fallback apenas se a RPC nao existe."""
+    try:
+        data = supabase_db.rpc(nome, params).execute().data
+        return data if isinstance(data, dict) else None
+    except Exception as exc:
+        if str(getattr(exc, 'code', '')) != 'PGRST202':
+            raise
+        logger.info('RPC %s ainda nao instalada; usando leitura anterior', nome)
+        return None
+
+
 @despacho_bp.route("/arvore", methods=["GET"])
 def get_arvore():
     """Totalizadores em tres niveis: marketplace, modalidade, prazo.
@@ -209,8 +221,10 @@ def get_arvore():
             return jsonify({"success": False, "error": "Nao autorizado"}), 401
 
         p_data = _parse_data(request.args.get("data"))
-        result = supabase_db.rpc("despacho_arvore", {"p_data": p_data}).execute()
-        rows = result.data or []
+        contexto = _contexto_rpc("despacho_arvore_contexto", {"p_data": p_data})
+        rows = contexto["rows"] if contexto is not None else (
+            supabase_db.rpc("despacho_arvore", {"p_data": p_data}).execute().data or []
+        )
 
         # Monta a arvore no shape que o frontend consome, sem repetir a
         # invariante de soma no cliente: cada linha ja veio agregada pelo
@@ -301,8 +315,10 @@ def get_arvore():
         # RELATIVO, e os dois sao rapidos.
         rapidas = {}
         try:
-            cat = supabase_db.table("modalidades_logisticas").select("id,entrega_rapida").execute()
-            rapidas = {m["id"]: bool(m.get("entrega_rapida")) for m in (cat.data or [])}
+            cat = contexto["catalogo"] if contexto is not None else (
+                supabase_db.table("modalidades_logisticas").select("id,entrega_rapida").execute().data or []
+            )
+            rapidas = {m["id"]: bool(m.get("entrega_rapida")) for m in cat}
         except Exception:
             logger.warning("Falha ao carregar flag de entrega rapida", exc_info=True)
 
@@ -312,23 +328,23 @@ def get_arvore():
         try:
             ids = [integration_id for integration_id in marketplaces if integration_id is not None]
             if ids:
-                integracoes = (supabase_db.table("installed_integrations")
-                    .select("id,module_id").in_("id", ids).execute().data or [])
+                integracoes = contexto["integracoes"] if contexto is not None else (
+                    supabase_db.table("installed_integrations")
+                    .select("id,module_id").in_("id", ids).execute().data or []
+                )
                 modulos = {row["id"]: row.get("module_id") for row in integracoes}
                 for integration_id, marketplace in marketplaces.items():
                     marketplace["module_id"] = modulos.get(integration_id)
         except Exception:
             logger.warning("Falha ao identificar modulos dos marketplaces", exc_info=True)
 
-        # De que situacoes o total e feito. A tela de Pedidos filtrada por "Em
-        # Andamento" mostra menos que a torre porque a torre tambem conta
-        # Produzido e Pronto para Envio — ainda sao trabalho do galpao. Um
-        # numero que precisa ser explicado toda vez e um numero que sera
-        # desconfiado toda vez, entao a composicao vai junto.
+        # A view e a autoridade sobre a pendencia: exclusivamente Em Andamento.
         composicao = {}
         try:
-            res_c = supabase_db.rpc("despacho_composicao_situacao", {"p_data": p_data}).execute()
-            for c in (res_c.data or []):
+            composicao_rows = contexto["composicao"] if contexto is not None else (
+                supabase_db.rpc("despacho_composicao_situacao", {"p_data": p_data}).execute().data or []
+            )
+            for c in composicao_rows:
                 composicao.setdefault(c["integration_id"], []).append({
                     "situacao_id": c["situacao_id"],
                     "situacao": c["situacao_nome"],
@@ -341,8 +357,12 @@ def get_arvore():
         # entao viram um card so e um lancamento so. Dois escopos para a mesma
         # coleta seriam dois lotes de producao para um caminhao.
         lote_por_modalidade = {}
+        if contexto is not None:
+            lote_por_modalidade = {
+                (l["integration_id"], l["modalidade_id"]): l for l in contexto["lotes"]
+            }
         for mkt_id in {row["integration_id"] for row in rows}:
-            if mkt_id is None:
+            if contexto is not None or mkt_id is None:
                 continue
             try:
                 res_l = supabase_db.rpc("despacho_lotes", {"p_integration_id": mkt_id}).execute()
@@ -356,8 +376,10 @@ def get_arvore():
         # e omitido.
         rascunhos = {}
         try:
-            res_r = supabase_db.rpc("despacho_rascunhos_abertos", {"p_data": p_data}).execute()
-            for r in (res_r.data or []):
+            rascunhos_rows = contexto["rascunhos"] if contexto is not None else (
+                supabase_db.rpc("despacho_rascunhos_abertos", {"p_data": p_data}).execute().data or []
+            )
+            for r in rascunhos_rows:
                 rascunhos[(r.get("integration_id"), r.get("modalidade_id"))] = r
         except Exception:
             logger.warning("Falha ao carregar rascunhos abertos", exc_info=True)
@@ -365,9 +387,16 @@ def get_arvore():
         # Saídas de despacho de cada lote: um mesmo corte pode ter coleta local
         # às 17h e entrega em ponto de coleta às 19h. É o que permite registrar
         # coleta parcial sem a demanda ficar atrasada — ainda há uma saída.
+        janelas_contexto = {
+            (j["integration_id"], j["modalidade_id"]): j["dados"]
+            for j in (contexto or {}).get("janelas", [])
+        }
         for mkt in marketplaces.values():
             for mod in mkt["modalidades"].values():
                 if not mod.get("modalidade_id") or not mod.get("coleta_em"):
+                    continue
+                if contexto is not None:
+                    mod["janelas"] = janelas_contexto.get((mkt["integration_id"], mod["modalidade_id"]), [])
                     continue
                 try:
                     dia = str(mod["coleta_em"])[:10]
@@ -475,6 +504,31 @@ def get_arvore():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
+def _bucket_operacional(prazo: str | None, data: str) -> str:
+    if not prazo:
+        return "sem_prazo"
+    dia = datetime.fromisoformat(prazo.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Sao_Paulo")).date()
+    referencia = date.fromisoformat(data)
+    diferenca = (dia - referencia).days
+    return "atrasado" if diferenca < 0 else "hoje" if diferenca == 0 else "amanha" if diferenca == 1 else "depois"
+
+
+def _ler_pedidos_do_escopo(ids: list[int]) -> list[dict]:
+    if not ids:
+        return []
+    pedidos = []
+    for inicio in range(0, len(ids), 200):
+        # Caminho de compatibilidade; o novo contexto retorna JSON sem truncamento.
+        fatia = supabase_db.table("pedidos").select(
+            "id,numero_pedido,codigo_pedido_externo,cliente_nome,total_pedido,data_venda,"
+            "data_limite_envio,compromisso_logistico_em,metodo_envio_chave,metodo_envio_rotulo,"
+            "modalidade_logistica_id,pack_id,marketplace_order_id,marketplace_module_id,"
+            "erp_integration_id,erp_store_id,erp_order_id,erp_order_number"
+        ).in_("id", ids[inicio:inicio + 200]).execute().data or []
+        pedidos.extend(fatia)
+    return sorted(pedidos, key=lambda p: (p.get("data_limite_envio") or "9999", p["id"]))
+
+
 @despacho_bp.route("/escopo", methods=["GET"])
 def get_escopo():
     """Pedidos de um no (integration_id, modalidade_id) dentro de um horizonte.
@@ -503,90 +557,52 @@ def get_escopo():
             unico = _parse_int(request.args.get("modalidade_id"))
             modalidade_ids = [unico] if unico is not None else None
 
-        if conferencia_id is not None:
-            pedido_ids = _pedido_ids_da_conferencia(conferencia_id)
+        contexto = None
+        if conferencia_id is None:
+            contexto = _contexto_rpc("despacho_escopo_contexto", {
+                "p_integration_id": integration_id, "p_modalidade_ids": modalidade_ids,
+                "p_horizonte": horizonte, "p_data": p_data,
+            })
+        if contexto is not None:
+            pedido_ids = contexto["pedido_ids"]
+            pedidos = contexto["pedidos"]
+            buckets = contexto["buckets"]
+            pacotes_rows = contexto["pacotes"]
         else:
-            ids_result = supabase_db.rpc("despacho_escopo_lote", {
-                "p_integration_id": integration_id,
-                "p_modalidade_ids": modalidade_ids,
-                "p_horizonte": horizonte,
-                "p_data": p_data,
-            }).execute()
-            pedido_ids = [row if isinstance(row, int) else row.get("despacho_escopo_lote")
-                          for row in (ids_result.data or [])]
-            pedido_ids = [pid for pid in pedido_ids if pid is not None]
-
-        if not pedido_ids:
-            return jsonify({"success": True, "data": {"total": 0, "pedidos": [], "conferencia_id": conferencia_id}})
-
-        pedidos_result = (
-            supabase_db.table("pedidos")
-            .select(
-                "id,numero_pedido,codigo_pedido_externo,cliente_nome,total_pedido,"
-                "data_venda,data_limite_envio,compromisso_logistico_em,"
-                "metodo_envio_chave,metodo_envio_rotulo,modalidade_logistica_id,pack_id,"
-                # O numero do ERP e util para o galpao, mas o numero que o
-                # operador confere contra o painel do marketplace e este.
-                # Sem ele a lista da torre nao casa com a tela de origem.
-                "marketplace_order_id,marketplace_module_id,"
-                "erp_integration_id,erp_order_id,erp_order_number"
-            )
-            .in_("id", pedido_ids)
-            .order("data_limite_envio", desc=False)
-            .order("id", desc=False)
-            .execute()
-        )
-        pedidos = pedidos_result.data or []
-
-        # Irmaos de pacote: esta e a tela onde a confusao custa caro. Dois
-        # pedidos do mesmo pacote aparecem com o mesmo `numero_pedido` (o do
-        # ERP), e e daqui que sai a demanda de producao. Sem o marcador, a
-        # leitura natural e "duplicata" — e a reacao natural a duplicata,
-        # momentos antes de lancar, e remover uma das linhas.
-        pacotes = {}
-        try:
-            pack_result = supabase_db.rpc(
-                "pedidos_pacotes", {"p_pedido_ids": [p["id"] for p in pedidos]}
-            ).execute()
-            pacotes = {row["pedido_id"]: row for row in (pack_result.data or [])}
-        except Exception:
-            logger.warning("Falha ao resolver pacotes do escopo", exc_info=True)
-
+            pedido_ids, _ = _pedido_ids_do_lote(request.args)
+            pedidos = _ler_pedidos_do_escopo(pedido_ids)
+            pacotes_rows = supabase_db.rpc("pedidos_pacotes", {"p_pedido_ids": pedido_ids}).execute().data or [] if pedido_ids else []
+            buckets = {}
+            if conferencia_id is None:
+                # Fallback para banco anterior: ler apenas os prazos deste no.
+                query = supabase_db.table("vw_pedidos_pendentes_despacho").select("data_limite_envio")
+                query = query.is_("marketplace_integration_id", "null") if integration_id is None else query.eq("marketplace_integration_id", integration_id)
+                query = query.is_("modalidade_logistica_id", "null") if modalidade_ids is None else query.in_("modalidade_logistica_id", modalidade_ids)
+                inicio = 0
+                while True:
+                    rows = query.range(inicio, inicio + 999).execute().data or []
+                    for row in rows:
+                        b = _bucket_operacional(row.get("data_limite_envio"), p_data)
+                        buckets[b] = buckets.get(b, 0) + 1
+                    if len(rows) < 1000:
+                        break
+                    inicio += 1000
+        pacotes = {row["pedido_id"]: row for row in pacotes_rows}
         for pedido in pedidos:
-            pacote = pacotes.get(pedido["id"])
-            pedido["pack_irmaos"] = (pacote or {}).get("irmaos") or 0
-            pedido["pack_irmaos_ids"] = (pacote or {}).get("irmaos_ids") or []
-
-        # Quebra por prazo do no inteiro, nao so do horizonte selecionado.
-        # O card da torre mostra o total do no; a tela abre com horizonte
-        # "atrasado + hoje" e mostra menos. Sem os buckets, a diferenca parece
-        # pedido sumido — e a duvida certa ("cade os outros?") vira desconfianca
-        # no contador, que e justamente o numero que existe para ser conferido
-        # contra o painel do marketplace.
-        buckets = {}
-        try:
-            arvore = supabase_db.rpc("despacho_arvore", {"p_data": p_data}).execute()
-            alvo = set(modalidade_ids) if modalidade_ids else {None}
-            for row in (arvore.data or []):
-                if (row.get("nivel") == 2
-                        and row.get("integration_id") == integration_id
-                        and row.get("modalidade_id") in alvo):
-                    b = row.get("bucket_prazo")
-                    buckets[b] = (buckets.get(b) or 0) + (row.get("qtd_pedidos") or 0)
-        except Exception:
-            logger.warning("Falha ao obter buckets do no", exc_info=True)
-
-        return jsonify({
-            "success": True,
-            "data": {
-                "total": len(pedido_ids),
-                "pedidos": pedidos,
-                "buckets": buckets,
-                "total_no": sum(buckets.values()) if buckets else len(pedido_ids),
-                "conferencia_id": conferencia_id,
-                "conferencia": _conferencia(conferencia_id) if conferencia_id else None,
-            },
-        })
+            pacote = pacotes.get(pedido["id"]) or {}
+            pedido["pack_irmaos"] = pacote.get("irmaos") or 0
+            pedido["pack_irmaos_ids"] = pacote.get("irmaos_ids") or []
+        data = {
+            "total": len(pedido_ids), "pedidos": pedidos, "buckets": buckets,
+            "total_no": contexto["total_no"] if contexto is not None else (sum(buckets.values()) if conferencia_id is None else len(pedido_ids)),
+            "conferencia_id": conferencia_id, "conferencia": _conferencia(conferencia_id) if conferencia_id else None,
+        }
+        if request.args.get("incluir_previsao") == "1":
+            chave = f"conferencia:{conferencia_id}" if conferencia_id is not None else f"escopo:{integration_id}/{modalidade_ids}"
+            data["previsao"] = _previsao_do_lote(pedido_ids, chave)
+            rotulos = {int(k): v for k, v in contexto["contas"].items()} if contexto is not None else None
+            data["acoes"] = _acoes_dos_pedidos(pedidos, rotulos)
+        return jsonify({"success": True, "data": data})
     except Exception as exc:
         logger.error("Erro ao obter escopo de despacho: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
@@ -825,6 +841,17 @@ def _resumo_consolidacao(itens: list[dict]) -> dict:
     }
 
 
+def _previsao_do_lote(ids: list[int], chave: str) -> dict:
+    rows = supabase_db.rpc("despacho_consolidar_pedidos", {"p_pedido_ids": ids}).execute().data or [] if ids else []
+    itens = [_linha_consolidada(row) for row in rows]
+    versao = hashlib.sha256(json.dumps({
+        "pedido_ids": sorted(ids),
+        "linhas": [{key: item.get(key) for key in ("linha_chave", "quantidade")} for item in itens],
+    }, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest() if ids else hashlib.sha256(b"empty").hexdigest()
+    return {"total_pedidos": len(ids), "itens": itens, "chave": chave,
+            "previsao_versao": versao, **_resumo_consolidacao(itens)}
+
+
 def _resolver_sku_exato(sku: str) -> dict:
     """Resolve SKU sem heurística; usado para linhas editadas e novas."""
     valor = str(sku or "").strip()
@@ -918,22 +945,7 @@ def previsao_consolidacao():
                 **_resumo_consolidacao([]),
             }})
 
-        rows = supabase_db.rpc(
-            "despacho_consolidar_pedidos", {"p_pedido_ids": ids}
-        ).execute().data or []
-        itens = [_linha_consolidada(row) for row in rows]
-        versao = hashlib.sha256(json.dumps({
-            "pedido_ids": sorted(ids),
-            "linhas": [{key: item.get(key) for key in ("linha_chave", "quantidade")} for item in itens],
-        }, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
-
-        return jsonify({"success": True, "data": {
-            "total_pedidos": len(ids),
-            "itens": itens,
-            "chave": chave,
-            "previsao_versao": versao,
-            **_resumo_consolidacao(itens),
-        }})
+        return jsonify({"success": True, "data": _previsao_do_lote(ids, chave)})
     except Exception as exc:
         # Sem retaguarda que "degrade" para itens crus: uma lista sem miolo e
         # sem produto resolvido nao e uma previa pior, e uma previa errada — e
@@ -1392,6 +1404,50 @@ def _rotulos_de_contas(integration_ids: list) -> dict:
         return {}
 
 
+def _acoes_dos_pedidos(pedidos: list[dict], rotulos: dict | None = None) -> dict:
+    codigos = [c for c in (_id_de_origem(p) for p in pedidos) if c]
+    blocos = [
+        {
+            "indice": indice + 1,
+            "quantidade": len(codigos[i:i + TAMANHO_BLOCO_IDS]),
+            "texto": ";".join(codigos[i:i + TAMANHO_BLOCO_IDS]),
+        }
+        for indice, i in enumerate(range(0, len(codigos), TAMANHO_BLOCO_IDS))
+    ]
+
+    if rotulos is None:
+        rotulos = _rotulos_de_contas([p.get("erp_integration_id") for p in pedidos])
+
+    grupos: dict = {}
+    sem_erp: list[dict] = []
+    for pedido in pedidos:
+        integracao = pedido.get("erp_integration_id")
+        pronto = bool(integracao and pedido.get("erp_order_id") and pedido.get("erp_order_number"))
+        if not pronto:
+            sem_erp.append({
+                "pedido_id": pedido["id"],
+                "id_origem": _id_de_origem(pedido),
+                "numero_pedido": pedido.get("numero_pedido"),
+                "motivo": "Pedido ainda sem numero no ERP - a nota nao pode ser emitida por aqui.",
+            })
+            continue
+        chave_grupo = int(integracao)
+        grupo = grupos.setdefault(chave_grupo, {
+            "erp_integration_id": chave_grupo,
+            "conta": rotulos.get(chave_grupo) or f"Conta {chave_grupo}",
+            "total": 0,
+            "pedido_ids": [],
+        })
+        grupo["total"] += 1
+        grupo["pedido_ids"].append(pedido["id"])
+
+    return {
+        "total": len(pedidos), "pedido_ids": [p["id"] for p in pedidos],
+        "blocos_ids": blocos, "tamanho_bloco": TAMANHO_BLOCO_IDS,
+        "contas_erp": sorted(grupos.values(), key=lambda g: -g["total"]), "sem_erp": sem_erp,
+    }
+
+
 @despacho_bp.route("/acoes", methods=["GET"])
 def get_acoes():
     """Insumos das acoes de um lote: IDs de origem em blocos e contas de ERP.
@@ -1407,51 +1463,7 @@ def get_acoes():
         pedido_ids, chave = _pedido_ids_do_lote(request.args)
         pedidos = _pedidos_para_acoes(pedido_ids)
 
-        codigos = [c for c in (_id_de_origem(p) for p in pedidos) if c]
-        blocos = [
-            {
-                "indice": indice + 1,
-                "quantidade": len(codigos[i:i + TAMANHO_BLOCO_IDS]),
-                "texto": ";".join(codigos[i:i + TAMANHO_BLOCO_IDS]),
-            }
-            for indice, i in enumerate(range(0, len(codigos), TAMANHO_BLOCO_IDS))
-        ]
-
-        rotulos = _rotulos_de_contas([p.get("erp_integration_id") for p in pedidos])
-
-        grupos: dict = {}
-        sem_erp: list[dict] = []
-        for pedido in pedidos:
-            integracao = pedido.get("erp_integration_id")
-            pronto = bool(integracao and pedido.get("erp_order_id") and pedido.get("erp_order_number"))
-            if not pronto:
-                sem_erp.append({
-                    "pedido_id": pedido["id"],
-                    "id_origem": _id_de_origem(pedido),
-                    "numero_pedido": pedido.get("numero_pedido"),
-                    "motivo": "Pedido ainda sem numero no ERP - a nota nao pode ser emitida por aqui.",
-                })
-                continue
-            chave_grupo = int(integracao)
-            grupo = grupos.setdefault(chave_grupo, {
-                "erp_integration_id": chave_grupo,
-                "conta": rotulos.get(chave_grupo) or f"Conta {chave_grupo}",
-                "total": 0,
-                "pedido_ids": [],
-            })
-            grupo["total"] += 1
-            grupo["pedido_ids"].append(pedido["id"])
-
-        logger.info("Acoes do lote %s: %s pedidos, %s blocos", chave, len(pedidos), len(blocos))
-
-        return jsonify({"success": True, "data": {
-            "total": len(pedidos),
-            "pedido_ids": [p["id"] for p in pedidos],
-            "blocos_ids": blocos,
-            "tamanho_bloco": TAMANHO_BLOCO_IDS,
-            "contas_erp": sorted(grupos.values(), key=lambda g: -g["total"]),
-            "sem_erp": sem_erp,
-        }})
+        return jsonify({"success": True, "data": _acoes_dos_pedidos(pedidos)})
     except Exception as exc:
         logger.error("Erro ao montar acoes do lote: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500

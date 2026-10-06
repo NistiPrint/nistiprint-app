@@ -93,7 +93,15 @@ def post_impressao_data():
                 continue
             order = _build_order_print_data(order_id, plataforma)
             if order:
-                orders_data.append(order)
+                blocked_reason = order.pop('_print_block_reason', None)
+                if blocked_reason:
+                    blocked_orders.append({
+                        'pedido_id': order_id,
+                        'status': 'personalization_review_required',
+                        'message': blocked_reason,
+                    })
+                else:
+                    orders_data.append(order)
             else:
                 blocked_orders.append({
                     'pedido_id': order_id,
@@ -396,8 +404,21 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
         itens_raw = itens_result.data or []
 
         # 4. Buscar personalizações
-        personalizations_result = supabase_db.table('personalizacoes_pedido').select('*').eq('shopee_order_sn', pedido.get('codigo_pedido_externo')).execute()
-        personalizations_raw = personalizations_result.data or []
+        mercadolivre_print_data = None
+        if plataforma_slug == 'mercadolivre':
+            from nistiprint_shared.services.mercadolivre_personalization_service import printable_personalizations
+            mercadolivre_print_data = printable_personalizations(
+                int(pedido.get('marketplace_integration_id')), pedido_id
+            ) if pedido.get('marketplace_integration_id') else {
+                'ready': False, 'by_item_id': {},
+                'message': 'A conta Mercado Livre do pedido não está identificada.',
+            }
+            personalizations_raw = []
+        elif plataforma_slug == 'shopee':
+            personalizations_result = supabase_db.table('personalizacoes_pedido').select('*').eq('shopee_order_sn', pedido.get('codigo_pedido_externo')).execute()
+            personalizations_raw = personalizations_result.data or []
+        else:
+            personalizations_raw = []
         personalizacoes_por_item_id, personalizacoes_por_descricao = (
             _indexar_personalizacoes(personalizations_raw)
         )
@@ -415,12 +436,17 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             
             # Buscar personalizações associadas a este item
             item_pers = []
-            personalizacoes_selecionadas = _personalizacoes_do_item(
-                item,
-                personalizacoes_por_item_id,
-                personalizacoes_por_descricao,
-                item_ids_validos,
-            )
+            if plataforma_slug == 'mercadolivre':
+                personalizacoes_selecionadas = (mercadolivre_print_data or {}).get('by_item_id', {}).get(
+                    int(item.get('id')), []
+                )
+            else:
+                personalizacoes_selecionadas = _personalizacoes_do_item(
+                    item,
+                    personalizacoes_por_item_id,
+                    personalizacoes_por_descricao,
+                    item_ids_validos,
+                )
             for p in personalizacoes_selecionadas:
                 detalhes = p.get('detalhes_personalizacao') or {}
                 metadata = p.get('metadata') or {}
@@ -501,7 +527,7 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
         # pacote, que e outra chamada de API — nao esta no pedido e por isso nao
         # aparece aqui.
         mensagem_comprador = ''
-        if _deve_usar_mensagem_comprador(itens_formatted):
+        if plataforma_slug == 'shopee' and _deve_usar_mensagem_comprador(itens_formatted):
             try:
                 snap = (
                     supabase_db.table('pedido_snapshots')
@@ -611,6 +637,9 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             'is_flex': is_flex,
             'servico_logistico': servico_logistico,
             'data_pedido': pedido.get('data_venda'),
+            **({'_print_block_reason': mercadolivre_print_data.get('message')}
+               if mercadolivre_print_data and not mercadolivre_print_data.get('ready')
+               else {}),
         }
 
     except Exception as e:

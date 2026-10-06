@@ -84,6 +84,7 @@ from routes.impressao_capas import impressao_capas_bp
 from routes.order_reprocess import order_reprocess_bp
 from routes.pedidos_sync import pedidos_sync_bp
 from routes.personalizados import personalizados_bp
+from routes.mercadolivre_personalizados import mercadolivre_personalizados_bp
 from routes.despacho import despacho_bp
 
 # Import Models to ensure they are registered
@@ -234,6 +235,7 @@ def create_app():
     app.register_blueprint(order_reprocess_bp)
     app.register_blueprint(pedidos_sync_bp, url_prefix='/api/v2/pedidos')
     app.register_blueprint(personalizados_bp, url_prefix='/api/v2/personalizados')
+    app.register_blueprint(mercadolivre_personalizados_bp)
     app.register_blueprint(despacho_bp, url_prefix='/api/v2/despacho')
 
     @app.route('/test_route')

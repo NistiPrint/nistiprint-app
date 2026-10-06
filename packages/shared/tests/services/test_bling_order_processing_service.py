@@ -6,6 +6,34 @@ from nistiprint_shared.services import bling_order_processing_service as service
 
 
 class TestBlingOrderProcessingService(unittest.TestCase):
+    def test_prazo_marketplace_nao_e_substituido_por_data_prevista_erp(self):
+        payload = {
+            'id': 987, 'numero': '123', 'numeroLoja': 'SN123',
+            'loja': {'id': '456'}, 'situacao': {'id': 2},
+            'contato': {'nome': 'Cliente'}, 'itens': [], 'dataPrevista': '2026-10-07',
+        }
+        casos = [
+            ('shopee', None, None, None),
+            ('shopee', {'ship_by_date': 0, 'days_to_ship': 2}, None, None),
+            ('shopee', {'ship_by_date': '0', 'raw': {'ship_by_date': '2026-10-06T23:59:59-03:00'}},
+             None, '2026-10-06T23:59:59-03:00'),
+            ('mercadolivre', None, None, None),
+        ]
+        for module, shopee, meli, esperado in casos:
+            with self.subTest(module=module, shopee=shopee), \
+                 patch.object(service, '_resolve_situacao_interna', return_value=2), \
+                 patch.object(service.logistica_coleta_service, 'calcular_data_coleta', return_value={}), \
+                 patch.object(service.canonical_order_repository, 'resolve_module_id', return_value=module), \
+                 patch.object(service.canonical_order_repository, 'resolve_erp_marketplace_link', return_value=None), \
+                 patch.object(service.canonical_order_repository, 'upsert', return_value=77) as upsert, \
+                 patch.object(service, '_upsert_itens_pedido'):
+                service._upsert_pedido_master(payload, pedido_bling_id=10, pedido_shopee_id=None,
+                    bling_integration_id=99, marketplace_integration_id=12, canal_venda_id=22,
+                    is_flex=False, modalidade='STANDARD', shopee_data=shopee, meli_data=meli)
+                self.assertEqual(upsert.call_args.args[0].get('data_limite_envio'), esperado)
+                self.assertEqual(upsert.call_args.kwargs['snapshot']['logistics'].get('dispatch_deadline_source'),
+                                 'shopee.ship_by_date' if esperado else None)
+
     def test_materialize_marketplace_direct_order_marks_personalized_flags(self):
         detalhe = {
             "id": 987,
