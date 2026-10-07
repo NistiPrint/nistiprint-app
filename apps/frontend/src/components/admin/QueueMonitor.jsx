@@ -36,7 +36,9 @@ const QueueService = {
 };
 
 export default function QueueMonitor({ embed = false }) {
-  const [stats, setStats] = useState({ pendentes: 0, processados: 0, dead_letter: 0, falhas: 0 });
+  const [stats, setStats] = useState(null);
+  const [statsError, setStatsError] = useState('');
+  const [itemsError, setItemsError] = useState('');
   const [items, setItems] = useState([]);
   const [activeQueue, setActiveQueue] = useState('pendentes');
   const [loading, setLoading] = useState(true);
@@ -44,9 +46,12 @@ export default function QueueMonitor({ embed = false }) {
   const fetchStats = async () => {
     try {
       const data = await QueueService.getStats();
+      if (data.success === false) throw new Error(data.error || 'Falha ao buscar estatísticas');
       setStats(data);
+      setStatsError('');
     } catch (error) {
       console.error(error);
+      setStatsError(error.message);
     }
   };
 
@@ -54,9 +59,13 @@ export default function QueueMonitor({ embed = false }) {
     setLoading(true);
     try {
       const data = await QueueService.getItems(queue);
+      if (data.success === false) throw new Error(data.error || 'Falha ao buscar itens da fila');
       setItems(data.items || []);
       setActiveQueue(queue);
+      setItemsError('');
     } catch (error) {
+      setItems([]);
+      setItemsError(error.message);
       toast.error('Erro ao carregar itens da fila.');
     } finally {
       setLoading(false);
@@ -124,6 +133,7 @@ export default function QueueMonitor({ embed = false }) {
 
   return (
     <div className="space-y-6">
+      {statsError && <div role="alert" className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">As filas estão sem dados: {statsError}</div>}
       {!embed && (
         <div className="flex justify-between items-center">
           <h2 className="text-3xl font-bold tracking-tight">Monitor de Fila (Bling)</h2>
@@ -145,7 +155,7 @@ export default function QueueMonitor({ embed = false }) {
                 <QueueRow
                   key={key}
                   title={label}
-                  value={stats[key] || 0}
+                  value={stats ? (stats[key] ?? 0) : null}
                   type={type}
                   active={activeQueue === key}
                   onClick={() => fetchItems(key)}
@@ -169,6 +179,8 @@ export default function QueueMonitor({ embed = false }) {
         <CardContent>
           {loading ? (
             <div className="flex justify-center p-8">Carregando itens...</div>
+          ) : itemsError ? (
+            <div role="alert" className="rounded border border-red-300 bg-red-50 p-4 text-sm text-red-800">Não foi possível consultar o conteúdo: {itemsError}</div>
           ) : items.length === 0 ? (
             <div className="flex flex-col items-center justify-center p-8 text-muted-foreground">
               <List className="h-12 w-12 mb-2 opacity-20" />
@@ -243,9 +255,9 @@ function QueueRow({ title, value, type, active, onClick, onReprocess, onClear })
         <span className="truncate text-sm font-medium">{title}</span>
       </span>
       <span className="flex items-center gap-2">
-        <Badge variant="outline" className="min-w-8 justify-center">{value}</Badge>
+        <Badge variant="outline" className="min-w-8 justify-center">{value ?? '—'}</Badge>
         <span className="flex gap-1">
-          {onReprocess && value > 0 && (
+          {onReprocess && value != null && value > 0 && (
             <Button variant="ghost" size="icon" className="h-7 w-7 text-blue-500" onClick={(e) => { e.stopPropagation(); onReprocess(); }}>
               <Repeat className="h-4 w-4" />
             </Button>

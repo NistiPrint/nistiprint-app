@@ -231,8 +231,7 @@ export const SECOES = [
         description: 'Modelo, comportamento e ferramentas de IA.',
         itens: [
           { name: 'Operação IA · Shopee', href: '/ferramentas/ia', icon: Sparkles, description: 'Processamento e logs da IA Shopee', adminOnly: true },
-          { name: 'Configuração IA · Shopee', href: '/configuracoes/ia', icon: Settings, description: 'Prompt, provedor e parâmetros da Shopee', adminOnly: true },
-          { name: 'Configuração IA · Mercado Livre', href: '/configuracoes/personalizacao/mercadolivre', icon: Settings, description: 'Escolha a conta Mercado Livre para configurar', adminOnly: true },
+          { name: 'Configuração de IA', href: '/configuracoes/ia', icon: Settings, description: 'Prompt, provedor e parâmetros por conta conectada', adminOnly: true },
         ],
       },
       {

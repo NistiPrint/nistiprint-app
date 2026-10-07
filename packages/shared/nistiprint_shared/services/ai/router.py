@@ -88,18 +88,23 @@ class AIRouter:
         value = app_config_service.get_config(key)
         return default if value in (None, "") else value
 
-    def resolve_settings(self) -> Dict[str, Any]:
-        provider = _normalize(self._get_config(CONFIG_KEYS["provider"], DEFAULT_PROVIDER))
+    def resolve_settings(self, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        overrides = overrides or {}
+
+        def configured(key: str, default: Any = None) -> Any:
+            return overrides.get(key, self._get_config(key, default))
+
+        provider = _normalize(configured(CONFIG_KEYS["provider"], DEFAULT_PROVIDER))
         if provider not in PROVIDERS:
             logger.warning(
                 "ia_provider=%r desconhecido; usando %s", provider, DEFAULT_PROVIDER
             )
             provider = DEFAULT_PROVIDER
 
-        model = self._get_config(CONFIG_KEYS["model"], None)
+        model = configured(CONFIG_KEYS["model"], None)
         model = str(model).strip().strip('"') if model else DEFAULT_MODEL_BY_PROVIDER[provider]
 
-        fallback = _normalize(self._get_config(CONFIG_KEYS["fallback_provider"], "")) or None
+        fallback = _normalize(configured(CONFIG_KEYS["fallback_provider"], "")) or None
         if fallback and fallback not in PROVIDERS:
             logger.warning("ia_fallback_provider=%r desconhecido; ignorando", fallback)
             fallback = None
@@ -107,7 +112,7 @@ class AIRouter:
             fallback = None
 
         try:
-            timeout = float(self._get_config(CONFIG_KEYS["timeout"], 60) or 60)
+            timeout = float(configured(CONFIG_KEYS["timeout"], 60) or 60)
         except (TypeError, ValueError):
             timeout = 60.0
 
@@ -118,8 +123,9 @@ class AIRouter:
             "timeout_seconds": timeout,
         }
 
-    def complete(self, system_prompt: str, user_payload: str) -> AIResponse:
-        settings = self.resolve_settings()
+    def complete(self, system_prompt: str, user_payload: str,
+                 settings: Optional[Dict[str, Any]] = None) -> AIResponse:
+        settings = self.resolve_settings(settings)
         primary = build_provider(
             settings["provider"], settings["model"], settings["timeout_seconds"]
         )

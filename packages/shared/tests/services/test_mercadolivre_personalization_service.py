@@ -218,7 +218,8 @@ class MercadoLivrePersonalizationTests(unittest.TestCase):
         context_hash = service._context_hash([message])
         base = {"marketplace_integration_id": integration_id, "pedido_id": pedido_id,
                 "item_pedido_id": item_id, "pack_id": "pack-1", "status": "SUCCESS",
-                "confirmed": True, "source": "ai", "context_hash": context_hash}
+                "confirmed": False, "source": "ai", "provider_message_id": "msg-1",
+                "context_hash": context_hash}
         tables = {
             "pedidos": [{"id": pedido_id, "marketplace_integration_id": integration_id,
                          "codigo_pedido_externo": "order-1", "marketplace_order_id": "order-1"}],

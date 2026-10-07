@@ -62,6 +62,8 @@ from routes.demanda_producao_api import demanda_producao_api_bp
 from routes.production_lot_suggestions_api import demanda_producao_api_bp as production_lot_suggestions_api_bp
 from routes.tasks_api import tasks_api_bp, admin_worker_logs_bp
 from routes.task_schedules_api import task_schedules_api_bp
+from routes.task_center_api import task_center_bp
+from routes.ai_personalization_config_api import ai_personalization_config_bp
 from routes.usuarios_setores import usuarios_setores_bp, usuarios_setores_api_bp
 from routes.notifications import notifications_bp
 from routes.orders import orders_api_bp
@@ -211,6 +213,8 @@ def create_app():
     app.register_blueprint(tasks_api_bp)
     app.register_blueprint(admin_worker_logs_bp)
     app.register_blueprint(task_schedules_api_bp)
+    app.register_blueprint(task_center_bp)
+    app.register_blueprint(ai_personalization_config_bp)
     app.register_blueprint(usuarios_setores_bp)
     app.register_blueprint(usuarios_setores_api_bp, url_prefix='/api/v2/usuarios-setores')
     app.register_blueprint(notifications_bp)

@@ -13,9 +13,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
-  HardDrive,
   Info,
-  PlayCircle,
   RefreshCw,
   Search,
   Settings,
@@ -23,7 +21,6 @@ import {
   Zap
 } from 'lucide-react';
 import { useEffect, useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 /**
@@ -63,11 +60,9 @@ function descreverCron(cron) {
  * Consolidates scheduling, execution monitoring, and queue visualization.
  */
 function TaskControlCenter() {
-  const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState('schedules');
+  const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [reloading, setReloading] = useState(false);
   const [reprocessing, setReprocessing] = useState(false);
   
   // Schedules State
@@ -78,6 +73,10 @@ function TaskControlCenter() {
   
   // Execution Logs State
   const [logs, setLogs] = useState([]);
+  const [overview, setOverview] = useState(null);
+  const [meliSchedules, setMeliSchedules] = useState([]);
+  const [hours, setHours] = useState(24);
+  const [selectedExecution, setSelectedExecution] = useState(null);
   const [stats, setStats] = useState({
     total: 0,
     pending: 0,
@@ -91,7 +90,11 @@ function TaskControlCenter() {
   const [logFilters, setLogFilters] = useState({
     status: 'all',
     task_name: '',
-    task_type: ''
+    task_type: '',
+    integration_id: '',
+    origin: '',
+    order_id: '',
+    batch_id: '',
   });
 
   const [confirmDialog, setConfirmDialog] = useState({ open: false, action: null, message: '' });
@@ -235,34 +238,42 @@ function TaskControlCenter() {
     }, 1000); // 1 segundo de delay
   };
 
-  const handleReloadWorker = async () => {
-    setReloading(true);
+  const fetchOverview = async () => {
     try {
-      const response = await fetch('/api/v2/admin/task-schedules/reload', { method: 'POST' });
-      const data = await response.json();
-      if (data.success) {
-        toast.success(data.message);
-        setShowReloadWarning(false);
-      }
-    } catch (e) {
-      toast.error('Erro ao solicitar recarga');
-    } finally {
-      setReloading(false);
+      const response = await fetch(`/api/v2/admin/task-center/overview?hours=${hours}`);
+      const body = await response.json();
+      if (!response.ok || !body.success) throw new Error(body.error || 'Falha ao medir a saúde');
+      setOverview(body.data);
+      setStats({ total: body.data.task_sample_size, pending: body.data.task_stats.PENDING,
+        processing: body.data.task_stats.PROCESSING, completed: body.data.task_stats.COMPLETED,
+        failed: body.data.task_stats.FAILED, cancelled: body.data.task_stats.CANCELLED });
+    } catch (error) {
+      setOverview({ status: 'unavailable', error: error.message });
     }
   };
 
-  // --- API Calls for Logs ---
+  const fetchCenterSchedules = async () => {
+    const response = await fetch('/api/v2/admin/task-center/schedules');
+    const body = await response.json();
+    if (!response.ok || !body.success) throw new Error(body.error || 'Falha ao carregar agendamentos');
+    setMeliSchedules(body.data.mercadolivre || []);
+    setShowReloadWarning(body.data.restart_state === 'pending');
+  };
 
   const fetchLogs = async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
+      const params = new URLSearchParams({ hours: String(hours), limit: '100', offset: '0' });
       if (logFilters.status !== 'all') params.append('status', logFilters.status);
       if (logFilters.task_name) params.append('task_name', logFilters.task_name);
       if (logFilters.task_type) params.append('task_type', logFilters.task_type);
+      if (logFilters.integration_id) params.append('integration_id', logFilters.integration_id);
+      if (logFilters.origin) params.append('origin', logFilters.origin);
+      if (logFilters.order_id) params.append('order_id', logFilters.order_id);
+      if (logFilters.batch_id) params.append('batch_id', logFilters.batch_id);
       params.append('limit', '50');
 
-      const response = await fetch(`/api/v2/tasks/execution-logs?${params.toString()}`);
+      const response = await fetch(`/api/v2/admin/task-center/executions?${params.toString()}`);
       const data = await response.json();
       if (data.success) setLogs(data.data || []);
     } catch (e) {
@@ -273,25 +284,53 @@ function TaskControlCenter() {
   };
 
   const fetchStats = async () => {
-    try {
-      const response = await fetch('/api/v2/tasks/stats');
-      const data = await response.json();
-      if (data.success) setStats(data.stats);
-    } catch (e) {}
+    await fetchOverview();
   };
 
-  const handleRetryTask = async (taskId) => {
+  const setMeliScheduleEnabled = async (integrationId, enabled) => {
     try {
-      const response = await fetch(`/api/v2/tasks/execution-logs/${taskId}/retry`, { method: 'POST' });
-      const data = await response.json();
-      if (data.success) {
-        toast.success('Tarefa reenviada');
-        fetchLogs();
-        fetchStats();
-      }
-    } catch (e) {
-      toast.error('Erro ao reenviar tarefa');
-    }
+      const response = await fetch(`/api/v2/admin/task-center/schedules/mercadolivre/${integrationId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, hour: meliSchedules.find(row => row.integration_id === integrationId)?.hour,
+          minute: meliSchedules.find(row => row.integration_id === integrationId)?.minute }),
+      });
+      const body = await response.json();
+      if (!response.ok || !body.success) throw new Error(body.error || 'Falha ao atualizar tarefa');
+      setMeliSchedules(rows => rows.map(row => row.integration_id === integrationId ? { ...row, enabled } : row));
+      toast.success(enabled ? 'Extração diária ativada.' : 'Extração diária pausada. Mensagens e extração manual continuam disponíveis.');
+      await fetchCenterSchedules();
+      fetchOverview();
+    } catch (error) { toast.error(error.message); }
+  };
+
+  const saveMeliScheduleTime = async (integrationId) => {
+    const row = meliSchedules.find(item => item.integration_id === integrationId);
+    if (!row) return;
+    const [hour, minute] = String(row.timeDraft || `${String(row.hour).padStart(2, '0')}:${String(row.minute).padStart(2, '0')}`)
+      .split(':').map(Number);
+    try {
+      const response = await fetch(`/api/v2/admin/task-center/schedules/mercadolivre/${integrationId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: Boolean(row.enabled), hour, minute }),
+      });
+      const body = await response.json();
+      if (!response.ok || !body.success) throw new Error(body.error || 'Falha ao atualizar horário');
+      setMeliSchedules(rows => rows.map(item => item.integration_id === integrationId
+        ? { ...item, hour: body.data.hour, minute: body.data.minute,
+          timeDraft: `${String(body.data.hour).padStart(2, '0')}:${String(body.data.minute).padStart(2, '0')}` }
+        : item));
+      toast.success('Horário diário atualizado.');
+      await fetchCenterSchedules();
+    } catch (error) { toast.error(error.message); }
+  };
+
+  const openExecution = async log => {
+    try {
+      const response = await fetch(`/api/v2/admin/task-center/executions/${encodeURIComponent(String(log.id).replace(/^task-/, ''))}`);
+      const body = await response.json();
+      if (!response.ok || !body.success) throw new Error(body.error || 'Falha ao abrir detalhes');
+      setSelectedExecution(body.data);
+    } catch (error) { toast.error(error.message); }
   };
 
   const handleReprocessEvents = async () => {
@@ -329,20 +368,22 @@ function TaskControlCenter() {
 
   // --- Unified Refresh ---
   const refreshAll = () => {
-    if (activeTab === 'schedules') fetchSchedules();
-    if (activeTab === 'logs') {
-      fetchLogs();
-      fetchStats();
-    }
+    fetchOverview();
+    if (activeTab === 'schedules') { fetchSchedules(); fetchCenterSchedules().catch(error => toast.error(error.message)); }
+    if (activeTab === 'logs') fetchLogs();
+    if (activeTab === 'queue') fetchCenterSchedules().catch(() => {});
   };
 
   useEffect(() => {
     refreshAll();
-    // Cleanup timers on unmount
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') refreshAll();
+    }, 30000);
     return () => {
+      clearInterval(timer);
       Object.values(debounceTimers.current).forEach(clearTimeout);
     };
-  }, [activeTab, logFilters]);
+  }, [activeTab, logFilters, hours]);
 
   // --- Helpers ---
   const formatFrequency = (seconds) => {
@@ -391,16 +432,14 @@ function TaskControlCenter() {
             <Settings className="h-8 w-8 text-primary" /> Central de Operações
           </h1>
           <p className="text-muted-foreground mt-1">
-            Gerenciamento e monitoramento de tarefas em segundo plano (Celery)
+            Execuções, filas, processos e agendamentos do backend
           </p>
         </div>
         <div className="flex gap-2">
-          {showReloadWarning && (
-            <Button variant="destructive" onClick={handleReloadWorker} disabled={reloading}>
-              <RefreshCw className={`h-4 w-4 mr-2 ${reloading ? 'animate-spin' : ''}`} />
-              Aplicar Mudanças (Reiniciar Worker)
-            </Button>
-          )}
+          {showReloadWarning && <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-800">Worker precisa ser reiniciado manualmente</Badge>}
+          <select value={hours} onChange={event => setHours(Number(event.target.value))} className="h-9 rounded border bg-background px-2 text-sm">
+            <option value={24}>Últimas 24 horas</option><option value={72}>Últimos 3 dias</option><option value={168}>Últimos 7 dias</option>
+          </select>
           <Button variant="outline" onClick={refreshAll}>
             <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} /> Atualizar
           </Button>
@@ -408,17 +447,45 @@ function TaskControlCenter() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="overview"><Activity className="w-4 h-4 mr-2" /> Visão geral</TabsTrigger>
           <TabsTrigger value="schedules">
             <Clock className="w-4 h-4 mr-2" /> Agendamentos
           </TabsTrigger>
           <TabsTrigger value="logs">
-            <Activity className="w-4 h-4 mr-2" /> Histórico de Execução
+            <Activity className="w-4 h-4 mr-2" /> Execuções
           </TabsTrigger>
           <TabsTrigger value="queue">
             <Zap className="w-4 h-4 mr-2" /> Fila em Tempo Real
           </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="overview" className="space-y-4 mt-6">
+          {!overview || overview.status === 'unavailable' ? <Card className="border-red-300"><CardContent className="p-5 text-sm text-red-800">Saúde indisponível: {overview?.error || 'consultando serviços'}</CardContent></Card> : <>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <StatCard title={`Execuções recentes (${hours}h, amostra)`} value={overview.task_sample_size} color="gray" />
+              <StatCard title="Em processamento" value={overview.task_stats.PROCESSING} color="blue" />
+              <StatCard title="Falhas no período" value={overview.task_stats.FAILED} color={overview.task_stats.FAILED ? 'red' : 'green'} />
+              <StatCard title="Pendentes" value={overview.task_stats.PENDING} color="yellow" />
+              <StatCard title="Sinal medido em" value={new Date(overview.measured_at).toLocaleTimeString('pt-BR')} color="gray" />
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Card><CardHeader><CardTitle>Filas</CardTitle><CardDescription>Tamanho atual informado por cada serviço.</CardDescription></CardHeader><CardContent className="space-y-3">
+                {Object.entries(overview.queues || {}).map(([name, section]) => <div key={name} className="rounded border p-3">
+                  <div className="flex justify-between"><strong className="capitalize">{name.replaceAll('_', ' ')}</strong><Badge variant="outline" className={section.status === 'available' ? 'text-green-700' : 'text-red-700'}>{section.status === 'available' ? 'Normal' : 'Indisponível'}</Badge></div>
+                  {section.status === 'available' ? <pre className="mt-2 whitespace-pre-wrap text-xs">{JSON.stringify(section.queues, null, 2)}</pre> : <p className="mt-2 text-xs text-red-700">{section.reason}</p>}
+                </div>)}
+              </CardContent></Card>
+              <Card><CardHeader><CardTitle>Processos</CardTitle><CardDescription>Batimento de atividade dos consumidores e serviços.</CardDescription></CardHeader><CardContent className="space-y-2">
+                {overview.processes?.status !== 'available' ? <p className="rounded border border-red-300 p-3 text-sm text-red-700">Indisponível: {overview.processes?.reason || 'sem dados'}</p> : overview.processes.items.map(process => <div key={process.name} className="flex flex-wrap items-center justify-between gap-2 rounded border p-3 text-sm"><span>{process.name}{process.active_tasks ? ` · ${process.active_tasks} execução(ões) ativa(s)` : ''}{process.stale_tasks ? ` · ${process.stale_tasks} sem progresso há 15 min` : ''}</span><span className={process.status === 'normal' ? 'text-green-700' : process.status === 'attention' ? 'text-amber-700' : 'text-red-700'}>{process.status === 'normal' ? 'Normal' : process.status === 'attention' ? 'Atenção' : 'Indisponível'}{process.last_heartbeat ? ` · ${new Date(process.last_heartbeat).toLocaleTimeString('pt-BR')}` : ''}</span></div>)}
+              </CardContent></Card>
+            </div>
+            <Card><CardHeader><CardTitle>Mercado Livre por conta</CardTitle><CardDescription>Pendências de mensagem, falhas e resultados que aguardam revisão.</CardDescription></CardHeader><CardContent>
+              {overview.mercadolivre_status !== 'available' ? <p className="rounded border border-red-300 p-3 text-sm text-red-700">Sem dados: {overview.mercadolivre_error || 'falha ao consultar as contas'}</p> : overview.mercadolivre.length ? <div className="space-y-2">{overview.mercadolivre.map(account => <details key={account.integration_id} className="rounded border p-3 text-sm"><summary className="cursor-pointer"><strong>{account.name}</strong><span className="ml-3">{account.health.inbox_pending} mensagens pendentes · {account.health.inbox_failed} falhas · {account.health.incomplete_conversations} conversas incompletas · {account.health.waiting_review} revisões · {account.health.ai_errors} falhas de IA{account.health.oldest_pending_at ? ` · pendência desde ${new Date(account.health.oldest_pending_at).toLocaleString('pt-BR')}` : ''}</span></summary><div className="mt-3 space-y-3">{!!account.pending_conversations.length && <div><strong>Conversas aguardando associação</strong>{account.pending_conversations.map(row => <p key={row.pack_id} className="mt-1 text-xs">Pacote {row.pack_id} · pedidos {row.pending_order_ids.join(', ') || 'aguardando importação'} · {row.message_count} mensagem(ns) · última {row.last_message_at ? new Date(row.last_message_at).toLocaleString('pt-BR') : '—'}</p>)}</div>}{!!account.unmatched_notifications.length && <div><strong>Notificações sem conta confirmada</strong>{account.unmatched_notifications.map((row, index) => <p key={`${row.provider_message_id}-${index}`} className="mt-1 text-xs">Mensagem {row.provider_message_id} · vendedor {row.account_user_id || 'ausente'} · aplicativo {row.application_id || 'ausente'} · {row.last_error || row.status}</p>)}</div>}{!account.pending_conversations.length && !account.unmatched_notifications.length && <p className="text-xs text-muted-foreground">Sem conversas sem associação nem notificações pendentes.</p>}</div></details>)}</div> : <p className="text-sm text-muted-foreground">Nenhuma conta Mercado Livre conectada.</p>}
+            </CardContent></Card>
+            {!!overview.recent_failures?.length && <Card className="border-red-200"><CardHeader><CardTitle>Falhas recentes</CardTitle></CardHeader><CardContent className="space-y-2">{overview.recent_failures.map(row => <div key={row.id} className="rounded border p-3 text-sm"><strong>{row.task_name}</strong> · {row.marketplace_integration_id ? `Conta ${row.marketplace_integration_id}` : 'Tarefa geral'}<p className="mt-1 text-red-700">{row.error_message || 'Falha sem detalhe registrado'}</p></div>)}</CardContent></Card>}
+          </>}
+        </TabsContent>
 
         {/* --- Aba 1: Agendamentos --- */}
         <TabsContent value="schedules" className="space-y-4 mt-6">
@@ -474,6 +541,7 @@ function TaskControlCenter() {
                       <TableCell>
                         <div className="font-medium">{getTaskFriendlyName(config.taskName)}</div>
                         <div className="text-xs text-muted-foreground">{config.description || config.taskName}</div>
+                        <div className="text-xs text-muted-foreground">Última: {config.last_execution?.started_at ? new Date(config.last_execution.started_at).toLocaleString('pt-BR') : 'sem registro'} · último sucesso: {config.last_success?.finished_at ? new Date(config.last_success.finished_at).toLocaleString('pt-BR') : 'sem registro'}</div>
                       </TableCell>
                       <TableCell>
                         {/* Intervalo e horario sao mutuamente excludentes no
@@ -524,6 +592,11 @@ function TaskControlCenter() {
               </Table>
             </CardContent>
           </Card>
+
+          <Card><CardHeader><CardTitle>Extração diária · Mercado Livre</CardTitle><CardDescription>Pausar esta tarefa não interrompe a leitura das mensagens nem a extração manual.</CardDescription></CardHeader><CardContent className="space-y-2">
+            {meliSchedules.map(row => <div key={row.integration_id} className="flex flex-wrap items-center justify-between gap-3 rounded border p-3"><div className="min-w-72 flex-1"><strong>{row.name}</strong><div className="mt-2 flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">Todos os dias · fuso de Brasília</span><Input type="time" value={row.timeDraft ?? `${String(row.hour).padStart(2, '0')}:${String(row.minute).padStart(2, '0')}`} onChange={event => setMeliSchedules(rows => rows.map(item => item.integration_id === row.integration_id ? { ...item, timeDraft: event.target.value } : item))} className="h-8 w-28" /><Button size="sm" variant="outline" onClick={() => saveMeliScheduleTime(row.integration_id)}>Salvar horário</Button></div><p className="mt-2 text-xs text-muted-foreground">Última execução {row.last_execution?.started_at ? new Date(row.last_execution.started_at).toLocaleString('pt-BR') : (row.last_scheduled_run_date || 'ainda não executada')} · último sucesso {row.last_success?.finished_at ? new Date(row.last_success.finished_at).toLocaleString('pt-BR') : 'sem registro'} · próxima execução {row.next_run_at ? new Date(row.next_run_at).toLocaleString('pt-BR') : '—'}</p></div><Switch checked={Boolean(row.enabled)} disabled={saving} aria-label={`Extração diária para ${row.name}`} onCheckedChange={enabled => setMeliScheduleEnabled(row.integration_id, enabled)} /></div>)}
+            {!meliSchedules.length && <p className="text-sm text-muted-foreground">Nenhuma conta Mercado Livre conectada.</p>}
+          </CardContent></Card>
 
           <div className="hidden" aria-hidden="true">
             {Object.entries(scheduledTasks).map(([taskName, config]) => (
@@ -611,6 +684,10 @@ function TaskControlCenter() {
                 <option value="COMPLETED">Concluído</option>
                 <option value="FAILED">Falhou</option>
               </select>
+              <Input className="w-full md:w-36" type="number" min="1" placeholder="ID da conta" value={logFilters.integration_id} onChange={e => setLogFilters({...logFilters, integration_id: e.target.value})} />
+              <select className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm w-full md:w-40" value={logFilters.origin} onChange={e => setLogFilters({...logFilters, origin: e.target.value})}><option value="">Todas as origens</option><option value="manual">Manual</option><option value="scheduled">Agendada</option><option value="recovery">Recuperação</option></select>
+              <Input className="w-full md:w-36" placeholder="Pedido ID" value={logFilters.order_id} onChange={e => setLogFilters({...logFilters, order_id: e.target.value})} />
+              <Input className="w-full md:w-36" placeholder="Lote ID" value={logFilters.batch_id} onChange={e => setLogFilters({...logFilters, batch_id: e.target.value})} />
             </CardContent>
           </Card>
 
@@ -644,15 +721,12 @@ function TaskControlCenter() {
                         <div className="flex flex-col">
                           <span>Início: {new Date(log.started_at).toLocaleString('pt-BR')}</span>
                           {log.finished_at && <span>Fim: {new Date(log.finished_at).toLocaleString('pt-BR')}</span>}
+                          <span>{log.duration_ms == null ? 'duração não registrada' : `${log.duration_ms} ms`} · {log.execution_origin || 'origem antiga'} · fila {log.queue_name || '—'} · conta {log.marketplace_integration_id || 'geral'}</span>
                         </div>
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
-                          {log.status === 'FAILED' && (
-                            <Button size="sm" variant="ghost" onClick={() => handleRetryTask(log.id)}>
-                              <PlayCircle className="h-4 w-4 mr-1" /> Reenviar
-                            </Button>
-                          )}
+                          <Button size="sm" variant="ghost" onClick={() => openExecution(log)}><Info className="h-4 w-4 mr-1" /> Detalhes</Button>
                           {log.error_message && (
                             <Button size="sm" variant="ghost" onClick={() => alert(log.error_message)}>
                               <AlertCircle className="h-4 w-4" />
@@ -673,6 +747,13 @@ function TaskControlCenter() {
           <QueueMonitor embed />
         </TabsContent>
       </Tabs>
+
+      <AlertDialog open={Boolean(selectedExecution)} onOpenChange={open => !open && setSelectedExecution(null)}>
+        <AlertDialogContent className="max-h-[85vh] overflow-y-auto"><AlertDialogHeader><AlertDialogTitle>{selectedExecution?.task_name || 'Detalhes da execução'}</AlertDialogTitle><AlertDialogDescription>Execução {selectedExecution?.id} · {selectedExecution?.execution_origin || 'origem não registrada'} · Conta {selectedExecution?.marketplace_integration_id || 'geral'} · Fila {selectedExecution?.queue_name || 'não registrada'} · {selectedExecution?.duration_ms ?? '—'} ms</AlertDialogDescription></AlertDialogHeader>
+          <div className="space-y-3 text-sm"><div>Status: {selectedExecution?.status} · Início: {selectedExecution?.started_at ? new Date(selectedExecution.started_at).toLocaleString('pt-BR') : '—'} · Fim: {selectedExecution?.finished_at ? new Date(selectedExecution.finished_at).toLocaleString('pt-BR') : 'em andamento'}</div>{selectedExecution?.correlation_id && <div>Correlação: <code>{selectedExecution.correlation_id}</code></div>}{selectedExecution?.error_message && <p className="rounded bg-red-50 p-3 text-red-800">{selectedExecution.error_message}</p>}<pre className="max-h-72 overflow-auto rounded bg-muted p-3 text-xs">{JSON.stringify(selectedExecution?.metadata || {}, null, 2)}</pre></div>
+          <AlertDialogFooter><AlertDialogCancel>Fechar</AlertDialogCancel></AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Confirmação de Reprocessamento */}
       <AlertDialog open={confirmDialog.open} onOpenChange={(open) => setConfirmDialog({ ...confirmDialog, open })}>

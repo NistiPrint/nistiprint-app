@@ -6,6 +6,7 @@
 
 import os
 import logging
+import sys
 from celery import Celery
 from celery.schedules import crontab
 
@@ -164,6 +165,18 @@ def load_dynamic_schedules():
         if not config:
             logger.warning("Configuração 'celery_task_schedules' não encontrada no banco. Usando padrões.")
             return get_default_schedules()
+
+        # The Central can distinguish a saved schedule from the revision
+        # loaded by Celery Beat. Workers import this module too, so only the
+        # beat process publishes the applied revision.
+        if 'beat' in sys.argv and config.get('revision'):
+            try:
+                import redis
+                redis.Redis.from_url(CELERY_BROKER_URL, socket_connect_timeout=1, socket_timeout=1).set(
+                    'np:taskcenter:celery_schedules_revision', str(config['revision']), ex=86400
+                )
+            except Exception:
+                logger.exception("Could not publish loaded Celery Beat schedule revision")
             
         task_schedules_config = config.get('task_schedules', {})
         schedules = {}

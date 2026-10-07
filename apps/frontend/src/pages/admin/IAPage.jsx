@@ -268,26 +268,15 @@ function IAPage() {
         </TabsList>
 
         <TabsContent value="config" className="mt-6">
-          <div className="grid max-w-4xl gap-4 md:grid-cols-2">
+          <div className="grid max-w-4xl gap-4">
             <Card>
               <CardHeader>
-                <CardTitle>Configuração IA · Shopee</CardTitle>
-                <CardDescription>Edite o prompt e os parâmetros usados pela integração Shopee.</CardDescription>
+                <CardTitle>Configuração de IA por conta</CardTitle>
+                <CardDescription>Escolha a conta Shopee ou Mercado Livre e ajuste o prompt e os parâmetros usados pela extração.</CardDescription>
               </CardHeader>
               <CardContent>
                 <Button asChild>
-                  <Link to="/configuracoes/ia">Abrir configuração Shopee</Link>
-                </Button>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle>Configuração IA · Mercado Livre</CardTitle>
-                <CardDescription>Escolha uma conta Mercado Livre para ajustar captura e extração.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Button variant="outline" asChild>
-                  <Link to="/configuracoes/personalizacao/mercadolivre">Escolher conta Mercado Livre</Link>
+                  <Link to="/configuracoes/ia">Abrir configurações</Link>
                 </Button>
               </CardContent>
             </Card>

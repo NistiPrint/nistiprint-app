@@ -3,6 +3,7 @@ Task Schedules API Endpoints
 Provides endpoints for managing Celery Beat periodic tasks (enable/disable and frequency)
 """
 from flask import Blueprint, request, jsonify
+from datetime import datetime, timezone
 from routes.auth import admin_required
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.app_config_service import app_config_service
@@ -190,6 +191,7 @@ def update_task_schedule(task_name):
                 task_schedules[task_name].pop('crontab', None)
         
         # Salvar configuração atualizada
+        config['revision'] = datetime.now(timezone.utc).isoformat()
         app_config_service.set_config('celery_task_schedules', config)
         
         logger.info(f"Tarefa {task_name} atualizada: {task_schedules[task_name]}")

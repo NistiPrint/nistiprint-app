@@ -19,7 +19,7 @@ from nistiprint_shared.services.ai_personalization_service import (
     save_feedback,
     update_ai_config,
 )
-from routes.auth import login_required
+from routes.auth import admin_required, login_required
 from utils.api_response import ApiResponse
 
 logger = logging.getLogger("PersonalizadosAPI")
@@ -217,7 +217,7 @@ def feedback():
 
 
 @personalizados_bp.route("/config", methods=["GET"])
-@login_required
+@admin_required
 def get_config():
     try:
         return ApiResponse.success({"config": get_ai_config()})
@@ -227,7 +227,7 @@ def get_config():
 
 
 @personalizados_bp.route("/config", methods=["PUT"])
-@login_required
+@admin_required
 def put_config():
     try:
         body = request.get_json(silent=True) or {}

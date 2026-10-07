@@ -19,6 +19,9 @@ indistinguivel de sucesso.
 from __future__ import annotations
 
 import logging
+import json
+import re
+import time
 import uuid
 from functools import wraps
 
@@ -30,6 +33,20 @@ from nistiprint_shared.services.correlation_service import (
 from nistiprint_shared.utils.date_utils import get_now_iso
 
 logger = logging.getLogger(__name__)
+_SENSITIVE_KEY = re.compile(r"token|secret|password|authorization|api.?key|credential", re.I)
+
+
+def _safe_value(value, depth: int = 0):
+    if depth > 4:
+        return "[truncated]"
+    if isinstance(value, dict):
+        return {str(key): ("[redacted]" if _SENSITIVE_KEY.search(str(key)) else _safe_value(item, depth + 1))
+                for key, item in list(value.items())[:50]}
+    if isinstance(value, (list, tuple)):
+        return [_safe_value(item, depth + 1) for item in list(value)[:50]]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return str(value)[:300] if isinstance(value, str) else value
+    return type(value).__name__
 
 
 def log_task_execution(task_type: str | None = None, task_name: str | None = None):
@@ -57,11 +74,19 @@ def log_task_execution(task_type: str | None = None, task_name: str | None = Non
 
             entity_type = kwargs.get("entity_type")
             entity_id = kwargs.get("entity_id")
+            task_request = getattr(args[0], "request", None) if args else None
+            request_id = getattr(task_request, "id", None)
+            delivery_info = getattr(task_request, "delivery_info", None) or {}
+            integration_id = kwargs.get("integration_id") or kwargs.get("marketplace_integration_id")
+            started_at = get_now_iso()
+            started_clock = time.monotonic()
             started_metadata = {
-                "args": str(args)[:500],
-                "kwargs": str(kwargs)[:500],
+                "args": json.dumps(_safe_value(args[1:] if task_request else args), ensure_ascii=False, default=str)[:500],
+                "kwargs": json.dumps(_safe_value(kwargs), ensure_ascii=False, default=str)[:500],
                 "entity_type": entity_type,
                 "entity_id": entity_id,
+                "marketplace_integration_id": integration_id,
+                "execution_origin": kwargs.get("execution_origin") or "celery",
             }
 
             task_log_id = None
@@ -74,7 +99,12 @@ def log_task_execution(task_type: str | None = None, task_name: str | None = Non
                             "task_type": task_type,
                             "status": "PROCESSING",
                             "correlation_id": correlation_id,
-                            "started_at": get_now_iso(),
+                            "started_at": started_at,
+                            "marketplace_integration_id": integration_id,
+                            "celery_task_id": request_id,
+                            "queue_name": delivery_info.get("routing_key") or delivery_info.get("exchange"),
+                            "execution_origin": kwargs.get("execution_origin") or "celery",
+                            "progress_at": started_at,
                             "metadata": started_metadata,
                         }
                     )
@@ -111,6 +141,8 @@ def log_task_execution(task_type: str | None = None, task_name: str | None = Non
                             {
                                 "status": "FAILED",
                                 "finished_at": get_now_iso(),
+                                "duration_ms": max(0, int((time.monotonic() - started_clock) * 1000)),
+                                "progress_at": get_now_iso(),
                                 "error_message": str(exc)[:1000],
                             }
                         ).eq("id", task_log_id).execute()
@@ -131,6 +163,8 @@ def log_task_execution(task_type: str | None = None, task_name: str | None = Non
                         {
                             "status": "COMPLETED",
                             "finished_at": get_now_iso(),
+                            "duration_ms": max(0, int((time.monotonic() - started_clock) * 1000)),
+                            "progress_at": get_now_iso(),
                             "metadata": {**started_metadata, "result": str(result)[:500]},
                         }
                     ).eq("id", task_log_id).execute()

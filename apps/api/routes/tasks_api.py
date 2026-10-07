@@ -6,7 +6,6 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify
 from routes.auth import login_required, admin_required
 from nistiprint_shared.database.supabase_db_service import supabase_db
-from nistiprint_shared.utils.date_utils import get_now_iso
 
 tasks_api_bp = Blueprint('tasks_api', __name__, url_prefix='/api/v2/tasks')
 admin_worker_logs_bp = Blueprint('admin_worker_logs', __name__)
@@ -245,81 +244,15 @@ def get_task_execution_log_details(task_log_id):
 @tasks_api_bp.route('/execution-logs/<task_log_id>/retry', methods=['POST'])
 @admin_required
 def retry_task(task_log_id):
-    """
-    Manually retry a failed task.
-    
-    This endpoint updates the task status to PENDING and increments retry count.
-    The actual task execution will be picked up by the worker.
-    """
-    try:
-        # Get current task log
-        response = supabase_db.table('task_execution_logs').select('*').eq('id', task_log_id).execute()
-        
-        if not response.data:
-            return jsonify({'success': False, 'error': 'Task log not found'}), 404
-        
-        task_log = response.data[0]
-        
-        # Only allow retry for failed tasks
-        if task_log.get('status') != 'FAILED':
-            return jsonify({'success': False, 'error': 'Can only retry failed tasks'}), 400
-        
-        # Update task log for retry
-        updates = {
-            'status': 'PENDING',
-            'retry_count': (task_log.get('retry_count') or 0) + 1,
-            'last_retry_at': get_now_iso(),
-            'error_message': None,
-            'started_at': None,
-            'finished_at': None
-        }
-        
-        supabase_db.table('task_execution_logs').update(updates).eq('id', task_log_id).execute()
-        
-        return jsonify({
-            'success': True,
-            'message': 'Task queued for retry',
-            'retry_count': updates['retry_count']
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    return jsonify({'success': False,
+                    'error': 'Esta execução não pode ser reenviada pelo histórico. Use a ação de reprocessamento do fluxo correspondente.'}), 410
 
 
 @tasks_api_bp.route('/execution-logs/<task_log_id>/cancel', methods=['POST'])
 @admin_required
 def cancel_task(task_log_id):
-    """
-    Cancel a pending or processing task.
-    
-    This endpoint updates the task status to CANCELLED.
-    """
-    try:
-        # Get current task log
-        response = supabase_db.table('task_execution_logs').select('*').eq('id', task_log_id).execute()
-        
-        if not response.data:
-            return jsonify({'success': False, 'error': 'Task log not found'}), 404
-        
-        task_log = response.data[0]
-        
-        # Only allow cancel for pending or processing tasks
-        if task_log.get('status') not in ['PENDING', 'PROCESSING']:
-            return jsonify({'success': False, 'error': 'Can only cancel pending or processing tasks'}), 400
-        
-        # Update task log to cancelled
-        updates = {
-            'status': 'CANCELLED',
-            'finished_at': get_now_iso()
-        }
-        
-        supabase_db.table('task_execution_logs').update(updates).eq('id', task_log_id).execute()
-        
-        return jsonify({
-            'success': True,
-            'message': 'Task cancelled successfully'
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    return jsonify({'success': False,
+                    'error': 'O histórico não controla o cancelamento da tarefa original.'}), 410
 
 
 @tasks_api_bp.route('/stats', methods=['GET'])

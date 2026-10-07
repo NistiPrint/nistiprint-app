@@ -6,9 +6,8 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ArrowLeft, Loader2, Save, TestTube2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { personalizadosService } from '@/services/personalizadosService';
 
 const PROVIDER_OPTIONS = [
   { value: 'gemini', label: 'Gemini (Google)' },
@@ -46,7 +45,10 @@ const DEFAULT_PROMPT = `**Role**: You are a highly specialized AI assistant for 
 
 function ConfiguracoesIA() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedIntegrationId = searchParams.get('integration_id') || '';
   const [loading, setLoading] = useState(true);
+  const [accounts, setAccounts] = useState([]);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
 
@@ -55,19 +57,49 @@ function ConfiguracoesIA() {
   const [modelName, setModelName] = useState('gemini-2.5-flash');
   const [fallbackProvider, setFallbackProvider] = useState(FALLBACK_NONE);
   const [maxProcessing, setMaxProcessing] = useState(50);
+  const [timeoutSeconds, setTimeoutSeconds] = useState(60);
+  const [loadedSnapshot, setLoadedSnapshot] = useState('');
 
   const [testResult, setTestResult] = useState(null);
 
   useEffect(() => {
-    loadConfig();
+    let active = true;
+    fetch('/api/v2/ai-personalization/accounts', { credentials: 'same-origin' })
+      .then(response => response.json())
+      .then(body => {
+        if (!active) return;
+        if (!body.success) throw new Error(body.error || 'Erro ao carregar contas');
+        const available = body.accounts || [];
+        setAccounts(available);
+        const requested = available.find(row => String(row.integration_id) === String(selectedIntegrationId));
+        const fallback = available.find(row => row.marketplace === 'shopee') || available[0];
+        if (!requested && fallback) setSearchParams({ integration_id: String(fallback.integration_id) }, { replace: true });
+        if (!available.length) setLoading(false);
+      })
+      .catch(error => { if (active) { toast.error(error.message); setLoading(false); } });
+    return () => { active = false; };
   }, []);
 
-  const loadConfig = async () => {
+  useEffect(() => {
+    if (!selectedIntegrationId || !accounts.some(row => String(row.integration_id) === String(selectedIntegrationId))) return;
+    loadConfig(selectedIntegrationId);
+  }, [selectedIntegrationId, accounts]);
+
+  const snapshot = config => JSON.stringify({
+    prompt_template: config.prompt_template || '', provider: config.provider || 'gemini',
+    model_name: config.model_name || 'gemini-2.5-flash', fallback_provider: config.fallback_provider || '',
+    max_processing: Number(config.max_processing || 50), timeout_seconds: Number(config.timeout_seconds || 60),
+  });
+
+  const loadConfig = async integrationId => {
     setLoading(true);
     try {
-      const data = await personalizadosService.getConfig();
-      if (data.success && data.data?.config) {
-        const cfg = data.data.config;
+      const response = await fetch(`/api/v2/ai-personalization/accounts/${integrationId}/config`, { credentials: 'same-origin' });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'Erro ao carregar configuração');
+      if (new URLSearchParams(window.location.search).get('integration_id') !== String(integrationId)) return;
+      if (data.config) {
+        const cfg = data.config;
         if (cfg.prompt_template) {
           // Pode vir como string ou objeto { text: ... }
           setPromptTemplate(typeof cfg.prompt_template === 'string' ? cfg.prompt_template : cfg.prompt_template.text || DEFAULT_PROMPT);
@@ -78,15 +110,27 @@ function ConfiguracoesIA() {
         if (cfg.model_name) setModelName(String(cfg.model_name).replace(/"/g, ''));
         setFallbackProvider(cfg.fallback_provider || FALLBACK_NONE);
         if (cfg.max_processing) setMaxProcessing(cfg.max_processing);
-      } else {
-        setPromptTemplate(DEFAULT_PROMPT);
+        setTimeoutSeconds(cfg.timeout_seconds || 60);
+        setLoadedSnapshot(snapshot(cfg));
       }
     } catch {
       toast.error('Erro ao carregar configurações');
-      setPromptTemplate(DEFAULT_PROMPT);
+      if (new URLSearchParams(window.location.search).get('integration_id') === String(integrationId)) setPromptTemplate(DEFAULT_PROMPT);
     } finally {
-      setLoading(false);
+      if (new URLSearchParams(window.location.search).get('integration_id') === String(integrationId)) setLoading(false);
     }
+  };
+
+  const selectedAccount = accounts.find(row => String(row.integration_id) === String(selectedIntegrationId));
+  const currentSnapshot = snapshot({ prompt_template: promptTemplate, provider, model_name: modelName,
+    fallback_provider: fallbackProvider === FALLBACK_NONE ? '' : fallbackProvider,
+    max_processing: maxProcessing, timeout_seconds: timeoutSeconds });
+  const isDirty = Boolean(loadedSnapshot && currentSnapshot !== loadedSnapshot);
+
+  const chooseAccount = integrationId => {
+    if (isDirty && !window.confirm('Há alterações não salvas. Descartar e trocar de conta?')) return;
+    setTestResult(null);
+    setSearchParams({ integration_id: String(integrationId) });
   };
 
   // Trocar de provedor troca o modelo junto: o modelo do provedor anterior
@@ -101,18 +145,23 @@ function ConfiguracoesIA() {
     setSaving(true);
     setTestResult(null);
     try {
-      const data = await personalizadosService.updateConfig({
+      const response = await fetch(`/api/v2/ai-personalization/accounts/${selectedIntegrationId}/config`, {
+        method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
         prompt_template: promptTemplate,
         provider,
         model_name: modelName,
         fallback_provider: fallbackProvider === FALLBACK_NONE ? '' : fallbackProvider,
         max_processing: maxProcessing,
-      });
-      if (data.success) {
-        toast.success('Configurações salvas com sucesso!');
+        timeout_seconds: timeoutSeconds,
+      }) });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setLoadedSnapshot(snapshot(data.config));
+        toast.success(`Configuração salva para ${selectedAccount?.name || 'esta conta'}.`);
         setTestResult({ type: 'success', message: 'Configurações aplicadas' });
       } else {
-        toast.error(data.message || 'Erro ao salvar');
+        toast.error(data.error || data.message || 'Erro ao salvar');
       }
     } catch {
       toast.error('Erro ao salvar configurações');
@@ -125,17 +174,22 @@ function ConfiguracoesIA() {
     setTesting(true);
     setTestResult(null);
     try {
-      // Teste simples: processar 1 pedido para validar config
-      const data = await personalizadosService.processar({ limit: 1 });
-      if (data.success) {
+      const response = await fetch(`/api/v2/ai-personalization/accounts/${selectedIntegrationId}/preview`, {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt_template: promptTemplate, provider, model_name: modelName,
+          fallback_provider: fallbackProvider === FALLBACK_NONE ? '' : fallbackProvider,
+          max_processing: maxProcessing, timeout_seconds: timeoutSeconds }),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
         setTestResult({
           type: 'success',
-          message: data.data?.message || 'Teste executado com sucesso',
-          detail: data.data?.result ? JSON.stringify(data.data.result, null, 2) : null,
+          message: 'Prévia concluída sem salvar personalizações.',
+          detail: JSON.stringify(data.result, null, 2),
         });
         toast.success('Teste concluído!');
       } else {
-        setTestResult({ type: 'error', message: data.message || 'Erro no teste' });
+        setTestResult({ type: 'error', message: data.error || data.message || 'Erro no teste' });
         toast.error('Erro no teste');
       }
     } catch (e) {
@@ -157,16 +211,19 @@ function ConfiguracoesIA() {
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <div className="flex items-center gap-4 mb-6">
-        <Button variant="outline" onClick={() => navigate('/vendas/personalizadas')}>
-          <ArrowLeft className="mr-2 h-4 w-4" /> Personalizados · Shopee
+        <Button variant="outline" onClick={() => navigate(selectedAccount?.marketplace === 'mercadolivre' ? '/vendas/personalizadas/mercadolivre' : '/vendas/personalizadas')}>
+          <ArrowLeft className="mr-2 h-4 w-4" /> Personalizados
         </Button>
-        <h1 className="text-2xl font-bold">Configuração IA · Shopee</h1>
+        <h1 className="text-2xl font-bold">Configuração de IA</h1>
       </div>
-      <div className="-mt-4 mb-6 flex justify-end">
-        <Button variant="outline" asChild>
-          <Link to="/configuracoes/personalizacao/mercadolivre">Configuração IA · Mercado Livre</Link>
-        </Button>
-      </div>
+      <Card><CardContent className="space-y-2 p-5">
+        <Label htmlFor="ai-account">Conta conectada</Label>
+        <select id="ai-account" value={selectedIntegrationId} onChange={event => chooseAccount(event.target.value)} disabled={saving || testing} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
+          {accounts.map(account => <option key={account.integration_id} value={account.integration_id}>{account.marketplace_label} · {account.name}</option>)}
+        </select>
+        {selectedAccount && <p className="text-xs text-muted-foreground">Configuração aplicada somente a {selectedAccount.marketplace_label} · {selectedAccount.name}.</p>}
+      </CardContent></Card>
+      {!selectedAccount && <Card><CardContent className="p-5 text-sm text-muted-foreground">Conecte uma conta Shopee ou Mercado Livre para configurar a extração.</CardContent></Card>}
 
       <div className="space-y-6">
         {/* Prompt Template */}
@@ -292,6 +349,11 @@ function ConfiguracoesIA() {
                   Quantos pedidos processar por execução.
                 </p>
               </div>
+              <div>
+                <Label htmlFor="timeout-seconds">Timeout (segundos)</Label>
+                <Input id="timeout-seconds" type="number" min={1} max={600} value={timeoutSeconds}
+                  onChange={e => setTimeoutSeconds(Number(e.target.value) || 60)} />
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -325,7 +387,7 @@ function ConfiguracoesIA() {
           <Button
             variant="outline"
             onClick={handleTest}
-            disabled={testing}
+            disabled={testing || !selectedAccount}
           >
             {testing ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -336,7 +398,7 @@ function ConfiguracoesIA() {
           </Button>
           <Button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !selectedAccount || !isDirty}
           >
             {saving ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />

@@ -87,8 +87,8 @@ def _settings(integration_id: int) -> dict:
             .eq("marketplace_integration_id", int(integration_id)).limit(1).execute().data or [])
     if rows:
         return rows[0]
-    seed = {"marketplace_integration_id": int(integration_id), "enabled": False,
-            "capture_enabled": False, "extraction_enabled": False}
+    seed = {"marketplace_integration_id": int(integration_id), "enabled": True,
+            "capture_enabled": True, "extraction_enabled": True, "schedule_enabled": True}
     result = supabase_db.table("mercadolivre_personalization_config").upsert(
         seed, on_conflict="marketplace_integration_id").execute().data or []
     return result[0] if result else seed
@@ -118,24 +118,28 @@ def available_integrations() -> list[dict]:
                        "enabled": bool(settings.get("enabled")),
                        "capture_enabled": bool(settings.get("capture_enabled")),
                        "extraction_enabled": bool(settings.get("extraction_enabled")),
+                       "schedule_enabled": bool(settings.get("schedule_enabled", True)),
                        "schedule_hour": settings.get("schedule_hour", 9),
-                       "schedule_minute": settings.get("schedule_minute", 0)})
+                       "schedule_minute": settings.get("schedule_minute", 0),
+                       "last_scheduled_run_date": settings.get("last_scheduled_run_date")})
     return output
 
 
 def update_settings(integration_id: int, values: dict, *, user_id: int | None = None) -> dict:
     _integration(integration_id, active=False)
     current = _settings(integration_id)
-    allowed = {"enabled", "capture_enabled", "extraction_enabled", "provider", "model_name",
+    allowed = {"schedule_enabled", "provider", "model_name",
                "fallback_provider", "timeout_seconds", "max_processing", "schedule_hour",
                "schedule_minute", "prompt_template"}
     update = {key: values[key] for key in allowed if key in values}
-    for key in ("enabled", "capture_enabled", "extraction_enabled"):
+    for key in ("schedule_enabled",):
         if key in update and not isinstance(update[key], bool):
             raise ValueError(f"{key} precisa ser booleano")
     provider = update.get("provider", current.get("provider", "gemini"))
     if provider not in {"gemini", "openrouter"}:
         raise ValueError("Provedor de IA inválido")
+    if "fallback_provider" in update and not update["fallback_provider"]:
+        update["fallback_provider"] = None
     if update.get("fallback_provider", current.get("fallback_provider")) == provider:
         raise ValueError("O fallback precisa ser diferente do provedor principal")
     for key, lower, upper in (("timeout_seconds", 1, 600), ("max_processing", 1, 500),
@@ -388,9 +392,6 @@ def sync_pack(integration_id: int, pack_id: str, seller_id: str,
               webhook_event_id: int | None = None,
               order_id_fallback: str | None = None) -> dict:
     integration = _integration(integration_id)
-    settings = _settings(integration_id)
-    if not settings.get("capture_enabled"):
-        return {"status": "capture_disabled", "pack_id": str(pack_id)}
     orders = ([str(order_id_fallback)] if order_id_fallback else
               _pack_order_ids(integration_id, integration, pack_id))
     if not orders and str(pack_id).isdigit():
@@ -463,9 +464,6 @@ def sync_pack(integration_id: int, pack_id: str, seller_id: str,
 
 def process_inbox_once(integration_id: int, *, limit: int = 25) -> dict:
     integration = _integration(integration_id)
-    settings = _settings(integration_id)
-    if not settings.get("enabled") or not settings.get("capture_enabled"):
-        return {"claimed": 0, "synced": 0, "retried": 0, "failed": 0, "status": "disabled"}
     seller_id = _text(((integration.get("config") or {}).get("account_identifiers") or {}).get("primary")
                       or (integration.get("config") or {}).get("user_id") or integration.get("user_id"))
     if not seller_id:
@@ -528,9 +526,6 @@ def process_inbox_once(integration_id: int, *, limit: int = 25) -> dict:
 
 def reconcile_once(integration_id: int, *, limit: int = 25) -> dict:
     result = process_inbox_once(integration_id, limit=limit)
-    settings = _settings(integration_id)
-    if not settings.get("enabled") or not settings.get("capture_enabled"):
-        return result
     integration = _integration(integration_id)
     seller_id = _text(((integration.get("config") or {}).get("account_identifiers") or {}).get("primary")
                       or (integration.get("config") or {}).get("user_id") or integration.get("user_id"))
@@ -730,9 +725,8 @@ def account_health(integration_id: int) -> dict:
                   .eq("marketplace_integration_id", int(integration_id)).eq("needs_review", True).execute())
     def count(response):
         return response.count if response.count is not None else len(response.data or [])
-    return {"integration_id": int(integration_id), "enabled": bool(settings.get("enabled")),
-            "capture_enabled": bool(settings.get("capture_enabled")),
-            "extraction_enabled": bool(settings.get("extraction_enabled")),
+    return {"integration_id": int(integration_id),
+            "schedule_enabled": bool(settings.get("schedule_enabled", True)),
             "schedule_hour": settings.get("schedule_hour", 9),
             "schedule_minute": settings.get("schedule_minute", 0),
             "last_daily_run": settings.get("last_scheduled_run_date"),
@@ -814,10 +808,6 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
                  force: bool = False) -> dict:
     integration = _integration(integration_id)
     settings = _settings(integration_id)
-    if not settings.get("enabled") or not settings.get("extraction_enabled"):
-        return {"status": "disabled", "pack_id": str(pack_id)}
-    if not settings.get("capture_enabled"):
-        raise RuntimeError("Captura de mensagens desabilitada; extração adiada.")
     conversation_rows = (supabase_db.table("mercadolivre_chat_conversations").select("seller_id,raw_json")
                          .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id))
                          .limit(1).execute().data or [])
@@ -906,7 +896,8 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
                 "customization_initial": _text(entry.get("customization_initial")) or None,
                 "status": status, "reasoning": _text(result.get("reasoning"))[:1500],
                 "context_hash": digest, "source": "ai", "confirmed": False,
-                "details": {"initial_source_message_id": initial_source_id or None}})
+                "details": {"name_source_message_id": source_id or None,
+                            "initial_source_message_id": initial_source_id or None}})
         for item in items:
             if personalized_quantity.get(item["id"], 0) not in (0, max(1, int(item.get("quantidade") or 1))):
                 status = "NEEDS_REVIEW"
@@ -959,11 +950,7 @@ def _queue_packs(integration_id: int, *, limit: int = 50, pedido_ids: list[int] 
 
 def queue_manual(integration_id: int, *, pedido_ids: list[int] | None = None,
                  force: bool = False, limit: int = 50) -> dict:
-    settings = _settings(integration_id)
-    if not settings.get("enabled") or not settings.get("extraction_enabled"):
-        raise ValueError("Extração da conta Mercado Livre está desabilitada")
-    if not settings.get("capture_enabled"):
-        raise ValueError("Ative a captura e sincronização de mensagens antes de extrair nomes")
+    _integration(integration_id)
     return _queue_packs(integration_id, limit=limit, pedido_ids=pedido_ids, force=force)
 
 
@@ -1166,7 +1153,7 @@ def save_manual_personalization(integration_id: int, pedido_id: int, body: dict,
 
 
 def printable_personalizations(integration_id: int, pedido_id: int) -> dict:
-    """Return only confirmed, current-context names, keyed by canonical item ID."""
+    """Return valid, current-context names keyed by canonical item ID."""
     _integration(integration_id, active=False)
     orders = (supabase_db.table("pedidos").select("id,codigo_pedido_externo,marketplace_order_id")
               .eq("id", int(pedido_id)).eq("marketplace_integration_id", int(integration_id))
@@ -1197,17 +1184,39 @@ def printable_personalizations(integration_id: int, pedido_id: int) -> dict:
                     (current_hashes.get(str(row.get("pack_id")))
                      and row.get("context_hash") == current_hashes.get(str(row.get("pack_id"))))
                     or (not current_hashes.get(str(row.get("pack_id"))) and row.get("source") == "manual")]
-    unresolved_rows = [row for row in current_rows
-                       if not row.get("confirmed") or row.get("status") != "SUCCESS"]
-    valid = [row for row in current_rows
-             if row.get("confirmed") and row.get("status") == "SUCCESS"]
+    current_messages = {}
+    for pack_id in pack_ids:
+        current_messages[pack_id] = (supabase_db.table("mercadolivre_chat_messages").select("provider_message_id,sender_role")
+            .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", pack_id).execute().data or [])
+    item_quantities = {int(item["id"]): max(1, int(item.get("quantidade") or 1)) for item in items}
+    valid = []
+    unresolved_rows = []
+    for row in current_rows:
+        item_id = int(row.get("item_pedido_id") or 0)
+        details = _json(row.get("details"), {}) or {}
+        buyer_message_ids = {str(message.get("provider_message_id")) for message in current_messages.get(str(row.get("pack_id")), [])
+                             if message.get("sender_role") == "buyer"}
+        try:
+            quantity = int(row.get("quantity_to_personalize") or 0)
+        except (TypeError, ValueError):
+            quantity = 0
+        source_ok = row.get("source") == "manual" or (
+            (not row.get("customization_name") or str(details.get("name_source_message_id")
+                or row.get("provider_message_id") or "") in buyer_message_ids)
+            and (not row.get("customization_initial") or str(details.get("initial_source_message_id") or "") in buyer_message_ids)
+        )
+        if (row.get("status") == "SUCCESS" and item_id in item_quantities
+                and 1 <= quantity <= item_quantities[item_id] and source_ok):
+            valid.append(row)
+        else:
+            unresolved_rows.append(row)
     by_item: dict[int, list[dict]] = {}
     for row in valid:
         by_item.setdefault(int(row["item_pedido_id"]), []).append({
             "customization_name": row.get("customization_name"),
             "customization_initial": row.get("customization_initial"),
             "quantity_to_personalize": row.get("quantity_to_personalize", 1),
-            "status": row.get("status"), "confirmed": True,
+            "status": row.get("status"), "confirmed": bool(row.get("confirmed")),
         })
     ready = not unresolved_rows
     for item in items:
@@ -1222,4 +1231,4 @@ def printable_personalizations(integration_id: int, pedido_id: int) -> dict:
         ready = False
     return {"ready": ready, "by_item_id": by_item,
             "message": None if ready else
-            "Personalização pendente, desatualizada ou aguardando confirmação/sincronização de mensagens."}
+            "Personalização pendente, desatualizada ou aguardando sincronização de mensagens."}

@@ -120,8 +120,10 @@ def _load_prompt_fallback() -> str:
         )
 
 
-def load_prompt_template() -> str:
-    prompt = app_config_service.get_config("prompt_template")
+def load_prompt_template(overrides: Dict[str, Any] | None = None) -> str:
+    prompt = (overrides or {}).get("prompt_template")
+    if prompt is None:
+        prompt = app_config_service.get_config("prompt_template")
     if isinstance(prompt, dict):
         prompt = prompt.get("text")
     if isinstance(prompt, str) and prompt.strip():
@@ -222,7 +224,7 @@ def update_ai_config(
     return get_ai_config()
 
 
-def run_model(prompt_payload: str) -> Dict[str, Any]:
+def run_model(prompt_payload: str, config_overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """Executa o prompt no provedor configurado e devolve o JSON extraido.
 
     O par (provedor, modelo) vem de `configuracoes_aplicacao`; ver
@@ -230,17 +232,17 @@ def run_model(prompt_payload: str) -> Dict[str, Any]:
     antiga por compatibilidade — quem precisa dos metadados da execucao usa
     `run_model_detailed`.
     """
-    return run_model_detailed(prompt_payload)[0]
+    return run_model_detailed(prompt_payload, config_overrides=config_overrides)[0]
 
 
-def run_model_detailed(prompt_payload: str) -> tuple[Dict[str, Any], AIResponse]:
+def run_model_detailed(prompt_payload: str, *, config_overrides: Dict[str, Any] | None = None) -> tuple[Dict[str, Any], AIResponse]:
     """Igual a `run_model`, mas devolve tambem a resposta bruta do provedor.
 
     Os metadados importam para auditoria: com `openrouter/auto` o modelo e
     escolhido do outro lado, entao sem registrar `model_used` nao ha como
     explicar depois por que dois pedidos parecidos sairam diferentes.
     """
-    response = ai_router.complete(load_prompt_template(), prompt_payload)
+    response = ai_router.complete(load_prompt_template(config_overrides), prompt_payload, settings=config_overrides)
     return extract_json(response.text), response
 
 
@@ -749,6 +751,7 @@ def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, for
                 "id": normalized["id"],
                 "order_sn": normalized["shopee_order_sn"],
                 "ai_status": normalized.get("ai_status"),
+                "marketplace_integration_id": normalized.get("marketplace_integration_id"),
             })
         else:
             skipped.append({
@@ -757,8 +760,30 @@ def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, for
                 "reason": "up_to_date",
             })
 
-    if normalized_limit and not pedido_ids and not order_sn:
-        to_process = to_process[:normalized_limit]
+    # A tela de configuração guarda o limite por conta conectada. Pedidos
+    # legados sem integração identificada mantêm o comportamento anterior.
+    if not pedido_ids and not order_sn and to_process:
+        from nistiprint_shared.services.ai_personalization_account_config import get_config
+        limits_by_account = {}
+        counts_by_account = {}
+        limited = []
+        for candidate in to_process:
+            integration_id = candidate.get("marketplace_integration_id")
+            if not integration_id:
+                if not normalized_limit or counts_by_account.get("legacy", 0) < normalized_limit:
+                    limited.append(candidate)
+                    counts_by_account["legacy"] = counts_by_account.get("legacy", 0) + 1
+                continue
+            key = str(integration_id)
+            if key not in limits_by_account:
+                limits_by_account[key] = int(get_config(int(integration_id))["max_processing"])
+            account_limit = limits_by_account[key]
+            if normalized_limit:
+                account_limit = min(account_limit, normalized_limit)
+            if counts_by_account.get(key, 0) < account_limit:
+                limited.append(candidate)
+                counts_by_account[key] = counts_by_account.get(key, 0) + 1
+        to_process = limited
 
     return to_process, skipped
 
@@ -1245,7 +1270,7 @@ def generate_prompt_payload(order: Dict[str, Any]) -> str:
     return "\n".join(payload)
 
 
-def _persistir_personalizacao(order: Dict[str, Any], result: Dict[str, Any]):
+def _persistir_personalizacao(order: Dict[str, Any], result: Dict[str, Any], *, model_name: str | None = None):
     shopee_order_sn = str(order["shopee_order_sn"])
     items_by_id = {str(item.get("id")): item for item in (order.get("items") or [])}
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -1274,7 +1299,7 @@ def _persistir_personalizacao(order: Dict[str, Any], result: Dict[str, Any]):
             "reasoning": _truncate(result.get("reasoning"), 1500),
             "detalhes_personalizacao": details,
             "metadata": {
-                "source": get_model_name(),
+                "source": model_name or get_model_name(),
                 "processed_at": now_iso,
                 "quantity_to_personalize": details["quantity_to_personalize"],
                 "initial_source_message_id": details["initial_source_message_id"],
@@ -1339,7 +1364,12 @@ def _process_single_order_sync(pedido_id: int, force: bool = False):
     chat_context = order.get("chat_messages") or []
 
     try:
-        result, ai_response = run_model_detailed(prompt_payload)
+        account_overrides = None
+        integration_id = order.get("marketplace_integration_id")
+        if integration_id:
+            from nistiprint_shared.services.ai_personalization_account_config import shopee_overrides
+            account_overrides = shopee_overrides(int(integration_id))
+        result, ai_response = run_model_detailed(prompt_payload, config_overrides=account_overrides)
         if order.get("chat_context_ambiguous"):
             result["status"] = "NEEDS_REVIEW"
             result["reasoning"] = (
@@ -1357,7 +1387,7 @@ def _process_single_order_sync(pedido_id: int, force: bool = False):
                 "a decisao foi tomada sobre contexto incompleto. "
                 + str(result.get("reasoning") or "")
             ).strip()
-        _persistir_personalizacao(order, result)
+        _persistir_personalizacao(order, result, model_name=ai_response.model_used or (account_overrides or {}).get("ia_model"))
         # Provedor e modelo efetivo ficam no log: com `openrouter/auto` quem
         # escolhe o modelo e o OpenRouter, e sem isso nao ha como auditar
         # depois qual modelo produziu determinado nome.

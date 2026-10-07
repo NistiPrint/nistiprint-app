@@ -52,6 +52,19 @@ class TestSelecaoDeProvedor(unittest.TestCase):
         router = AIRouter(config_reader=_config(ia_timeout_seconds="depois"))
         self.assertEqual(router.resolve_settings()["timeout_seconds"], 60.0)
 
+    def test_overrides_por_conta_nao_alteram_a_configuracao_global(self):
+        router = AIRouter(config_reader=_config(ia_provider="gemini", ia_model="gemini-2.0-flash"))
+        account = router.resolve_settings({
+            "ia_provider": "openrouter",
+            "ia_model": "openrouter/auto",
+            "ia_timeout_seconds": 45,
+        })
+        self.assertEqual(account["provider"], "openrouter")
+        self.assertEqual(account["model"], "openrouter/auto")
+        self.assertEqual(account["timeout_seconds"], 45.0)
+        self.assertEqual(router.resolve_settings()["provider"], "gemini")
+        self.assertEqual(router.resolve_settings()["model"], "gemini-2.0-flash")
+
 
 class TestValidacaoDePar(unittest.TestCase):
     """Provedor e modelo sao validados juntos — isolados, ambos parecem ok."""
