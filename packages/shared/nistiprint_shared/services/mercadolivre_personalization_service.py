@@ -439,9 +439,32 @@ def _pack_order_ids(integration_id: int, integration: dict, pack_id: str) -> lis
     if pack.get("error"):
         if pack.get("retryable"):
             raise ProviderRetryError(pack["error"], pack.get("retry_after"))
+        # A conversation may still be available through /messages/packs/{id}
+        # when the optional /packs/{id} metadata endpoint does not find it.
+        # This also covers orders whose pack_id is null and use order_id instead.
+        if int(pack.get("status_code") or 0) == 404:
+            logger.info("Mercado Livre pack metadata unavailable; continuing with conversation integration=%s pack=%s",
+                        integration_id, pack_id)
+            return []
         raise RuntimeError("terminal:" + pack["error"])
     return list(dict.fromkeys(str(value) for value in pack.get("orders") or pack.get("orders_ids") or []
                               if value not in (None, "")))
+
+
+def _mark_inbox_messages_persisted(integration_id: int, messages: list[dict]) -> None:
+    """Complete inbox events only after their provider message was persisted."""
+    message_ids = list(dict.fromkeys(
+        _text(message.get("provider_message_id")) for message in messages
+        if _text(message.get("provider_message_id"))
+    ))
+    if not message_ids:
+        return
+    (supabase_db.table("mercadolivre_chat_inbox")
+     .update({"status": "done", "lease_until": None, "last_error": None, "updated_at": _now()})
+     .eq("marketplace_integration_id", int(integration_id))
+     .in_("provider_message_id", message_ids)
+     .in_("status", ["pending", "retry", "processing"])
+     .execute())
 
 
 def sync_pack(integration_id: int, pack_id: str, seller_id: str,
@@ -494,6 +517,7 @@ def sync_pack(integration_id: int, pack_id: str, seller_id: str,
                 logger.info("Could not resolve buyer identity integration=%s order=%s", integration_id, order_id)
     rows = _upsert_messages(integration_id, str(pack_id), str(seller_id), all_messages,
                             webhook_event_id, buyer_ids=buyer_ids)
+    _mark_inbox_messages_persisted(integration_id, rows)
     needs_review = any(row["sender_role"] == "unknown"
                        or (row.get("attachments") and not _text(row.get("text_content")))
                        or row.get("moderation_status") not in {None, "", "available"}
@@ -561,11 +585,19 @@ def process_inbox_once(integration_ids: list[int] | None = None, *, limit: int =
                 if detail.get("retryable"):
                     raise ProviderRetryError(detail["error"], detail.get("retry_after"))
                 raise RuntimeError("terminal:" + detail["error"])
-            resources = detail.get("message_resources") or []
+            # Most accounts return the message fields at the root. Some API
+            # responses wrap the message in a one-element `messages` list.
+            message_detail = detail
+            nested_messages = detail.get("messages")
+            if isinstance(nested_messages, list) and nested_messages:
+                message_detail = next((message for message in nested_messages
+                                       if _text(message.get("message_id") or message.get("id"))
+                                       == str(entry["provider_message_id"])), nested_messages[0])
+            resources = message_detail.get("message_resources") or detail.get("message_resources") or []
             pack_id = next((_text(r.get("id")) for r in resources if r.get("name") == "packs"), "")
             fallback_order_id = next((_text(r.get("id")) for r in resources if r.get("name") == "orders"), "")
             message_seller = next((_text(r.get("id")) for r in resources if r.get("name") == "seller"), "")
-            detail_resource = str(detail.get("resource") or "")
+            detail_resource = str(message_detail.get("resource") or detail.get("resource") or "")
             if not pack_id:
                 pack_id = next((_text(detail_resource.split("/")[2])
                                 for _ in [0] if detail_resource.startswith("/packs/")), "")

@@ -132,6 +132,66 @@ class MercadoLivrePersonalizationTests(unittest.TestCase):
         self.assertEqual(acquire.call_args_list[0].args, (7, "messages"))
         self.assertEqual(acquire.call_args_list[1].args, (8, "messages"))
 
+    def test_pack_metadata_404_does_not_block_conversation_ingest(self):
+        integration = {"id": 7}
+        with patch.object(service, "_meli_request", return_value={
+            "error": "Erro na API Mercado Livre: 404", "status_code": 404,
+            "retryable": False,
+        }):
+            self.assertEqual(service._pack_order_ids(7, integration, "2000018727299206"), [])
+
+    def test_sync_pack_persists_messages_when_optional_pack_lookup_returns_404(self):
+        from unittest.mock import MagicMock
+        integration = {"id": 7}
+        fetched_endpoints = []
+        message_rows = [{"provider_message_id": "message-from-unread",
+                         "sender_role": "buyer", "text_content": "Olá", "attachments": []}]
+
+        def provider_request(_integration_id, endpoint, _function, _integration, *_args, **_kwargs):
+            fetched_endpoints.append(endpoint)
+            if endpoint == "packs":
+                return {"error": "Erro na API Mercado Livre: 404", "status_code": 404,
+                        "retryable": False}
+            if endpoint == "orders":
+                return {"error": "Erro na API Mercado Livre: 404", "status_code": 404,
+                        "retryable": False}
+            return {"messages": [{"id": "message-from-unread", "text": "Olá"}],
+                    "paging": {"total": 1}}
+
+        database = MagicMock()
+        database.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        with patch.object(service, "_integration", return_value=integration), \
+             patch.object(service, "_meli_request", side_effect=provider_request), \
+             patch.object(service, "_upsert_messages", return_value=message_rows), \
+             patch.object(service, "_mark_inbox_messages_persisted") as mark_persisted, \
+             patch.object(service, "supabase_db", database):
+            result = service.sync_pack(7, "2000018727299206", "seller-7")
+
+        self.assertEqual(result["messages"], 1)
+        self.assertIn("packs", fetched_endpoints)
+        self.assertIn("messages", fetched_endpoints)
+        mark_persisted.assert_called_once_with(7, message_rows)
+
+    def test_persisted_reconciliation_messages_complete_matching_inbox_rows(self):
+        from unittest.mock import MagicMock
+        database = MagicMock()
+        with patch.object(service, "supabase_db", database):
+            service._mark_inbox_messages_persisted(7, [
+                {"provider_message_id": "message-a"},
+                {"provider_message_id": "message-a"},
+                {"provider_message_id": "message-b"},
+                {"provider_message_id": None},
+            ])
+        database.table.assert_called_once_with("mercadolivre_chat_inbox")
+        query = database.table.return_value.update.return_value
+        query.eq.assert_called_once_with("marketplace_integration_id", 7)
+        scoped_query = query.eq.return_value
+        self.assertEqual(scoped_query.in_.call_args_list[0].args,
+                         ("provider_message_id", ["message-a", "message-b"]))
+        self.assertEqual(scoped_query.in_.return_value.in_.call_args.args,
+                         ("status", ["pending", "retry", "processing"]))
+        scoped_query.in_.return_value.in_.return_value.execute.assert_called_once_with()
+
     def test_shared_account_config_exposes_and_updates_meli_daily_schedule(self):
         installation = {"id": 7, "module_id": "mercadolivre"}
         raw = {"schedule_enabled": False, "schedule_hour": 8, "schedule_minute": 35}
