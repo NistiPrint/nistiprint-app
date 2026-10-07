@@ -59,7 +59,7 @@ export default function PersonalizacoesLayoutPage() {
     ...account,
     value: `${account.marketplace}:${account.integration_id}`,
     path: accountPath(account),
-    label: `${account.marketplace_label} · ${account.name}`,
+    label: account.name,
   })), [accounts]);
 
   return (

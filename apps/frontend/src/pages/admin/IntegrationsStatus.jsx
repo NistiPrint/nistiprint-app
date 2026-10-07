@@ -6,8 +6,10 @@ import MarketplaceService from '@/services/MarketplaceService';
 import * as integracaoCanalService from '@/services/integracaoCanalService';
 import IntegrationCard from '@/pages/integracoes/IntegrationCard';
 import { Database, RefreshCw, ShoppingCart, Sparkles } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 export default function IntegrationsStatus({ onAddClick }) {
+  const navigate = useNavigate();
   const [integrations, setIntegrations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [testingId, setTestingId] = useState(null);
@@ -245,6 +247,7 @@ export default function IntegrationsStatus({ onAddClick }) {
                 }
                 linksSummaryStatus={linkSummaryStatus}
                 onRefreshLinks={refreshLinkSummaries}
+                onConfigure={() => navigate(`/configuracoes/integracoes/${integration.id}`)}
               />
             ))}
           </div>

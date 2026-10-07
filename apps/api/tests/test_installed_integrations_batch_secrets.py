@@ -21,6 +21,53 @@ class InstalledIntegrationsBatchSecretsTest(unittest.TestCase):
             session["user_id"] = 1
 
     @patch.object(
+        marketplace_routes,
+        "_public_installation",
+        side_effect=lambda inst: {"id": inst.id, "instance_name": inst.instance_name},
+    )
+    @patch.object(
+        marketplace_routes,
+        "_normalize_marketplace_update_payload",
+        return_value={"instance_name": "Shopee Outlet"},
+    )
+    @patch.object(
+        marketplace_routes.installed_integration_service,
+        "get_installed_by_id",
+        side_effect=[
+            SimpleNamespace(id=5, module_id="shopee", instance_name="Shopee Principal"),
+            SimpleNamespace(id=5, module_id="shopee", instance_name="Shopee Outlet"),
+        ],
+    )
+    @patch.object(
+        marketplace_routes.installed_integration_service,
+        "update_installed",
+        return_value=True,
+    )
+    def test_update_name_loads_installation_before_normalizing_and_returns_saved_name(
+        self, update_installed, get_installed, normalize_payload, public_installation
+    ):
+        response = self.client.put(
+            "/api/v2/marketplace/installed/5",
+            json={"instance_name": "Shopee Outlet"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["installation"]["instance_name"], "Shopee Outlet")
+        normalize_payload.assert_called_once()
+        self.assertEqual(
+            normalize_payload.call_args.args[0].instance_name,
+            "Shopee Principal",
+        )
+        self.assertEqual(
+            normalize_payload.call_args.args[1],
+            {"instance_name": "Shopee Outlet"},
+        )
+        update_installed.assert_called_once_with(
+            "5", {"instance_name": "Shopee Outlet"}
+        )
+        self.assertEqual(get_installed.call_count, 2)
+
+    @patch.object(
         marketplace_routes.integration_secret_service,
         "secret_kinds_for_owners",
         return_value={"5": {"access_token", "refresh_token"}},

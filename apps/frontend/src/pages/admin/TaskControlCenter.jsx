@@ -21,7 +21,9 @@ import {
   Zap
 } from 'lucide-react';
 import { useEffect, useState, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
+import FerramentasPage from './FerramentasPage';
 
 /**
  * Converte o cron gravado no banco para o valor de um <input type="time">.
@@ -60,7 +62,14 @@ function descreverCron(cron) {
  * Consolidates scheduling, execution monitoring, and queue visualization.
  */
 function TaskControlCenter() {
-  const [activeTab, setActiveTab] = useState('overview');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = ['overview', 'schedules', 'logs', 'queue', 'maintenance'].includes(searchParams.get('aba')) ? searchParams.get('aba') : 'overview';
+  const [activeTab, setActiveTab] = useState(tabFromUrl);
+  useEffect(() => { setActiveTab(tabFromUrl); }, [tabFromUrl]);
+  const changeTab = (value) => {
+    setActiveTab(value);
+    setSearchParams((current) => { const next = new URLSearchParams(current); next.set('aba', value); return next; });
+  };
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [reprocessing, setReprocessing] = useState(false);
@@ -146,7 +155,7 @@ function TaskControlCenter() {
           [taskName]: { ...prev[taskName], enabled: !currentEnabled }
         }));
       }
-    } catch (e) {
+    } catch {
       toast.error('Erro ao atualizar tarefa');
     } finally {
       setSaving(false);
@@ -171,7 +180,7 @@ function TaskControlCenter() {
           [taskName]: { ...prev[taskName], schedule_seconds: parseInt(newFrequency) }
         }));
       }
-    } catch (e) {
+    } catch {
       toast.error('Erro ao salvar frequência');
     } finally {
       setSaving(false);
@@ -206,7 +215,7 @@ function TaskControlCenter() {
         ...prev,
         [taskName]: { ...prev[taskName], cron: cron || undefined }
       }));
-    } catch (e) {
+    } catch {
       toast.error('Erro ao salvar horario');
     } finally {
       setSaving(false);
@@ -274,7 +283,7 @@ function TaskControlCenter() {
       const response = await fetch(`/api/v2/admin/task-center/executions?${params.toString()}`);
       const data = await response.json();
       if (data.success) setLogs(data.data || []);
-    } catch (e) {
+    } catch {
       toast.error('Erro ao carregar logs');
     } finally {
       setLoading(false);
@@ -304,7 +313,7 @@ function TaskControlCenter() {
         fetchLogs();
         fetchStats();
       }
-    } catch (e) {
+    } catch {
       toast.error('Erro ao reprocessar eventos');
     } finally {
       setReprocessing(false);
@@ -407,8 +416,8 @@ function TaskControlCenter() {
         </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
+      <Tabs value={activeTab} onValueChange={changeTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-2 sm:grid-cols-5">
           <TabsTrigger value="overview"><Activity className="w-4 h-4 mr-2" /> Visão geral</TabsTrigger>
           <TabsTrigger value="schedules">
             <Clock className="w-4 h-4 mr-2" /> Agendamentos
@@ -419,6 +428,7 @@ function TaskControlCenter() {
           <TabsTrigger value="queue">
             <Zap className="w-4 h-4 mr-2" /> Fila em Tempo Real
           </TabsTrigger>
+          <TabsTrigger value="maintenance"><Settings className="w-4 h-4 mr-2" />Manutenção</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4 mt-6">
@@ -704,6 +714,9 @@ function TaskControlCenter() {
         {/* --- Aba 3: Fila Redis --- */}
         <TabsContent value="queue" className="mt-6">
           <QueueMonitor embed />
+        </TabsContent>
+        <TabsContent value="maintenance" className="mt-6">
+          <FerramentasPage embedded />
         </TabsContent>
       </Tabs>
 

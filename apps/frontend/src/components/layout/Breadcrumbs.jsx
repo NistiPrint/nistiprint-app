@@ -28,13 +28,16 @@ const rotulosExtras = {
   escopo: 'Escopo',
   perfil: 'Meu Perfil',
   install: 'Instalação',
+  plataforma: 'Plataformas',
+  'canal-venda': 'Canais de venda',
+  'regras-erp': 'Regras ERP',
+  manutencao: 'Manutenção',
 };
 
 const routeLabels = { ...rotulosDerivados, ...rotulosExtras };
 
 function labelForPath(segment, parent, pathnames) {
-  if (segment === 'ia' && parent === 'ferramentas') return 'Operação IA · Shopee';
-  if (segment === 'ia' && parent === 'configuracoes') return 'Configuração IA · Shopee';
+  if (segment === 'ia' && parent === 'configuracoes') return 'Inteligência artificial';
   if (segment === 'mercadolivre' && (pathnames.includes('personalizadas') || pathnames.includes('configuracoes'))) {
     return 'Mercado Livre';
   }

@@ -17,7 +17,7 @@ import {
   Activity, BarChart3, Boxes, Building, CalendarClock, ClipboardList, Cog, Database, Factory,
   Download, HardDrive, Home, Layers, MapPin, Monitor, Package, Printer, Scale, ScrollText,
   Settings, Share2, ShieldCheck, ShoppingCart, Sparkles, Store, Tag, TowerControl,
-  Trello, Truck, Users, Warehouse, Waypoints, Wrench,
+  Trello, Truck, Users, Warehouse,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -91,16 +91,7 @@ export const TOP_NAV = [
       { name: 'Visão geral', href: '/configuracoes', icon: Settings, type: 'link', adminOnly: true },
       { name: 'Acesso e Permissões', href: '/sistema', icon: Users, type: 'link', adminOnly: true },
       { name: 'Agente local', href: '/configuracoes/agente-local', icon: Download, type: 'link' },
-      {
-        name: 'Utilitários',
-        icon: Wrench,
-        type: 'sub-collapsible',
-        adminOnly: true,
-        children: [
-          { name: 'Central de Tarefas', href: '/admin/utilitarios/tasks', icon: HardDrive, type: 'link', adminOnly: true },
-          { name: 'Ferramentas', href: '/ferramentas', icon: Wrench, type: 'link', adminOnly: true },
-        ],
-      },
+      { name: 'Central de Tarefas', href: '/admin/utilitarios/tasks', icon: HardDrive, type: 'link', adminOnly: true },
     ],
   },
 ];
@@ -199,18 +190,14 @@ export const SECOES = [
         nome: 'Conexões e canais',
         description: 'Contas, integrações com marketplaces e canais de venda.',
         itens: [
-          { name: 'Hub de Integrações', href: '/configuracoes/integracoes', icon: Share2, description: 'Contas conectadas, marketplaces e apps OAuth', adminOnly: true },
-          { name: 'Roteamento de Contas', href: '/configuracoes/roteamento', icon: Waypoints, description: 'Qual conta ERP atende cada marketplace', adminOnly: true },
-          { name: 'Padrões Bling', href: '/configuracoes/bling', icon: Waypoints, description: 'Regras de negócio e mapeamentos', adminOnly: true },
-          { name: 'Canais de Venda', href: '/cadastros/canal-venda', icon: Store, description: 'Derivado das integrações instaladas', adminOnly: true },
-          { name: 'Plataformas', href: '/cadastros/plataforma', icon: Share2, description: 'Marketplaces disponíveis', adminOnly: true },
+          { name: 'Contas e integrações', href: '/configuracoes/integracoes', icon: Share2, description: 'Contas conectadas, configurações por conta e apps OAuth', adminOnly: true },
         ],
       },
       {
         nome: 'Operação',
         description: 'Regras de despacho, coleta, estoque e produção.',
         itens: [
-          { name: 'Janelas de Despacho', href: '/configuracoes/janelas-despacho', icon: CalendarClock, description: 'Horário de corte, coleta e canais de cada lote', adminOnly: true },
+          { name: 'Logística e despacho', href: '/configuracoes/janelas-despacho', icon: CalendarClock, description: 'Modalidades, identificadores, horário de corte e coleta', adminOnly: true },
           { name: 'Pontos de Coleta', href: '/cadastros/ponto-coleta', icon: MapPin, description: 'Onde entregar e a hora em que cada ponto fecha', adminOnly: true },
           { name: 'Depósitos', href: '/cadastros/deposito', icon: Building, description: 'Locais de armazenamento', adminOnly: true },
           { name: 'Fornecedores', href: '/cadastros/fornecedor', icon: Truck, description: 'Parceiros de suprimento', adminOnly: true },
@@ -230,8 +217,7 @@ export const SECOES = [
         nome: 'IA',
         description: 'Modelo, comportamento e ferramentas de IA.',
         itens: [
-          { name: 'Operação IA · Shopee', href: '/ferramentas/ia', icon: Sparkles, description: 'Processamento e logs da IA Shopee', adminOnly: true },
-          { name: 'Configuração de IA', href: '/configuracoes/ia', icon: Settings, description: 'Prompt, provedor e parâmetros por conta conectada', adminOnly: true },
+          { name: 'Inteligência artificial', href: '/configuracoes/ia', icon: Sparkles, description: 'Configuração e operação da IA por conta', adminOnly: true },
         ],
       },
       {
@@ -239,7 +225,6 @@ export const SECOES = [
         description: 'Agente local, tarefas automáticas e manutenção.',
         itens: [
           { name: 'Central de Tarefas', href: '/admin/utilitarios/tasks', icon: HardDrive, description: 'Agendamentos e execuções', adminOnly: true },
-          { name: 'Ferramentas', href: '/ferramentas', icon: Wrench, description: 'Manutenção e reprocessamento', adminOnly: true },
           { name: 'Agente local', href: '/configuracoes/agente-local', icon: Download, description: 'Instalação do agente de impressão' },
         ],
       },

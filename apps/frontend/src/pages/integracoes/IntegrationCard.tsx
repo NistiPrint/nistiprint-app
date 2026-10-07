@@ -60,6 +60,8 @@ interface IntegrationCardProps {
   linksSummary?: ErpLink[] | null;
   linksSummaryStatus?: 'loading' | 'loaded' | 'error';
   onRefreshLinks?: () => Promise<boolean>;
+  onConfigure?: () => void;
+  initiallyOpen?: boolean;
 }
 
 interface AppProfile {
@@ -134,9 +136,11 @@ export default function IntegrationCard({
   linksSummary = null,
   linksSummaryStatus = 'loading',
   onRefreshLinks,
+  onConfigure,
+  initiallyOpen = false,
 }: IntegrationCardProps) {
   const isErp = type === 'erp';
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const [links, setLinks] = useState<ErpLink[]>([]);
   const [linksLoaded, setLinksLoaded] = useState(false);
   const [summaryLinks, setSummaryLinks] = useState<ErpLink[]>(linksSummary || []);
@@ -460,54 +464,61 @@ export default function IntegrationCard({
             </div>
           </div>
 
-          <div className="ml-auto hidden items-center gap-0.5 rounded-lg bg-muted/40 p-0.5 sm:flex">
-            {onTest && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onTest(integration.id)}
-                disabled={testingId === integration.id}
-                title="Testar conexão"
-                aria-label="Testar conexão"
-              >
-                <Zap className="h-4 w-4" />
+          <div className="ml-auto flex items-center gap-2">
+            {onConfigure && (
+              <Button variant="outline" size="sm" onClick={onConfigure}>
+                Configurar conta
               </Button>
             )}
-            {onRenewToken && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onRenewToken(integration.id, integration.instance_name)}
-                disabled={!integration.credential_status?.actions?.can_refresh}
-                title="Renovar token"
-                aria-label="Renovar token"
-              >
-                <KeyRound className="h-4 w-4" />
-              </Button>
-            )}
-            {!isErp && onSyncAccountIdentity && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onSyncAccountIdentity(integration.id, integration.instance_name)}
-                disabled={syncingAccountIdentityId === integration.id}
-                title="Sincronizar identificador da conta"
-                aria-label="Sincronizar identificador da conta"
-              >
-                <Fingerprint className={`h-4 w-4 ${syncingAccountIdentityId === integration.id ? 'animate-spin' : ''}`} />
-              </Button>
-            )}
-            {!isErp && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={startNewLink}
-                title="Criar vínculo"
-                aria-label="Criar vínculo"
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-            )}
+            <div className="hidden items-center gap-0.5 rounded-lg bg-muted/40 p-0.5 sm:flex">
+              {onTest && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onTest(integration.id)}
+                  disabled={testingId === integration.id}
+                  title="Testar conexão"
+                  aria-label="Testar conexão"
+                >
+                  <Zap className="h-4 w-4" />
+                </Button>
+              )}
+              {onRenewToken && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onRenewToken(integration.id, integration.instance_name)}
+                  disabled={!integration.credential_status?.actions?.can_refresh}
+                  title="Renovar token"
+                  aria-label="Renovar token"
+                >
+                  <KeyRound className="h-4 w-4" />
+                </Button>
+              )}
+              {!isErp && onSyncAccountIdentity && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onSyncAccountIdentity(integration.id, integration.instance_name)}
+                  disabled={syncingAccountIdentityId === integration.id}
+                  title="Sincronizar identificador da conta"
+                  aria-label="Sincronizar identificador da conta"
+                >
+                  <Fingerprint className={`h-4 w-4 ${syncingAccountIdentityId === integration.id ? 'animate-spin' : ''}`} />
+                </Button>
+              )}
+              {!isErp && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={startNewLink}
+                  title="Criar vínculo"
+                  aria-label="Criar vínculo"
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
           </div>
 
           <CollapsibleTrigger asChild>

@@ -8,7 +8,7 @@ import OrderCard from '@/components/vendas/OrderCard';
 import OrderFilters from '@/components/vendas/OrderFilters';
 import { personalizadosService } from '@/services/personalizadosService';
 import { ArrowLeft, Brain, ChevronDown, ChevronRight, Database, FileText, Flag, Loader2, RefreshCw, Settings, Terminal } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createElement, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -210,7 +210,7 @@ function VendasPersonalizadasPage() {
         } else {
             toast.error("Erro ao alterar modo.");
         }
-    } catch (e) {
+    } catch {
         toast.error("Erro de conexão.");
     } finally {
         setUpdatingMode(false);
@@ -233,7 +233,7 @@ function VendasPersonalizadasPage() {
           : String(order.marketplace_integration_id) === String(integrationId))
         : rows);
     } catch (e) {
-      setError(e.message);
+        setError(e.message);
       toast.error(`Erro ao carregar vendas: ${e.message}`);
     } finally {
       setLoading(false);
@@ -320,7 +320,7 @@ function VendasPersonalizadasPage() {
       } else {
         toast.error(data.message || 'Erro ao processar pedido', { id: toastId });
       }
-    } catch (e) {
+    } catch {
       toast.error('Erro de rede ao processar pedido', { id: toastId });
     }
   };
@@ -452,7 +452,7 @@ function VendasPersonalizadasPage() {
       } else {
         toast.error(data.message || 'Erro ao enviar relato', { id: toastId });
       }
-    } catch (e) {
+    } catch {
       toast.error('Erro ao enviar relato', { id: toastId });
     }
   };
@@ -461,7 +461,7 @@ function VendasPersonalizadasPage() {
   if (error) return <div className="text-center py-4 text-red-500">Erro: {error}</div>;
 
   // Componente colapsável para seções de log
-  const CollapsibleSection = ({ icon: Icon, title, content, defaultOpen = false }) => {
+  const CollapsibleSection = ({ icon, title, content, defaultOpen = false }) => {
     const [open, setOpen] = useState(defaultOpen);
 
     if (!content) return null;
@@ -473,7 +473,7 @@ function VendasPersonalizadasPage() {
           className="w-full flex items-center gap-2 px-3 py-2 bg-gray-50 hover:bg-gray-100 transition-colors text-sm font-medium"
         >
           {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-          <Icon className="h-4 w-4 text-muted-foreground" />
+          {createElement(icon, { className: 'h-4 w-4 text-muted-foreground' })}
           {title}
         </button>
         {open && (
@@ -517,11 +517,11 @@ function VendasPersonalizadasPage() {
       </h1>
 
       <div className="-mt-2 mb-5 flex flex-wrap justify-end gap-2">
-        <Button variant="outline" onClick={() => navigate('/ferramentas/ia')}>
-          <Brain className="mr-2 h-4 w-4" /> Operação IA Shopee
+        <Button variant="outline" onClick={() => navigate(`/configuracoes/ia?aba=operacao${integrationId ? `&integration_id=${integrationId}` : ''}`)}>
+          <Brain className="mr-2 h-4 w-4" /> Operação de IA
         </Button>
-        <Button variant="outline" onClick={() => navigate(integrationId ? `/configuracoes/ia?integration_id=${integrationId}` : '/configuracoes/ia')}>
-          <Settings className="mr-2 h-4 w-4" /> Configuração IA Shopee
+        <Button variant="outline" onClick={() => navigate(integrationId ? `/configuracoes/integracoes/${integrationId}/ia` : '/configuracoes/ia')}>
+          <Settings className="mr-2 h-4 w-4" /> Configuração de IA
         </Button>
       </div>
 
@@ -656,7 +656,7 @@ function VendasPersonalizadasPage() {
               </div>
             ) : (
               <div className="space-y-4">
-                {aiLogs.map((log, index) => (
+                {aiLogs.map((log) => (
                   <Card key={log.id} className="border">
                     <CardHeader className="pb-2">
                       <CardTitle className="text-lg flex items-center justify-between">

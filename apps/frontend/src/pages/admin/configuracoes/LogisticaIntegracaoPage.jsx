@@ -46,7 +46,7 @@ export default function LogisticaIntegracaoPage() {
   return <LogisticaManutencao Janelas={JanelasLogisticas} />;
 }
 
-function JanelasLogisticas({ integrationId = 'all' }) {
+export function JanelasLogisticas({ integrationId = 'all' }) {
   const [editId, setEditId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -54,7 +54,7 @@ function JanelasLogisticas({ integrationId = 'all' }) {
   const [modalidadesForm, setModalidadesForm] = useState([]);
   const [integracoes, setIntegracoes] = useState([]);
   const [pontos, setPontos] = useState([]);
-  const [selectedIntegration, setSelectedIntegration] = useState('all');
+  const [selectedIntegration, setSelectedIntegration] = useState(integrationId);
   const [form, setForm] = useState(defaultForm);
 
   const marketplaceIntegrations = useMemo(
@@ -287,7 +287,12 @@ function JanelasLogisticas({ integrationId = 'all' }) {
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div className="space-y-2">
-              <Label>Integração instalada</Label>
+              <Label>Conta conectada</Label>
+              {integrationId !== 'all' ? (
+                <div className="flex h-10 items-center rounded-md border bg-muted/30 px-3 text-sm">
+                  {integracaoSelecionada?.optionLabel || `Conta ${integrationId}`}
+                </div>
+              ) : (
               <Select
                 disabled={!!editId}
                 value={form.marketplace_integration_id}
@@ -300,6 +305,7 @@ function JanelasLogisticas({ integrationId = 'all' }) {
                   ))}
                 </SelectContent>
               </Select>
+              )}
             </div>
             <div className="space-y-2">
               <Label>Modalidade</Label>

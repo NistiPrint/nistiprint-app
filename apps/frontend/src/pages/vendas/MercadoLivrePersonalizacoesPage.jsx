@@ -226,7 +226,7 @@ function AccountOrders({ integrationId }) {
           <p className="text-sm text-muted-foreground">Pedidos personalizados · Mercado Livre</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link className="rounded border px-3 py-2 text-sm" to={`/configuracoes/ia?integration_id=${integrationId}`}><Settings className="mr-1 inline h-4 w-4" />Configuração IA</Link>
+          <Link className="rounded border px-3 py-2 text-sm" to={`/configuracoes/integracoes/${integrationId}/ia`}><Settings className="mr-1 inline h-4 w-4" />Configuração IA</Link>
           <Button variant="outline" onClick={() => startExtraction(null, false)} disabled={!!activeBatch?.batch_id && !['COMPLETED', 'FAILED'].includes(activeBatch.status)}>
             <Brain className="mr-2 h-4 w-4" /> Extrair nomes pendentes
           </Button>

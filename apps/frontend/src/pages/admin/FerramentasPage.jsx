@@ -5,13 +5,21 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { reprocessamentoService } from '@/services/reprocessamentoService';
-import { Activity, AlertTriangle, Brain, Database, Loader2, RefreshCw, Undo2, Upload } from 'lucide-react';
+import RessincronizarConta from '@/components/integracoes/RessincronizarConta';
+import { Activity, AlertTriangle, Database, Loader2, RefreshCw, Undo2, Upload } from 'lucide-react';
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
-function FerramentasPage() {
-  const navigate = useNavigate();
+function FerramentasPage({ embedded = false }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const toolTabs = ['import', 'reprocess', 'ressync', 'maintenance'];
+  const activeToolTab = toolTabs.includes(searchParams.get('ferramenta')) ? searchParams.get('ferramenta') : 'import';
+  const changeToolTab = (value) => setSearchParams((current) => {
+    const next = new URLSearchParams(current);
+    next.set('ferramenta', value);
+    return next;
+  });
   const [loadingImport, setLoadingImport] = useState(false);
   const [numeroLoja, setNumeroLoja] = useState('');
   
@@ -157,58 +165,6 @@ function FerramentasPage() {
     }
   };
 
-  // Ressincronização a partir da origem do ingest.
-  const [contas, setContas] = useState([]);
-  const [contasCarregadas, setContasCarregadas] = useState(false);
-  const [dias, setDias] = useState('7');
-  const [limite, setLimite] = useState('');
-  const [ressyncEmAndamento, setRessyncEmAndamento] = useState(null);
-  const [ressyncResultado, setRessyncResultado] = useState(null);
-
-  const carregarContas = async () => {
-    try {
-      const response = await fetch('/api/v2/ferramentas/ressincronizar/contas', {
-        headers: { Accept: 'application/json' },
-      });
-      const data = await response.json();
-      if (data.success) {
-        setContas(data.data || []);
-        setContasCarregadas(true);
-      } else {
-        toast.error(data.message || 'Erro ao carregar contas.');
-      }
-    } catch (error) {
-      toast.error(`Erro: ${error.message}`);
-    }
-  };
-
-  const handleRessincronizar = async (conta) => {
-    setRessyncEmAndamento(conta.integration_id);
-    setRessyncResultado(null);
-    try {
-      const response = await fetch('/api/v2/ferramentas/ressincronizar', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({
-          integration_id: conta.integration_id,
-          dias: parseInt(dias, 10) || 7,
-          limite: limite ? parseInt(limite, 10) : null,
-        }),
-      });
-      const data = await response.json();
-      if (data.success) {
-        toast.success(`${conta.nome}: ${data.message}`);
-        setRessyncResultado({ conta: conta.nome, ...data.data });
-      } else {
-        toast.error(data.message || 'Erro na ressincronização.');
-      }
-    } catch (error) {
-      toast.error(`Erro: ${error.message}`);
-    } finally {
-      setRessyncEmAndamento(null);
-    }
-  };
-
   // Rota inversa: parte dos pedidos travados na nossa base, não da origem.
   // Alcança o pedido defasado há semanas, que a busca por data de criação
   // deixa passar.
@@ -329,10 +285,10 @@ function FerramentasPage() {
   };
 
   return (
-    <div className="container mx-auto py-8">
-      <h1 className="text-3xl font-bold mb-6">Ferramentas Administrativas</h1>
+    <div className={embedded ? 'space-y-4' : 'container mx-auto py-8'}>
+      {!embedded && <h1 className="text-3xl font-bold mb-6">Ferramentas Administrativas</h1>}
 
-      <Tabs defaultValue="import" className="w-full">
+      <Tabs value={activeToolTab} onValueChange={changeToolTab} className="w-full">
         <TabsList className="grid w-full grid-cols-4">
           <TabsTrigger value="import">Importação Manual</TabsTrigger>
           <TabsTrigger value="reprocess">
@@ -369,23 +325,6 @@ function FerramentasPage() {
             </CardContent>
           </Card>
 
-          <Card className="mt-6">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Brain className="h-5 w-5" />
-                IA - Inteligência Artificial
-              </CardTitle>
-              <CardDescription>
-                Gerenciamento de processamento de IA para personalizações
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button onClick={() => navigate('/ferramentas/ia')} className="w-full">
-                <Brain className="mr-2 h-4 w-4" />
-                Acessar Painel de IA
-              </Button>
-            </CardContent>
-          </Card>
         </TabsContent>
 
         <TabsContent value="reprocess">
@@ -604,109 +543,7 @@ function FerramentasPage() {
                 </CardContent>
             </Card>
 
-            <Card>
-                <CardHeader>
-                    <CardTitle>Ressincronizar a partir da origem</CardTitle>
-                    <CardDescription>
-                        Relê os pedidos pendentes direto no marketplace e reprocessa pela pipeline
-                        normal de ingest. Use quando a base estiver defasada ou incoerente.
-                    </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                    <div className="flex flex-wrap gap-4">
-                        <div className="space-y-2 w-32">
-                            <Label htmlFor="ressyncDias">Últimos dias</Label>
-                            <Input
-                                id="ressyncDias"
-                                type="number"
-                                min="1"
-                                value={dias}
-                                onChange={(e) => setDias(e.target.value)}
-                            />
-                        </div>
-                        <div className="space-y-2 w-40">
-                            <Label htmlFor="ressyncLimite">Limite (opcional)</Label>
-                            <Input
-                                id="ressyncLimite"
-                                type="number"
-                                min="1"
-                                placeholder="sem limite"
-                                value={limite}
-                                onChange={(e) => setLimite(e.target.value)}
-                            />
-                        </div>
-                    </div>
-
-                    {!contasCarregadas ? (
-                        <Button onClick={carregarContas} variant="outline">
-                            <RefreshCw className="mr-2 h-4 w-4" />
-                            Carregar contas de marketplace
-                        </Button>
-                    ) : (
-                        <div className="space-y-2">
-                            {contas.length === 0 && (
-                                <p className="text-sm text-muted-foreground">
-                                    Nenhuma conta de marketplace ativa encontrada.
-                                </p>
-                            )}
-                            {contas.map((conta) => (
-                                <div
-                                    key={conta.integration_id}
-                                    className="flex items-center justify-between gap-3 rounded-md border p-3"
-                                >
-                                    <div className="min-w-0">
-                                        <div className="flex items-center gap-2">
-                                            <span className="font-medium text-sm">{conta.nome}</span>
-                                            <span className={`text-[10px] rounded-full px-2 py-0.5 ${
-                                                conta.rota === 'direta'
-                                                    ? 'bg-green-100 text-green-800'
-                                                    : 'bg-blue-100 text-blue-800'
-                                            }`}>
-                                                {conta.rota === 'direta' ? 'API própria' : 'via Bling'}
-                                            </span>
-                                        </div>
-                                        <p className="text-xs text-muted-foreground mt-0.5">
-                                            {conta.module_id}
-                                            {conta.shop_id ? ` · shop_id ${conta.shop_id}` : ''}
-                                        </p>
-                                    </div>
-                                    <Button
-                                        size="sm"
-                                        variant="outline"
-                                        disabled={ressyncEmAndamento !== null}
-                                        onClick={() => handleRessincronizar(conta)}
-                                    >
-                                        {ressyncEmAndamento === conta.integration_id ? (
-                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                        ) : (
-                                            <RefreshCw className="mr-2 h-4 w-4" />
-                                        )}
-                                        Ressincronizar
-                                    </Button>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-
-                    {ressyncResultado && (
-                        <div className="rounded-md border p-3 text-sm space-y-1">
-                            <p className="font-medium">{ressyncResultado.conta}</p>
-                            <p className="text-muted-foreground">
-                                {ressyncResultado.listados} listados na origem ·{' '}
-                                {ressyncResultado.processados} reprocessados ·{' '}
-                                {ressyncResultado.total_erros || 0} erros
-                            </p>
-                            {ressyncResultado.erros?.length > 0 && (
-                                <ul className="text-xs text-destructive mt-2 space-y-0.5">
-                                    {ressyncResultado.erros.map((err) => (
-                                        <li key={err.externo}>{err.externo}: {err.erro}</li>
-                                    ))}
-                                </ul>
-                            )}
-                        </div>
-                    )}
-                </CardContent>
-            </Card>
+            <RessincronizarConta />
         </TabsContent>
 
         <TabsContent value="maintenance" className="space-y-4">

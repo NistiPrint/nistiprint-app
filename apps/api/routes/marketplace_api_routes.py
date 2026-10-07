@@ -508,10 +508,12 @@ def get_installed_integrations():
 @marketplace_api_bp.route("/installed/<instance_id>", methods=["GET", "PUT", "DELETE"])
 @login_required
 def installed_crud(instance_id):
-    if request.method == "GET":
+    if request.method in {"GET", "PUT"}:
         inst = installed_integration_service.get_installed_by_id(instance_id)
         if not inst:
             return jsonify({"error": "Nao encontrado"}), 404
+
+    if request.method == "GET":
         return jsonify({"installation": _public_installation(inst)})
 
     if request.method == "PUT":

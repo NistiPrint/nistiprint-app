@@ -30,6 +30,11 @@ const ROTAS_SEM_MENU = new Set([
   '/producao/demanda/calendario',
   '/estoque/dashboard',
   '/configuracoes/demanda-permissions',
+  // Cadastros acessados pela área recolhível de Contas e integrações.
+  '/cadastros/canal-venda',
+  '/cadastros/plataforma',
+  // Compatibilidade para favoritos da configuração antiga do Mercado Livre.
+  '/configuracoes/personalizacao/mercadolivre',
   // Aba interna do hub de personalizados, sem item de menu independente.
   '/vendas/personalizadas/mercadolivre',
   '/relatorios/index',

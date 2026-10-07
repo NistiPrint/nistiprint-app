@@ -44,10 +44,10 @@ const DEFAULT_PROMPT = `**Role**: You are a highly specialized AI assistant for 
 
 **Objective**: For a given order, identify how many customizable items there are and extract the corresponding name and/or initial for each item from the chat messages. You must extract the name with strict adherence to the customer's original spelling and determine their final decision, even if they change their mind. The final output must be a clean JSON object for our production system.`;
 
-function ConfiguracoesIA() {
+function ConfiguracoesIA({ integrationId: forcedIntegrationId = null, embedded = false }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const selectedIntegrationId = searchParams.get('integration_id') || '';
+  const selectedIntegrationId = forcedIntegrationId ? String(forcedIntegrationId) : searchParams.get('integration_id') || '';
   const [loading, setLoading] = useState(true);
   const [accounts, setAccounts] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -74,14 +74,15 @@ function ConfiguracoesIA() {
         if (!body.success) throw new Error(body.error || 'Erro ao carregar contas');
         const available = body.accounts || [];
         setAccounts(available);
-        const requested = available.find(row => String(row.integration_id) === String(selectedIntegrationId));
+        const requestedId = forcedIntegrationId || new URLSearchParams(window.location.search).get('integration_id');
+        const requested = available.find(row => String(row.integration_id) === String(requestedId));
         const fallback = available.find(row => row.marketplace === 'shopee') || available[0];
-        if (!requested && fallback) setSearchParams({ integration_id: String(fallback.integration_id) }, { replace: true });
+        if (!forcedIntegrationId && !requested && fallback) setSearchParams({ integration_id: String(fallback.integration_id) }, { replace: true });
         if (!available.length) setLoading(false);
       })
       .catch(error => { if (active) { toast.error(error.message); setLoading(false); } });
     return () => { active = false; };
-  }, []);
+  }, [forcedIntegrationId, setSearchParams]);
 
   useEffect(() => {
     if (!selectedIntegrationId || !accounts.some(row => String(row.integration_id) === String(selectedIntegrationId))) return;
@@ -105,7 +106,7 @@ function ConfiguracoesIA() {
       const response = await fetch(`/api/v2/ai-personalization/accounts/${integrationId}/config`, { credentials: 'same-origin' });
       const data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.error || 'Erro ao carregar configuração');
-      if (new URLSearchParams(window.location.search).get('integration_id') !== String(integrationId)) return;
+      if (String(forcedIntegrationId || new URLSearchParams(window.location.search).get('integration_id')) !== String(integrationId)) return;
       if (data.config) {
         const cfg = data.config;
         if (cfg.prompt_template) {
@@ -128,9 +129,9 @@ function ConfiguracoesIA() {
       }
     } catch {
       toast.error('Erro ao carregar configurações');
-      if (new URLSearchParams(window.location.search).get('integration_id') === String(integrationId)) setPromptTemplate(DEFAULT_PROMPT);
+      if (String(forcedIntegrationId || new URLSearchParams(window.location.search).get('integration_id')) === String(integrationId)) setPromptTemplate(DEFAULT_PROMPT);
     } finally {
-      if (new URLSearchParams(window.location.search).get('integration_id') === String(integrationId)) setLoading(false);
+      if (String(forcedIntegrationId || new URLSearchParams(window.location.search).get('integration_id')) === String(integrationId)) setLoading(false);
     }
   };
 
@@ -232,19 +233,19 @@ function ConfiguracoesIA() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
-      <div className="flex items-center gap-4 mb-6">
+      {!embedded && <div className="flex items-center gap-4 mb-6">
         <Button variant="outline" onClick={() => navigate(selectedAccount?.marketplace === 'mercadolivre' ? '/vendas/personalizadas/mercadolivre' : '/vendas/personalizadas')}>
           <ArrowLeft className="mr-2 h-4 w-4" /> Personalizados
         </Button>
         <h1 className="text-2xl font-bold">Configuração de IA</h1>
-      </div>
-      <Card><CardContent className="space-y-2 p-5">
+      </div>}
+      {!forcedIntegrationId && <Card><CardContent className="space-y-2 p-5">
         <Label htmlFor="ai-account">Conta conectada</Label>
         <select id="ai-account" value={selectedIntegrationId} onChange={event => chooseAccount(event.target.value)} disabled={saving || testing} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
           {accounts.map(account => <option key={account.integration_id} value={account.integration_id}>{account.marketplace_label} · {account.name}</option>)}
         </select>
         {selectedAccount && <p className="text-xs text-muted-foreground">Configuração aplicada somente a {selectedAccount.marketplace_label} · {selectedAccount.name}.</p>}
-      </CardContent></Card>
+      </CardContent></Card>}
       {!selectedAccount && <Card><CardContent className="p-5 text-sm text-muted-foreground">Conecte uma conta Shopee ou Mercado Livre para configurar a extração.</CardContent></Card>}
 
       {selectedAccount?.marketplace === 'mercadolivre' && <Card>

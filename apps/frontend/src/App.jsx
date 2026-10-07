@@ -11,7 +11,6 @@ import CadastrosPage from './pages/admin/CadastrosPage'
 import ConfiguracoesPage from './pages/admin/ConfiguracoesPage'
 import ConfiguracoesHomePage from './pages/admin/ConfiguracoesHomePage'
 import AgenteLocalPage from './pages/admin/configuracoes/AgenteLocalPage'
-import FerramentasPage from './pages/admin/FerramentasPage'
 import LogisticaIntegracaoPage from '@/pages/admin/configuracoes/LogisticaIntegracaoPage';
 import IntegracoesPage from './pages/admin/IntegracoesPage'
 import RelatoriosPage from './pages/admin/RelatoriosPage'
@@ -39,9 +38,7 @@ import UomConversionFormPage from './pages/admin/cadastros/UomConversionFormPage
 import UomConversionsListPage from './pages/admin/cadastros/UomConversionsListPage'
 import UsuarioFormPage from './pages/admin/cadastros/UsuarioFormPage'
 import UsuarioListPage from './pages/admin/cadastros/UsuarioListPage'
-import ConfiguracoesBlingPage from './pages/admin/configuracoes/ConfiguracoesBlingPage'
 import ConfiguracoesProducaoPage from './pages/admin/configuracoes/ConfiguracoesProducaoPage'
-import IntegrationRoutingPage from './pages/admin/configuracoes/IntegrationRoutingPage'
 import PermissoesDemandaPage from './pages/admin/configuracoes/PermissoesDemandaPage'
 import HistoricoColetasPage from './pages/admin/relatorios/HistoricoColetasPage'
 import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPage'
@@ -49,11 +46,10 @@ import MonitoramentoEstoquePage from './pages/admin/relatorios/MonitoramentoEsto
 import RelatoriosIndexPage from './pages/admin/relatorios/RelatoriosIndexPage'
 import WebhooksPage from './pages/admin/relatorios/WebhooksPage'
 // AIDashboardPage removido — duplica VendasPersonalizadasPage
-import IAPage from './pages/admin/IAPage'
 import TaskControlCenter from './pages/admin/TaskControlCenter'
 import { AILogsPage } from './pages/ai/AILogsPage'
 import AuditoriaPage from './pages/auditoria/AuditoriaPage'
-import ConfiguracoesIA from './pages/configuracoes/ConfiguracoesIA'
+import InteligenciaArtificialPage from './pages/configuracoes/InteligenciaArtificialPage'
 import TorreDespachoPage from './pages/despacho/TorreDespachoPage'
 import EscopoDespachoPage from './pages/despacho/EscopoDespachoPage'
 import PlanoImpressaoPage from './pages/despacho/PlanoImpressaoPage'
@@ -87,6 +83,7 @@ import VendasPersonalizadasPage from './pages/vendas/VendasPersonalizadasPage'
 import PersonalizacoesLayoutPage from './pages/vendas/PersonalizacoesLayoutPage'
 import MercadoLivrePersonalizacoesPage from './pages/vendas/MercadoLivrePersonalizacoesPage'
 import MercadoLivrePersonalizacaoConfigPage from './pages/admin/configuracoes/MercadoLivrePersonalizacaoConfigPage'
+import IntegrationAccountSettingsPage from './pages/admin/configuracoes/IntegrationAccountSettingsPage'
 import PerfilPage from './pages/PerfilPage'
 
 function App() {
@@ -288,7 +285,7 @@ function App() {
               path='demanda-permissions'
               element={<PermissoesDemandaPage />}
             />
-            <Route path='ia' element={<ConfiguracoesIA />} />
+            <Route path='ia' element={<InteligenciaArtificialPage />} />
             <Route path='personalizacao/mercadolivre' element={<MercadoLivrePersonalizacaoConfigPage />} />
             <Route path='personalizacao/mercadolivre/:integration_id' element={<MercadoLivrePersonalizacaoConfigPage />} />
             {/* Janelas de despacho saiu de dentro do hub de integrações: é
@@ -296,14 +293,16 @@ function App() {
                 conexão de conta. Estava enterrada numa aba de um hub cujo nome
                 não sugere que o horário de corte mora ali. */}
             <Route path='janelas-despacho' element={<LogisticaIntegracaoPage />} />
+            <Route path='integracoes/:integrationId' element={<IntegrationAccountSettingsPage />} />
+            <Route path='integracoes/:integrationId/:secao' element={<IntegrationAccountSettingsPage />} />
             <Route path='integracoes' element={<IntegracoesPage />}>
               <Route
                 path='install/:moduleId'
                 element={<InstallWizard />}
               />
             </Route>
-            <Route path='roteamento' element={<IntegrationRoutingPage />} />
-            <Route path='bling' element={<ConfiguracoesBlingPage />} />
+            <Route path='roteamento' element={<Navigate to='/configuracoes/integracoes?aba=regras-erp' replace />} />
+            <Route path='bling' element={<Navigate to='/configuracoes/integracoes?aba=regras-erp' replace />} />
           </Route>
 
           <Route path='configuracoes/agente-local' element={<AgenteLocalPage />} />
@@ -343,7 +342,7 @@ function App() {
             path='ferramentas'
             element={
               <ProtectedRoute requireAdmin={true}>
-                <FerramentasPage />
+                <Navigate to='/admin/utilitarios/tasks?aba=maintenance' replace />
               </ProtectedRoute>
             }
           />
@@ -352,7 +351,7 @@ function App() {
             path='ferramentas/ia'
             element={
               <ProtectedRoute requireAdmin={true}>
-                <IAPage />
+                <Navigate to='/configuracoes/ia?aba=operacao' replace />
               </ProtectedRoute>
             }
           />

@@ -494,10 +494,84 @@ def get_arvore():
             mkt["composicao"] = composicao.get(mkt["integration_id"], [])
             payload.append(mkt)
 
+        # Recorte independente por dia limite: a coleta é apenas a próxima
+        # oportunidade de saída, e não deve repartir nem recontar o lote.
+        timeline_rows = contexto.get("timeline") if contexto is not None else None
+        timeline_disponivel = True
+        if timeline_rows is None:
+            try:
+                timeline_rows = supabase_db.rpc("despacho_lotes_timeline", {
+                    "p_data": p_data,
+                }).execute().data or []
+            except Exception:
+                # A árvore antiga continua sendo suficiente para a visão
+                # anterior. Falha na RPC nova não deve esconder as pendências.
+                timeline_rows = []
+                timeline_disponivel = False
+                logger.warning("Timeline de despacho indisponível; mantendo árvore anterior", exc_info=True)
+
+        marketplace_por_id = {m["integration_id"]: m for m in payload}
+        timeline_por_chave = {}
+        for row in timeline_rows:
+            integration_id = row.get("integration_id")
+            modalidade_id = row.get("modalidade_id")
+            info = lote_por_modalidade.get((integration_id, modalidade_id))
+            lote_chave = info["lote_chave"] if info else ("nc" if modalidade_id is None else str(modalidade_id))
+            modalidade_ids = info.get("modalidade_ids") if info else ([] if modalidade_id is None else [modalidade_id])
+            data_limite_dia = row.get("data_limite_dia")
+            chave = (integration_id, lote_chave, data_limite_dia or "sem_prazo")
+            lote = timeline_por_chave.setdefault(chave, {
+                "integration_id": integration_id,
+                "nome_marketplace": row.get("marketplace_nome") or "Origem não resolvida",
+                "module_id": marketplace_por_id.get(integration_id, {}).get("module_id"),
+                "lote_chave": lote_chave,
+                "modalidade_ids": list(modalidade_ids or []),
+                "modalidade_id": modalidade_id,
+                "nome_modalidade": info.get("lote_nome") if info else row.get("modalidade_nome"),
+                "codigo_modalidade": row.get("modalidade_codigo"),
+                "entrega_rapida": bool(info.get("entrega_rapida")) if info else bool(row.get("entrega_rapida")),
+                "tipo_prazo": row.get("tipo_prazo") or "FIXO",
+                "data_limite_dia": data_limite_dia,
+                "bucket": row.get("bucket_prazo") or "sem_prazo",
+                "qtd_pedidos": 0,
+                "proxima_saida_em": row.get("proxima_saida_em"),
+                "saida_apos_prazo": bool(row.get("saida_apos_prazo")),
+                "rascunho": None,
+            })
+            lote["qtd_pedidos"] += row.get("qtd_pedidos") or 0
+            lote["modalidade_ids"] = sorted(set(lote["modalidade_ids"]) | set(modalidade_ids or []))
+            saida = row.get("proxima_saida_em")
+            if saida and (not lote["proxima_saida_em"] or saida < lote["proxima_saida_em"]):
+                lote["proxima_saida_em"] = saida
+            lote["saida_apos_prazo"] = lote["saida_apos_prazo"] or bool(row.get("saida_apos_prazo"))
+
+        lotes_timeline = list(timeline_por_chave.values())
+        # Rascunhos legados não registram o dia limite. Só os associamos à linha
+        # quando existe um único dia possível para aquela modalidade.
+        for rascunho in rascunhos.values():
+            candidatos = [l for l in lotes_timeline
+                          if l["integration_id"] == rascunho.get("integration_id")
+                          and rascunho.get("modalidade_id") in l["modalidade_ids"]]
+            dia_rascunho = (rascunho.get("data_limite_dia")
+                            or (rascunho.get("escopo_despacho") or {}).get("data_limite_dia"))
+            if dia_rascunho:
+                candidatos = [l for l in candidatos if l["data_limite_dia"] == str(dia_rascunho)[:10]]
+            if len(candidatos) == 1:
+                candidatos[0]["rascunho"] = rascunho
+
+        lotes_timeline.sort(key=lambda l: (
+            l["proxima_saida_em"] or "9999",
+            l["data_limite_dia"] or "9999",
+            l["nome_marketplace"].casefold(),
+            l["nome_modalidade"].casefold(),
+        ))
+
         return jsonify({"success": True, "data": {
             "data": p_data,
             "marketplaces": payload,
             "abas": abas_totais,
+            "lotes_timeline": lotes_timeline,
+            "linha_tempo_disponivel": timeline_disponivel,
         }})
     except Exception as exc:
         logger.error("Erro ao montar arvore de despacho: %s", exc, exc_info=True)

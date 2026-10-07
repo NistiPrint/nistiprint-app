@@ -425,7 +425,7 @@ const InstallWizard = () => {
           {currentStep === 1 ? (
             <>
               <div className="space-y-2">
-                <Label>Nome da instancia *</Label>
+                <Label>Nome da conta *</Label>
                 <Input
                   placeholder="Ex: Minha Loja Principal"
                   value={formData.instanceName || ''}

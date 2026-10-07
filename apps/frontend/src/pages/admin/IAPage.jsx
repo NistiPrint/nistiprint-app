@@ -1,7 +1,6 @@
 import { cn } from '@/lib/utils';
-import { Brain, Settings, Play, FileText } from 'lucide-react';
-import { createElement, useEffect, useState, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Brain, Play, FileText } from 'lucide-react';
+import { createElement, useCallback, useEffect, useState, useRef } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -21,7 +20,7 @@ const STATUS_CONFIG = {
   no_response: { label: 'Sem Resposta', icon: AlertCircle, color: 'bg-yellow-100 text-yellow-800 border-yellow-300' },
 };
 
-function IAPage() {
+function IAPage({ integrationId = null }) {
 
   const [repairOrderIds, setRepairOrderIds] = useState('');
   const [repairingClassification, setRepairingClassification] = useState(false);
@@ -57,10 +56,6 @@ function IAPage() {
       stopPolling();
     };
   }, []);
-
-  useEffect(() => {
-    loadLogs();
-  }, [page]);
 
   const handleRepairClassification = async () => {
     setRepairingClassification(true);
@@ -116,6 +111,7 @@ function IAPage() {
       const data = await personalizadosService.processar({
         order_sn: orderSn || undefined,
         limit: aiLimit ? parseInt(aiLimit) : 0,
+        ...(integrationId ? { integration_id: Number(integrationId) } : {}),
       });
 
       addLog(`Resposta da API: ${data.success ? 'OK' : 'ERRO'} - ${data.message || ''}`,
@@ -125,6 +121,13 @@ function IAPage() {
         addLog(`Task ID: ${data.task_id} (background Celery)`, 'info');
       } else {
         addLog('Processamento síncrono — logs aparecerão conforme concluídos', 'info');
+      }
+
+      if (integrationId) {
+        setIsProcessing(false);
+        setProcessingComplete({ success: Boolean(data.success), message: data.message || 'Solicitação enviada para esta conta.' });
+        addLog(data.message || 'Solicitação enviada para esta conta.', data.success ? 'success' : 'error');
+        return;
       }
 
       let pollCount = 0;
@@ -187,7 +190,7 @@ function IAPage() {
     }
   };
 
-  const loadLogs = async () => {
+  const loadLogs = useCallback(async () => {
     setLoadingLogs(true);
     try {
       const params = { limit, offset: (page - 1) * limit };
@@ -204,7 +207,11 @@ function IAPage() {
     } finally {
       setLoadingLogs(false);
     }
-  };
+  }, [page, logFilterSn]);
+
+  useEffect(() => {
+    if (!integrationId) loadLogs();
+  }, [loadLogs, integrationId]);
 
   const handleSearchLogs = () => {
     setPage(1);
@@ -247,41 +254,22 @@ function IAPage() {
   return (
     <div className="p-6">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold">Operação IA · Shopee</h1>
-        <p className="text-muted-foreground mt-1">Processamento manual e logs de extração da Shopee.</p>
+        <h1 className="text-3xl font-bold">{integrationId ? 'Operação de IA' : 'Operação IA · Shopee'}</h1>
+        <p className="text-muted-foreground mt-1">{integrationId ? 'Processamento associado a esta conta.' : 'Processamento manual, classificação e logs gerais da IA Shopee.'}</p>
       </div>
 
       <Tabs defaultValue="batch" className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
-          <TabsTrigger value="config">
-            <Settings className="w-4 h-4 mr-2" /> Configurações
-          </TabsTrigger>
+        <TabsList className={`grid w-full ${integrationId ? 'max-w-xl grid-cols-2' : 'grid-cols-3'}`}>
           <TabsTrigger value="batch">
             <Play className="w-4 h-4 mr-2" /> Processamento em Lote
           </TabsTrigger>
           <TabsTrigger value="individual">
             <Play className="w-4 h-4 mr-2" /> Processamento Individual
           </TabsTrigger>
-          <TabsTrigger value="logs">
+          {!integrationId && <TabsTrigger value="logs">
             <FileText className="w-4 h-4 mr-2" /> Logs de Execução
-          </TabsTrigger>
+          </TabsTrigger>}
         </TabsList>
-
-        <TabsContent value="config" className="mt-6">
-          <div className="grid max-w-4xl gap-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Configuração de IA por conta</CardTitle>
-                <CardDescription>Escolha a conta Shopee ou Mercado Livre e ajuste o prompt e os parâmetros usados pela extração.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Button asChild>
-                  <Link to="/configuracoes/ia">Abrir configurações</Link>
-                </Button>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
 
         <TabsContent value="batch" className="mt-6">
           <div className="space-y-4 max-w-4xl">
@@ -456,7 +444,7 @@ function IAPage() {
           </div>
         </TabsContent>
 
-        <TabsContent value="logs" className="mt-6">
+        {!integrationId && <TabsContent value="logs" className="mt-6">
           <Card>
             <CardHeader>
               <CardTitle>Logs de Execução IA</CardTitle>
@@ -599,7 +587,7 @@ function IAPage() {
               </div>
             </div>
           )}
-        </TabsContent>
+        </TabsContent>}
       </Tabs>
     </div>
   );

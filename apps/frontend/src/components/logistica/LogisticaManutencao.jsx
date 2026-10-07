@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { createElement, useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,9 +15,9 @@ const fmt = (v) => v ? new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao
 function Field({ label, children }) { return <label className="flex flex-col gap-2 text-sm">{label}{children}</label>; }
 function Check({ label, checked, onChange }) { return <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!checked} onChange={(e) => onChange(e.target.checked)} />{label}</label>; }
 
-export default function LogisticaManutencao({ Janelas }) {
+export default function LogisticaManutencao({ Janelas, integrationId: forcedIntegrationId = null, marketplaceModuleId = null, mode = 'all' }) {
   const [integracoes, setIntegracoes] = useState([]);
-  const [integrationId, setIntegrationId] = useState('all');
+  const [integrationId, setIntegrationId] = useState(forcedIntegrationId ? String(forcedIntegrationId) : 'all');
   const [versao, setVersao] = useState(0);
   const [modalidades, setModalidades] = useState([]);
   useEffect(() => { listarIntegracoes().then((data) => setIntegracoes((data || []).filter((i) => i.module_id !== 'bling'))).catch(() => toast.error('Falha ao carregar contas')); }, []);
@@ -28,18 +28,40 @@ export default function LogisticaManutencao({ Janelas }) {
     return () => { live = false; };
   }, [integrationId, versao]);
   const conta = integracoes.find((i) => String(i.id) === integrationId);
-  const modules = [...new Set(integracoes.map((i) => i.module_id))];
+  const modules = [...new Set([...(marketplaceModuleId ? [marketplaceModuleId] : []), ...integracoes.map((i) => i.module_id)])];
   const reload = () => setVersao((v) => v + 1);
+  const showLogistics = mode !== 'despacho';
+  const showDispatch = mode !== 'logistica';
   return <div className="space-y-6">
-    <PageHeader title="Logística dos marketplaces" description="Mantenha modalidades, identificadores e horários. O prazo oficial de cada pedido é acompanhado separadamente." />
-    <Field label="Conta"><select className={`${control} max-w-lg`} value={integrationId} onChange={(e) => setIntegrationId(e.target.value)}>
-      <option value="all">Todas as contas</option>{integracoes.map((i) => <option key={i.id} value={i.id}>{i.instance_name || i.module_id} · {i.module_id}</option>)}
-    </select></Field>
-    <Tabs defaultValue="modalidades">
-      <TabsList><TabsTrigger value="modalidades">Modalidades</TabsTrigger><TabsTrigger value="identificadores">Identificadores de envio</TabsTrigger><TabsTrigger value="agenda">Agenda e regras</TabsTrigger></TabsList>
-      <TabsContent value="modalidades"><Modalidades key={integrationId} modalidades={modalidades} modules={conta ? [conta.module_id] : modules} reload={reload} /></TabsContent>
-      <TabsContent value="identificadores"><Identificadores key={integrationId} integrationId={integrationId} moduleId={conta?.module_id} modules={modules} modalidades={modalidades} /></TabsContent>
-      <TabsContent value="agenda" className="space-y-6"><Agenda key={integrationId} integrationId={integrationId} conta={conta} versao={versao} /><Janelas key={`${integrationId}-${versao}`} integrationId={integrationId} /></TabsContent>
+    {mode === 'all' && <PageHeader title="Logística dos marketplaces" description="Mantenha modalidades, identificadores e horários. O prazo oficial de cada pedido é acompanhado separadamente." />}
+    {forcedIntegrationId ? (
+      <div className="rounded-lg border bg-muted/20 px-4 py-3 text-sm">
+        Configuração para <strong>{conta?.instance_name || `Conta ${forcedIntegrationId}`}</strong> · {conta?.module_id || 'marketplace'}
+      </div>
+    ) : (
+      <Field label="Conta"><select className={`${control} max-w-lg`} value={integrationId} onChange={(e) => setIntegrationId(e.target.value)}>
+        <option value="all">Todas as contas</option>{integracoes.map((i) => <option key={i.id} value={i.id}>{i.instance_name || i.module_id} · {i.module_id}</option>)}
+      </select></Field>
+    )}
+    <Tabs defaultValue={showLogistics ? 'modalidades' : 'agenda'}>
+      <TabsList>
+        {showLogistics && <><TabsTrigger value="modalidades">Modalidades</TabsTrigger><TabsTrigger value="identificadores">Identificadores de envio</TabsTrigger></>}
+        {showDispatch && <><TabsTrigger value="janelas">Janelas de despacho</TabsTrigger><TabsTrigger value="agenda">Agenda e regras</TabsTrigger></>}
+      </TabsList>
+      {showLogistics && <>
+        <TabsContent value="modalidades" className="space-y-4">
+          {forcedIntegrationId && <p className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">Modalidades são compartilhadas entre contas do mesmo marketplace. Alterações aqui também aparecem nas outras contas de {conta?.module_id || 'este marketplace'}.</p>}
+          <Modalidades key={integrationId} modalidades={modalidades} modules={conta ? [conta.module_id] : modules} reload={reload} />
+        </TabsContent>
+        <TabsContent value="identificadores" className="space-y-4">
+          {forcedIntegrationId && <p className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">As associações de identificadores também são compartilhadas entre contas do mesmo marketplace.</p>}
+          <Identificadores key={integrationId} integrationId={integrationId} moduleId={conta?.module_id} modules={modules} modalidades={modalidades} />
+        </TabsContent>
+      </>}
+      {showDispatch && <>
+        <TabsContent value="janelas">{createElement(Janelas, { key: `${integrationId}-${versao}`, integrationId })}</TabsContent>
+        <TabsContent value="agenda"><Agenda key={integrationId} integrationId={integrationId} conta={conta} versao={versao} /></TabsContent>
+      </>}
     </Tabs>
   </div>;
 }

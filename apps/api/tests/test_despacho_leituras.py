@@ -65,13 +65,42 @@ class TestLeiturasDespacho(unittest.TestCase):
     def test_torre_carrega_todos_metadados_em_uma_rpc(self):
         banco = MagicMock()
         banco.rpc.return_value.execute.return_value = SimpleNamespace(data={
-            'rows': [], 'catalogo': [], 'integracoes': [], 'composicao': [],
+            'rows': [], 'timeline': [], 'catalogo': [], 'integracoes': [], 'composicao': [],
             'lotes': [], 'rascunhos': [], 'janelas': []})
         with patch.object(modulo, 'get_current_user', return_value={'id': 1}), patch.object(modulo, 'supabase_db', banco):
             response = self.client.get('/api/v2/despacho/arvore?data=2026-10-05')
         self.assertEqual(response.status_code, 200)
         banco.rpc.assert_called_once_with('despacho_arvore_contexto', {'p_data': '2026-10-05'})
         banco.table.assert_not_called()
+
+    def test_torre_preserva_visao_anterior_sem_rpc_timeline(self):
+        banco = MagicMock()
+        base = {'integration_id': 6, 'marketplace_nome': 'Shopee',
+                'modalidade_id': 1, 'modalidade_codigo': 'STANDARD', 'modalidade_nome': 'Comum',
+                'tipo_prazo': 'FIXO', 'bucket_prazo': 'hoje', 'qtd_pedidos': 5,
+                'qtd_itens': 5, 'corte_em': None, 'coleta_em': None,
+                'prazo_final_em': None, 'compromisso_mais_proximo': None, 'coleta_grupo': None}
+        contexto_antigo = {
+            'rows': [dict(base, nivel=n) for n in range(5)],
+            'catalogo': [{'id': 1, 'entrega_rapida': False}],
+            'integracoes': [{'id': 6, 'module_id': 'shopee'}],
+            'composicao': [], 'lotes': [], 'rascunhos': [], 'janelas': [],
+        }
+
+        def rpc(nome, _params):
+            if nome == 'despacho_arvore_contexto':
+                return SimpleNamespace(execute=lambda: SimpleNamespace(data=contexto_antigo))
+            raise RuntimeError('function not installed')
+
+        banco.rpc.side_effect = rpc
+        with patch.object(modulo, 'get_current_user', return_value={'id': 1}), patch.object(modulo, 'supabase_db', banco):
+            response = self.client.get('/api/v2/despacho/arvore?data=2026-10-05')
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()['data']
+        self.assertFalse(data['linha_tempo_disponivel'])
+        self.assertEqual(data['marketplaces'][0]['modalidades'][0]['qtd_pedidos'], 5)
+        self.assertEqual(data['lotes_timeline'], [])
 
     def test_falha_real_nao_e_mascarada_pelo_fallback(self):
         banco = MagicMock()
@@ -94,7 +123,7 @@ class TestLeiturasDespacho(unittest.TestCase):
             'integracoes': [{'id': 6, 'module_id': 'shopee'}],
             'composicao': [{'integration_id': 6, 'situacao_id': 2,
                             'situacao_nome': 'Em Andamento', 'qtd_pedidos': 71}],
-            'lotes': [], 'rascunhos': [], 'janelas': []})
+            'timeline': [], 'lotes': [], 'rascunhos': [], 'janelas': []})
         with patch.object(modulo, 'get_current_user', return_value={'id': 1}), patch.object(modulo, 'supabase_db', banco):
             response = self.client.get('/api/v2/despacho/arvore?data=2026-10-05')
         self.assertEqual(response.status_code, 200)
@@ -103,6 +132,50 @@ class TestLeiturasDespacho(unittest.TestCase):
         self.assertEqual(data['marketplaces'][0]['modalidades'][0]['por_aba']['amanha'], 71)
         banco.rpc.assert_called_once()
         banco.table.assert_not_called()
+
+    def test_torre_expoe_lotes_timeline_por_data_limite(self):
+        banco = MagicMock()
+        base = {'integration_id': 6, 'marketplace_nome': 'Shopee',
+                'modalidade_id': 1, 'modalidade_codigo': 'STANDARD', 'modalidade_nome': 'Comum',
+                'tipo_prazo': 'FIXO', 'bucket_prazo': 'hoje', 'qtd_pedidos': 50,
+                'qtd_itens': 50, 'corte_em': None, 'coleta_em': None,
+                'prazo_final_em': None, 'compromisso_mais_proximo': None, 'coleta_grupo': None}
+        banco.rpc.return_value.execute.return_value = SimpleNamespace(data={
+            'rows': [dict(base, nivel=n) for n in range(5)],
+            'timeline': [{
+                'integration_id': 6, 'marketplace_nome': 'Shopee', 'modalidade_id': 1,
+                'modalidade_codigo': 'STANDARD', 'modalidade_nome': 'Comum',
+                'tipo_prazo': 'FIXO', 'entrega_rapida': False,
+                'data_limite_dia': '2026-10-07', 'bucket_prazo': 'hoje',
+                'qtd_pedidos': 50, 'proxima_saida_em': '2026-10-07T15:00:00-03:00',
+                'saida_apos_prazo': False,
+            }, {
+                'integration_id': 6, 'marketplace_nome': 'Shopee', 'modalidade_id': 2,
+                'modalidade_codigo': 'PICKUP', 'modalidade_nome': 'Retirada',
+                'tipo_prazo': 'FIXO', 'entrega_rapida': False,
+                'data_limite_dia': '2026-10-07', 'bucket_prazo': 'hoje',
+                'qtd_pedidos': 10, 'proxima_saida_em': '2026-10-07T15:00:00-03:00',
+                'saida_apos_prazo': False,
+            }],
+            'catalogo': [{'id': 1, 'entrega_rapida': False}],
+            'integracoes': [{'id': 6, 'module_id': 'shopee'}],
+            'composicao': [],
+            'lotes': [
+                {'integration_id': 6, 'modalidade_id': 1, 'lote_chave': 'shared',
+                 'modalidade_ids': [1, 2], 'lote_nome': 'Comum + Retirada', 'entrega_rapida': False},
+                {'integration_id': 6, 'modalidade_id': 2, 'lote_chave': 'shared',
+                 'modalidade_ids': [1, 2], 'lote_nome': 'Comum + Retirada', 'entrega_rapida': False},
+            ],
+            'rascunhos': [], 'janelas': [],
+        })
+        with patch.object(modulo, 'get_current_user', return_value={'id': 1}), patch.object(modulo, 'supabase_db', banco):
+            response = self.client.get('/api/v2/despacho/arvore?data=2026-10-07')
+        self.assertEqual(response.status_code, 200)
+        lote = response.get_json()['data']['lotes_timeline'][0]
+        self.assertEqual(lote['qtd_pedidos'], 60)
+        self.assertEqual(lote['data_limite_dia'], '2026-10-07')
+        self.assertEqual(lote['modalidade_ids'], [1, 2])
+        self.assertEqual(lote['proxima_saida_em'], '2026-10-07T15:00:00-03:00')
 
     def test_data_operacional_independe_de_utc(self):
         self.assertEqual(modulo._bucket_operacional('2026-10-07T02:59:59Z', '2026-10-05'), 'amanha')
