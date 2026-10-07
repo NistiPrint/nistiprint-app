@@ -48,7 +48,39 @@ class FakeDatabase:
         return FakeQuery(self.tables.get(name, []))
 
 
+class PedidosSchemaQuery(FakeQuery):
+    def select(self, columns, **kwargs):
+        if "data_pedido" in columns.split(","):
+            raise AssertionError("pedidos does not have a data_pedido column")
+        return super().select(columns, **kwargs)
+
+
+class PedidosSchemaDatabase(FakeDatabase):
+    def table(self, name):
+        query = PedidosSchemaQuery(self.tables.get(name, [])) if name == "pedidos" else FakeQuery(self.tables.get(name, []))
+        return query
+
+
 class MercadoLivrePersonalizationTests(unittest.TestCase):
+    def test_order_queries_use_the_canonical_data_venda_column(self):
+        order = {
+            "id": 10, "numero_pedido": "ML-10", "codigo_pedido_externo": "external-10",
+            "marketplace_order_id": "external-10", "marketplace_integration_id": 7,
+            "data_venda": "2026-10-06T09:00:00", "situacao_pedido_id": 2,
+            "cliente_nome": "Cliente", "buyer_username": "buyer-10",
+            "informacoes_cliente": {}, "message_to_seller": None,
+        }
+        database = PedidosSchemaDatabase({
+            "pedidos": [order],
+            "itens_pedido": [{"id": 20, "pedido_id": 10, "personalizado": True}],
+        })
+        with patch.object(service, "_integration", return_value={}), \
+             patch.object(service, "supabase_db", database):
+            listed = service.list_personalized_orders(7)
+            context_orders = service._integration_orders(7, ["external-10"])
+        self.assertEqual(listed[0]["id"], 10)
+        self.assertEqual(context_orders[0]["id"], 10)
+
     def test_message_api_keeps_opaque_ids_and_does_not_mark_history_read(self):
         result = {"message_id": "0033b582a1474fa98c02d229abcec43c"}
         captured = []

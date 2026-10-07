@@ -27,6 +27,9 @@ function AccountList() {
         <h1 className="text-2xl font-semibold">Personalizações · Mercado Livre</h1>
         <p className="mt-1 text-sm text-muted-foreground">Escolha a conta para consultar pedidos, mensagens privadas e extrações.</p>
       </div>
+      <div className="flex flex-wrap gap-2">
+        <Link to="/configuracoes/personalizacao/mercadolivre" className="rounded border px-3 py-2 text-sm hover:bg-muted">Configurar IA por conta</Link>
+      </div>
       {error && <p className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{error}</p>}
       {!accounts.length && !error && <p className="rounded border p-4 text-sm">Nenhuma conta Mercado Livre conectada.</p>}
       <div className="grid gap-4 md:grid-cols-2">
@@ -194,7 +197,7 @@ function AccountOrders({ integrationId }) {
           <p className="text-sm text-muted-foreground">ID da conta conectada: {integrationId}</p>
         </div>
         <div className="flex gap-2">
-          <Link className="rounded border px-3 py-2 text-sm" to={`/configuracoes/personalizacao/mercadolivre/${integrationId}`}>Configuração</Link>
+          <Link className="rounded border px-3 py-2 text-sm" to={`/configuracoes/personalizacao/mercadolivre/${integrationId}`}>Configuração IA desta conta</Link>
           <button onClick={() => startExtraction(false)} disabled={!account?.enabled || !account?.capture_enabled || !account?.extraction_enabled} className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50">Extrair pendentes</button>
           <button onClick={() => startExtraction(true)} disabled={!account?.enabled || !account?.capture_enabled || !account?.extraction_enabled} className="rounded border px-3 py-2 text-sm disabled:opacity-50">Reprocessar</button>
         </div>

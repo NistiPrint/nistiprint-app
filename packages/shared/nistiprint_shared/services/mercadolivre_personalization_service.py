@@ -586,7 +586,7 @@ def list_personalized_orders(integration_id: int, limit: int = 200) -> list[dict
     statuses = [2, STATUS_PEDIDO_PRONTO_ENVIO]
     orders = (supabase_db.table("pedidos").select(
         "id,numero_pedido,codigo_pedido_externo,marketplace_order_id,marketplace_integration_id," 
-        "data_venda,data_pedido,situacao_pedido_id,cliente_nome,buyer_username,informacoes_cliente"
+        "data_venda,situacao_pedido_id,cliente_nome,buyer_username,informacoes_cliente"
     ).eq("marketplace_integration_id", int(integration_id)).in_("situacao_pedido_id", statuses)
       .order("data_venda", desc=True).limit(min(max(int(limit), 1), 500)).execute().data or [])
     if not orders:
@@ -745,13 +745,13 @@ def account_health(integration_id: int) -> dict:
 def _integration_orders(integration_id: int, external_order_ids: list[str]) -> list[dict]:
     if not external_order_ids:
         return []
-    rows = (supabase_db.table("pedidos").select("id,numero_pedido,codigo_pedido_externo,marketplace_order_id,data_pedido,data_venda,situacao_pedido_id,cliente_nome,message_to_seller")
+    rows = (supabase_db.table("pedidos").select("id,numero_pedido,codigo_pedido_externo,marketplace_order_id,data_venda,situacao_pedido_id,cliente_nome,message_to_seller")
             .eq("marketplace_integration_id", int(integration_id)).in_("codigo_pedido_externo", external_order_ids).execute().data or [])
     # Some direct-import builds store marketplace_order_id as the external key.
     existing = {str(row.get("codigo_pedido_externo")) for row in rows}
     missing = [value for value in external_order_ids if value not in existing]
     if missing:
-        rows.extend(supabase_db.table("pedidos").select("id,numero_pedido,codigo_pedido_externo,marketplace_order_id,data_pedido,data_venda,situacao_pedido_id,cliente_nome,message_to_seller")
+        rows.extend(supabase_db.table("pedidos").select("id,numero_pedido,codigo_pedido_externo,marketplace_order_id,data_venda,situacao_pedido_id,cliente_nome,message_to_seller")
                     .eq("marketplace_integration_id", int(integration_id)).in_("marketplace_order_id", missing).execute().data or [])
     return rows
 

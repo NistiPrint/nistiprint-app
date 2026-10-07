@@ -32,6 +32,15 @@ const rotulosExtras = {
 
 const routeLabels = { ...rotulosDerivados, ...rotulosExtras };
 
+function labelForPath(segment, parent, pathnames) {
+  if (segment === 'ia' && parent === 'ferramentas') return 'Operação IA · Shopee';
+  if (segment === 'ia' && parent === 'configuracoes') return 'Configuração IA · Shopee';
+  if (segment === 'mercadolivre' && (pathnames.includes('personalizadas') || pathnames.includes('configuracoes'))) {
+    return 'Mercado Livre';
+  }
+  return routeLabels[segment] || segment;
+}
+
 function Breadcrumbs() {
   const location = useLocation();
   const pathnames = location.pathname.split('/').filter((x) => x);
@@ -50,7 +59,8 @@ function Breadcrumbs() {
       {pathnames.map((value, index) => {
         const last = index === pathnames.length - 1;
         const to = `/${pathnames.slice(0, index + 1).join('/')}`;
-        const label = routeLabels[value] || value;
+        const parent = pathnames[index - 1];
+        const label = labelForPath(value, parent, pathnames);
 
         // Skip IDs (UUIDs or numeric)
         const isId = /^[0-9a-fA-F-]{8,}$/.test(value) || /^\d+$/.test(value);

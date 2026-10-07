@@ -16,25 +16,29 @@ export default function MercadoLivrePersonalizacaoConfigPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   useEffect(() => {
-    if (!integrationId) {
-      fetch('/api/v2/mercadolivre/integracoes/personalizacoes', { credentials: 'same-origin' })
-        .then(async response => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const accountsResponse = await fetch('/api/v2/mercadolivre/integracoes/personalizacoes', { credentials: 'same-origin' });
+        const accountsBody = await accountsResponse.json();
+        if (!accountsResponse.ok || accountsBody.success === false) throw new Error(accountsBody.message || 'Falha ao carregar contas');
+        if (!cancelled) setAccounts(accountsBody.data.accounts || []);
+
+        if (integrationId) {
+          const response = await fetch(`/api/v2/mercadolivre/integracoes/${integrationId}/personalizados/config`, { credentials: 'same-origin' });
           const body = await response.json();
-          if (!response.ok || body.success === false) throw new Error(body.message || 'Falha ao carregar contas');
-          setAccounts(body.data.accounts || []);
-        })
-        .catch(error => toast.error(error.message))
-        .finally(() => setLoading(false));
-      return;
-    }
-    fetch(`/api/v2/mercadolivre/integracoes/${integrationId}/personalizados/config`, { credentials: 'same-origin' })
-      .then(async response => {
-        const body = await response.json();
-        if (!response.ok || body.success === false) throw new Error(body.message || 'Falha ao carregar configuração');
-        setConfig(current => ({ ...current, ...body.data.config, fallback_provider: body.data.config.fallback_provider || '' }));
-      })
-      .catch(error => toast.error(error.message))
-      .finally(() => setLoading(false));
+          if (!response.ok || body.success === false) throw new Error(body.message || 'Falha ao carregar configuração');
+          if (!cancelled) setConfig(current => ({ ...current, ...body.data.config, fallback_provider: body.data.config.fallback_provider || '' }));
+        }
+      } catch (error) {
+        if (!cancelled) toast.error(error.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
   }, [integrationId]);
   const change = (key, value) => setConfig(current => ({ ...current, [key]: value }));
   const save = async event => {
@@ -55,7 +59,11 @@ export default function MercadoLivrePersonalizacaoConfigPage() {
   if (loading) return <main className="p-6">Carregando configuração…</main>;
   if (!integrationId) return (
     <main className="mx-auto max-w-4xl space-y-5 p-6">
-      <div><h1 className="text-2xl font-semibold">Configuração · Mercado Livre</h1><p className="text-sm text-muted-foreground">Cada conta possui credenciais de IA, captura e agenda próprias.</p></div>
+      <div><h1 className="text-2xl font-semibold">Configuração IA · Mercado Livre</h1><p className="text-sm text-muted-foreground">Cada conta possui credenciais de IA, captura e agenda próprias.</p></div>
+      <div className="flex flex-wrap gap-2">
+        <Link to="/vendas/personalizadas/mercadolivre" className="rounded border px-3 py-2 text-sm hover:bg-muted">Personalizados · Mercado Livre</Link>
+        <Link to="/configuracoes/ia" className="rounded border px-3 py-2 text-sm hover:bg-muted">Configuração IA · Shopee</Link>
+      </div>
       {!accounts.length && <p className="rounded border p-4 text-sm">Nenhuma conta Mercado Livre conectada.</p>}
       <div className="grid gap-3 md:grid-cols-2">{accounts.map(account => <Link key={account.integration_id} to={`/configuracoes/personalizacao/mercadolivre/${account.integration_id}`} className="rounded-lg border bg-card p-4 hover:border-primary"><h2 className="font-medium">{account.name}</h2><p className="text-sm text-muted-foreground">Conta {account.account_user_id || account.integration_id}</p><p className="mt-2 text-xs">Configurar esta conta →</p></Link>)}</div>
     </main>
@@ -70,8 +78,8 @@ export default function MercadoLivrePersonalizacaoConfigPage() {
     <main className="mx-auto max-w-3xl space-y-5 p-6">
       <div>
         <Link className="text-sm text-muted-foreground" to={`/vendas/personalizadas/mercadolivre/${integrationId}`}>← Voltar aos pedidos</Link>
-        <h1 className="mt-2 text-2xl font-semibold">Configuração de personalização · Mercado Livre</h1>
-        <p className="text-sm text-muted-foreground">Conta conectada {integrationId}. Estes parâmetros não alteram as configurações da Shopee nem de outras contas.</p>
+        <h1 className="mt-2 text-2xl font-semibold">Configuração IA · Mercado Livre · {accounts.find(account => String(account.integration_id) === String(integrationId))?.name || `Conta ${integrationId}`}</h1>
+        <p className="text-sm text-muted-foreground">ID da conta conectada: {integrationId}. Estas opções são próprias desta conta.</p>
       </div>
       <form onSubmit={save} className="space-y-5 rounded-lg border bg-card p-5">
         <div className="space-y-2">

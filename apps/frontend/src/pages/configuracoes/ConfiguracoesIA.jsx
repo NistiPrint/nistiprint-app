@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ArrowLeft, Loader2, Save, TestTube2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { personalizadosService } from '@/services/personalizadosService';
 
@@ -158,9 +158,14 @@ function ConfiguracoesIA() {
     <div className="mx-auto max-w-4xl space-y-6">
       <div className="flex items-center gap-4 mb-6">
         <Button variant="outline" onClick={() => navigate('/vendas/personalizadas')}>
-          <ArrowLeft className="mr-2 h-4 w-4" /> Voltar
+          <ArrowLeft className="mr-2 h-4 w-4" /> Personalizados · Shopee
         </Button>
-        <h1 className="text-2xl font-bold">Configurações de IA — Personalizações</h1>
+        <h1 className="text-2xl font-bold">Configuração IA · Shopee</h1>
+      </div>
+      <div className="-mt-4 mb-6 flex justify-end">
+        <Button variant="outline" asChild>
+          <Link to="/configuracoes/personalizacao/mercadolivre">Configuração IA · Mercado Livre</Link>
+        </Button>
       </div>
 
       <div className="space-y-6">

@@ -84,6 +84,7 @@ import ProdutoFormPage from './pages/produtos/ProdutoFormPage'
 import ProdutoListPage from './pages/produtos/ProdutoListPage'
 import VendasPage from './pages/vendas/VendasPage'
 import VendasPersonalizadasPage from './pages/vendas/VendasPersonalizadasPage'
+import PersonalizacoesLayoutPage from './pages/vendas/PersonalizacoesLayoutPage'
 import MercadoLivrePersonalizacoesPage from './pages/vendas/MercadoLivrePersonalizacoesPage'
 import MercadoLivrePersonalizacaoConfigPage from './pages/admin/configuracoes/MercadoLivrePersonalizacaoConfigPage'
 import PerfilPage from './pages/PerfilPage'
@@ -116,12 +117,11 @@ function App() {
           {/* 2. Comercial (Vendas e Pedidos) */}
           <Route path='vendas' element={<VendasPage />}>
             <Route index element={<Navigate to='pedidos' replace />} />
-            <Route
-              path='personalizadas'
-              element={<VendasPersonalizadasPage />}
-            />
-            <Route path='personalizadas/mercadolivre' element={<MercadoLivrePersonalizacoesPage />} />
-            <Route path='personalizadas/mercadolivre/:integration_id' element={<MercadoLivrePersonalizacoesPage />} />
+            <Route path='personalizadas' element={<PersonalizacoesLayoutPage />}>
+              <Route index element={<VendasPersonalizadasPage />} />
+              <Route path='mercadolivre' element={<MercadoLivrePersonalizacoesPage />} />
+              <Route path='mercadolivre/:integration_id' element={<MercadoLivrePersonalizacoesPage />} />
+            </Route>
             <Route path='pedidos' element={<PedidosListPage />} />
             <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
           </Route>

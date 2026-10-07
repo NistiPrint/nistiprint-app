@@ -502,8 +502,17 @@ function VendasPersonalizadasPage() {
             <>Fonte: {opMode.toUpperCase()}</>
           )}
         </Button>
-        Pedidos Personalizados
+        Pedidos Shopee
       </h1>
+
+      <div className="-mt-2 mb-5 flex flex-wrap justify-end gap-2">
+        <Button variant="outline" onClick={() => navigate('/ferramentas/ia')}>
+          <Brain className="mr-2 h-4 w-4" /> Operação IA Shopee
+        </Button>
+        <Button variant="outline" onClick={() => navigate('/configuracoes/ia')}>
+          <Settings className="mr-2 h-4 w-4" /> Configuração IA Shopee
+        </Button>
+      </div>
 
       {/* Orders */}
       <Card className="shadow-sm border-light">

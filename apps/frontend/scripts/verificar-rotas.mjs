@@ -30,6 +30,8 @@ const ROTAS_SEM_MENU = new Set([
   '/producao/demanda/calendario',
   '/estoque/dashboard',
   '/configuracoes/demanda-permissions',
+  // Aba interna do hub de personalizados, sem item de menu independente.
+  '/vendas/personalizadas/mercadolivre',
   '/relatorios/index',
   // Raizes de layout: o filho index redireciona, ninguem aterrissa aqui.
   '/vendas',
