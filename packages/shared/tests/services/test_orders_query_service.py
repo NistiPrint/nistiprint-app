@@ -10,6 +10,7 @@ class TestOrdersQueryService(unittest.TestCase):
             "id": 1,
             "order_id": "12345",
             "shopee_order_sn": "260618ABC123",
+            "marketplace_integration_id": 17,
             "order_date": "2026-06-18T10:00:00",
             "contato": {"nome": "Maria"},
             "nome_cliente": "Maria",
@@ -35,6 +36,7 @@ class TestOrdersQueryService(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["numero"], "12345")
         self.assertEqual(rows[0]["numeroLoja"], "260618ABC123")
+        self.assertEqual(rows[0]["marketplace_integration_id"], 17)
         self.assertEqual(rows[0]["shopee"]["username"], "maria123")
         self.assertEqual(rows[0]["shopee"]["message"], "Pode gravar Maria Clara")
         self.assertEqual(rows[0]["shopee"]["message_to_seller"], "nome: Maria")

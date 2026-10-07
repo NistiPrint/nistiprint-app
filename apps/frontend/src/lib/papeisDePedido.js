@@ -16,6 +16,7 @@
 // fatias pequenas mantem cada resposta abaixo do timeout do proxy, sem dividir
 // o documento final que sera enviado para impressao.
 const PEDIDOS_POR_REQUISICAO = 25;
+const REQUISICOES_EM_PARALELO = 4;
 
 function escaparHtml(valor) {
   return String(valor ?? '')
@@ -50,38 +51,63 @@ export async function buscarPapeisDePedido(pedidoIds, { onProgress, plataforma }
   const ids = [...new Set((pedidoIds || []).filter(Boolean))];
   if (ids.length === 0) return { orders: [], blocked: [] };
 
-  const orders = [];
-  const blocked = [];
-  onProgress?.({ processados: 0, total: ids.length });
+  const fatias = [];
   for (let i = 0; i < ids.length; i += PEDIDOS_POR_REQUISICAO) {
-    const fatia = ids.slice(i, i + PEDIDOS_POR_REQUISICAO);
-    const res = await fetch('/api/v2/pedidos/impressao', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        order_ids: fatia,
-        ...(plataforma ? { plataforma } : {}),
-      }),
-    });
-    const json = await res.json();
-    if (!res.ok || !json.success) {
-      throw new Error(json.message || json.error || 'Falha ao carregar os papeis dos pedidos.');
-    }
-    orders.push(...(json.data?.orders || []));
-    blocked.push(...(json.data?.blocked_orders || []));
-    const resolvidos = new Set([
-      ...(json.data?.orders || []).map((order) => Number(order.id)),
-      ...(json.data?.blocked_orders || []).map((order) => Number(order.pedido_id)),
-    ]);
-    if (resolvidos.size !== (json.data?.orders || []).length + (json.data?.blocked_orders || []).length) {
-      throw new Error('A impressão recebeu resultados repetidos para um ou mais pedidos.');
-    }
-    const semResultado = fatia.filter((id) => !resolvidos.has(Number(id)));
-    if (semResultado.length > 0) {
-      throw new Error(`A impressão não retornou resultado para ${semResultado.length} pedido(s): ${semResultado.join(', ')}.`);
-    }
-    onProgress?.({ processados: Math.min(i + fatia.length, ids.length), total: ids.length });
+    fatias.push(ids.slice(i, i + PEDIDOS_POR_REQUISICAO));
   }
+  const resultadosPorFatia = new Array(fatias.length);
+  onProgress?.({ processados: 0, total: ids.length });
+  let proximaFatia = 0;
+  let processados = 0;
+  let erroFatia = null;
+  const processarFatia = async () => {
+    while (!erroFatia) {
+      const indice = proximaFatia;
+      proximaFatia += 1;
+      if (indice >= fatias.length) return;
+      const fatia = fatias[indice];
+      try {
+        const res = await fetch('/api/v2/pedidos/impressao', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            order_ids: fatia,
+            ...(plataforma ? { plataforma } : {}),
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.success) {
+          throw new Error(json.message || json.error || 'Falha ao carregar os papeis dos pedidos.');
+        }
+        const orders = json.data?.orders || [];
+        const blocked = json.data?.blocked_orders || [];
+        const resolvidos = new Set([
+          ...orders.map((order) => Number(order.id)),
+          ...blocked.map((order) => Number(order.pedido_id)),
+        ]);
+        if (resolvidos.size !== orders.length + blocked.length) {
+          throw new Error('A impressão recebeu resultados repetidos para um ou mais pedidos.');
+        }
+        const semResultado = fatia.filter((id) => !resolvidos.has(Number(id)));
+        if (semResultado.length > 0) {
+          throw new Error(`A impressão não retornou resultado para ${semResultado.length} pedido(s): ${semResultado.join(', ')}.`);
+        }
+        resultadosPorFatia[indice] = { orders, blocked };
+        processados += fatia.length;
+        onProgress?.({ processados, total: ids.length });
+      } catch (error) {
+        erroFatia ||= error;
+      }
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(REQUISICOES_EM_PARALELO, fatias.length) },
+    processarFatia,
+  ));
+  if (erroFatia) throw erroFatia;
+
+  const orders = resultadosPorFatia.flatMap((resultado) => resultado.orders);
+  const blocked = resultadosPorFatia.flatMap((resultado) => resultado.blocked);
   return { orders, blocked };
 }
 
@@ -157,11 +183,12 @@ function cartaoHtml(order) {
     ? `<div>${escaparHtml(order.contato.endereco)}</div>`
     : '';
   const ehMercadoLivre = order.plataforma_slug === 'mercadolivre';
+  const idPedidoMercadoLivre = order.marketplace_order_id || order.numeroLoja || order.numero || order.id || 'N/A';
   const identificadorCabecalho = ehMercadoLivre
-    ? `Pacote ${order.pack_id || 'não informado'}`
+    ? (order.pack_id || idPedidoMercadoLivre)
     : (order.numeroLoja || 'N/A');
   const identificadorPedido = ehMercadoLivre
-    ? (order.marketplace_order_id || order.numero || order.id || 'N/A')
+    ? (order.numero || idPedidoMercadoLivre)
     : (order.numero || order.id || 'N/A');
   return `
     <div class="stamp-card">

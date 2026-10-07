@@ -3,10 +3,12 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { formatAppDate, formatAppDateInput, formatAppDateTime } from '@/lib/dateTime';
 import { Loader2, MessageSquare, RefreshCw } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+const EMPTY_HIGHLIGHTED_MESSAGE_IDS = [];
 
 /**
- * ChatSidebar — sidebar de chat do Shopee.
+ * ChatSidebar — histórico de conversas da Shopee e do Mercado Livre.
  *
  * Props:
  *  - open: boolean
@@ -15,49 +17,70 @@ import { useEffect, useRef, useState } from 'react';
  *  - orderId: string (número do pedido para exibição)
  *  - highlightedMessageIds: string[] (mensagens que originaram personalizações)
  */
-export function ChatSidebar({ open, onOpenChange, username, orderId, highlightedMessageIds = [], marketplace = 'shopee', integrationId, pedidoId }) {
+export function ChatSidebar({ open, onOpenChange, username, orderId, highlightedMessageIds = EMPTY_HIGHLIGHTED_MESSAGE_IDS, marketplace = 'shopee', integrationId, pedidoId }) {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const containerRef = useRef(null);
   const highlightSet = useRef(new Set(highlightedMessageIds));
+  const requestRef = useRef(null);
 
-  useEffect(() => {
-    if (open && (username || (marketplace === 'mercadolivre' && integrationId && pedidoId))) {
-      highlightSet.current = new Set(highlightedMessageIds);
-      loadMessages(username);
-    }
-  }, [open, username, marketplace, integrationId, pedidoId]);
-
-  const loadMessages = async (user) => {
+  const loadMessages = useCallback(async (user) => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setLoading(true);
     setError(null);
     try {
       const path = marketplace === 'mercadolivre'
         ? `/api/v2/mercadolivre/integracoes/${integrationId}/personalizados/pedidos/${pedidoId}/chat`
-        : `/api/v2/personalizados/chat/${encodeURIComponent(user)}`;
+        : `/api/v2/personalizados/chat/${encodeURIComponent(user)}${integrationId ? `?integration_id=${encodeURIComponent(integrationId)}` : ''}`;
       const res = await fetch(path, {
         headers: { Accept: 'application/json' },
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const msgs = data.success ? (data.data?.messages || []) : [];
       const displayMessages = marketplace === 'mercadolivre'
-        ? msgs.map(message => ({
-          id: message.provider_message_id,
-          from_user_name: message.sender_role === 'buyer' ? user : `meli-${message.sender_role}`,
-          content: message.text_content || (message.attachments?.length ? `${message.attachments.length} anexo(s)` : 'Mensagem sem texto'),
-          created_at: message.created_at,
-          type: 'text',
-        }))
+        ? msgs.map(message => {
+          const senderRole = message.sender_role || 'unknown';
+          const senderLabels = {
+            seller: 'Vendedor',
+            agent: 'Equipe de atendimento',
+            unknown: 'Remetente não identificado',
+          };
+          return {
+            id: message.provider_message_id,
+            from_user_name: senderRole === 'buyer' ? user : `meli-${senderRole}`,
+            sender_label: senderRole === 'buyer' ? null : senderLabels[senderRole] || 'Remetente não identificado',
+            content: message.text_content || (message.attachments?.length ? `${message.attachments.length} anexo(s)` : 'Mensagem sem texto'),
+            created_at: message.created_at,
+            type: 'text',
+          };
+        })
         : msgs;
       setMessages(displayMessages);
     } catch (err) {
-      setError(err.message);
+      if (err.name !== 'AbortError') setError(err.message);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
-  };
+  }, [integrationId, marketplace, pedidoId]);
+
+  useEffect(() => {
+    if (open && (username || (marketplace === 'mercadolivre' && integrationId && pedidoId))) {
+      highlightSet.current = new Set(highlightedMessageIds);
+      setMessages([]);
+      loadMessages(username);
+    } else {
+      requestRef.current?.abort();
+      setMessages([]);
+      setLoading(false);
+      setError(null);
+    }
+    return () => requestRef.current?.abort();
+  }, [open, username, marketplace, integrationId, pedidoId, highlightedMessageIds, loadMessages]);
 
   // Scroll para o fim após carregar
   useEffect(() => {
@@ -129,7 +152,7 @@ function renderMessages(messages, username, highlightSet) {
     elements.push(
       <div key={`date-${date}`} className="text-center text-xs text-muted-foreground py-2 sticky top-0 bg-muted/30 backdrop-blur-sm z-10">
         <Badge variant="secondary" className="font-normal">
-          {formatDateBadge(date)}
+          {date === 'sem-data' ? 'Data não informada' : formatDateBadge(date)}
         </Badge>
       </div>
     );
@@ -205,6 +228,7 @@ function renderMessage(msg, username, highlightSet) {
             : 'bg-blue-500 text-white'
         }`}
       >
+        {msg.sender_label && <span className={`mb-1 text-[10px] ${isCustomer ? 'text-muted-foreground' : 'text-blue-100'}`}>{msg.sender_label}</span>}
         <p className="whitespace-pre-wrap">{msg.display_content || msg.content || ''}</p>
       </div>
       <span className="text-[10px] text-muted-foreground mt-1">
@@ -216,11 +240,18 @@ function renderMessage(msg, username, highlightSet) {
 
 function groupMessagesByDate(messages) {
   const groups = {};
-  messages.forEach((msg) => {
+  const sorted = [...messages].sort((left, right) => {
+    const leftDate = left.created_at ? new Date(left.created_at).getTime() : Number.POSITIVE_INFINITY;
+    const rightDate = right.created_at ? new Date(right.created_at).getTime() : Number.POSITIVE_INFINITY;
+    const safeLeftDate = Number.isNaN(leftDate) ? Number.POSITIVE_INFINITY : leftDate;
+    const safeRightDate = Number.isNaN(rightDate) ? Number.POSITIVE_INFINITY : rightDate;
+    return safeLeftDate - safeRightDate || String(left.id || '').localeCompare(String(right.id || ''));
+  });
+  sorted.forEach((msg) => {
     const date = formatAppDateInput(msg.created_at);
-    if (!date) return;
-    if (!groups[date]) groups[date] = [];
-    groups[date].push(msg);
+    const group = date || 'sem-data';
+    if (!groups[group]) groups[group] = [];
+    groups[group].push(msg);
   });
   return groups;
 }

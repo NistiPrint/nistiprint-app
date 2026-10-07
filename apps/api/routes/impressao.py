@@ -14,6 +14,7 @@ from nistiprint_shared.services.order_erp_reference_service import order_erp_ref
 from nistiprint_shared.utils import process_string
 from utils.api_response import ApiResponse
 import logging
+import time
 
 logger = logging.getLogger("ImpressaoAPI")
 
@@ -81,31 +82,57 @@ def post_impressao_data():
         if validation_error:
             return ApiResponse.error(validation_error, 400)
         plataforma = payload.get('plataforma')
+        inicio_preparacao = time.perf_counter()
 
         orders_data = []
         blocked_orders = []
 
         pedidos_result = (supabase_db.table('pedidos')
-                          .select('id,marketplace_module_id,origem')
+                          .select('id,marketplace_module_id,origem,marketplace_order_id,codigo_pedido_externo,marketplace_integration_id,pack_id,erp_order_number,cliente_nome,cliente_documento,cliente_telefone,cliente_email,informacoes_cliente,buyer_username,is_flex,servico_logistico,data_venda,ingest_source')
                           .in_('id', order_ids).execute())
-        plataformas_por_id = {
-            row['id']: _normalizar_plataforma_slug(row.get('marketplace_module_id') or row.get('origem'))
-            for row in (pedidos_result.data or [])
-        }
-        ids_sem_erp = {
+        rows_por_id = {row['id']: row for row in (pedidos_result.data or [])}
+        plataformas_por_id = {}
+        for pedido_id, row in rows_por_id.items():
+            # Registros antigos podem ter um dos campos vazio ou desatualizado.
+            # Considere ambos para não submeter pedidos ML à resolução ERP.
+            candidatos = (row.get('marketplace_module_id'), row.get('origem'))
+            plataformas_por_id[pedido_id] = next(
+                (_normalizar_plataforma_slug(value) for value in candidatos
+                 if _normalizar_plataforma_slug(value) == 'mercadolivre'),
+                _normalizar_plataforma_slug(next((value for value in candidatos if value), None)),
+            )
+        ids_mercadolivre = {
             pedido_id for pedido_id, plataforma_slug in plataformas_por_id.items()
             if plataforma_slug == 'mercadolivre'
         }
-        ids_com_erp = [pedido_id for pedido_id in order_ids if pedido_id not in ids_sem_erp]
-        ready_ids = set(ids_sem_erp)
+        pedidos_ml = [rows_por_id[pedido_id] for pedido_id in order_ids
+                      if pedido_id in ids_mercadolivre and pedido_id in rows_por_id]
+        resultado_ml = _build_orders_print_data_mercadolivre(pedidos_ml, plataforma)
+        orders_data.extend(resultado_ml['orders'])
+        blocked_orders.extend(resultado_ml['blocked_orders'])
+
+        ids_com_erp = [pedido_id for pedido_id in order_ids if pedido_id not in ids_mercadolivre]
+        ready_ids = set()
+        orders_prontos = {}
         if ids_com_erp:
             resolution = order_erp_reference_service.resolve_many(ids_com_erp, allow_remote=True)
             ready_ids.update(item['pedido_id'] for item in resolution['ready'])
-            blocked_orders.extend(resolution['blocked'])
-        for order_id in order_ids:
+            # A resolução ERP não pode impedir um papel ML quando o cadastro local
+            # contém o pedido e seus itens. Tente montar usando exclusivamente a base.
+            bloqueados_erp = []
+            for blocked in resolution['blocked']:
+                pedido_id = blocked.get('pedido_id')
+                order = _build_order_print_data(pedido_id, plataforma)
+                if order and order.get('plataforma_slug') == 'mercadolivre':
+                    orders_prontos[pedido_id] = order
+                    ready_ids.add(pedido_id)
+                else:
+                    bloqueados_erp.append(blocked)
+            blocked_orders.extend(bloqueados_erp)
+        for order_id in ids_com_erp:
             if order_id not in ready_ids:
                 continue
-            order = _build_order_print_data(order_id, plataforma)
+            order = orders_prontos.get(order_id) or _build_order_print_data(order_id, plataforma)
             if order:
                 blocked_reason = order.pop('_print_block_reason', None)
                 if blocked_reason:
@@ -137,6 +164,11 @@ def post_impressao_data():
                 })
 
         orders_data.sort(key=_print_sort_key)
+        logger.info(
+            'Impressao de papeis: pedidos=%d ml=%d preparados=%d bloqueados=%d total_ms=%d',
+            len(order_ids), len(ids_mercadolivre), len(orders_data), len(blocked_orders),
+            int((time.perf_counter() - inicio_preparacao) * 1000),
+        )
 
         return ApiResponse.success({
             'orders': orders_data,
@@ -386,18 +418,87 @@ def _print_sort_key(order: dict):
     )
 
 
-def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> dict | None:
+def _build_orders_print_data_mercadolivre(pedidos: list[dict], plataforma_filter: str = None) -> dict:
+    """Carrega as dependências de impressão ML em lote e formata os papéis."""
+    if not pedidos:
+        return {'orders': [], 'blocked_orders': []}
+
+    order_ids = [int(order['id']) for order in pedidos]
+    inicio_busca = time.perf_counter()
+    items_rows = (supabase_db.table('itens_pedido')
+        .select('*, produtos(tag_impressao_pdf)').in_('pedido_id', order_ids).execute().data or [])
+    items_by_order = {}
+    for item in items_rows:
+        items_by_order.setdefault(int(item['pedido_id']), []).append(item)
+
+    snapshots_rows = (supabase_db.table('pedido_snapshots')
+        .select('pedido_id,customer,logistics,platform_fields').in_('pedido_id', order_ids).execute().data or [])
+    snapshots_by_order = {int(row['pedido_id']): row for row in snapshots_rows}
+
+    order_ids_external = [str(order.get('marketplace_order_id') or order.get('codigo_pedido_externo') or '').strip()
+                          for order in pedidos]
+    order_ids_external = [value for value in order_ids_external if value]
+    pack_ids = {}
+    try:
+        from nistiprint_shared.services.order_erp_reference_service import _ml_pack_ids_por_pedido
+        pack_ids = _ml_pack_ids_por_pedido(order_ids_external)
+    except Exception:
+        logger.warning('Falha ao carregar pacotes dos pedidos Mercado Livre em lote', exc_info=True)
+
+    try:
+        from nistiprint_shared.services.mercadolivre_personalization_service import printable_personalizations_many
+        personalization_by_order = printable_personalizations_many(pedidos, items_by_order)
+    except Exception:
+        logger.warning('Falha ao carregar personalizações Mercado Livre em lote', exc_info=True)
+        personalization_by_order = {
+            int(order['id']): {'ready': False, 'by_item_id': {}, 'message': 'Personalização indisponível.'}
+            for order in pedidos
+        }
+    duracao_busca_ms = int((time.perf_counter() - inicio_busca) * 1000)
+
+    inicio_montagem = time.perf_counter()
+    orders = []
+    blocked = []
+    for pedido in pedidos:
+        pedido_id = int(pedido['id'])
+        prepared = {
+            'pedido': pedido,
+            'itens': items_by_order.get(pedido_id, []),
+            'snapshot': snapshots_by_order.get(pedido_id, {}),
+            'pack_id': pack_ids.get(str(pedido.get('marketplace_order_id') or pedido.get('codigo_pedido_externo') or '').strip()),
+            'personalizacao': personalization_by_order.get(pedido_id, {
+                'ready': False, 'by_item_id': {}, 'message': 'Personalização indisponível.'
+            }),
+        }
+        order = _build_order_print_data(pedido_id, plataforma_filter, prepared=prepared)
+        if order:
+            blocked_reason = order.pop('_print_block_reason', None)
+            if blocked_reason:
+                blocked.append({'pedido_id': pedido_id, 'status': 'personalization_review_required', 'message': blocked_reason})
+            else:
+                orders.append(order)
+        else:
+            blocked.append({'pedido_id': pedido_id, 'status': 'invalid_print_data',
+                            'message': 'Pedido não encontrado ou sem dados para impressão'})
+    logger.info('Impressao Mercado Livre: pedidos=%d busca_ms=%d montagem_ms=%d',
+                len(pedidos), duracao_busca_ms, int((time.perf_counter() - inicio_montagem) * 1000))
+    return {'orders': orders, 'blocked_orders': blocked}
+
+
+def _build_order_print_data(pedido_id: int, plataforma_filter: str = None, prepared: dict | None = None) -> dict | None:
     """
     Monta dados completos de um pedido para o template de impressão.
     Inclui: cliente, itens, personalizações, custom_tags.
     """
     try:
         # 1. Buscar pedido core
-        pedido_result = supabase_db.table('pedidos').select('*').eq('id', pedido_id).single().execute()
-        if not pedido_result.data:
+        if prepared:
+            pedido = prepared.get('pedido')
+        else:
+            pedido_result = supabase_db.table('pedidos').select('*').eq('id', pedido_id).single().execute()
+            pedido = pedido_result.data
+        if not pedido:
             return None
-
-        pedido = pedido_result.data
         # 2. Plataforma de origem.
         #
         # Antes isto vinha de `vinculos_integracao_pedido`, tabela que esta
@@ -410,6 +511,17 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
         plataforma_slug = _normalizar_plataforma_slug(
             pedido.get('marketplace_module_id') or pedido.get('origem')
         )
+        pack_id = prepared.get('pack_id') if prepared else pedido.get('pack_id')
+        if prepared and pedido.get('pack_id'):
+            pack_id = pedido.get('pack_id')
+        if plataforma_slug == 'mercadolivre' and not pack_id and not prepared:
+            order_id = str(pedido.get('marketplace_order_id') or pedido.get('codigo_pedido_externo') or '').strip()
+            if order_id:
+                try:
+                    from nistiprint_shared.services.order_erp_reference_service import _ml_pack_ids_por_pedido
+                    pack_id = _ml_pack_ids_por_pedido([order_id]).get(order_id)
+                except Exception:
+                    logger.info('Não foi possível recuperar pack_id do pedido %s; será usado o número do pedido', pedido_id, exc_info=True)
         if plataforma_filter:
             filtro = _normalizar_plataforma_slug(plataforma_filter)
             # `BLING` nao e marketplace: e o caminho de ingest. Um pedido
@@ -421,22 +533,28 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
                 return None
 
         # 3. Buscar itens do pedido com tag_impressao_pdf do produto
-        itens_result = supabase_db.table('itens_pedido').select(
-            '*, produtos(tag_impressao_pdf)'
-        ).eq('pedido_id', pedido_id).execute()
-        itens_raw = itens_result.data or []
+        if prepared:
+            itens_raw = prepared.get('itens') or []
+        else:
+            itens_result = supabase_db.table('itens_pedido').select(
+                '*, produtos(tag_impressao_pdf)'
+            ).eq('pedido_id', pedido_id).execute()
+            itens_raw = itens_result.data or []
 
         # 4. Buscar personalizações
-        mercadolivre_print_data = None
+        mercadolivre_print_data = prepared.get('personalizacao') if prepared else None
         if plataforma_slug == 'mercadolivre':
             try:
-                from nistiprint_shared.services.mercadolivre_personalization_service import printable_personalizations
-                mercadolivre_print_data = printable_personalizations(
-                    int(pedido.get('marketplace_integration_id')), pedido_id
-                ) if pedido.get('marketplace_integration_id') else {
-                    'ready': False, 'by_item_id': {},
-                    'message': 'A conta Mercado Livre do pedido não está identificada.',
-                }
+                if prepared:
+                    pass
+                else:
+                    from nistiprint_shared.services.mercadolivre_personalization_service import printable_personalizations
+                    mercadolivre_print_data = printable_personalizations(
+                        int(pedido.get('marketplace_integration_id')), pedido_id
+                    ) if pedido.get('marketplace_integration_id') else {
+                        'ready': False, 'by_item_id': {},
+                        'message': 'A conta Mercado Livre do pedido não está identificada.',
+                    }
             except Exception:
                 logger.warning('Falha ao ler personalizações do pedido %s; o papel sairá sem nomes', pedido_id, exc_info=True)
                 mercadolivre_print_data = {
@@ -486,7 +604,7 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
                 item_pers.append({
                     'customization_name': nome.strip() if isinstance(nome, str) else None,
                     'customization_initial': p.get('customization_initial'),
-                    'quantity_to_personalize': detalhes.get('quantity_to_personalize')
+                    'quantity_to_personalize': p.get('quantity_to_personalize') or detalhes.get('quantity_to_personalize')
                         or metadata.get('quantity_to_personalize', 1),
                     'status': p.get('status'),
                 })
@@ -529,10 +647,11 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             }
             itens_formatted.append(item_formatted)
 
-        snapshot_customer = {}
-        snapshot_logistics = {}
-        snapshot_platform_fields = {}
-        if plataforma_slug == 'mercadolivre':
+        snapshot = prepared.get('snapshot') or {} if prepared else {}
+        snapshot_customer = snapshot.get('customer') or {}
+        snapshot_logistics = snapshot.get('logistics') or {}
+        snapshot_platform_fields = snapshot.get('platform_fields') or {}
+        if plataforma_slug == 'mercadolivre' and not prepared:
             try:
                 snapshot_result = (
                     supabase_db.table('pedido_snapshots')
@@ -595,14 +714,15 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
         )
         if not documento:
             try:
-                snapshot_result = (
-                    supabase_db.table('pedido_snapshots')
-                    .select('customer')
-                    .eq('pedido_id', pedido_id)
-                    .limit(1)
-                    .execute()
-                )
-                snapshot_customer = ((snapshot_result.data or [{}])[0] or {}).get('customer') or {}
+                if not prepared:
+                    snapshot_result = (
+                        supabase_db.table('pedido_snapshots')
+                        .select('customer')
+                        .eq('pedido_id', pedido_id)
+                        .limit(1)
+                        .execute()
+                    )
+                    snapshot_customer = ((snapshot_result.data or [{}])[0] or {}).get('customer') or {}
                 snapshot_raw_customer = snapshot_customer.get('raw') or {}
                 documento = _primeiro_valor_preenchido(
                     snapshot_customer.get('document'),
@@ -620,6 +740,12 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
             plataforma_slug, plataforma_slug.replace('_', ' ').title()
         ) if plataforma_slug else ''
         numero_loja = pedido.get('marketplace_order_id') or pedido.get('codigo_pedido_externo', '')
+        numero_pedido = (
+            pack_id or pedido.get('marketplace_order_id') or pedido.get('codigo_pedido_externo') or pedido.get('id')
+            if plataforma_slug == 'mercadolivre'
+            else pedido.get('erp_order_number') or pedido.get('marketplace_order_id')
+            or pedido.get('codigo_pedido_externo') or pedido.get('id')
+        )
 
         # 8. Calcular total
         total_produtos = sum(i.get('valor', 0) * i.get('quantidade', 0) for i in itens_formatted)
@@ -650,11 +776,12 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None) -> di
 
         return {
             'id': pedido.get('id'),
-            'numero': str(pedido.get('erp_order_number') or pedido.get('marketplace_order_id')
-                          or pedido.get('codigo_pedido_externo') or pedido.get('id')),
+            # Mercado Livre não depende do número do Bling: sem pacote, o número
+            # do pedido é o identificador impresso também no cabeçalho.
+            'numero': str(numero_pedido),
             'numeroLoja': numero_loja,
             'marketplace_order_id': str(pedido.get('marketplace_order_id') or pedido.get('codigo_pedido_externo') or ''),
-            'pack_id': str(pedido.get('pack_id')) if pedido.get('pack_id') not in (None, '') else None,
+            'pack_id': str(pack_id) if pack_id not in (None, '') else None,
             'personalizacao_pendente': bool(
                 plataforma_slug == 'mercadolivre'
                 and mercadolivre_print_data

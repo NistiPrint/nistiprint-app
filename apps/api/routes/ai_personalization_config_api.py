@@ -2,13 +2,13 @@
 from flask import Blueprint, request, session
 
 from nistiprint_shared.services import ai_personalization_account_config as service
-from routes.auth import admin_required
+from routes.auth import admin_required, check_permission
 
 ai_personalization_config_bp = Blueprint("ai_personalization_config", __name__)
 
 
 @ai_personalization_config_bp.get("/api/v2/ai-personalization/accounts")
-@admin_required
+@check_permission("vendas", "ler")
 def list_accounts():
     try:
         return {"success": True, "accounts": service.list_accounts()}

@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from scripts import backfill_mercadolivre_chat as chat_backfill
 from nistiprint_shared.services import mercadolivre_personalization_service as service
 from nistiprint_shared.services import ai_personalization_account_config as account_config
 from nistiprint_shared.services.platform_drivers import mercadolivre as driver
@@ -262,6 +263,61 @@ class MercadoLivrePersonalizationTests(unittest.TestCase):
         self.assertIn(result["message_id"], captured[0][0][1])
         self.assertEqual(captured[1][1]["params"]["mark_as_read"], "false")
         self.assertEqual(captured[1][1]["params"]["tag"], "post_sale")
+
+    def test_pack_order_ids_normalize_objects_scalars_and_duplicates(self):
+        with patch.object(service, "_meli_request", return_value={"orders": [
+            {"id": 2000018837650802, "static_tags": []},
+            {"id": "2000018837650802"},
+            2000018835141756,
+        ]}):
+            self.assertEqual(service._pack_order_ids(7, {}, "pack-1"),
+                             ["2000018837650802", "2000018835141756"])
+
+    def test_pack_order_ids_reject_malformed_entries(self):
+        with patch.object(service, "_meli_request", return_value={
+            "orders": [{"static_tags": []}],
+        }):
+            with self.assertRaisesRegex(ValueError, "ID válido"):
+                service._pack_order_ids(7, {}, "pack-1")
+
+    def test_backfill_safely_normalizes_legacy_object_ids(self):
+        self.assertEqual(chat_backfill._conversation_order_ids([
+            "{'id': 2000018837650802, 'static_tags': []}",
+            "{'id': '2000018837650802'}",
+        ]), ["2000018837650802"])
+        self.assertEqual(chat_backfill._conversation_order_ids(["2000018835141756"]),
+                         ["2000018835141756"])
+        self.assertEqual(chat_backfill._legacy_value("__import__('os').system('whoami')"),
+                         "__import__('os').system('whoami')")
+
+    def test_backfill_recovers_nested_message_creation_date(self):
+        self.assertEqual(chat_backfill._message_timestamp({
+            "message_date": {"created": "2026-10-05T10:53:40Z"},
+        }), "2026-10-05T10:53:40+00:00")
+        self.assertEqual(chat_backfill._message_timestamp({
+            "date_created": "2026-10-05T11:00:00Z",
+        }), "2026-10-05T11:00:00+00:00")
+        self.assertIsNone(chat_backfill._message_timestamp({}))
+
+    def test_message_normalization_reads_created_date_and_attachment_fields(self):
+        tables = {}
+        with patch.object(service.supabase_db, "table", side_effect=lambda name: CaptureQuery(tables, name)):
+            rows = service._upsert_messages(7, "pack-1", "seller-1", [
+                {"id": "meli-message-1", "from": {"user_id": "seller-1"},
+                 "message_date": {"created": "2026-10-05T10:53:40Z"},
+                 "message_attachments": [{"type": "image", "filename": "foto.jpg"}],
+                 "moderation": {"status": "available"}},
+                {"id": "meli-message-2", "date_created": "2026-10-05T11:00:00Z"},
+                {"id": "meli-message-3", "date": "2026-10-05T11:10:00Z"},
+                {"id": "meli-message-4"},
+            ], None)
+
+        self.assertEqual(rows[0]["created_at"], "2026-10-05T10:53:40+00:00")
+        self.assertEqual(rows[0]["attachments"][0]["filename"], "foto.jpg")
+        self.assertEqual(rows[0]["moderation_status"], "available")
+        self.assertEqual(rows[1]["created_at"], "2026-10-05T11:00:00+00:00")
+        self.assertEqual(rows[2]["created_at"], "2026-10-05T11:10:00+00:00")
+        self.assertIsNone(rows[3]["created_at"])
 
     def test_sender_not_assumed_to_be_buyer_because_recipient_is_seller(self):
         tables = {}

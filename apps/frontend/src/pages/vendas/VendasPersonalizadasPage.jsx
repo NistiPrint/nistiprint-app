@@ -9,7 +9,7 @@ import OrderFilters from '@/components/vendas/OrderFilters';
 import { personalizadosService } from '@/services/personalizadosService';
 import { ArrowLeft, Brain, ChevronDown, ChevronRight, Database, FileText, Flag, Loader2, RefreshCw, Settings, Terminal } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 const ITEMS_PER_PAGE = 20;
@@ -40,6 +40,11 @@ const hasNoName = (order) =>
 
 function VendasPersonalizadasPage() {
   const navigate = useNavigate();
+  const params = useParams();
+  const outletContext = useOutletContext() || {};
+  const integrationId = params.integration_id || outletContext.integrationId;
+  const account = outletContext.account;
+  const singleShopeeAccount = outletContext.singleShopeeAccount;
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -156,7 +161,7 @@ function VendasPersonalizadasPage() {
     if (opMode !== null) {
       fetchOrdersRef.current?.();
     }
-  }, [opMode]);
+  }, [opMode, integrationId]);
 
   // Helper seguro para renderizar campos JSONB do banco
   // Supabase retorna objetos já parseados, mas às vezes vem como string
@@ -221,7 +226,12 @@ function VendasPersonalizadasPage() {
       });
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
-      setOrders(data.data?.bling_orders || []);
+      const rows = data.data?.bling_orders || [];
+      setOrders(integrationId
+        ? rows.filter(order => (order.marketplace_integration_id === null || order.marketplace_integration_id === undefined)
+          ? singleShopeeAccount
+          : String(order.marketplace_integration_id) === String(integrationId))
+        : rows);
     } catch (e) {
       setError(e.message);
       toast.error(`Erro ao carregar vendas: ${e.message}`);
@@ -303,7 +313,7 @@ function VendasPersonalizadasPage() {
     const toastId = toast.loading(force ? 'Reprocessando com IA...' : 'Processando com IA...');
     try {
       // Backend espera 'order_sn', não 'shopee_order_sn'
-      const data = await personalizadosService.processar({ order_sn: orderSn, limit: 1, force });
+      const data = await personalizadosService.processar({ order_sn: orderSn, limit: 1, force, ...(integrationId ? { integration_id: Number(integrationId) } : {}) });
       if (data.success) {
         toast.success(data.message || 'Pedido processado com sucesso!', { id: toastId });
         fetchOrders();
@@ -326,7 +336,7 @@ function VendasPersonalizadasPage() {
     processToastRef.current = toast.loading('Preparando pedidos para extração...');
 
     try {
-      const data = await personalizadosService.processar({ limit: 0 });
+      const data = await personalizadosService.processar({ limit: 0, ...(integrationId ? { integration_id: Number(integrationId) } : {}) });
       if (!data.success) {
         toast.error(data.message || 'Erro ao iniciar extração', { id: processToastRef.current });
         processToastRef.current = null;
@@ -503,14 +513,14 @@ function VendasPersonalizadasPage() {
             <>Fonte: {opMode.toUpperCase()}</>
           )}
         </Button>
-        Pedidos Shopee
+        {account?.name || 'Pedidos Shopee'}
       </h1>
 
       <div className="-mt-2 mb-5 flex flex-wrap justify-end gap-2">
         <Button variant="outline" onClick={() => navigate('/ferramentas/ia')}>
           <Brain className="mr-2 h-4 w-4" /> Operação IA Shopee
         </Button>
-        <Button variant="outline" onClick={() => navigate('/configuracoes/ia')}>
+        <Button variant="outline" onClick={() => navigate(integrationId ? `/configuracoes/ia?integration_id=${integrationId}` : '/configuracoes/ia')}>
           <Settings className="mr-2 h-4 w-4" /> Configuração IA Shopee
         </Button>
       </div>
@@ -591,6 +601,7 @@ function VendasPersonalizadasPage() {
         onOpenChange={setIsChatOpen}
         username={selectedChatUser?.username}
         orderId={selectedChatUser?.orderId}
+        integrationId={integrationId}
         highlightedMessageIds={highlightedMessages}
       />
 

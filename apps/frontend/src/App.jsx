@@ -121,6 +121,7 @@ function App() {
               <Route index element={<VendasPersonalizadasPage />} />
               <Route path='mercadolivre' element={<MercadoLivrePersonalizacoesPage />} />
               <Route path='mercadolivre/:integration_id' element={<MercadoLivrePersonalizacoesPage />} />
+              <Route path='shopee/:integration_id' element={<VendasPersonalizadasPage />} />
             </Route>
             <Route path='pedidos' element={<PedidosListPage />} />
             <Route path='pedidos/:id' element={<PedidoDetalhePage />} />

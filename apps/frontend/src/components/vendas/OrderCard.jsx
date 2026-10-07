@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import {
   Brain,
+  AlertTriangle,
   ExternalLink,
   FileText,
   Flag,
@@ -71,6 +72,9 @@ function getStatusBadge(order) {
 function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProblem }) {
   const [isProcessing, setIsProcessing] = useState(false)
   const statusBadge = getStatusBadge(order)
+  const needsReview = (order.itens || []).some(item =>
+    (item.personalizations || []).some(personalization => personalization.status === 'NEEDS_REVIEW'),
+  )
   const buyerMessage = String(order.shopee?.message ?? order.message_to_seller ?? '').trim()
   const isMercadoLivre = order.marketplace === 'mercadolivre'
 
@@ -98,7 +102,7 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
     : orderDate
 
   return (
-    <Card className='border shadow-sm transition-shadow duration-200 hover:shadow-md'>
+    <Card className={`border shadow-sm transition-shadow duration-200 hover:shadow-md ${needsReview ? 'border-amber-500 bg-amber-50/30 ring-1 ring-amber-300' : ''}`}>
       <CardContent className='p-3 sm:p-4'>
         <div className='grid gap-3 md:grid-cols-[minmax(190px,1fr)_minmax(0,4fr)_auto] md:gap-4'>
           <section className='space-y-2 md:border-r md:pr-4' aria-label='Dados do pedido'>
@@ -129,7 +133,7 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
             </div>
 
             <div className='flex flex-wrap gap-1.5'>
-              <Badge variant='outline' title={statusBadge.title} className={`${statusBadge.className} text-xs`}>
+              <Badge variant='outline' title={statusBadge.title} className={`${statusBadge.className} text-xs ${needsReview ? 'border-amber-500 bg-amber-200 text-amber-950 font-bold' : ''}`}>
                 {statusBadge.label}
               </Badge>
               {order.chat_context_ambiguous && (
@@ -141,6 +145,12 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
           </section>
 
           <section className='min-w-0 space-y-2' aria-label='Produtos e personalizações'>
+            {needsReview && (
+              <div role='alert' className='flex items-start gap-2 rounded-md border-2 border-amber-500 bg-amber-100 px-3 py-2.5 text-sm font-semibold text-amber-950'>
+                <AlertTriangle className='mt-0.5 h-5 w-5 flex-shrink-0' />
+                <div><div>Revisão necessária</div><div className='font-normal'>Confira a personalização antes de considerar este pedido resolvido.</div></div>
+              </div>
+            )}
             {buyerMessage && (
               <div className='flex items-start gap-2 rounded border border-blue-200 bg-blue-50 px-2.5 py-2 text-sm text-blue-800'>
                 <MessageCircleMore className='mt-0.5 h-4 w-4 flex-shrink-0' />
@@ -177,10 +187,11 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
                               <button
                                 key={personalization.id ?? pIdx}
                                 type='button'
-                                className='inline-flex max-w-full items-center gap-1.5 rounded-md border border-sky-300 bg-white px-3 py-1.5 text-left text-lg font-bold leading-snug text-sky-900 shadow-sm transition-colors hover:bg-sky-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-600'
+                                className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-3 py-1.5 text-left text-lg font-bold leading-snug shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 ${personalization.status === 'NEEDS_REVIEW' ? 'border-amber-500 bg-amber-50 text-amber-950 hover:bg-amber-100 focus-visible:ring-amber-600' : 'border-sky-300 bg-white text-sky-900 hover:bg-sky-50 focus-visible:ring-sky-600'}`}
                                 onClick={() => handleCopy(personalization.customization_name)}
                                 title={`Clique para copiar ${personalization.customization_name}`}>
                                 <span className='break-words'>{personalization.customization_name}</span>
+                                {personalization.status === 'NEEDS_REVIEW' && <span className='shrink-0 rounded bg-amber-200 px-1.5 py-0.5 text-xs font-bold uppercase tracking-wide text-amber-950'>Provisório · confirmar</span>}
                                 {personalization.customization_initial && (
                                   <span className='shrink-0 font-semibold text-sky-700'>
                                     ({personalization.customization_initial})

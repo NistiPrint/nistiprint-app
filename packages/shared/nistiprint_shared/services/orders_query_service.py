@@ -56,6 +56,7 @@ class OrdersQueryService:
                     "numero": row.get("order_id") or row.get("numero_pedido"),
                     "nome_cliente": row.get("nome_cliente", "") or "",
                     "numeroLoja": row.get("shopee_order_sn") or row.get("numero_loja"),
+                    "marketplace_integration_id": row.get("marketplace_integration_id"),
                     "data": row.get("order_date") or row.get("data_pedido"),
                     "contato": contato,
                     "itens": itens,

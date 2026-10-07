@@ -70,7 +70,7 @@ test('envia lotes por POST no corpo e agrega o resultado com progresso', async (
 });
 
 
-test('interrompe os lotes seguintes quando a API retorna erro', async () => {
+test('nao inicia nova janela de lotes quando uma fatia retorna erro', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async () => {
@@ -82,12 +82,43 @@ test('interrompe os lotes seguintes quando a API retorna erro', async () => {
   };
 
   try {
-    const ids = Array.from({ length: 26 }, (_, index) => index + 1);
+    const ids = Array.from({ length: 126 }, (_, index) => index + 1);
     await assert.rejects(
       buscarPapeisDePedido(ids),
       /Falha ao preparar o lote/,
     );
-    assert.equal(calls, 1);
+    assert.equal(calls, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('processa lotes de 400 pedidos com no máximo quatro requisições simultâneas', async () => {
+  const originalFetch = globalThis.fetch;
+  const chamadas = [];
+  let ativas = 0;
+  let maximoAtivo = 0;
+  globalThis.fetch = async (_url, options) => {
+    const { order_ids: lote } = JSON.parse(options.body);
+    chamadas.push(lote);
+    ativas += 1;
+    maximoAtivo = Math.max(maximoAtivo, ativas);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    ativas -= 1;
+    return jsonResponse({
+      success: true,
+      data: { orders: lote.map((id) => ({ id })), blocked_orders: [] },
+    });
+  };
+
+  try {
+    const ids = Array.from({ length: 400 }, (_, index) => index + 1);
+    const resultado = await buscarPapeisDePedido(ids);
+    assert.equal(chamadas.length, 16);
+    assert.ok(maximoAtivo > 1);
+    assert.ok(maximoAtivo <= 4);
+    assert.equal(resultado.orders.length, 400);
+    assert.deepEqual(resultado.orders.map((order) => order.id), ids);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -185,10 +216,10 @@ test('usa mensagem do comprador quando nao existe nome identificado', () => {
 });
 
 
-test('exibe pacote no cabecalho e numero do marketplace no pedido', () => {
+test('exibe o pacote no cabecalho e reaproveita o numero sem ERP no pedido', () => {
   const html = montarDocumentoDePapeis([{
     id: 3,
-    numero: 'Bling-123',
+    numero: '9007199254740999',
     numeroLoja: 'ordem-externa',
     marketplace_order_id: '9007199254740993',
     pack_id: '9007199254740999',
@@ -196,9 +227,25 @@ test('exibe pacote no cabecalho e numero do marketplace no pedido', () => {
     itens: [],
   }]);
 
-  assert.match(html, /Pacote 9007199254740999/);
-  assert.match(html, /Pedido 9007199254740993/);
+  assert.match(html, /<div>9007199254740999<\/div>/);
+  assert.match(html, /Pedido 9007199254740999/);
   assert.doesNotMatch(html, /ordem-externa/);
+});
+
+
+test('usa o numero do pedido no cabecalho quando o Mercado Livre nao tem pacote', () => {
+  const html = montarDocumentoDePapeis([{
+    id: 5,
+    numeroLoja: '8001234567890',
+    marketplace_order_id: '8001234567890',
+    pack_id: null,
+    plataforma_slug: 'mercadolivre',
+    itens: [],
+  }]);
+
+  assert.match(html, /<div>8001234567890<\/div>/);
+  assert.match(html, /Pedido 8001234567890/);
+  assert.doesNotMatch(html, /Pacote não informado/);
 });
 
 

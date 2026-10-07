@@ -731,7 +731,7 @@ def _assemble_orders(
     return assembled
 
 
-def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, force=False):
+def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, force=False, integration_id=None):
     normalized_limit = None
     if limit not in (None, 0):
         normalized_limit = max(1, int(limit))
@@ -740,6 +740,7 @@ def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, for
         order_sn=order_sn,
         pedido_ids=pedido_ids,
         limit=normalized_limit,
+        integration_id=integration_id,
     )
     to_process = []
     skipped = []
@@ -788,7 +789,7 @@ def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, for
     return to_process, skipped
 
 
-def _select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None):
+def _select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, integration_id=None):
     """Carrega apenas sinais de elegibilidade, sem montar detalhes da listagem.
 
     A montagem completa de pedidos também consulta itens, personalizacoes,
@@ -806,6 +807,9 @@ def _select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None):
         .in_("situacao_pedido_id", STATUS_PERSONALIZACAO)
         .order("data_venda", desc=True)
     )
+
+    if integration_id is not None:
+        query = query.eq("marketplace_integration_id", int(integration_id))
     if order_sn:
         query = query.eq("codigo_pedido_externo", str(order_sn))
     elif pedido_ids:
@@ -1659,7 +1663,7 @@ def processar_pendentes_agendado(self, limit=None):
     return {"success": success, "message": message, "total": total}
 
 
-def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False):
+def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False, integration_id=None):
     effective_limit = limit
     if limit in (0, "0", ""):
         effective_limit = None
@@ -1669,6 +1673,7 @@ def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False):
         pedido_ids=pedido_ids,
         limit=effective_limit,
         force=force,
+        integration_id=integration_id,
     )
 
     if order_sn and candidates:
@@ -1750,7 +1755,7 @@ def save_feedback(order_sn, avaliacao, texto_feedback=""):
     return payload
 
 
-def get_chat_messages(username, limit=None):
+def get_chat_messages(username, limit=None, integration_id=None):
     if not username:
         return []
     query = (
@@ -1760,6 +1765,8 @@ def get_chat_messages(username, limit=None):
         .gte("created_at", (datetime.now(timezone.utc) - timedelta(days=CHAT_LOOKBACK_DAYS)).isoformat())
         .order("created_at", desc=False)
     )
+    if integration_id is not None:
+        query = query.eq("installed_integration_id", int(integration_id))
     if limit:
         query = query.limit(limit)
     messages = query.execute().data or []

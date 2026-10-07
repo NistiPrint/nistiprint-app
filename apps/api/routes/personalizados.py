@@ -81,6 +81,7 @@ def processar():
         pedido_ids = body.get("pedido_ids")
         order_sn = body.get("order_sn")
         limit = body.get("limit")
+        integration_id = body.get("integration_id")
         force = _parse_bool(body.get("force"))
 
         success, message, payload = process_orders(
@@ -88,6 +89,7 @@ def processar():
             order_sn=order_sn,
             pedido_ids=pedido_ids,
             force=force,
+            integration_id=integration_id,
         )
         if not success:
             return ApiResponse.error(message, 500)
@@ -253,7 +255,8 @@ def put_config():
 def chat(username):
     try:
         limit = request.args.get("limit", type=int)
-        messages = get_chat_messages(username, limit=limit)
+        integration_id = request.args.get("integration_id", type=int)
+        messages = get_chat_messages(username, limit=limit, integration_id=integration_id)
         return ApiResponse.success({"messages": messages, "total": len(messages)})
     except Exception as exc:
         logger.error("Erro ao carregar chat %s: %s", username, exc, exc_info=True)

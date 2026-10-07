@@ -362,6 +362,29 @@ def _parse_created(value: Any) -> str | None:
         return None
 
 
+def _message_created_at(message: dict) -> str | None:
+    dates = message.get("message_date")
+    created = dates.get("created") if isinstance(dates, dict) else None
+    return _parse_created(created or message.get("date_created") or message.get("date"))
+
+
+def _normalize_order_ids(values: Any) -> list[str]:
+    """Return provider order IDs without stringifying pack order objects."""
+    if not isinstance(values, list):
+        raise ValueError("resposta de pacote sem lista de pedidos")
+    normalized = []
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get("id")
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            raise ValueError("resposta de pacote contém pedido sem ID válido")
+        order_id = str(value).strip()
+        if not order_id or len(order_id) > 160:
+            raise ValueError("resposta de pacote contém pedido sem ID válido")
+        normalized.append(order_id)
+    return list(dict.fromkeys(normalized))
+
+
 def _messages_from_response(response: dict) -> list[dict]:
     if isinstance(response.get("error"), str):
         retryable = bool(response.get("retryable"))
@@ -399,14 +422,17 @@ def _upsert_messages(integration_id: int, pack_id: str, seller_id: str,
         else:
             role = "unknown"
         text = _message_text(message)
-        attachments = message.get("attachments") if isinstance(message.get("attachments"), list) else []
+        attachments_value = message.get("attachments")
+        if not isinstance(attachments_value, list):
+            attachments_value = message.get("message_attachments")
+        attachments = attachments_value if isinstance(attachments_value, list) else []
         moderation = message.get("moderation") or {}
         records.append({
             "marketplace_integration_id": int(integration_id), "provider_message_id": msg_id,
             "pack_id": str(pack_id), "seller_id": str(seller_id), "from_user_id": sender or None,
             "to_user_id": receiver or None, "sender_role": role,
             "message_type": "attachment" if attachments and not text else "text",
-            "text_content": text or None, "created_at": _parse_created(message.get("date_created") or message.get("date")),
+            "text_content": text or None, "created_at": _message_created_at(message),
             "moderation_status": _text(message.get("status") or moderation.get("status")) or None,
             "attachments": attachments, "raw_json": message,
             "webhook_event_id": webhook_event_id, "updated_at": _now(),
@@ -447,8 +473,7 @@ def _pack_order_ids(integration_id: int, integration: dict, pack_id: str) -> lis
                         integration_id, pack_id)
             return []
         raise RuntimeError("terminal:" + pack["error"])
-    return list(dict.fromkeys(str(value) for value in pack.get("orders") or pack.get("orders_ids") or []
-                              if value not in (None, "")))
+    return _normalize_order_ids(pack.get("orders") or pack.get("orders_ids") or [])
 
 
 def _mark_inbox_messages_persisted(integration_id: int, messages: list[dict]) -> None:
@@ -471,8 +496,16 @@ def sync_pack(integration_id: int, pack_id: str, seller_id: str,
               webhook_event_id: int | None = None,
               order_id_fallback: str | None = None) -> dict:
     integration = _integration(integration_id)
+    existing = (supabase_db.table("mercadolivre_chat_conversations").select("id,raw_json,order_ids,needs_review")
+                .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id))
+                .eq("seller_id", str(seller_id)).limit(1).execute().data or [])
     orders = ([str(order_id_fallback)] if order_id_fallback else
               _pack_order_ids(integration_id, integration, pack_id))
+    if not orders and existing:
+        try:
+            orders = _normalize_order_ids(_json(existing[0].get("order_ids"), []) or [])
+        except ValueError:
+            orders = []
     if not orders and str(pack_id).isdigit():
         orders = [str(pack_id)]
     all_messages: list[dict] = []
@@ -493,9 +526,6 @@ def sync_pack(integration_id: int, pack_id: str, seller_id: str,
         offset += len(page)
     else:
         raise RuntimeError("retry:histórico de mensagens excedeu o limite de páginas")
-    existing = (supabase_db.table("mercadolivre_chat_conversations").select("id,raw_json,order_ids,needs_review")
-                .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id))
-                .eq("seller_id", str(seller_id)).limit(1).execute().data or [])
     metadata = _json(existing[0].get("raw_json"), {}) if existing else {}
     cached_buyers = metadata.get("buyer_ids") if isinstance(metadata, dict) else None
     buyer_ids = {str(value) for value in cached_buyers or []}
@@ -526,7 +556,7 @@ def sync_pack(integration_id: int, pack_id: str, seller_id: str,
     # Update existing state without overwriting the AI context hash or review state.
     conversation_fields = {
         "site_id": site_id, "order_ids": orders,
-        "last_message_at": max((_parse_created(m.get("date_created") or m.get("date")) or "" for m in all_messages), default="") or None,
+        "last_message_at": max((_message_created_at(message) or "" for message in all_messages), default="") or None,
         "last_synced_at": _now(), "raw_json": {"paging_total": total,
             "order_id_fallback": str(order_id_fallback) if order_id_fallback else None,
             "buyer_ids": sorted(buyer_ids)}, "updated_at": _now(),
@@ -1382,15 +1412,147 @@ def printable_personalizations(integration_id: int, pedido_id: int) -> dict:
     conversations = (supabase_db.table("mercadolivre_chat_conversations").select("pack_id,context_hash,last_ai_executed_at,ai_status")
                      .eq("marketplace_integration_id", int(integration_id)).execute().data or [])
     known_conversations = {str(row["pack_id"]): row for row in conversations}
-    # Keep the last completed extraction available while a newer buyer message is pending.
-    current_rows = [row for row in all_stored if row.get("source") == "manual" or
-                    row.get("marketplace_integration_id") == int(integration_id)]
     current_messages = {}
     for pack_id in pack_ids:
         current_messages[pack_id] = (supabase_db.table("mercadolivre_chat_messages").select("provider_message_id,sender_role")
             .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", pack_id).execute().data or [])
+    pending_events = (supabase_db.table("mercadolivre_chat_inbox").select("id", count="exact")
+                      .eq("marketplace_integration_id", int(integration_id))
+                      .in_("status", ["pending", "retry", "processing", "unmatched"]).execute())
+    has_pending_events = bool(getattr(pending_events, "count", None) or getattr(pending_events, "data", None))
+    return _evaluate_printable_personalizations(
+        int(integration_id), items, all_stored, known_conversations,
+        current_messages, has_pending_events,
+    )
+
+
+def printable_personalizations_many(orders: list[dict], items_by_order: dict[int, list[dict]]) -> dict[int, dict]:
+    """Resolve as personalizações imprimíveis de um lote com leituras agrupadas."""
+    from nistiprint_shared.services.personalized_classification_service import classify_items
+
+    pedidos_por_id = {int(order["id"]): order for order in orders if order.get("id") is not None}
+    ids_por_integracao: dict[int, list[int]] = {}
+    itens_personalizados: dict[int, list[dict]] = {}
+    resultados = {}
+    for pedido_id, order in pedidos_por_id.items():
+        personalized_items = [item for item in items_by_order.get(pedido_id, [])
+            if item.get("personalizado") or classify_items([{
+                "descricao": item.get("titulo_anuncio") or item.get("descricao")
+            }]).matched_items]
+        itens_personalizados[pedido_id] = personalized_items
+        if not personalized_items:
+            resultados[pedido_id] = {"ready": True, "by_item_id": {}, "message": None}
+            continue
+        integration_id = order.get("marketplace_integration_id")
+        if not integration_id:
+            resultados[pedido_id] = {"ready": False, "by_item_id": {}, "message": "Conta Mercado Livre não identificada."}
+            continue
+        try:
+            integration_id = int(integration_id)
+        except (TypeError, ValueError):
+            resultados[pedido_id] = {"ready": False, "by_item_id": {}, "message": "Conta Mercado Livre não identificada."}
+            continue
+        ids_por_integracao.setdefault(integration_id, []).append(pedido_id)
+
+    if not ids_por_integracao:
+        for pedido_id in pedidos_por_id:
+            resultados.setdefault(pedido_id, {"ready": True, "by_item_id": {}, "message": None})
+        return resultados
+
+    integrations = list(ids_por_integracao)
+    for integration_id in integrations:
+        try:
+            _integration(integration_id, active=False)
+        except Exception:
+            logger.warning("Falha ao validar conta Mercado Livre para impressão em lote", exc_info=True)
+            for pedido_id in ids_por_integracao[integration_id]:
+                resultados[pedido_id] = {"ready": False, "by_item_id": {}, "message": "Conta Mercado Livre indisponível."}
+
+    todos_os_ids = [pedido_id for ids in ids_por_integracao.values() for pedido_id in ids]
+    stored_rows = (supabase_db.table("mercadolivre_personalizations").select("*")
+        .in_("marketplace_integration_id", integrations).in_("pedido_id", todos_os_ids).execute().data or [])
+    stored_por_pedido: dict[int, list[dict]] = {}
+    pack_ids = set()
+    provider_ids = set()
+    for row in stored_rows:
+        try:
+            pedido_id = int(row.get("pedido_id"))
+        except (TypeError, ValueError):
+            continue
+        stored_por_pedido.setdefault(pedido_id, []).append(row)
+        if row.get("pack_id"):
+            pack_ids.add(str(row["pack_id"]))
+        details = _json(row.get("details"), {}) or {}
+        for value in (
+            details.get("name_source_message_id") or row.get("provider_message_id"),
+            details.get("initial_source_message_id"),
+        ):
+            if value and str(value) != "message_to_seller":
+                provider_ids.add(str(value))
+
+    conversations = []
+    if pack_ids:
+        conversations = (supabase_db.table("mercadolivre_chat_conversations")
+            .select("marketplace_integration_id,pack_id,context_hash,last_ai_executed_at,ai_status")
+            .in_("marketplace_integration_id", integrations).in_("pack_id", sorted(pack_ids)).execute().data or [])
+    conversas_por_integracao_pack = {
+        (int(row["marketplace_integration_id"]), str(row["pack_id"])): row
+        for row in conversations
+    }
+
+    messages = []
+    if provider_ids:
+        messages = (supabase_db.table("mercadolivre_chat_messages").select("marketplace_integration_id,pack_id,provider_message_id,sender_role")
+            .in_("marketplace_integration_id", integrations).in_("provider_message_id", sorted(provider_ids)).execute().data or [])
+    mensagens_por_integracao_pack: dict[tuple[int, str], list[dict]] = {}
+    for row in messages:
+        key = (int(row["marketplace_integration_id"]), str(row["pack_id"]))
+        mensagens_por_integracao_pack.setdefault(key, []).append(row)
+
+    integrations_com_fila = set()
+    for integration_id in integrations:
+        pending = (supabase_db.table("mercadolivre_chat_inbox").select("id")
+            .eq("marketplace_integration_id", integration_id)
+            .in_("status", ["pending", "retry", "processing", "unmatched"]).limit(1).execute().data or [])
+        if pending:
+            integrations_com_fila.add(integration_id)
+
+    for integration_id, pedido_ids in ids_por_integracao.items():
+        for pedido_id in pedido_ids:
+            if pedido_id in resultados:
+                continue
+            items = itens_personalizados.get(pedido_id, [])
+            if not items:
+                resultados[pedido_id] = {"ready": True, "by_item_id": {}, "message": None}
+                continue
+            rows = stored_por_pedido.get(pedido_id, [])
+            packs_do_pedido = {str(row.get("pack_id")) for row in rows if row.get("pack_id")}
+            conversas = {pack: conversas_por_integracao_pack[(integration_id, pack)]
+                for pack in packs_do_pedido if (integration_id, pack) in conversas_por_integracao_pack}
+            mensagens = {pack: mensagens_por_integracao_pack.get((integration_id, pack), []) for pack in packs_do_pedido}
+            resultados[pedido_id] = _evaluate_printable_personalizations(
+                integration_id, items, rows, conversas, mensagens,
+                integration_id in integrations_com_fila,
+            )
+
+    for pedido_id in pedidos_por_id:
+        resultados.setdefault(pedido_id, {"ready": False, "by_item_id": {}, "message": "Conta Mercado Livre não identificada."})
+    return resultados
+
+
+def _evaluate_printable_personalizations(
+    integration_id: int,
+    items: list[dict],
+    all_stored: list[dict],
+    conversations: dict[str, dict],
+    current_messages: dict[str, list[dict]],
+    has_pending_events: bool,
+) -> dict:
+    """Aplica as regras de validade sem fazer consultas ao banco."""
+    known_conversations = conversations
+    current_rows = [row for row in all_stored if row.get("source") == "manual" or
+                    row.get("marketplace_integration_id") == int(integration_id)]
     item_quantities = {int(item["id"]): max(1, int(item.get("quantidade") or 1)) for item in items}
-    # When multiple successful runs exist, only the newest completed run should feed printing.
     latest_success: dict[tuple[str, int], tuple[str, str]] = {}
     for row in current_rows:
         if row.get("status") == "SUCCESS" and row.get("marketplace_integration_id") == int(integration_id):
@@ -1398,8 +1560,7 @@ def printable_personalizations(integration_id: int, pedido_id: int) -> dict:
             if (known_conversations.get(key[0]) or {}).get("context_hash") and row.get("context_hash") != (known_conversations.get(key[0]) or {}).get("context_hash"):
                 continue
             latest_success[key] = max(latest_success.get(key, ("", "")), (
-                str(row.get("updated_at") or row.get("created_at") or ""),
-                str(row.get("id") or "")))
+                str(row.get("updated_at") or row.get("created_at") or ""), str(row.get("id") or "")))
     valid = []
     unresolved_rows = []
     for row in current_rows:
@@ -1417,8 +1578,7 @@ def printable_personalizations(integration_id: int, pedido_id: int) -> dict:
             and (not row.get("customization_initial") or str(details.get("initial_source_message_id") or "") in buyer_message_ids | {"message_to_seller"})
         )
         row_key = (str(row.get("pack_id")), item_id)
-        row_time = (str(row.get("updated_at") or row.get("created_at") or ""),
-                    str(row.get("id") or ""))
+        row_time = (str(row.get("updated_at") or row.get("created_at") or ""), str(row.get("id") or ""))
         current_success = row.get("status") == "SUCCESS" and row.get("context_hash") == (known_conversations.get(row_key[0]) or {}).get("context_hash")
         if (row.get("status") == "SUCCESS" and row.get("marketplace_integration_id") == int(integration_id)
                 and (row_time == latest_success.get(row_key) or not current_success)
@@ -1435,17 +1595,11 @@ def printable_personalizations(integration_id: int, pedido_id: int) -> dict:
             "quantity_to_personalize": row.get("quantity_to_personalize", 1),
             "status": row.get("status"), "confirmed": bool(row.get("confirmed")),
         })
-    ready = not unresolved_rows
+    ready = not unresolved_rows and not has_pending_events
     for item in items:
         rows = by_item.get(int(item["id"]), [])
         names = sum(int(row.get("quantity_to_personalize") or 0) for row in rows)
         if not rows or names != max(1, int(item.get("quantidade") or 1)):
             ready = False
-    pending_events = (supabase_db.table("mercadolivre_chat_inbox").select("id", count="exact")
-                      .eq("marketplace_integration_id", int(integration_id))
-                      .in_("status", ["pending", "retry", "processing", "unmatched"]).execute())
-    if getattr(pending_events, "count", None) or getattr(pending_events, "data", None):
-        ready = False
     return {"ready": ready, "by_item_id": by_item,
-            "message": None if ready else
-            "Personalização pendente, desatualizada ou aguardando sincronização de mensagens."}
+            "message": None if ready else "Personalização pendente, desatualizada ou aguardando sincronização de mensagens."}
