@@ -59,6 +59,9 @@ function normalizeOrder(order) {
   return {
     ...order,
     marketplace: 'mercadolivre',
+    // OrderCard is shared with Shopee and reads the buyer and item fields
+    // from the canonical card shape. Keep these aliases here so a new chat
+    // message can mark the order pending without hiding its previous result.
     numero: order.numero_pedido || externalId,
     numeroLoja: externalId,
     data: order.data_venda,
