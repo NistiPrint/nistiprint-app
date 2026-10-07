@@ -31,12 +31,24 @@ BEGIN
             SELECT 1 FROM despacho_escopo_lote(6,ARRAY[1],ARRAY['sem_prazo'],dia) x WHERE x=alvo.id)
         THEN RAISE EXCEPTION 'Pedido com coleta foi para sem_prazo'; END IF;
     END LOOP;
-    IF EXISTS (SELECT 1 FROM despacho_arvore(dia) a WHERE a.nivel=2
-        AND a.qtd_pedidos<>jsonb_array_length(despacho_escopo_contexto(a.integration_id,
-            CASE WHEN a.modalidade_id IS NULL THEN NULL ELSE ARRAY[a.modalidade_id] END,
-            ARRAY[a.bucket_prazo],dia)->'pedido_ids'))
-    THEN RAISE EXCEPTION 'Torre e escopo divergem com fallback'; END IF;
+    SELECT a.integration_id,a.modalidade_id,a.bucket_prazo,a.qtd_pedidos,
+           jsonb_array_length(despacho_escopo_contexto(a.integration_id,
+               CASE WHEN a.modalidade_id IS NULL THEN NULL ELSE ARRAY[a.modalidade_id] END,
+               ARRAY[a.bucket_prazo],dia)->'pedido_ids') AS qtd_escopo
+      INTO alvo FROM despacho_arvore(dia) a WHERE a.nivel=2
+       AND a.qtd_pedidos<>jsonb_array_length(despacho_escopo_contexto(a.integration_id,
+           CASE WHEN a.modalidade_id IS NULL THEN NULL ELSE ARRAY[a.modalidade_id] END,
+           ARRAY[a.bucket_prazo],dia)->'pedido_ids') LIMIT 1;
+    IF FOUND THEN RAISE EXCEPTION 'Torre e escopo divergem: %, %, %, arvore %, escopo %',
+        alvo.integration_id,alvo.modalidade_id,alvo.bucket_prazo,alvo.qtd_pedidos,alvo.qtd_escopo; END IF;
     IF despacho_bucket_operacional(NULL,NULL,NULL,dia)<>'sem_prazo'
     THEN RAISE EXCEPTION 'Ausencia de prazo e agenda deveria ser sem_prazo'; END IF;
+    IF despacho_bucket_operacional(now(),now()+interval '2 days',now()+interval '2 days',dia)
+       IS DISTINCT FROM despacho_bucket_prazo(now(),dia)
+    THEN RAISE EXCEPTION 'Prazo salvo deve prevalecer sobre coleta futura'; END IF;
+    IF despacho_bucket_operacional(NULL,now()+interval '1 day',now(),dia)<>'amanha'
+    THEN RAISE EXCEPTION 'Coleta deve classificar pedido sem prazo'; END IF;
+    IF despacho_bucket_operacional(NULL,NULL,now(),dia)<>'sem_prazo'
+    THEN RAISE EXCEPTION 'Compromisso isolado nao deve substituir prazo ou coleta'; END IF;
 END $$;
 ROLLBACK;

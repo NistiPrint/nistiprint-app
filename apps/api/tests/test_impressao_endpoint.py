@@ -37,7 +37,15 @@ class TestImpressaoEndpoint(unittest.TestCase):
             'ready': [{'pedido_id': 480920}, {'pedido_id': 481214}],
             'blocked': [],
         }
+
+        class Query:
+            def select(self, *_args): return self
+            def in_(self, *_args): return self
+            def execute(self): return type('Result', (), {'data': []})()
+
+        banco = type('Database', (), {'table': lambda _self, _name: Query()})()
         with (
+            patch.object(impressao_module, 'supabase_db', banco),
             patch.object(
                 impressao_module.order_erp_reference_service,
                 'resolve_many',
@@ -66,6 +74,30 @@ class TestImpressaoEndpoint(unittest.TestCase):
             build_order.call_args_list,
             [call(480920, 'SHOPEE'), call(481214, 'SHOPEE')],
         )
+
+    def test_mercadolivre_gera_papel_sem_consultar_o_erp(self):
+        class Query:
+            def select(self, *_args):
+                return self
+
+            def in_(self, *_args):
+                return self
+
+            def execute(self):
+                return type('Result', (), {'data': [{'id': 77, 'marketplace_module_id': 'mercadolivre'}]})()
+
+        banco = type('Database', (), {'table': lambda _self, _name: Query()})()
+        with (
+            patch.object(impressao_module, 'supabase_db', banco),
+            patch.object(impressao_module.order_erp_reference_service, 'resolve_many') as resolve_many,
+            patch.object(impressao_module, '_build_order_print_data', side_effect=_order_data) as build_order,
+        ):
+            response = self.client.post('/api/v2/pedidos/impressao', json={'order_ids': [77]})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['data']['total'], 1)
+        resolve_many.assert_not_called()
+        build_order.assert_called_once_with(77, None)
 
     def test_post_sem_corpo_retorna_400(self):
         response = self.client.post('/api/v2/pedidos/impressao')

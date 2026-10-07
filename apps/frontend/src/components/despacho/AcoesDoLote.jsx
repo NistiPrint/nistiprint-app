@@ -97,10 +97,12 @@ export default function AcoesDoLote({ params, titulo = 'Ações do lote', classN
       const { total, blocked } = await imprimirPapeisDePedido(ids, {
         onProgress: setProgressoImpressao,
       });
-      if (total === 0) {
-        toast.warning('Nenhum papel pôde ser montado — os pedidos ainda não têm número no ERP.');
-      } else if (blocked.length > 0) {
-        toast.warning(`${total} papéis enviados para impressão. ${blocked.length} ficaram de fora por falta de dados.`);
+      if (blocked.length > 0) {
+        const identificadores = blocked.slice(0, 5).map((pedido) => pedido.pedido_id).filter(Boolean).join(', ');
+        const restante = blocked.length > 5 ? ` e mais ${blocked.length - 5}` : '';
+        toast.warning(`${total} papéis enviados. ${blocked.length} pedidos não foram gerados${identificadores ? ` (IDs ${identificadores}${restante})` : ''}.`);
+      } else if (total === 0) {
+        toast.warning('Nenhum papel pôde ser montado com os dados salvos dos pedidos.');
       } else {
         toast.success(`${total} papéis enviados para impressão.`);
       }
@@ -244,7 +246,7 @@ export default function AcoesDoLote({ params, titulo = 'Ações do lote', classN
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <div>
               {semErp.length} pedido{semErp.length > 1 ? 's' : ''} ainda sem número no ERP.
-              {' '}A nota destes não sai por aqui, e o papel deles também não é impresso.
+              {' '}A emissão das notas destes pedidos permanece pendente.
               <div className="mt-1 font-mono">
                 {semErp.slice(0, 8).map((p) => p.id_origem || p.pedido_id).join(', ')}
                 {semErp.length > 8 && ` e mais ${semErp.length - 8}`}

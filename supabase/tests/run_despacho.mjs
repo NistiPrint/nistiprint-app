@@ -15,6 +15,7 @@ try {
     'supabase/tests/despacho_leituras_em_lote.sql',
     'supabase/migrations/20261005191000_shopee_prazos_confirmados.sql',
     'supabase/migrations/20261005200000_despacho_sem_prazo_proxima_coleta.sql',
+    'supabase/migrations/20261007100000_despacho_prazo_sobre_coleta.sql',
     'supabase/tests/despacho_sem_prazo_proxima_coleta.sql',
     'supabase/tests/despacho_abas_por_prazo.sql',
   ]) {

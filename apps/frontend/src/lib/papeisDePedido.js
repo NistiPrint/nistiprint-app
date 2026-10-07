@@ -47,7 +47,7 @@ function pedidoTemNomeIdentificado(order) {
  * `onProgress` recebe { processados, total } ao iniciar e ao concluir cada fatia.
  */
 export async function buscarPapeisDePedido(pedidoIds, { onProgress, plataforma } = {}) {
-  const ids = (pedidoIds || []).filter(Boolean);
+  const ids = [...new Set((pedidoIds || []).filter(Boolean))];
   if (ids.length === 0) return { orders: [], blocked: [] };
 
   const orders = [];
@@ -69,6 +69,17 @@ export async function buscarPapeisDePedido(pedidoIds, { onProgress, plataforma }
     }
     orders.push(...(json.data?.orders || []));
     blocked.push(...(json.data?.blocked_orders || []));
+    const resolvidos = new Set([
+      ...(json.data?.orders || []).map((order) => Number(order.id)),
+      ...(json.data?.blocked_orders || []).map((order) => Number(order.pedido_id)),
+    ]);
+    if (resolvidos.size !== (json.data?.orders || []).length + (json.data?.blocked_orders || []).length) {
+      throw new Error('A impressão recebeu resultados repetidos para um ou mais pedidos.');
+    }
+    const semResultado = fatia.filter((id) => !resolvidos.has(Number(id)));
+    if (semResultado.length > 0) {
+      throw new Error(`A impressão não retornou resultado para ${semResultado.length} pedido(s): ${semResultado.join(', ')}.`);
+    }
     onProgress?.({ processados: Math.min(i + fatia.length, ids.length), total: ids.length });
   }
   return { orders, blocked };
@@ -85,7 +96,7 @@ function personalizacoesHtml(item) {
     .join('');
 }
 
-function itemHtml(item) {
+function itemHtml(item, esconderPersonalizacao = false) {
   const variacao = item.variacao && String(item.variacao).trim() && item.variacao !== '-'
     ? `<div class="variacao">${escaparHtml(item.variacao)}</div>`
     : '';
@@ -95,7 +106,7 @@ function itemHtml(item) {
         <div>${escaparHtml(item.descricao || 'N/A')}</div>
         ${variacao}
         <div><strong>${escaparHtml(item.codigo || '')}</strong></div>
-        ${personalizacoesHtml(item)}
+        ${esconderPersonalizacao ? '' : personalizacoesHtml(item)}
       </div>
       <div class="item-quantity">${escaparHtml(item.quantidade ?? 1)}</div>
       <div class="item-price">${moeda(item.valor)}</div>
@@ -126,7 +137,7 @@ function mensagemHtml(order) {
   // So aparece quando o pedido e personalizado e nao veio nome estruturado: e
   // o texto cru do comprador ("Nome na capa sera: ..."), que sem isto obrigaria
   // o operador a abrir o painel do marketplace pedido a pedido.
-  if (pedidoTemNomeIdentificado(order)) return '';
+  if (order.personalizacao_pendente || pedidoTemNomeIdentificado(order)) return '';
   const mensagem = (order.mensagem_comprador || '').trim();
   if (!mensagem) return '';
   return `<div class="mensagem-comprador">
@@ -145,6 +156,13 @@ function cartaoHtml(order) {
   const endereco = order.contato?.endereco
     ? `<div>${escaparHtml(order.contato.endereco)}</div>`
     : '';
+  const ehMercadoLivre = order.plataforma_slug === 'mercadolivre';
+  const identificadorCabecalho = ehMercadoLivre
+    ? `Pacote ${order.pack_id || 'não informado'}`
+    : (order.numeroLoja || 'N/A');
+  const identificadorPedido = ehMercadoLivre
+    ? (order.marketplace_order_id || order.numero || order.id || 'N/A')
+    : (order.numero || order.id || 'N/A');
   return `
     <div class="stamp-card">
       <div class="stamp-header">
@@ -156,12 +174,12 @@ function cartaoHtml(order) {
         <div></div>
         <div class="origem">
           <div>${escaparHtml(order.plataforma || 'Pedido')}</div>
-          <div>${escaparHtml(order.numeroLoja || 'N/A')}</div>
+          <div>${escaparHtml(identificadorCabecalho)}</div>
         </div>
       </div>
       <div class="stamp-content">
-        <div class="order-info"><div>Pedido ${escaparHtml(order.numero || order.id || 'N/A')}</div></div>
-        ${itens.map(itemHtml).join('')}
+        <div class="order-info"><div>Pedido ${escaparHtml(identificadorPedido)}</div></div>
+        ${itens.map((item) => itemHtml(item, order.personalizacao_pendente)).join('')}
         ${mensagemHtml(order)}
         <div class="item">
           <div class="item-details"></div>

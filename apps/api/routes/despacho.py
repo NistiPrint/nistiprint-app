@@ -504,10 +504,11 @@ def get_arvore():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
-def _bucket_operacional(prazo: str | None, data: str) -> str:
-    if not prazo:
+def _bucket_operacional(prazo: str | None, data: str, coleta: str | None = None) -> str:
+    prazo_efetivo = prazo or coleta
+    if not prazo_efetivo:
         return "sem_prazo"
-    dia = datetime.fromisoformat(prazo.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Sao_Paulo")).date()
+    dia = datetime.fromisoformat(prazo_efetivo.replace("Z", "+00:00")).astimezone(ZoneInfo("America/Sao_Paulo")).date()
     referencia = date.fromisoformat(data)
     diferenca = (dia - referencia).days
     return "atrasado" if diferenca < 0 else "hoje" if diferenca == 0 else "amanha" if diferenca == 1 else "depois"
@@ -574,19 +575,37 @@ def get_escopo():
             pacotes_rows = supabase_db.rpc("pedidos_pacotes", {"p_pedido_ids": pedido_ids}).execute().data or [] if pedido_ids else []
             buckets = {}
             if conferencia_id is None:
-                # Fallback para banco anterior: ler apenas os prazos deste no.
-                query = supabase_db.table("vw_pedidos_pendentes_despacho").select("data_limite_envio")
+                # Fallback para banco anterior: reconstruir o mesmo bucket de
+                # prazo/coleta do contexto RPC, sem usar compromisso isolado.
+                query = supabase_db.table("vw_pedidos_pendentes_despacho").select("id,data_limite_envio")
                 query = query.is_("marketplace_integration_id", "null") if integration_id is None else query.eq("marketplace_integration_id", integration_id)
                 query = query.is_("modalidade_logistica_id", "null") if modalidade_ids is None else query.in_("modalidade_logistica_id", modalidade_ids)
+                linhas_bucket = []
                 inicio = 0
                 while True:
                     rows = query.range(inicio, inicio + 999).execute().data or []
-                    for row in rows:
-                        b = _bucket_operacional(row.get("data_limite_envio"), p_data)
-                        buckets[b] = buckets.get(b, 0) + 1
+                    linhas_bucket.extend(rows)
                     if len(rows) < 1000:
                         break
                     inicio += 1000
+                ids_sem_prazo = [row["id"] for row in linhas_bucket if not row.get("data_limite_envio")]
+                coletas_por_id = {}
+                if ids_sem_prazo:
+                    try:
+                        coleta_rows = supabase_db.rpc("despacho_coletas_em_lote", {
+                            "p_pedido_ids": ids_sem_prazo,
+                            "p_agora": datetime.now(ZoneInfo("UTC")).isoformat(),
+                        }).execute().data or []
+                        coletas_por_id = {row["pedido_id"]: row.get("coleta_em") for row in coleta_rows}
+                    except Exception as exc:
+                        if str(getattr(exc, "code", "")) != "PGRST202":
+                            raise
+                        logger.info("RPC de coletas em lote ausente; fallback classifica pedidos sem prazo")
+                for row in linhas_bucket:
+                    bucket = _bucket_operacional(
+                        row.get("data_limite_envio"), p_data, coletas_por_id.get(row["id"])
+                    )
+                    buckets[bucket] = buckets.get(bucket, 0) + 1
         pacotes = {row["pedido_id"]: row for row in pacotes_rows}
         for pedido in pedidos:
             pacote = pacotes.get(pedido["id"]) or {}

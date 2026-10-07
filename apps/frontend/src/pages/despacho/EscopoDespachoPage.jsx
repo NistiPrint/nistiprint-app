@@ -66,7 +66,9 @@ export default function EscopoDespachoPage() {
   const marketplaceNome = searchParams.get('marketplace_nome') || 'Origem não resolvida';
   const modalidadeNome = searchParams.get('modalidade_nome') || 'Modalidade não classificada';
   const abaOrigem = searchParams.get('aba') || 'hoje';
+  const identidadeOrigem = `${integrationId ?? ''}/${modalidadeIds.join(',')}/${conferenciaId ?? ''}/${abaOrigem}`;
   const [horizonte, setHorizonte] = useState(() => horizonteDaAba(abaOrigem));
+  const [dataReferencia, setDataReferencia] = useState(() => dataOperacionalHoje());
   const [dados, setDados] = useState(null);
   const [loading, setLoading] = useState(true);
   const [publicando, setPublicando] = useState(false);
@@ -78,8 +80,9 @@ export default function EscopoDespachoPage() {
   const [abrindoPlano, setAbrindoPlano] = useState(false);
   const baselineRef = useRef([]);
   const requisicaoRef = useRef(null);
+  const identidadeOrigemRef = useRef(identidadeOrigem);
   const incluirSemPrazo = horizonte.includes('sem_prazo');
-  const chaveDoEscopo = useMemo(() => origemArquivo ? { conferencia_id: conferenciaId } : { integration_id: integrationId ?? undefined, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? undefined, horizonte, data: dataOperacionalHoje() }, [origemArquivo, conferenciaId, integrationId, modalidadeIds, horizonte]);
+  const chaveDoEscopo = useMemo(() => origemArquivo ? { conferencia_id: conferenciaId } : { integration_id: integrationId ?? undefined, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? undefined, horizonte, data: dataReferencia }, [origemArquivo, conferenciaId, integrationId, modalidadeIds, horizonte, dataReferencia]);
   const carregar = useCallback(async () => {
     requisicaoRef.current?.abort();
     const controller = new AbortController();
@@ -93,7 +96,7 @@ export default function EscopoDespachoPage() {
         modalidadeIds.forEach((id) => params.append('modalidade_ids', id));
         if (modalidadeIds.length) params.set('modalidade_id', modalidadeIds[0]);
         horizonte.forEach((item) => params.append('horizonte', item));
-        params.set('data', dataOperacionalHoje());
+        params.set('data', dataReferencia);
       }
       params.set('incluir_previsao', '1');
       const escopo = await carregarEscopoDespacho(fetch, params, controller.signal);
@@ -107,15 +110,23 @@ export default function EscopoDespachoPage() {
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, [origemArquivo, conferenciaId, integrationId, modalidadeIds, horizonte]);
+  }, [origemArquivo, conferenciaId, integrationId, modalidadeIds, horizonte, dataReferencia]);
   useEffect(() => { carregar(); return () => requisicaoRef.current?.abort(); }, [carregar]);
+  useEffect(() => {
+    const verificarDiaOperacional = () => {
+      const hoje = dataOperacionalHoje();
+      setDataReferencia((anterior) => anterior === hoje ? anterior : hoje);
+    };
+    const timer = window.setInterval(verificarDiaOperacional, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const publicar = async () => {
     setPublicando(true); setConflitos([]);
     try {
       const planoAtual = planoImpressao?.id
         ? await capaPrintService.savePlan({ pedido_ids: (dados?.pedidos || []).map((pedido) => pedido.id).filter(Boolean), linhas: prepararLinhasParaEnvio(linhasEditadas), previsao_versao: previsaoVersao })
         : null;
-      const lancamento = await fetch('/api/v2/despacho/lancar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ integration_id: integrationId, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? null, horizonte, data: dataOperacionalHoje(), ...(origemArquivo ? { conferencia_id: conferenciaId } : {}), previsao_versao: previsaoVersao }) });
+      const lancamento = await fetch('/api/v2/despacho/lancar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ integration_id: integrationId, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? null, horizonte, data: dataReferencia, ...(origemArquivo ? { conferencia_id: conferenciaId } : {}), previsao_versao: previsaoVersao }) });
       const criado = await lancamento.json(); if (!criado.success) throw new Error(criado.error || 'Não foi possível montar a demanda');
       setConflitos(criado.data.ja_em_rascunho || []);
       const linhas = temAlteracoes ? prepararLinhasParaEnvio(linhasEditadas) : undefined;
@@ -135,6 +146,15 @@ export default function EscopoDespachoPage() {
   const qtdSemPrazo = dados?.buckets?.sem_prazo ?? 0;
   const temAlteracoes = useMemo(() => linhasForamEditadas(linhasEditadas, baselineRef.current), [linhasEditadas]);
   const confirmarDescarte = useCallback(() => !temAlteracoes || window.confirm('Existem alterações não publicadas. Deseja descartá-las?'), [temAlteracoes]);
+  useEffect(() => {
+    if (identidadeOrigemRef.current === identidadeOrigem) return;
+    if (!confirmarDescarte()) {
+      navigate('/despacho');
+      return;
+    }
+    identidadeOrigemRef.current = identidadeOrigem;
+    setHorizonte(horizonteDaAba(abaOrigem));
+  }, [identidadeOrigem, abaOrigem, confirmarDescarte, navigate]);
   const pedidoIds = useMemo(() => (dados?.pedidos || []).map((pedido) => pedido.id).filter(Boolean), [dados?.pedidos]);
   const linhasParaImpressao = useMemo(() => prepararLinhasParaEnvio(linhasEditadas), [linhasEditadas]);
   const abrirPlano = async () => {

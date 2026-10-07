@@ -106,6 +106,8 @@ class TestLeiturasDespacho(unittest.TestCase):
 
     def test_data_operacional_independe_de_utc(self):
         self.assertEqual(modulo._bucket_operacional('2026-10-07T02:59:59Z', '2026-10-05'), 'amanha')
+        self.assertEqual(modulo._bucket_operacional(None, '2026-10-05', '2026-10-06T03:00:00Z'), 'amanha')
+        self.assertEqual(modulo._bucket_operacional(None, '2026-10-05'), 'sem_prazo')
 
     def test_autenticacao_antes_de_qualquer_consulta(self):
         banco = MagicMock()

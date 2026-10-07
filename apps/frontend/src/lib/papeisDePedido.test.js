@@ -22,7 +22,10 @@ test('envia lotes por POST no corpo e agrega o resultado com progresso', async (
   const responses = [
     jsonResponse({
       success: true,
-      data: { orders: [{ id: 1 }], blocked_orders: [{ pedido_id: 2 }] },
+      data: {
+        orders: Array.from({ length: 24 }, (_, index) => ({ id: index + 1 })),
+        blocked_orders: [{ pedido_id: 25 }],
+      },
     }),
     jsonResponse({
       success: true,
@@ -52,10 +55,10 @@ test('envia lotes por POST no corpo e agrega o resultado com progresso', async (
     assert.deepEqual(JSON.parse(calls[1][1].body), {
       order_ids: [26],
     });
-    assert.deepEqual(result, {
-      orders: [{ id: 1 }, { id: 26 }],
-      blocked: [{ pedido_id: 2 }],
-    });
+    assert.equal(result.orders.length, 25);
+    assert.equal(result.orders[0].id, 1);
+    assert.equal(result.orders[23].id, 24);
+    assert.deepEqual(result.blocked, [{ pedido_id: 25 }]);
     assert.deepEqual(progress, [
       { processados: 0, total: 26 },
       { processados: 25, total: 26 },
@@ -91,6 +94,21 @@ test('interrompe os lotes seguintes quando a API retorna erro', async () => {
 });
 
 
+test('identifica explicitamente pedidos omitidos pela API', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => jsonResponse({
+    success: true,
+    data: { orders: [{ id: 1 }], blocked_orders: [] },
+  });
+
+  try {
+    await assert.rejects(buscarPapeisDePedido([1, 2]), /não retornou resultado.*2/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
 test('agrega todos os lotes em um unico documento de impressao', async () => {
   const originalFetch = globalThis.fetch;
   const originalDocument = globalThis.document;
@@ -105,17 +123,13 @@ test('agrega todos os lotes em um unico documento de impressao', async () => {
       close: () => {},
     },
   };
-  const responses = [
-    jsonResponse({
+  globalThis.fetch = async (_url, options) => {
+    const { order_ids: lote } = JSON.parse(options.body);
+    return jsonResponse({
       success: true,
-      data: { orders: [{ id: 1, itens: [] }], blocked_orders: [] },
-    }),
-    jsonResponse({
-      success: true,
-      data: { orders: [{ id: 26, itens: [] }], blocked_orders: [] },
-    }),
-  ];
-  globalThis.fetch = async () => responses.shift();
+      data: { orders: lote.map((id) => ({ id, itens: [] })), blocked_orders: [] },
+    });
+  };
   globalThis.document = {
     createElement: () => iframe,
     body: {
@@ -127,7 +141,7 @@ test('agrega todos os lotes em um unico documento de impressao', async () => {
     const ids = Array.from({ length: 26 }, (_, index) => index + 1);
     const result = await imprimirPapeisDePedido(ids);
 
-    assert.equal(result.total, 2);
+    assert.equal(result.total, 26);
     assert.equal(appendedIframes, 1);
     assert.match(writtenHtml, /Pedido 1/);
     assert.match(writtenHtml, /Pedido 26/);
@@ -168,4 +182,38 @@ test('usa mensagem do comprador quando nao existe nome identificado', () => {
   assert.match(html, /Mensagem do comprador/);
   assert.match(html, /Nome ainda nao identificado/);
   assert.doesNotMatch(html, /custom-name-display">\s+</);
+});
+
+
+test('exibe pacote no cabecalho e numero do marketplace no pedido', () => {
+  const html = montarDocumentoDePapeis([{
+    id: 3,
+    numero: 'Bling-123',
+    numeroLoja: 'ordem-externa',
+    marketplace_order_id: '9007199254740993',
+    pack_id: '9007199254740999',
+    plataforma_slug: 'mercadolivre',
+    itens: [],
+  }]);
+
+  assert.match(html, /Pacote 9007199254740999/);
+  assert.match(html, /Pedido 9007199254740993/);
+  assert.doesNotMatch(html, /ordem-externa/);
+});
+
+
+test('personalizacao pendente omite nomes, iniciais e mensagem de comprador', () => {
+  const html = montarDocumentoDePapeis([{
+    id: 4,
+    plataforma_slug: 'mercadolivre',
+    personalizacao_pendente: true,
+    itens: [{
+      descricao: 'Capa personalizada',
+      personalizations: [{ customization_name: 'Maria', customization_initial: 'M' }],
+    }],
+    mensagem_comprador: 'Gravar o nome enviado na conversa',
+  }]);
+
+  assert.doesNotMatch(html, /Maria|Gravar o nome enviado|<div class="custom-name-display">/);
+  assert.doesNotMatch(html, /revisão|revisar|pendente/i);
 });
