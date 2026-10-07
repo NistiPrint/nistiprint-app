@@ -284,14 +284,38 @@ def enqueue_notification(payload: dict, *, webhook_event_id: int | None = None) 
             "inbox_id": saved.get("id"), "resource_id": message_id}
 
 
-def _claim_notifications(integration_id: int, limit: int = 25) -> list[dict]:
+def message_consumer_accounts() -> list[dict]:
+    """Return active accounts whose webhook identity can be matched safely."""
+    modules = (supabase_db.table("integration_modules").select("id")
+               .eq("id", "mercadolivre").limit(1).execute().data or [])
+    if not modules:
+        return []
+    rows = (supabase_db.table("installed_integrations").select(
+        "id,module_id,user_id,is_active,config,app_profile_id"
+    ).eq("module_id", modules[0]["id"]).eq("is_active", True).order("id").execute().data or [])
+    accounts = []
+    for row in rows:
+        config = _json(row.get("config"), {}) or {}
+        seller_id = _text(((config.get("account_identifiers") or {}).get("primary")
+                           or config.get("user_id") or row.get("user_id")))
+        application_id = _profile_application_id(row.get("app_profile_id"), row.get("module_id"))
+        if seller_id and application_id:
+            accounts.append({**row, "integration_id": int(row["id"]),
+                             "seller_id": seller_id, "application_id": application_id})
+    return accounts
+
+
+def _claim_notifications(integration_ids: list[int], limit: int = 25) -> list[dict]:
+    integration_ids = sorted({int(value) for value in integration_ids if value is not None})
+    if not integration_ids:
+        return []
     now = _now()
     stale = (supabase_db.table("mercadolivre_chat_inbox").update({"status": "retry", "lease_until": None})
-             .eq("marketplace_integration_id", int(integration_id)).eq("status", "processing")
+             .in_("marketplace_integration_id", integration_ids).eq("status", "processing")
              .lt("lease_until", now).execute())
     del stale
     candidates = (supabase_db.table("mercadolivre_chat_inbox").select("*")
-                  .eq("marketplace_integration_id", int(integration_id)).in_("status", ["pending", "retry"])
+                  .in_("marketplace_integration_id", integration_ids).in_("status", ["pending", "retry"])
                   .lte("available_at", now).order("created_at").limit(min(max(int(limit), 1), 100)).execute().data or [])
     claimed = []
     for row in candidates:
@@ -496,21 +520,38 @@ def sync_pack(integration_id: int, pack_id: str, seller_id: str,
             "messages": len(rows), "needs_review": needs_review}
 
 
-def process_inbox_once(integration_id: int, *, limit: int = 25) -> dict:
-    integration = _integration(integration_id)
-    seller_id = _text(((integration.get("config") or {}).get("account_identifiers") or {}).get("primary")
-                      or (integration.get("config") or {}).get("user_id") or integration.get("user_id"))
-    if not seller_id:
-        raise ValueError("Conta conectada sem user_id em account_identifiers")
-    _resolve_unmatched_for_account(integration_id, integration, seller_id)
-    entries = _claim_notifications(integration_id, limit)
+def process_inbox_once(integration_ids: list[int] | None = None, *, limit: int = 25) -> dict:
+    """Consume matched notifications for all selected accounts in one marketplace worker."""
+    accounts = message_consumer_accounts()
+    if integration_ids is not None:
+        requested = {int(value) for value in integration_ids}
+        accounts = [account for account in accounts if account["integration_id"] in requested]
+    eligible_ids = [account["integration_id"] for account in accounts]
+    for account in accounts:
+        try:
+            _resolve_unmatched_for_account(
+                account["integration_id"], account, account["seller_id"]
+            )
+        except Exception:
+            logger.exception("Could not resolve unmatched Mercado Livre notifications integration=%s",
+                             account["integration_id"])
+    entries = _claim_notifications(eligible_ids, limit)
     result = {"claimed": len(entries), "synced": 0, "retried": 0, "failed": 0}
     for entry in entries:
+        integration_id = int(entry.get("marketplace_integration_id") or 0)
         try:
+            if integration_id not in eligible_ids:
+                raise RuntimeError("terminal:integração da notificação não está ativa ou identificável")
+            integration = _integration(integration_id)
+            seller_id = _text(((integration.get("config") or {}).get("account_identifiers") or {}).get("primary")
+                              or (integration.get("config") or {}).get("user_id") or integration.get("user_id"))
+            if not seller_id:
+                raise RuntimeError("terminal:conta conectada sem user_id em account_identifiers")
             raw = entry.get("raw_payload") or {}
             actions = raw.get("actions") or []
             if "created" not in actions and "updated" not in actions and "read" not in actions:
-                supabase_db.table("mercadolivre_chat_inbox").update({"status": "done", "lease_until": None}).eq("id", entry["id"]).execute()
+                supabase_db.table("mercadolivre_chat_inbox").update({"status": "done", "lease_until": None,
+                    "updated_at": _now()}).eq("id", entry["id"]).eq("status", "processing").execute()
                 continue
             detail = _meli_request(
                 integration_id, "messages", meli_driver.get_message,
@@ -558,8 +599,7 @@ def process_inbox_once(integration_id: int, *, limit: int = 25) -> dict:
     return result
 
 
-def reconcile_once(integration_id: int, *, limit: int = 25) -> dict:
-    result = process_inbox_once(integration_id, limit=limit)
+def _reconcile_account_once(integration_id: int, *, limit: int = 25) -> dict:
     integration = _integration(integration_id)
     seller_id = _text(((integration.get("config") or {}).get("account_identifiers") or {}).get("primary")
                       or (integration.get("config") or {}).get("user_id") or integration.get("user_id"))
@@ -604,8 +644,26 @@ def reconcile_once(integration_id: int, *, limit: int = 25) -> dict:
             synced += 1
         except Exception:
             logger.exception("Mercado Livre reconciliation failed integration=%s pack=%s", integration_id, row.get("pack_id"))
-    result["reconciled"] = synced
-    result["unread_recovered"] = unread_synced
+    return {"reconciled": synced, "unread_recovered": unread_synced}
+
+
+def reconcile_once(integration_id: int | None = None, *, limit: int = 25) -> dict:
+    """Run shared inbox processing and account-scoped unread/history reconciliation."""
+    accounts = message_consumer_accounts()
+    if integration_id is not None:
+        accounts = [account for account in accounts
+                    if account["integration_id"] == int(integration_id)]
+    integration_ids = [account["integration_id"] for account in accounts]
+    result = process_inbox_once(integration_ids, limit=limit)
+    result.update(reconciled=0, unread_recovered=0, reconcile_errors=0)
+    for account_id in integration_ids:
+        try:
+            account_result = _reconcile_account_once(account_id, limit=limit)
+            result["reconciled"] += account_result["reconciled"]
+            result["unread_recovered"] += account_result["unread_recovered"]
+        except Exception:
+            result["reconcile_errors"] += 1
+            logger.exception("Mercado Livre account reconciliation failed integration=%s", account_id)
     return result
 
 
@@ -815,16 +873,6 @@ def _integration_orders(integration_id: int, external_order_ids: list[str]) -> l
     return rows
 
 
-def _conversation_order_ids(integration_id: int, pack_id: str) -> list[int]:
-    conversations = (supabase_db.table("mercadolivre_chat_conversations").select("order_ids")
-                     .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id))
-                     .limit(1).execute().data or [])
-    if not conversations:
-        return []
-    external_ids = [str(value) for value in (_json(conversations[0].get("order_ids"), []) or [])]
-    return sorted({int(row["id"]) for row in _integration_orders(integration_id, external_ids) if row.get("id")})
-
-
 def _pack_context(integration_id: int, pack_id: str) -> tuple[list[dict], list[dict], str, bool]:
     conversations = (supabase_db.table("mercadolivre_chat_conversations").select("*")
                      .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id)).limit(1).execute().data or [])
@@ -887,28 +935,15 @@ def _ai_response(integration_id: int, settings: dict, system_prompt: str, payloa
 
 def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = None,
                  force: bool = False) -> dict:
-    integration = _integration(integration_id)
+    _integration(integration_id)
     settings = _settings(integration_id)
     conversation_rows = (supabase_db.table("mercadolivre_chat_conversations").select("seller_id,raw_json")
                          .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id))
                          .limit(1).execute().data or [])
     if not conversation_rows:
         raise LookupError("Conversa Mercado Livre ainda não sincronizada")
-    metadata = _json(conversation_rows[0].get("raw_json"), {}) or {}
-    try:
-        sync_pack(integration_id, str(pack_id), str(conversation_rows[0]["seller_id"]),
-                  order_id_fallback=metadata.get("order_id_fallback"))
-    except Exception as exc:
-        for pedido_id in _conversation_order_ids(integration_id, pack_id) or [None]:
-            supabase_db.table("mercadolivre_personalization_logs").insert({
-                "marketplace_integration_id": int(integration_id), "batch_id": batch_id,
-                "pedido_id": pedido_id, "pack_id": str(pack_id), "status": "capture_error",
-                "error_message": str(exc)[:1000],
-            }).execute()
-        supabase_db.table("mercadolivre_chat_conversations").update({
-            "last_error": str(exc)[:1000], "updated_at": _now(),
-        }).eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id)).execute()
-        raise
+    # Message capture is owned by the inbox/reconciliation tasks. AI consumes
+    # only the persisted account-scoped snapshot and never calls the provider.
     orders, items, digest, forced_review = _pack_context(integration_id, pack_id)
     conversation = (supabase_db.table("mercadolivre_chat_conversations").select("context_hash,ai_status")
                     .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id)).limit(1).execute().data or [{}])[0]

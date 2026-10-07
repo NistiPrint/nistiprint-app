@@ -9,14 +9,16 @@ migration validation, account permissions, and a real-message pilot.
 
 Capture private post-sale Mercado Livre conversations, identify requested
 names and initials with AI, permit operator confirmation, and pass only current,
-confirmed results to order printing. Keep this flow isolated from Shopee and
-scoped to each installed Mercado Livre integration.
+confirmed results to order printing. Keep provider data and account
+configuration scoped to each Mercado Livre integration while using shared
+worker infrastructure.
 
 ## Actors
 
 - Mercado Livre sends `messages` topic notifications through the existing
   durable N8N/reliable-ingest path.
-- A dedicated process group synchronizes each connected Mercado Livre account.
+- The shared chat consumer records Mercado Livre events, and shared Celery
+  functions synchronize messages and run AI extraction as separate stages.
 - Authenticated operators review conversations and confirm extracted data.
 - Administrators configure capture, AI, and the daily run for one account.
 
@@ -42,15 +44,15 @@ records through the API or workers.
 
 1. The reliable worker routes only Mercado Livre `messages` events into this
    domain. Its inbox row is persisted before the original event is finalized.
-2. Per-account consumers resolve `user_id` and `application_id`, fetch the
-   message, then page the `post_sale` package conversation with
+2. The shared inbox function resolves `user_id` and `application_id`, fetches
+   the message, then pages the `post_sale` package conversation with
    `mark_as_read=false`. An unread-conversation scan recovers missed notices;
    stored active conversations are periodically reconciled.
 3. When the order is not imported yet, messages remain stored and appear under
    conversations awaiting order association. No incomplete order is created.
-4. A dedicated account worker processes manual or daily batches. It synchronizes
-   the chat first, hashes the full conversation, and avoids repeated AI calls
-   for unchanged successful context.
+4. Separate shared Celery functions process manual or daily batches with the
+   account ID. They read only persisted messages, hash the full conversation,
+   and avoid repeated AI calls for unchanged successful context.
 5. Operators confirm or correct each name/initial. The print reader selects
    Mercado Livre rows by the canonical integration, order, and item IDs. It
    blocks stale, incomplete, unconfirmed, or review-required personalization.
@@ -86,14 +88,22 @@ checks order or batch ownership in the same account.
 
 ## Async workers
 
-Run the separate account manager with
-`python -m nistiprint_shared.services.mercadolivre_personalization_worker accounts`.
-It discovers active Mercado Livre installations and maintains an isolated
-message consumer, Celery worker, queue, and beat scheduler for each. The
-existing Shopee Celery app, task names, queues, and schedules are not imported
-or changed. Each Meli queue is named `meli_personalization_<integration_id>`;
-per-account worker concurrency is one. The daily due task reads its own account
-schedule from Supabase, and batch recovery runs every five minutes.
+The existing shared Celery worker and Beat execute registered Mercado Livre
+functions on the default `celery` queue. The shared reliable-ingest `chat`
+consumer persists the source-specific webhook notification and schedules the
+inbox-processing function. The Beat repeats inbox processing and runs chat
+reconciliation as recovery. Both stages resolve the integration using the
+webhook seller and application identities; incomplete or ambiguous events stay
+in the audit inbox.
+
+AI extraction is an independent set of Celery functions. Manual and daily batch
+tasks receive an integration ID and use only that account's settings, API
+credentials, and rate-limit bucket. The shared Beat checks per-account daily
+settings and dispatches due work; a Redis lock keyed by integration and local
+date prevents duplicate daily runs. Batch recovery is dispatched periodically
+per account. No account-specific Celery app, queue, worker, beat, supervisor,
+or Compose service is required. Shopee's `chat`, `chatsync`, and persistence
+paths remain unchanged.
 
 ## Permissions and acceptance criteria
 
@@ -112,16 +122,15 @@ schedule from Supabase, and batch recovery runs every five minutes.
 
 ## Operational rollout and rollback
 
-Apply and validate the additive migration, provision account-specific AI
-secrets, then pilot with capture enabled and extraction disabled. After real
-messages and account associations are verified, enable extraction for the pilot
-account. A second account appears automatically and remains disabled until its
-permissions are checked. Rollback disables only these account processes and
-settings; persisted data remains available and Shopee continues independently.
+Apply and validate the additive migration, provide account-specific AI secrets
+to the shared worker environment, then pilot with capture enabled and extraction
+disabled. After real messages and account associations are verified, enable
+extraction for the pilot account. A second account appears automatically and
+remains disabled until its permissions are checked. Rollback disables the
+account settings; persisted data remains available and Shopee continues
+independently.
 
 ## Known deployment gate
 
-The repository contains the migration and account supervisor, but they have not
-been applied to production and the new account process has not been started in
-the deployed environment. Do not enable the feature until both steps and the
-real-message pilot are recorded.
+The repository contains the migration, but it has not been applied to production.
+Production deployment and the real-message pilot remain outside this change.

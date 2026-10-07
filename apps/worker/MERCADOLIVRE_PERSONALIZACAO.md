@@ -1,46 +1,43 @@
-# Worker de personalização Mercado Livre
+# Mensagens e personalização do Mercado Livre
 
-Este é um serviço independente do container/entrypoint padrão do worker, que
-continua executando as tarefas atuais e o processamento Shopee.
+O Mercado Livre usa o worker e o Beat Celery já existentes. Não existe serviço,
+supervisor, worker ou Beat exclusivo do marketplace ou de cada integração.
 
-## Subir a implantação
+## Etapas
 
-1. Aplicar a migração `20261006100000_mercadolivre_personalization_isolated.sql`.
-2. Configurar `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` e copiar
-   `.env.mercadolivre.accounts.example` para `.env.mercadolivre.accounts`, com
-   chaves de IA próprias por instalação. Não reutilizar variáveis da Shopee.
-3. Iniciar apenas o serviço adicional pelo arquivo
-   `apps/worker/docker-compose.mercadolivre.yml`.
-4. Acompanhar os logs do container. O supervisor detecta cada instalação ativa
-   de Mercado Livre e inicia, para cada ID, os subprocessos `messages`,
-   `worker` e `beat`, cada qual com sua própria fila.
-5. No painel da conta piloto, validar identidade e mensagens com captura ativa
-   e extração desligada. Ativar extração depois da conferência operacional.
+1. O N8N recebe e enfileira o webhook. O consumidor compartilhado de chat chama
+   o adaptador do Mercado Livre, que resolve a conta por `user_id` e
+   `application_id` e grava a notificação em `mercadolivre_chat_inbox`.
+2. O consumidor agenda a função Celery `mercadolivre.chat.process_inbox` na
+   fila padrão `celery`. O Beat compartilhado também a agenda periodicamente
+   para recuperar notificações retidas. A função usa as credenciais e o
+   limitador de chamadas da integração identificada e persiste conversas e
+   mensagens. Identidades incompletas ou ambíguas permanecem em `unmatched`.
+3. A reconciliação de conversas roda pela função Celery
+   `mercadolivre.chat.reconcile`; ela recupera lacunas do histórico sem chamar
+   IA.
+4. A extração é uma etapa independente. As funções Celery de lotes manuais,
+   diários e recuperação recebem o `integration_id`, usam a configuração da
+   conta e processam somente mensagens já persistidas. O agendamento diário
+   continua configurável na integração e é despachado pelo Beat compartilhado.
 
-Uma segunda conta ativa aparece automaticamente no supervisor, mas sua
-configuração nasce com captura e extração desabilitadas. Habilite-a apenas após
-validar usuário, application profile, permissões de mensagens, token e segredo
-de assinatura para a nova instalação.
+O ramo Shopee do consumidor de chat, seus workers `chat` e `chatsync`, e sua
+persistência não mudam. Apenas o adaptador e os dados de origem do Mercado Livre
+são específicos.
 
-## Rollback
+## Operação e recuperação
 
-Desabilitar `enabled`, `capture_enabled` e `extraction_enabled` na conta ou
-parar somente `mercadolivre-personalization-accounts`. Isso não reinicia nem
-altera o container da Shopee. Inbox, conversas, personalizações e logs ficam
-preservados para auditoria e retomada.
-
-## Operação
-
-- Chaves de IA por instalação (recomendado para cotas independentes):
-  `MERCADOLIVRE_PERSONALIZACAO_GEMINI_API_KEY_<integration_id>` e
-  `MERCADOLIVRE_PERSONALIZACAO_OPENROUTER_API_KEY_<integration_id>`. As chaves
-  gerais sem sufixo, quando injetadas pelo ambiente, são fallback apenas dentro
-  do ambiente Mercado Livre; nunca são lidas as chaves usadas pela Shopee.
-- A leitura das mensagens usa `tag=post_sale` e `mark_as_read=false`.
-- O limitador Redis coordena consumidor e worker pela conta (padrão: 2 chamadas/s
-  por conta e 12 chamadas/s no total); respeita `Retry-After` e retoma lotes com
-  falhas parciais até três tentativas.
-- Agendamento diário padrão: 09:00 `America/Sao_Paulo`; a tela administra hora e
-  minuto separadamente por conta.
-- Reconciliação padrão: a cada 120 segundos; lote interrompido recuperado a cada
-  300 segundos.
+- Todas as funções do Mercado Livre usam a fila padrão `celery`; tarefas
+  manuais e periódicas são executadas pelo worker compartilhado.
+- O intervalo de segurança da inbox e da reconciliação usa
+  `MERCADOLIVRE_CHAT_RECONCILE_SECONDS` (padrão: 120 segundos). Notificações
+  novas também disparam a ingestão imediatamente.
+- O Beat verifica agendamentos diários por integração a cada minuto. Uma trava
+  Redis por integração/data evita execução duplicada; lotes não confirmados são
+  recuperados periodicamente.
+- As chaves de provedor de IA por conta continuam no ambiente do worker
+  compartilhado: `MERCADOLIVRE_PERSONALIZACAO_GEMINI_API_KEY_<integration_id>`
+  e `MERCADOLIVRE_PERSONALIZACAO_OPENROUTER_API_KEY_<integration_id>`.
+- A Central de Tarefas mostra a saúde da ingestão, das contas e dos lotes a
+  partir das execuções e pendências registradas, sem exigir heartbeat de
+  processos do Mercado Livre.

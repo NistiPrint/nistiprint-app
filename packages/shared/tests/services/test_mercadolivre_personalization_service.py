@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from nistiprint_shared.services import mercadolivre_personalization_service as service
+from nistiprint_shared.services import ai_personalization_account_config as account_config
 from nistiprint_shared.services.platform_drivers import mercadolivre as driver
 
 
@@ -65,6 +66,104 @@ class PedidosSchemaDatabase(FakeDatabase):
 
 
 class MercadoLivrePersonalizationTests(unittest.TestCase):
+    def test_shared_inbox_consumer_uses_each_webhook_integration(self):
+        accounts = [
+            {"integration_id": 7, "seller_id": "seller-a", "application_id": "app-a",
+             "module_id": "mercadolivre", "app_profile_id": 10},
+            {"integration_id": 8, "seller_id": "seller-b", "application_id": "app-b",
+             "module_id": "mercadolivre", "app_profile_id": 11},
+        ]
+        entries = [
+            {"id": 101, "marketplace_integration_id": 7, "provider_message_id": "msg-a",
+             "raw_payload": {"actions": ["created"]}, "attempts": 1},
+            {"id": 102, "marketplace_integration_id": 8, "provider_message_id": "msg-b",
+             "raw_payload": {"actions": ["created"]}, "attempts": 1},
+        ]
+        integrations = {
+            7: {"id": 7, "config": {"account_identifiers": {"primary": "seller-a"}}},
+            8: {"id": 8, "config": {"account_identifiers": {"primary": "seller-b"}}},
+        }
+        syncs = []
+        provider_requests = []
+
+        def provider_request(integration_id, _endpoint, function, integration, message_id):
+            provider_requests.append((integration_id, integration["id"]))
+            return {"message_resources": [
+                {"name": "packs", "id": f"pack-{integration_id}"},
+                {"name": "seller", "id": f"seller-{ 'a' if integration_id == 7 else 'b' }"},
+            ]}
+
+        with patch.object(service, "message_consumer_accounts", return_value=accounts), \
+             patch.object(service, "_resolve_unmatched_for_account") as resolve_unmatched, \
+             patch.object(service, "_claim_notifications", return_value=entries) as claim, \
+             patch.object(service, "_integration", side_effect=lambda ident: integrations[ident]), \
+             patch.object(service, "_meli_request", side_effect=provider_request), \
+             patch.object(service, "sync_pack", side_effect=lambda *args, **kwargs: syncs.append((args, kwargs))), \
+             patch.object(service, "supabase_db"):
+            result = service.process_inbox_once(limit=10)
+
+        self.assertEqual(result, {"claimed": 2, "synced": 2, "retried": 0, "failed": 0})
+        self.assertEqual(claim.call_args.args[0], [7, 8])
+        self.assertEqual([call.args[0] for call in resolve_unmatched.call_args_list], [7, 8])
+        self.assertEqual([row[0][0] for row in syncs], [7, 8])
+        self.assertEqual([row[0][1] for row in syncs], ["pack-7", "pack-8"])
+        self.assertEqual(provider_requests, [(7, 7), (8, 8)])
+
+    def test_personalization_reads_persisted_chat_without_running_message_ingest(self):
+        database = FakeDatabase({"mercadolivre_chat_conversations": [{
+            "marketplace_integration_id": 7, "pack_id": "pack-7", "seller_id": "seller-a",
+            "raw_json": {}, "context_hash": "same-context", "ai_status": "success",
+        }]})
+        with patch.object(service, "_integration", return_value={}), \
+             patch.object(service, "_settings", return_value={}), \
+             patch.object(service, "_pack_context",
+                          return_value=([], [], "same-context", False)), \
+             patch.object(service, "sync_pack") as sync_pack, \
+             patch.object(service, "supabase_db", database):
+            result = service.process_pack(7, "pack-7")
+        self.assertEqual(result, {"status": "up_to_date", "pack_id": "pack-7"})
+        sync_pack.assert_not_called()
+
+    def test_mercadolivre_request_limiter_is_scoped_to_each_integration(self):
+        from nistiprint_shared.services import mercadolivre_rate_limit as rate_limit
+        with patch.object(rate_limit.mercadolivre_rate_limit_coordinator, "acquire") as acquire:
+            self.assertEqual(service._meli_request(7, "messages", lambda: "a"), "a")
+            self.assertEqual(service._meli_request(8, "messages", lambda: "b"), "b")
+        self.assertEqual(acquire.call_args_list[0].args, (7, "messages"))
+        self.assertEqual(acquire.call_args_list[1].args, (8, "messages"))
+
+    def test_shared_account_config_exposes_and_updates_meli_daily_schedule(self):
+        installation = {"id": 7, "module_id": "mercadolivre"}
+        raw = {"schedule_enabled": False, "schedule_hour": 8, "schedule_minute": 35}
+        with patch.object(account_config, "_installation", return_value=installation), \
+             patch("nistiprint_shared.services.mercadolivre_personalization_service._settings", return_value=raw):
+            config = account_config.get_config(7)
+        self.assertFalse(config["schedule_enabled"])
+        self.assertEqual((config["schedule_hour"], config["schedule_minute"]), (8, 35))
+
+        current = {"marketplace": "mercadolivre", "provider": "gemini", "model_name": "gemini-2.5-flash",
+                   "fallback_provider": "", "timeout_seconds": 60, "max_processing": 50,
+                   "prompt_template": "A prompt longer than the minimum length."}
+        with patch.object(account_config, "_installation", return_value=installation), \
+             patch.object(account_config, "get_config", return_value=current), \
+             patch("nistiprint_shared.services.ai.router.build_provider"), \
+             patch("nistiprint_shared.services.mercadolivre_personalization_service.update_settings") as save:
+            account_config.update_config(7, {"schedule_enabled": False, "schedule_hour": 8,
+                                             "schedule_minute": 35})
+        save.assert_called_once()
+        self.assertEqual({key: save.call_args.args[1][key] for key in
+                          ("schedule_enabled", "schedule_hour", "schedule_minute")},
+                         {"schedule_enabled": False, "schedule_hour": 8, "schedule_minute": 35})
+
+    def test_shopee_account_config_rejects_meli_schedule_fields(self):
+        with patch.object(account_config, "_installation", return_value={"id": 8, "module_id": "shopee"}), \
+             patch.object(account_config, "get_config", return_value={
+                 "marketplace": "shopee", "provider": "gemini", "model_name": "gemini-2.5-flash",
+                 "fallback_provider": "", "timeout_seconds": 60, "max_processing": 50,
+             }):
+            with self.assertRaisesRegex(ValueError, "somente para Mercado Livre"):
+                account_config.update_config(8, {"schedule_enabled": False})
+
     def test_order_queries_use_the_canonical_data_venda_column(self):
         order = {
             "id": 10, "numero_pedido": "ML-10", "codigo_pedido_externo": "external-10",

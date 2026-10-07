@@ -39,6 +39,34 @@ class CeleryConfigTest(TestCase):
         self.assertEqual(entrada["task"], "services.ai_personalization.processar_pendentes")
         self.assertEqual(entrada["options"], {"queue": "ai_personalization"})
 
+    def test_mercadolivre_functions_are_always_in_default_celery_queue(self):
+        schedules = celery_config.get_default_schedules()
+        self.assertEqual(schedules["mercadolivre-chat-inbox"]["task"],
+                         "mercadolivre.chat.process_inbox")
+        self.assertEqual(schedules["mercadolivre-chat-reconcile"]["options"],
+                         {"queue": "celery"})
+        self.assertEqual(schedules["mercadolivre-personalization-dispatch-due"]["task"],
+                         "mercadolivre.personalization.dispatch_due")
+
+    def test_mercadolivre_functions_overlay_database_schedule_configuration(self):
+        from unittest.mock import patch
+        from nistiprint_shared.services.app_config_service import app_config_service
+        with patch.object(app_config_service, "get_config", return_value={"task_schedules": {}}):
+            schedules = celery_config.load_dynamic_schedules()
+        self.assertIn("mercadolivre-chat-inbox", schedules)
+        self.assertIn("mercadolivre-personalization-dispatch-due", schedules)
+
+    def test_shared_celery_app_registers_mercadolivre_functions(self):
+        names = (
+            "mercadolivre.chat.process_inbox",
+            "mercadolivre.chat.reconcile",
+            "mercadolivre.personalization.process_batch",
+            "mercadolivre.personalization.run_due",
+        )
+        for name in names:
+            with self.subTest(name=name):
+                self.assertIn(name, celery_config.celery_app.tasks)
+
 
 class BuildScheduleTest(TestCase):
     """O agendador precisa distinguir 'de tempos em tempos' de 'nesse horario'.

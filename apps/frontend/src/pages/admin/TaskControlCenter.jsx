@@ -74,7 +74,6 @@ function TaskControlCenter() {
   // Execution Logs State
   const [logs, setLogs] = useState([]);
   const [overview, setOverview] = useState(null);
-  const [meliSchedules, setMeliSchedules] = useState([]);
   const [hours, setHours] = useState(24);
   const [selectedExecution, setSelectedExecution] = useState(null);
   const [stats, setStats] = useState({
@@ -256,7 +255,6 @@ function TaskControlCenter() {
     const response = await fetch('/api/v2/admin/task-center/schedules');
     const body = await response.json();
     if (!response.ok || !body.success) throw new Error(body.error || 'Falha ao carregar agendamentos');
-    setMeliSchedules(body.data.mercadolivre || []);
     setShowReloadWarning(body.data.restart_state === 'pending');
   };
 
@@ -285,43 +283,6 @@ function TaskControlCenter() {
 
   const fetchStats = async () => {
     await fetchOverview();
-  };
-
-  const setMeliScheduleEnabled = async (integrationId, enabled) => {
-    try {
-      const response = await fetch(`/api/v2/admin/task-center/schedules/mercadolivre/${integrationId}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled, hour: meliSchedules.find(row => row.integration_id === integrationId)?.hour,
-          minute: meliSchedules.find(row => row.integration_id === integrationId)?.minute }),
-      });
-      const body = await response.json();
-      if (!response.ok || !body.success) throw new Error(body.error || 'Falha ao atualizar tarefa');
-      setMeliSchedules(rows => rows.map(row => row.integration_id === integrationId ? { ...row, enabled } : row));
-      toast.success(enabled ? 'Extração diária ativada.' : 'Extração diária pausada. Mensagens e extração manual continuam disponíveis.');
-      await fetchCenterSchedules();
-      fetchOverview();
-    } catch (error) { toast.error(error.message); }
-  };
-
-  const saveMeliScheduleTime = async (integrationId) => {
-    const row = meliSchedules.find(item => item.integration_id === integrationId);
-    if (!row) return;
-    const [hour, minute] = String(row.timeDraft || `${String(row.hour).padStart(2, '0')}:${String(row.minute).padStart(2, '0')}`)
-      .split(':').map(Number);
-    try {
-      const response = await fetch(`/api/v2/admin/task-center/schedules/mercadolivre/${integrationId}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: Boolean(row.enabled), hour, minute }),
-      });
-      const body = await response.json();
-      if (!response.ok || !body.success) throw new Error(body.error || 'Falha ao atualizar horário');
-      setMeliSchedules(rows => rows.map(item => item.integration_id === integrationId
-        ? { ...item, hour: body.data.hour, minute: body.data.minute,
-          timeDraft: `${String(body.data.hour).padStart(2, '0')}:${String(body.data.minute).padStart(2, '0')}` }
-        : item));
-      toast.success('Horário diário atualizado.');
-      await fetchCenterSchedules();
-    } catch (error) { toast.error(error.message); }
   };
 
   const openExecution = async log => {
@@ -432,7 +393,7 @@ function TaskControlCenter() {
             <Settings className="h-8 w-8 text-primary" /> Central de Operações
           </h1>
           <p className="text-muted-foreground mt-1">
-            Execuções, filas, processos e agendamentos do backend
+            Execuções, filas, workers compartilhados e agendamentos do backend
           </p>
         </div>
         <div className="flex gap-2">
@@ -476,12 +437,15 @@ function TaskControlCenter() {
                   {section.status === 'available' ? <pre className="mt-2 whitespace-pre-wrap text-xs">{JSON.stringify(section.queues, null, 2)}</pre> : <p className="mt-2 text-xs text-red-700">{section.reason}</p>}
                 </div>)}
               </CardContent></Card>
-              <Card><CardHeader><CardTitle>Processos</CardTitle><CardDescription>Batimento de atividade dos consumidores e serviços.</CardDescription></CardHeader><CardContent className="space-y-2">
+              <Card><CardHeader><CardTitle>Workers e funções</CardTitle><CardDescription>Atividade dos consumidores compartilhados e das tarefas Celery.</CardDescription></CardHeader><CardContent className="space-y-2">
                 {overview.processes?.status !== 'available' ? <p className="rounded border border-red-300 p-3 text-sm text-red-700">Indisponível: {overview.processes?.reason || 'sem dados'}</p> : overview.processes.items.map(process => <div key={process.name} className="flex flex-wrap items-center justify-between gap-2 rounded border p-3 text-sm"><span>{process.name}{process.active_tasks ? ` · ${process.active_tasks} execução(ões) ativa(s)` : ''}{process.stale_tasks ? ` · ${process.stale_tasks} sem progresso há 15 min` : ''}</span><span className={process.status === 'normal' ? 'text-green-700' : process.status === 'attention' ? 'text-amber-700' : 'text-red-700'}>{process.status === 'normal' ? 'Normal' : process.status === 'attention' ? 'Atenção' : 'Indisponível'}{process.last_heartbeat ? ` · ${new Date(process.last_heartbeat).toLocaleTimeString('pt-BR')}` : ''}</span></div>)}
               </CardContent></Card>
             </div>
             <Card><CardHeader><CardTitle>Mercado Livre por conta</CardTitle><CardDescription>Pendências de mensagem, falhas e resultados que aguardam revisão.</CardDescription></CardHeader><CardContent>
               {overview.mercadolivre_status !== 'available' ? <p className="rounded border border-red-300 p-3 text-sm text-red-700">Sem dados: {overview.mercadolivre_error || 'falha ao consultar as contas'}</p> : overview.mercadolivre.length ? <div className="space-y-2">{overview.mercadolivre.map(account => <details key={account.integration_id} className="rounded border p-3 text-sm"><summary className="cursor-pointer"><strong>{account.name}</strong><span className="ml-3">{account.health.inbox_pending} mensagens pendentes · {account.health.inbox_failed} falhas · {account.health.incomplete_conversations} conversas incompletas · {account.health.waiting_review} revisões · {account.health.ai_errors} falhas de IA{account.health.oldest_pending_at ? ` · pendência desde ${new Date(account.health.oldest_pending_at).toLocaleString('pt-BR')}` : ''}</span></summary><div className="mt-3 space-y-3">{!!account.pending_conversations.length && <div><strong>Conversas aguardando associação</strong>{account.pending_conversations.map(row => <p key={row.pack_id} className="mt-1 text-xs">Pacote {row.pack_id} · pedidos {row.pending_order_ids.join(', ') || 'aguardando importação'} · {row.message_count} mensagem(ns) · última {row.last_message_at ? new Date(row.last_message_at).toLocaleString('pt-BR') : '—'}</p>)}</div>}{!!account.unmatched_notifications.length && <div><strong>Notificações sem conta confirmada</strong>{account.unmatched_notifications.map((row, index) => <p key={`${row.provider_message_id}-${index}`} className="mt-1 text-xs">Mensagem {row.provider_message_id} · vendedor {row.account_user_id || 'ausente'} · aplicativo {row.application_id || 'ausente'} · {row.last_error || row.status}</p>)}</div>}{!account.pending_conversations.length && !account.unmatched_notifications.length && <p className="text-xs text-muted-foreground">Sem conversas sem associação nem notificações pendentes.</p>}</div></details>)}</div> : <p className="text-sm text-muted-foreground">Nenhuma conta Mercado Livre conectada.</p>}
+            </CardContent></Card>
+            <Card><CardHeader><CardTitle>Shopee por conta</CardTitle><CardDescription>Completude das conversas atendidas pelos consumidores atuais de chat.</CardDescription></CardHeader><CardContent>
+              {overview.shopee_status !== 'available' ? <p className="rounded border border-red-300 p-3 text-sm text-red-700">Sem dados: {overview.shopee_error || 'falha ao consultar as contas'}</p> : overview.shopee?.length ? <div className="space-y-2">{overview.shopee.map(account => <div key={account.integration_id} className="rounded border p-3 text-sm"><strong>{account.name}</strong><span className="ml-3">{account.health.incomplete_conversations} conversas pendentes · {account.health.failed_conversations} falhas · {account.health.expired_conversations} expiradas</span>{account.health.oldest_pending_at && <p className="mt-1 text-xs text-muted-foreground">Pendência mais antiga desde {new Date(account.health.oldest_pending_at).toLocaleString('pt-BR')}</p>}</div>)}</div> : <p className="text-sm text-muted-foreground">Nenhuma conta Shopee conectada.</p>}
             </CardContent></Card>
             {!!overview.recent_failures?.length && <Card className="border-red-200"><CardHeader><CardTitle>Falhas recentes</CardTitle></CardHeader><CardContent className="space-y-2">{overview.recent_failures.map(row => <div key={row.id} className="rounded border p-3 text-sm"><strong>{row.task_name}</strong> · {row.marketplace_integration_id ? `Conta ${row.marketplace_integration_id}` : 'Tarefa geral'}<p className="mt-1 text-red-700">{row.error_message || 'Falha sem detalhe registrado'}</p></div>)}</CardContent></Card>}
           </>}
@@ -592,11 +556,6 @@ function TaskControlCenter() {
               </Table>
             </CardContent>
           </Card>
-
-          <Card><CardHeader><CardTitle>Extração diária · Mercado Livre</CardTitle><CardDescription>Pausar esta tarefa não interrompe a leitura das mensagens nem a extração manual.</CardDescription></CardHeader><CardContent className="space-y-2">
-            {meliSchedules.map(row => <div key={row.integration_id} className="flex flex-wrap items-center justify-between gap-3 rounded border p-3"><div className="min-w-72 flex-1"><strong>{row.name}</strong><div className="mt-2 flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">Todos os dias · fuso de Brasília</span><Input type="time" value={row.timeDraft ?? `${String(row.hour).padStart(2, '0')}:${String(row.minute).padStart(2, '0')}`} onChange={event => setMeliSchedules(rows => rows.map(item => item.integration_id === row.integration_id ? { ...item, timeDraft: event.target.value } : item))} className="h-8 w-28" /><Button size="sm" variant="outline" onClick={() => saveMeliScheduleTime(row.integration_id)}>Salvar horário</Button></div><p className="mt-2 text-xs text-muted-foreground">Última execução {row.last_execution?.started_at ? new Date(row.last_execution.started_at).toLocaleString('pt-BR') : (row.last_scheduled_run_date || 'ainda não executada')} · último sucesso {row.last_success?.finished_at ? new Date(row.last_success.finished_at).toLocaleString('pt-BR') : 'sem registro'} · próxima execução {row.next_run_at ? new Date(row.next_run_at).toLocaleString('pt-BR') : '—'}</p></div><Switch checked={Boolean(row.enabled)} disabled={saving} aria-label={`Extração diária para ${row.name}`} onCheckedChange={enabled => setMeliScheduleEnabled(row.integration_id, enabled)} /></div>)}
-            {!meliSchedules.length && <p className="text-sm text-muted-foreground">Nenhuma conta Mercado Livre conectada.</p>}
-          </CardContent></Card>
 
           <div className="hidden" aria-hidden="true">
             {Object.entries(scheduledTasks).map(([taskName, config]) => (

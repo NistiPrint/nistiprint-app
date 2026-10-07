@@ -41,6 +41,46 @@ def _sanitize(value):
     return value
 
 
+def _heartbeat_status(stamp: str | None, *, max_age_seconds: int = 90) -> str:
+    if not stamp:
+        return "unavailable"
+    try:
+        observed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        return "normal" if (_now() - observed).total_seconds() <= max_age_seconds else "attention"
+    except (TypeError, ValueError):
+        return "attention"
+
+
+def _celery_function_status(task_name: str | list[str], *, integration_id: int | None = None,
+                            max_age_seconds: int | None = 600) -> dict:
+    query = (supabase_db.table("task_execution_logs")
+             .select("id,status,started_at,finished_at,created_at,error_message")
+             .in_("task_name", [task_name] if isinstance(task_name, str) else task_name))
+    if integration_id is not None:
+        query = query.eq("marketplace_integration_id", int(integration_id))
+    row = query.order("created_at", desc=True).limit(1).execute().data or []
+    if not row:
+        return {"status": "unavailable", "last_heartbeat": None}
+    latest = row[0]
+    stamp = latest.get("finished_at") or latest.get("started_at") or latest.get("created_at")
+    status = str(latest.get("status") or "").upper()
+    if status == "FAILED":
+        health = "attention"
+    elif status == "PROCESSING":
+        health = (_heartbeat_status(stamp, max_age_seconds=max_age_seconds)
+                  if max_age_seconds is not None else "normal")
+    elif status == "COMPLETED":
+        health = (_heartbeat_status(stamp, max_age_seconds=max_age_seconds)
+                  if max_age_seconds is not None else "normal")
+    else:
+        health = "attention"
+    return {"status": health, "last_heartbeat": stamp,
+            "last_execution_status": status,
+            "last_error": str(latest.get("error_message") or "")[:300] or None}
+
+
 def _task_rows(hours: int, limit: int = 500):
     since = (_now() - timedelta(hours=hours)).isoformat()
     return (supabase_db.table("task_execution_logs").select("*")
@@ -75,13 +115,7 @@ def _queue_signals():
     try:
         import redis
         client = redis.Redis.from_url(os.getenv("CELERY_BROKER_URL", "redis://redis-celery:6379/0"), socket_connect_timeout=1, socket_timeout=1)
-        accounts = (supabase_db.table("mercadolivre_personalization_config")
-                    .select("marketplace_integration_id").execute().data or [])
-        queues = {}
-        for row in accounts:
-            integration_id = int(row["marketplace_integration_id"])
-            key = f"meli_personalization_{integration_id}"
-            queues[str(integration_id)] = {"queue": key, "ready": int(client.llen(key))}
+        queues = {"celery": {"queue": "celery", "ready": int(client.llen("celery"))}}
         celery = {"status": "available", "queues": queues}
     except Exception as exc:
         celery = {"status": "unavailable", "reason": str(exc)[:300], "queues": {}}
@@ -98,8 +132,20 @@ def _process_signals():
             key = f"np/ingest/heartbeat/{role}"
             legacy_key = f"np:ingest:heartbeat:{role}"
             stamp = client.get(legacy_key) or client.get(key)
-            processes.append({"name": f"ingest:{role}", "status": "normal" if stamp else "unavailable",
+            processes.append({"name": f"ingest:{role}", "status": _heartbeat_status(stamp),
                               "last_heartbeat": stamp, "source": legacy_key})
+        function_health = _celery_function_status("mercadolivre.chat.process_inbox")
+        processes.append({"name": "Mercado Livre · ingestão de mensagens",
+                          "marketplace": "mercadolivre", "role": "chat_ingest",
+                          **function_health})
+        reconcile_health = _celery_function_status("mercadolivre.chat.reconcile")
+        processes.append({"name": "Mercado Livre · reconciliação de mensagens",
+                          "marketplace": "mercadolivre", "role": "chat_reconcile",
+                          **reconcile_health})
+        retained_health = _celery_function_status("mercadolivre.chat.replay_retained_events")
+        processes.append({"name": "Mercado Livre · recuperação de webhooks antigos",
+                          "marketplace": "mercadolivre", "role": "chat_replay",
+                          **retained_health})
         accounts = (supabase_db.table("installed_integrations").select("id,module_id,instance_name")
                     .eq("module_id", "mercadolivre").eq("is_active", True).execute().data or [])
         for account in accounts:
@@ -116,17 +162,21 @@ def _process_signals():
                     active_ages.append(max(0, int((_now() - start).total_seconds())))
                 except (TypeError, ValueError):
                     pass
-            for role in ("messages", "worker", "beat"):
-                key = f"np:ml-personalization:heartbeat:{integration_id}:{role}"
-                stamp = client.get(key)
-                progress = client.get(f"np:ml-personalization:progress:{integration_id}:{role}")
-                stale_task = role == "worker" and any(age > 900 for age in active_ages)
-                processes.append({"name": f"Mercado Livre · {account.get('instance_name') or integration_id} · {role}",
-                                  "integration_id": integration_id,
-                                  "status": "unavailable" if not stamp else "attention" if stale_task else "normal",
-                                  "last_heartbeat": stamp, "last_progress": progress,
-                                  "active_tasks": len(running_rows) if role == "worker" else 0,
-                                  "stale_tasks": sum(age > 900 for age in active_ages) if role == "worker" else 0})
+            latest_ai = _celery_function_status(
+                ["mercadolivre.personalization.process_batch",
+                 "mercadolivre.personalization.run_due",
+                 "mercadolivre.personalization.recover_account"],
+                integration_id=integration_id, max_age_seconds=None,
+            )
+            processes.append({
+                "name": f"Mercado Livre · {account.get('instance_name') or integration_id} · IA",
+                "integration_id": integration_id,
+                **latest_ai,
+                "active_tasks": len(running_rows),
+                "stale_tasks": sum(age > 900 for age in active_ages),
+                "status": ("attention" if any(age > 900 for age in active_ages)
+                           else latest_ai["status"]),
+            })
     except Exception as exc:
         return {"status": "unavailable", "reason": str(exc)[:300], "items": []}
     return {"status": "available", "measured_at": _now().isoformat(), "items": processes}
@@ -143,6 +193,8 @@ def overview():
         processes = _process_signals()
         meli = []
         health_status = "available"
+        shopee = []
+        shopee_health_status = "available"
         try:
             from nistiprint_shared.services.mercadolivre_personalization_service import (
                 available_integrations, account_health, list_pending_conversations, list_unmatched_notifications,
@@ -170,12 +222,51 @@ def overview():
         except Exception as exc:
             health_status = "unavailable"
             meli_error = str(exc)[:300]
+        try:
+            accounts = (supabase_db.table("installed_integrations").select("id,instance_name,config")
+                        .eq("module_id", "shopee").eq("is_active", True).order("id").execute().data or [])
+            for account in accounts:
+                integration_id = int(account["id"])
+                incomplete = (supabase_db.table("conversas_chat_shopee").select(
+                    "conversation_id", count="exact", head=True
+                ).eq("installed_integration_id", integration_id).eq("status_completude", "pendente").execute())
+                failed = (supabase_db.table("conversas_chat_shopee").select(
+                    "conversation_id", count="exact", head=True
+                ).eq("installed_integration_id", integration_id).eq("status_completude", "erro").execute())
+                expired = (supabase_db.table("conversas_chat_shopee").select(
+                    "conversation_id", count="exact", head=True
+                ).eq("installed_integration_id", integration_id).eq("status_completude", "expirada").execute())
+                oldest = (supabase_db.table("conversas_chat_shopee").select("created_at")
+                          .eq("installed_integration_id", integration_id)
+                          .in_("status_completude", ["pendente", "erro"])
+                          .order("created_at").limit(1).execute().data or [])
+                config = _json(account.get("config"))
+                shopee.append({
+                    "integration_id": integration_id,
+                    "name": account.get("instance_name") or config.get("name") or f"Shopee #{integration_id}",
+                    "health": {
+                        "incomplete_conversations": int(getattr(incomplete, "count", 0) or 0),
+                        "failed_conversations": int(getattr(failed, "count", 0) or 0),
+                        "expired_conversations": int(getattr(expired, "count", 0) or 0),
+                        "oldest_pending_at": oldest[0].get("created_at") if oldest else None,
+                        "chat_worker_status": next((item["status"] for item in processes
+                                                     if item.get("name") == "ingest:chat"), "unavailable"),
+                        "chatsync_worker_status": next((item["status"] for item in processes
+                                                         if item.get("name") == "ingest:chatsync"), "unavailable"),
+                    },
+                })
+        except Exception as exc:
+            shopee_health_status = "unavailable"
+            shopee_error = str(exc)[:300]
         return {"success": True, "data": {
             "hours": hours, "measured_at": _now().isoformat(), "task_stats": status_counts,
             "task_sample_size": len(rows), "queues": queues, "processes": processes,
             "mercadolivre": meli,
             "mercadolivre_status": health_status,
             "mercadolivre_error": locals().get("meli_error"),
+            "shopee": shopee,
+            "shopee_status": shopee_health_status,
+            "shopee_error": locals().get("shopee_error"),
             "recent_failures": [_sanitize(row) for row in rows if row.get("status") == "FAILED"][:20],
             "overdue": [row for row in rows if row.get("status") in {"PENDING", "PROCESSING"}][:50],
         }}
@@ -272,7 +363,7 @@ def schedules():
                           "restart_state": restart_state}
     try:
         from nistiprint_shared.services.mercadolivre_personalization_service import available_integrations
-        meli = [{"task_name": f"mercadolivre.personalization.process_due.{row['integration_id']}",
+        meli = [{"task_name": "mercadolivre.personalization.run_due",
                  "marketplace": "mercadolivre", "integration_id": row["integration_id"], "name": row["name"],
                  "enabled": row.get("schedule_enabled", True), "hour": row.get("schedule_hour", 9),
                  "minute": row.get("schedule_minute", 0), "timezone": "America/Sao_Paulo",
@@ -283,10 +374,12 @@ def schedules():
             task_name = item["task_name"]
             item["last_execution"] = (supabase_db.table("task_execution_logs")
                 .select("id,status,started_at,finished_at,duration_ms")
-                .eq("task_name", task_name).order("created_at", desc=True).limit(1).execute().data or [None])[0]
+                .eq("task_name", task_name).eq("marketplace_integration_id", item["integration_id"])
+                .order("created_at", desc=True).limit(1).execute().data or [None])[0]
             item["last_success"] = (supabase_db.table("task_execution_logs")
                 .select("id,status,finished_at")
-                .eq("task_name", task_name).eq("status", "COMPLETED")
+                .eq("task_name", task_name).eq("marketplace_integration_id", item["integration_id"])
+                .eq("status", "COMPLETED")
                 .order("created_at", desc=True).limit(1).execute().data or [None])[0]
         local_now = _now().astimezone(ZoneInfo("America/Sao_Paulo"))
         for item in meli:

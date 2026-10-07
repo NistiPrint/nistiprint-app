@@ -47,6 +47,7 @@ def get_default_schedules():
     """
     return {
         **logistica_schedules(),
+        **mercadolivre_schedules(),
         'reconcile-pending-erp-references': {
             'task': 'nistiprint_shared.services.order_erp_reference_service.reconcile_pending',
             'schedule': 60,
@@ -76,6 +77,41 @@ def get_default_schedules():
             'task': 'services.ai_personalization.recolher_lotes_parados',
             'schedule': 300,
             'options': {'queue': 'ai_personalization'},
+        },
+    }
+
+
+def mercadolivre_schedules():
+    """Periodic Mercado Livre functions executed by the shared Celery app."""
+    try:
+        inbox_seconds = max(30, int(os.getenv("MERCADOLIVRE_CHAT_RECONCILE_SECONDS", "120")))
+    except (TypeError, ValueError):
+        inbox_seconds = 120
+    return {
+        "mercadolivre-chat-inbox": {
+            "task": "mercadolivre.chat.process_inbox",
+            "schedule": inbox_seconds,
+            "options": {"queue": "celery"},
+        },
+        "mercadolivre-chat-reconcile": {
+            "task": "mercadolivre.chat.reconcile",
+            "schedule": inbox_seconds,
+            "options": {"queue": "celery"},
+        },
+        "mercadolivre-chat-replay-retained": {
+            "task": "mercadolivre.chat.replay_retained_events",
+            "schedule": 300,
+            "options": {"queue": "celery"},
+        },
+        "mercadolivre-personalization-dispatch-due": {
+            "task": "mercadolivre.personalization.dispatch_due",
+            "schedule": 60,
+            "options": {"queue": "celery"},
+        },
+        "mercadolivre-personalization-dispatch-recovery": {
+            "task": "mercadolivre.personalization.dispatch_recovery",
+            "schedule": 300,
+            "options": {"queue": "celery"},
         },
     }
 
@@ -237,6 +273,9 @@ def load_dynamic_schedules():
                 logger.info(f"Task periódica desativada via banco: {task_name}")
                 
         schedules.update(logistica_schedules())
+        # Integration-critical functions remain active even when the database
+        # contains a custom list of user-managed schedules.
+        schedules.update(mercadolivre_schedules())
         return schedules
     except Exception as e:
         logger.error(f"Erro ao carregar tasks dinâmicas: {e}. Usando padrões de código.")
@@ -324,6 +363,7 @@ celery_app = Celery(
         'tasks.bom_cost_tasks',
         'nistiprint_shared.services.bling_status_sync_service',
         'nistiprint_shared.services.ai_personalization_service',
+        'nistiprint_shared.services.mercadolivre_personalization_worker',
         'nistiprint_shared.services.order_erp_reference_service',
         'nistiprint_shared.services.order_dispatch_deadline_service',
         'nistiprint_shared.services.marketplace_lifecycle_tasks',

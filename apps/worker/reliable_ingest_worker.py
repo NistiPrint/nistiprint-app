@@ -173,7 +173,13 @@ def _process_order(item):
 def _process_chat(item):
     if item.get("source") == "mercadolivre":
         from nistiprint_shared.services.mercadolivre_personalization_service import enqueue_notification
-        return enqueue_notification(_payload(item), webhook_event_id=int(item["webhook_event_id"]))
+        result = enqueue_notification(_payload(item), webhook_event_id=int(item["webhook_event_id"]))
+        if result.get("status") in ("success", "pending_private_chat"):
+            from nistiprint_shared.services.celery_app import celery_app
+            celery_app.send_task(
+                "mercadolivre.chat.process_inbox", queue="celery",
+            )
+        return result
     if item.get("source") != "shopee":
         return {"status": "error", "error_type": "unsupported_source",
                 "message": "somente chat Shopee entra nesta fila"}

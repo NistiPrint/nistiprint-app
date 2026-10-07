@@ -18,29 +18,32 @@ Workers are Celery/Redis based. The dependency entrypoint is under
 - Stock reconciliation tasks.
 - Batch consolidation or reprocessing tasks.
 - Task execution logging.
-- Isolated private-chat and AI personalization processes for each Mercado Livre
-  installation.
+- Mercado Livre private-chat ingestion, reconciliation, and AI personalization
+  as independent functions on the shared Celery worker.
 
-## Mercado Livre personalization process contract
+## Mercado Livre personalization task contract
 
 - Entrypoint: `nistiprint_shared.services.mercadolivre_personalization_worker`.
-- `accounts` discovers active Mercado Livre installations and starts separate
-  `messages`, Celery `worker`, and Celery `beat` child processes for each.
-- Each child requires one explicit positive `integration_id`; the account is
-  validated against `installed_integrations.module_id=mercadolivre` before data access.
-- Queue/task names include the account ID. Each account worker runs with
-  concurrency one; the Redis supervisor lease prevents duplicate managers.
-- Notifications are persisted to the Mercado Livre inbox before reliable-ingest
-  events are finalized. Claims use status compare-and-set and expiring leases.
-- The worker reconciles unread conversations and stored chats every 120 seconds,
-  without marking messages read. Batch recovery runs every 300 seconds and uses
-  a renewable lease to resume interrupted work.
-- Daily scheduling uses `America/Sao_Paulo`, default 09:00; each account's
-  database-configured time is read by its own minute tick and only one run/date
-  is recorded.
+- The shared reliable-ingest `chat` consumer writes provider notifications to
+  `mercadolivre_chat_inbox` and dispatches `mercadolivre.chat.process_inbox`.
+  Scheduled processing recovers inbox rows if immediate dispatch is delayed.
+- `mercadolivre.chat.process_inbox`, `mercadolivre.chat.reconcile`, and
+  `mercadolivre.chat.replay_retained_events` are ingestion functions. They run
+  on the shared `celery` queue and never invoke AI.
+- `mercadolivre.personalization.process_batch`, `run_due`, and recovery tasks
+  are a separate AI stage. They receive a positive `integration_id`; the account
+  is validated against `installed_integrations.module_id=mercadolivre` before
+  data access. Credentials and provider rate limits remain account-scoped.
+- The Beat dispatches account schedules every minute using
+  `America/Sao_Paulo`, default 09:00. A Redis lock keyed by integration/date
+  prevents duplicate daily runs. Batch recovery runs every 300 seconds.
+- Inbox claims use status compare-and-set and expiring leases. Batch claims and
+  leases remain account-scoped so retries resume without crossing accounts.
+- No account-specific Celery app, queue, worker, Beat, supervisor, or Compose
+  service is required.
 - Environment credentials for AI are Meli-specific and have no Shopee fallback.
-- Operators can enqueue only after the account's independent extraction flags
-  are enabled. Account creation starts capture/extraction disabled.
+- The existing Shopee `chat` and `chatsync` consumers and message persistence
+  are unchanged.
 
 ## Contract Rules
 

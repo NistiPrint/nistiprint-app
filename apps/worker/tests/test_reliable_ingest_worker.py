@@ -32,6 +32,30 @@ class SignatureVerdictTest(unittest.TestCase):
         with patch("nistiprint_shared.services.marketplace_adapters.shopee_adapter", adapter):
             self.assertTrue(worker._is_chat({"source": "shopee", "parsed_payload": {}}))
 
+    def test_shopee_chat_keeps_existing_ingest_path(self):
+        expected = {"status": "success", "event_status": "chat_persisted"}
+        item = {"source": "shopee", "parsed_payload": {"topic": "shopee_chat"},
+                "webhook_event_id": 55}
+        with patch("nistiprint_shared.services.shopee_chat_service.shopee_chat_ingest_service.process",
+                   return_value=expected) as shopee_process, \
+             patch("nistiprint_shared.services.mercadolivre_personalization_service.enqueue_notification") as meli_enqueue:
+            result = worker._process_chat(item)
+        self.assertEqual(result, expected)
+        shopee_process.assert_called_once_with(item["parsed_payload"], webhook_event_id=55)
+        meli_enqueue.assert_not_called()
+
+    def test_mercadolivre_chat_persists_inbox_then_dispatches_shared_celery_function(self):
+        expected = {"status": "success", "identity_status": "matched", "inbox_id": 99}
+        item = {"source": "mercadolivre", "parsed_payload": {"topic": "messages"},
+                "webhook_event_id": 77}
+        with patch("nistiprint_shared.services.mercadolivre_personalization_service.enqueue_notification",
+                   return_value=expected) as enqueue, \
+             patch("nistiprint_shared.services.celery_app.celery_app.send_task") as send_task:
+            result = worker._process_chat(item)
+        self.assertEqual(result, expected)
+        enqueue.assert_called_once_with(item["parsed_payload"], webhook_event_id=77)
+        send_task.assert_called_once_with("mercadolivre.chat.process_inbox", queue="celery")
+
     def test_validated_404_retries_only_inside_short_window(self):
         recent = {
             "event_id": "recent-404",

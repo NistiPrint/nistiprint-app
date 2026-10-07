@@ -4,6 +4,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { ArrowLeft, Loader2, Save, TestTube2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -58,6 +59,8 @@ function ConfiguracoesIA() {
   const [fallbackProvider, setFallbackProvider] = useState(FALLBACK_NONE);
   const [maxProcessing, setMaxProcessing] = useState(50);
   const [timeoutSeconds, setTimeoutSeconds] = useState(60);
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
+  const [scheduleTime, setScheduleTime] = useState('09:00');
   const [loadedSnapshot, setLoadedSnapshot] = useState('');
 
   const [testResult, setTestResult] = useState(null);
@@ -85,10 +88,15 @@ function ConfiguracoesIA() {
     loadConfig(selectedIntegrationId);
   }, [selectedIntegrationId, accounts]);
 
-  const snapshot = config => JSON.stringify({
+  const snapshot = (config, marketplace) => JSON.stringify({
     prompt_template: config.prompt_template || '', provider: config.provider || 'gemini',
     model_name: config.model_name || 'gemini-2.5-flash', fallback_provider: config.fallback_provider || '',
     max_processing: Number(config.max_processing || 50), timeout_seconds: Number(config.timeout_seconds || 60),
+    ...(marketplace === 'mercadolivre' ? {
+      schedule_enabled: config.schedule_enabled !== false,
+      schedule_hour: Number(config.schedule_hour ?? 9),
+      schedule_minute: Number(config.schedule_minute ?? 0),
+    } : {}),
   });
 
   const loadConfig = async integrationId => {
@@ -111,7 +119,12 @@ function ConfiguracoesIA() {
         setFallbackProvider(cfg.fallback_provider || FALLBACK_NONE);
         if (cfg.max_processing) setMaxProcessing(cfg.max_processing);
         setTimeoutSeconds(cfg.timeout_seconds || 60);
-        setLoadedSnapshot(snapshot(cfg));
+        const hour = Number(cfg.schedule_hour ?? 9);
+        const minute = Number(cfg.schedule_minute ?? 0);
+        setScheduleEnabled(cfg.schedule_enabled !== false);
+        setScheduleTime(`${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`);
+        const marketplace = accounts.find(row => String(row.integration_id) === String(integrationId))?.marketplace;
+        setLoadedSnapshot(snapshot(cfg, marketplace));
       }
     } catch {
       toast.error('Erro ao carregar configurações');
@@ -124,7 +137,11 @@ function ConfiguracoesIA() {
   const selectedAccount = accounts.find(row => String(row.integration_id) === String(selectedIntegrationId));
   const currentSnapshot = snapshot({ prompt_template: promptTemplate, provider, model_name: modelName,
     fallback_provider: fallbackProvider === FALLBACK_NONE ? '' : fallbackProvider,
-    max_processing: maxProcessing, timeout_seconds: timeoutSeconds });
+    max_processing: maxProcessing, timeout_seconds: timeoutSeconds,
+    schedule_enabled: scheduleEnabled,
+    schedule_hour: Number(scheduleTime.split(':')[0] || 9),
+    schedule_minute: Number(scheduleTime.split(':')[1] || 0),
+  }, selectedAccount?.marketplace);
   const isDirty = Boolean(loadedSnapshot && currentSnapshot !== loadedSnapshot);
 
   const chooseAccount = integrationId => {
@@ -154,10 +171,15 @@ function ConfiguracoesIA() {
         fallback_provider: fallbackProvider === FALLBACK_NONE ? '' : fallbackProvider,
         max_processing: maxProcessing,
         timeout_seconds: timeoutSeconds,
+        ...(selectedAccount?.marketplace === 'mercadolivre' ? {
+          schedule_enabled: scheduleEnabled,
+          schedule_hour: Number(scheduleTime.split(':')[0] || 9),
+          schedule_minute: Number(scheduleTime.split(':')[1] || 0),
+        } : {}),
       }) });
       const data = await response.json();
       if (response.ok && data.success) {
-        setLoadedSnapshot(snapshot(data.config));
+        setLoadedSnapshot(snapshot(data.config, selectedAccount?.marketplace));
         toast.success(`Configuração salva para ${selectedAccount?.name || 'esta conta'}.`);
         setTestResult({ type: 'success', message: 'Configurações aplicadas' });
       } else {
@@ -224,6 +246,26 @@ function ConfiguracoesIA() {
         {selectedAccount && <p className="text-xs text-muted-foreground">Configuração aplicada somente a {selectedAccount.marketplace_label} · {selectedAccount.name}.</p>}
       </CardContent></Card>
       {!selectedAccount && <Card><CardContent className="p-5 text-sm text-muted-foreground">Conecte uma conta Shopee ou Mercado Livre para configurar a extração.</CardContent></Card>}
+
+      {selectedAccount?.marketplace === 'mercadolivre' && <Card>
+        <CardHeader>
+          <CardTitle>Extração diária</CardTitle>
+          <CardDescription>Pausar o agendamento não interrompe a captura de mensagens nem a extração manual.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Switch id="daily-schedule-enabled" checked={scheduleEnabled} disabled={saving}
+              onCheckedChange={setScheduleEnabled} />
+            <Label htmlFor="daily-schedule-enabled">Executar diariamente</Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Label htmlFor="daily-schedule-time">Horário de Brasília</Label>
+            <Input id="daily-schedule-time" type="time" value={scheduleTime}
+              disabled={!scheduleEnabled || saving} onChange={event => setScheduleTime(event.target.value)}
+              className="h-9 w-32" />
+          </div>
+        </CardContent>
+      </Card>}
 
       <div className="space-y-6">
         {/* Prompt Template */}

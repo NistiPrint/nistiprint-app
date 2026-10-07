@@ -85,7 +85,7 @@ def get_config(integration_id: int) -> dict:
         prompt_default = DEFAULT_PROMPT
     if installation["module_id"] == "shopee":
         prompt_default = ""
-    return {
+    result = {
         "integration_id": int(integration_id),
         "marketplace": installation["module_id"],
         "prompt_template": raw.get("prompt_template") or prompt_default,
@@ -95,6 +95,13 @@ def get_config(integration_id: int) -> dict:
         "timeout_seconds": int(raw.get("timeout_seconds") or 60),
         "max_processing": int(raw.get("max_processing") or 50),
     }
+    if installation["module_id"] == "mercadolivre":
+        result.update(
+            schedule_enabled=bool(raw.get("schedule_enabled", True)),
+            schedule_hour=int(raw.get("schedule_hour", 9)),
+            schedule_minute=int(raw.get("schedule_minute", 0)),
+        )
+    return result
 
 
 def update_config(integration_id: int, values: dict, *, user_id: int | None = None) -> dict:
@@ -104,7 +111,12 @@ def update_config(integration_id: int, values: dict, *, user_id: int | None = No
 
     current = get_config(integration_id)
     update: dict[str, Any] = {}
-    for key in ("prompt_template", "provider", "model_name", "fallback_provider", "timeout_seconds", "max_processing"):
+    fields = ["prompt_template", "provider", "model_name", "fallback_provider", "timeout_seconds", "max_processing"]
+    if installation["module_id"] == "mercadolivre":
+        fields.extend(("schedule_enabled", "schedule_hour", "schedule_minute"))
+    elif any(key in values for key in ("schedule_enabled", "schedule_hour", "schedule_minute")):
+        raise ValueError("Agendamento diário configurável somente para Mercado Livre")
+    for key in fields:
         if key in values:
             update[key] = values[key]
     provider = str(update.get("provider", current["provider"])).strip().lower()
