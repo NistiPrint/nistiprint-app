@@ -127,6 +127,7 @@ def run_account_supervisor() -> None:
     children: dict[int, dict[str, subprocess.Popen]] = {}
     running = True
     lock_held = False
+    recovered_chat_events = False
 
     def stop(_signum=None, _frame=None):
         nonlocal running
@@ -142,6 +143,22 @@ def run_account_supervisor() -> None:
                 if not lock_held:
                     time.sleep(10)
                     continue
+            if not recovered_chat_events:
+                recovered_chat_events = True
+                try:
+                    from nistiprint_shared.database.supabase_db_service import supabase_db
+                    from nistiprint_shared.services.webhook_monitoring_service import webhook_monitoring_service
+                    missed = (supabase_db.table("webhook_events").select("id")
+                              .eq("source", "mercadolivre")
+                              .eq("provider_topic", "messages")
+                              .eq("last_status", "skipped_unsupported_topic")
+                              .order("received_at").limit(500).execute().data or [])
+                    queued = sum(bool(webhook_monitoring_service.reprocess_event(int(row["id"])).get("queued"))
+                                 for row in missed)
+                    if queued:
+                        logger.info("Requeued %d retained Mercado Livre chat notifications", queued)
+                except Exception:
+                    logger.exception("Could not recover retained Mercado Livre chat notifications")
             try:
                 active_ids = {int(row["integration_id"]) for row in available_integrations()
                               if row.get("is_active") and row.get("application_id_configured")

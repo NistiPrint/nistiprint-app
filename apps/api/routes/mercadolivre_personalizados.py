@@ -145,6 +145,33 @@ def obter_logs(integration_id, pedido_id):
         return _handle_error(exc)
 
 
+@mercadolivre_personalizados_bp.delete(
+    "/api/v2/mercadolivre/integracoes/<int:integration_id>/personalizados/pedidos/<int:pedido_id>/logs"
+)
+@check_permission("vendas", "editar")
+def deletar_logs(integration_id, pedido_id):
+    try:
+        deleted = service.delete_logs_for_order(integration_id, pedido_id)
+        return ApiResponse.success({"deleted_count": deleted}, message=f"{deleted} log(s) deletado(s).")
+    except Exception as exc:
+        return _handle_error(exc)
+
+
+@mercadolivre_personalizados_bp.post(
+    "/api/v2/mercadolivre/integracoes/<int:integration_id>/personalizados/pedidos/<int:pedido_id>/feedback"
+)
+@check_permission("vendas", "editar")
+def relatar_problema(integration_id, pedido_id):
+    try:
+        body = request.get_json(silent=True) or {}
+        feedback = service.save_order_feedback(
+            integration_id, pedido_id, body.get("texto_feedback", ""), user_id=_user_id()
+        )
+        return ApiResponse.success(feedback, message="Obrigado pelo relato. Vamos analisar o ocorrido.")
+    except Exception as exc:
+        return _handle_error(exc)
+
+
 @mercadolivre_personalizados_bp.post(
     "/api/v2/mercadolivre/integracoes/<int:integration_id>/personalizados/extrair"
 )
@@ -184,33 +211,5 @@ def extrair(integration_id):
 def progresso_lote(integration_id, batch_id):
     try:
         return ApiResponse.success(service.batch_status(integration_id, batch_id))
-    except Exception as exc:
-        return _handle_error(exc)
-
-
-@mercadolivre_personalizados_bp.post(
-    "/api/v2/mercadolivre/integracoes/<int:integration_id>/personalizados/pedidos/<int:pedido_id>/personalizacoes"
-)
-@check_permission("vendas", "editar")
-def salvar_personalizacao_manual(integration_id, pedido_id):
-    try:
-        result = service.save_manual_personalization(
-            integration_id, pedido_id, request.get_json(silent=True) or {}, user_id=_user_id()
-        )
-        return ApiResponse.success(result, message="Personalização confirmada manualmente.")
-    except Exception as exc:
-        return _handle_error(exc)
-
-
-@mercadolivre_personalizados_bp.post(
-    "/api/v2/mercadolivre/integracoes/<int:integration_id>/personalizados/personalizacoes/<int:personalization_id>/confirmar"
-)
-@check_permission("vendas", "editar")
-def confirmar_personalizacao(integration_id, personalization_id):
-    try:
-        result = service.confirm_personalization(
-            integration_id, personalization_id, request.get_json(silent=True) or {}, user_id=_user_id()
-        )
-        return ApiResponse.success(result, message="Personalização confirmada.")
     except Exception as exc:
         return _handle_error(exc)

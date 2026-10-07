@@ -51,7 +51,7 @@ function getStatusBadge(order) {
     personalizations.some(
       p => p.status === 'NO_PERSONALIZATION_FOUND' || (!p.customization_name && p.status === 'SUCCESS'),
     ) ||
-    order.ai_status === 'NO_PERSONALIZATION_FOUND'
+    ['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(order.ai_status)
   ) {
     return { label: 'Sem nome', className: 'bg-slate-100 text-slate-800 border-slate-300' }
   }
@@ -71,7 +71,8 @@ function getStatusBadge(order) {
 function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProblem }) {
   const [isProcessing, setIsProcessing] = useState(false)
   const statusBadge = getStatusBadge(order)
-  const buyerMessage = String(order.shopee?.message ?? '').trim()
+  const buyerMessage = String(order.shopee?.message ?? order.message_to_seller ?? '').trim()
+  const isMercadoLivre = order.marketplace === 'mercadolivre'
 
   const handleCopy = async name => {
     try {
@@ -85,13 +86,13 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
   const handleProcessClick = async force => {
     setIsProcessing(true)
     try {
-      await onProcessAI(order.numeroLoja, force)
+      await onProcessAI(order.numeroLoja || order.external_order_id, force)
     } finally {
       setIsProcessing(false)
     }
   }
 
-  const orderDate = order.data ? String(order.data).slice(0, 10) : ''
+  const orderDate = (order.data || order.data_venda) ? String(order.data || order.data_venda).slice(0, 10) : ''
   const formattedOrderDate = /^\d{4}-\d{2}-\d{2}$/.test(orderDate)
     ? orderDate.split('-').reverse().join('/')
     : orderDate
@@ -103,14 +104,18 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
           <section className='space-y-2 md:border-r md:pr-4' aria-label='Dados do pedido'>
             <div>
               <Link
-                to={`/vendas/pedidos/${order.id}`}
+                to={isMercadoLivre
+                  ? `/vendas/pedidos/${order.id}`
+                  : `https://www.bling.com.br/vendas.php#edit/${order.id}`}
+                target={isMercadoLivre ? undefined : '_blank'}
+                rel={isMercadoLivre ? undefined : 'noopener noreferrer'}
                 className='text-lg font-semibold text-blue-700 transition-colors hover:text-blue-900 hover:underline'
                 title='Abrir a tela do pedido'>
                 #{order.numero}
               </Link>
-              {order.numeroLoja && (
-                <div className='mt-0.5 break-all font-mono text-xs text-gray-500' title='Código do pedido na Shopee'>
-                  {order.numeroLoja}
+              {(order.numeroLoja || order.external_order_id) && (
+                <div className='mt-0.5 break-all font-mono text-xs text-gray-500' title={`Código do pedido no ${isMercadoLivre ? 'Mercado Livre' : 'Shopee'}`}>
+                  {order.numeroLoja || order.external_order_id}
                 </div>
               )}
             </div>
@@ -119,7 +124,7 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
               <div className='truncate font-medium text-gray-800' title={order.contato?.nome || order.nome_cliente || ''}>
                 {order.contato?.nome || order.nome_cliente || 'Cliente não identificado'}
               </div>
-              {order.shopee?.username && <div className='truncate'>@{order.shopee.username}</div>}
+              {(order.shopee?.username || order.buyer_username) && <div className='truncate'>{isMercadoLivre ? order.buyer_username : `@${order.shopee.username}`}</div>}
               {formattedOrderDate && <time className='block text-xs text-gray-500'>{formattedOrderDate}</time>}
             </div>
 
@@ -198,6 +203,10 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
                           )}
                         </div>
                       )}
+                      {!item.personalizations?.length && item.personalizado &&
+                        ['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(order.ai_status) && (
+                          <Badge variant='outline' className='border-slate-300 text-slate-600'>Sem nome</Badge>
+                        )}
                     </div>
                   </div>
                 </div>
@@ -210,13 +219,17 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
               size='sm'
               variant={order.has_chat_messages ? 'outline' : 'ghost'}
               className='h-9 gap-1.5 px-2.5'
-              disabled={!order.shopee?.username}
+              disabled={isMercadoLivre
+                ? !order.chat_available && !order.has_chat_messages && !order.buyer_username
+                : !order.shopee?.username}
               onClick={() => onOpenChat(order.shopee?.username, order.numero, order)}
               title={
-                order.shopee?.username
+                (order.shopee?.username || order.chat_available || order.has_chat_messages || (isMercadoLivre && order.buyer_username))
                   ? order.has_chat_messages
                     ? 'Abrir chat do comprador'
-                    : 'Sem mensagens registradas para este comprador'
+                    : order.chat_available
+                      ? 'Sem mensagens registradas para este comprador'
+                      : 'Abrir chat do pedido; a sincronização das mensagens pode estar pendente'
                   : 'Comprador não identificado'
               }>
               <MessageCircleMore
@@ -237,20 +250,20 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
               </DropdownMenuTrigger>
               <DropdownMenuContent align='end' className='w-56'>
                 <DropdownMenuItem
-                  disabled={!order.numeroLoja || isProcessing}
+              disabled={!(order.numeroLoja || order.external_order_id) || isProcessing}
                   onSelect={() => handleProcessClick(false)}>
                   <Brain className='mr-2 h-4 w-4' />
                   {order.needs_ai_processing ? 'Processar com IA' : 'Processar (se pendente)'}
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  disabled={!order.numeroLoja || isProcessing}
+              disabled={!(order.numeroLoja || order.external_order_id) || isProcessing}
                   onSelect={() => handleProcessClick(true)}>
                   <RefreshCw className='mr-2 h-4 w-4' />
                   Forçar reprocessamento
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  disabled={!order.numeroLoja}
-                  onSelect={() => onOpenAiLogs(order.numeroLoja)}>
+                  disabled={!(order.numeroLoja || order.external_order_id)}
+                  onSelect={() => onOpenAiLogs(order.numeroLoja || order.external_order_id, order)}>
                   <FileText className='mr-2 h-4 w-4' />
                   Ver logs da IA
                 </DropdownMenuItem>
@@ -258,21 +271,23 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
                 <DropdownMenuSeparator />
 
                 <DropdownMenuItem asChild>
-                  <a
-                    href={`https://www.bling.com.br/vendas.php#edit/${order.id}`}
-                    target='_blank'
-                    rel='noopener noreferrer'>
-                    <ExternalLink className='mr-2 h-4 w-4' />
-                    Abrir no Bling
-                  </a>
+                  {isMercadoLivre ? (
+                    <Link to={`/vendas/pedidos/${order.id}`}>
+                      <ExternalLink className='mr-2 h-4 w-4' /> Abrir pedido
+                    </Link>
+                  ) : (
+                    <a href={`https://www.bling.com.br/vendas.php#edit/${order.id}`} target='_blank' rel='noopener noreferrer'>
+                      <ExternalLink className='mr-2 h-4 w-4' /> Abrir no Bling
+                    </a>
+                  )}
                 </DropdownMenuItem>
 
                 <DropdownMenuSeparator />
 
                 <DropdownMenuItem
                   className='text-red-600 focus:bg-red-50 focus:text-red-700'
-                  disabled={!order.numeroLoja}
-                  onSelect={() => onReportProblem(order.numeroLoja)}>
+                  disabled={!(order.numeroLoja || order.external_order_id)}
+                  onSelect={() => onReportProblem(order.numeroLoja || order.external_order_id, order)}>
                   <Flag className='mr-2 h-4 w-4' />
                   Relatar problema
                 </DropdownMenuItem>

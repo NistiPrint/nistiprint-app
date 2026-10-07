@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from 'react';
  *  - orderId: string (número do pedido para exibição)
  *  - highlightedMessageIds: string[] (mensagens que originaram personalizações)
  */
-export function ChatSidebar({ open, onOpenChange, username, orderId, highlightedMessageIds = [] }) {
+export function ChatSidebar({ open, onOpenChange, username, orderId, highlightedMessageIds = [], marketplace = 'shopee', integrationId, pedidoId }) {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -23,23 +23,35 @@ export function ChatSidebar({ open, onOpenChange, username, orderId, highlighted
   const highlightSet = useRef(new Set(highlightedMessageIds));
 
   useEffect(() => {
-    if (open && username) {
+    if (open && (username || (marketplace === 'mercadolivre' && integrationId && pedidoId))) {
       highlightSet.current = new Set(highlightedMessageIds);
       loadMessages(username);
     }
-  }, [open, username]);
+  }, [open, username, marketplace, integrationId, pedidoId]);
 
   const loadMessages = async (user) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/v2/personalizados/chat/${encodeURIComponent(user)}`, {
+      const path = marketplace === 'mercadolivre'
+        ? `/api/v2/mercadolivre/integracoes/${integrationId}/personalizados/pedidos/${pedidoId}/chat`
+        : `/api/v2/personalizados/chat/${encodeURIComponent(user)}`;
+      const res = await fetch(path, {
         headers: { Accept: 'application/json' },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const msgs = data.success ? (data.data?.messages || []) : [];
-      setMessages(msgs);
+      const displayMessages = marketplace === 'mercadolivre'
+        ? msgs.map(message => ({
+          id: message.provider_message_id,
+          from_user_name: message.sender_role === 'buyer' ? user : `meli-${message.sender_role}`,
+          content: message.text_content || (message.attachments?.length ? `${message.attachments.length} anexo(s)` : 'Mensagem sem texto'),
+          created_at: message.created_at,
+          type: 'text',
+        }))
+        : msgs;
+      setMessages(displayMessages);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -65,12 +77,12 @@ export function ChatSidebar({ open, onOpenChange, username, orderId, highlighted
                 <MessageSquare className="h-4 w-4" />
                 Chat — Pedido #{orderId || '—'}
               </SheetTitle>
-              <p className="text-xs text-muted-foreground mt-1">@{username || '—'}</p>
+              <p className="text-xs text-muted-foreground mt-1">{marketplace === 'mercadolivre' ? (username || 'Conversa do pedido') : `@${username || '—'}`}</p>
             </div>
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => username && loadMessages(username)}
+              onClick={() => loadMessages(username)}
               disabled={loading}
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
@@ -88,13 +100,15 @@ export function ChatSidebar({ open, onOpenChange, username, orderId, highlighted
             <div className="text-center py-8 text-red-500">
               <p>Erro ao carregar mensagens:</p>
               <p className="text-sm font-mono mt-1">{error}</p>
-              <Button variant="outline" size="sm" className="mt-3" onClick={() => username && loadMessages(username)}>
+              <Button variant="outline" size="sm" className="mt-3" onClick={() => loadMessages(username)}>
                 Tentar novamente
               </Button>
             </div>
           ) : messages.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
-              Nenhuma mensagem encontrada.
+              {marketplace === 'mercadolivre'
+                ? 'Nenhuma mensagem sincronizada para este pedido. Tente atualizar em instantes.'
+                : 'Nenhuma mensagem encontrada.'}
             </div>
           ) : (
             renderMessages(messages, username, highlightSet.current)

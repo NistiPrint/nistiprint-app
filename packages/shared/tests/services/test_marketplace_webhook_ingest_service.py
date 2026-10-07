@@ -12,6 +12,20 @@ from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
 
 
 class TestMarketplaceWebhookIngestService(unittest.TestCase):
+    def test_meli_messages_notification_is_enqueued_for_private_chat(self):
+        service = MarketplaceWebhookIngestService()
+        resource = SimpleNamespace(topic='messages', resource_path='/messages/msg-1',
+            resource_type='message', resource_id='msg-1', account_id='123')
+        parsed = SimpleNamespace(primary_resource=resource, primary_order_id=None, classification='chat')
+        expected = {"status": "success", "event_status": "pending_private_chat",
+                    "provider_topic": "messages", "provider_resource": "/messages/msg-1",
+                    "provider_resource_type": "message", "provider_resource_id": "msg-1"}
+        with patch('nistiprint_shared.services.marketplace_webhook_ingest_service.mercadolivre_adapter.parse_webhook', return_value=parsed), \
+             patch('nistiprint_shared.services.mercadolivre_personalization_service.enqueue_notification', return_value=expected) as enqueue:
+            result = service._process_mercadolivre({"topic": "messages"}, correlation_id="test", webhook_event_id=987)
+        self.assertEqual(result, expected)
+        enqueue.assert_called_once_with({"topic": "messages"}, webhook_event_id=987)
+
     def test_shipment_rate_limit_stops_remaining_pack_orders(self):
         service = MarketplaceWebhookIngestService()
         resource = SimpleNamespace(topic='shipments', resource_path='/shipments/555',

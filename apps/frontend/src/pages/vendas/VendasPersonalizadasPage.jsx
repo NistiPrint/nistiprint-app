@@ -33,9 +33,10 @@ const hasIdentifiedName = (order) =>
 const hasNoName = (order) =>
   order.itens?.some(item =>
     item.personalizations?.some(
-      p => p.status === 'NO_PERSONALIZATION_FOUND' || (!p.customization_name && p.status === 'SUCCESS'),
+      p => ['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(p.status)
+        || (!p.customization_name && p.status === 'SUCCESS'),
     ),
-  );
+  ) || ['no_personalization_found', 'NO_PERSONALIZATION_FOUND'].includes(order.ai_status);
 
 function VendasPersonalizadasPage() {
   const navigate = useNavigate();

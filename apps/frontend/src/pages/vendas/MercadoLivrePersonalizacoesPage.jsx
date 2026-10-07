@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { ChatSidebar } from '@/components/chat/ChatSidebar';
+import OrderCard from '@/components/vendas/OrderCard';
+import OrderFilters from '@/components/vendas/OrderFilters';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Textarea } from '@/components/ui/textarea';
+import { Brain, Flag, Loader2, RefreshCw, Settings } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -22,206 +31,282 @@ function AccountList() {
     api('/personalizacoes').then(data => setAccounts(data.accounts || [])).catch(err => setError(err.message));
   }, []);
   return (
-    <main className="mx-auto max-w-5xl space-y-5 p-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Personalizações · Mercado Livre</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Escolha a conta para consultar pedidos, mensagens privadas e extrações.</p>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold">Pedidos do Mercado Livre</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Escolha uma conta para consultar pedidos e conversas.</p>
+        </div>
+        <Link to="/configuracoes/ia" className="rounded border px-3 py-2 text-sm hover:bg-muted">Configuração de IA</Link>
       </div>
-      <div className="flex flex-wrap gap-2"><Link to="/configuracoes/ia" className="rounded border px-3 py-2 text-sm hover:bg-muted">Configuração de IA</Link></div>
       {error && <p className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{error}</p>}
       {!accounts.length && !error && <p className="rounded border p-4 text-sm">Nenhuma conta Mercado Livre conectada.</p>}
       <div className="grid gap-4 md:grid-cols-2">
         {accounts.map(account => (
           <Link key={account.integration_id} to={`/vendas/personalizadas/mercadolivre/${account.integration_id}`}
             className="rounded-lg border bg-card p-5 shadow-sm transition hover:border-primary">
-            <h2 className="font-semibold">{account.name}</h2>
+            <h3 className="font-semibold">{account.name}</h3>
             <p className="mt-1 text-sm text-muted-foreground">Conta {account.account_user_id || account.integration_id}</p>
-            <p className="mt-3 text-xs text-muted-foreground">Abrir pedidos desta conta →</p>
           </Link>
         ))}
       </div>
-    </main>
+    </div>
   );
 }
 
-function OrderCard({ integrationId, order, refresh }) {
-  const [chat, setChat] = useState(null);
-  const [logs, setLogs] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const openChat = async () => {
-    try {
-      const result = await api(`/${integrationId}/personalizados/pedidos/${order.id}/chat`);
-      setChat(result);
-    } catch (error) { toast.error(error.message); }
+function normalizeOrder(order) {
+  const externalId = order.external_order_id || order.marketplace_order_id || order.codigo_pedido_externo;
+  return {
+    ...order,
+    marketplace: 'mercadolivre',
+    numero: order.numero_pedido || externalId,
+    numeroLoja: externalId,
+    data: order.data_venda,
+    contato: { nome: order.cliente_nome || order.buyer_username || '' },
+    shopee: { username: order.buyer_username || '', message: order.message_to_seller || '' },
+    itens: (order.items || []).map(item => ({
+      ...item,
+      codigo: item.sku_externo,
+      descricao: item.titulo_anuncio || item.descricao,
+      personalizations: (item.personalizations || []).map(value => ({
+        ...value,
+        name_source_message_id: value.name_source_message_id || value.details?.name_source_message_id,
+        initial_source_message_id: value.initial_source_message_id || value.details?.initial_source_message_id,
+      })),
+    })),
   };
-  const save = async (event, item, personalization) => {
-    event.preventDefault();
-    const values = Object.fromEntries(new FormData(event.currentTarget).entries());
-    values.item_pedido_id = item.id;
-    values.quantity_to_personalize = Number(values.quantity_to_personalize || 1);
-    setBusy(true);
-    try {
-      const path = personalization
-        ? `/${integrationId}/personalizados/personalizacoes/${personalization.id}/confirmar`
-        : `/${integrationId}/personalizados/pedidos/${order.id}/personalizacoes`;
-      await api(path, { method: 'POST', body: JSON.stringify(values) });
-      toast.success('Personalização confirmada.');
-      await refresh();
-    } catch (error) { toast.error(error.message); }
-    finally { setBusy(false); }
-  };
-  const allPersonalizations = (order.items || []).flatMap(item => item.personalizations?.length
-    ? item.personalizations.map(value => ({ item, value }))
-    : item.personalization ? [{ item, value: item.personalization }] : []);
-  const needsReview = allPersonalizations.some(({ value }) => value.status !== 'SUCCESS');
-  return (
-    <article className="rounded-lg border bg-card p-4 shadow-sm">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="font-semibold">Pedido {order.numero_pedido || order.external_order_id}</h2>
-          <p className="text-sm text-muted-foreground">Origem {order.external_order_id} · {order.cliente_nome || 'Comprador Mercado Livre'}</p>
-          <p className="mt-1 text-sm text-muted-foreground">{allPersonalizations.length
-            ? needsReview ? 'Precisa de revisão' : 'Personalizado'
-            : order.has_chat_messages ? 'Aguardando extração' : 'Aguardando mensagem'}</p>
-        </div>
-        <div className="flex gap-2">
-          <button className="rounded border px-3 py-1.5 text-sm" onClick={openChat}>Ver conversa</button>
-          <button className="rounded border px-3 py-1.5 text-sm" onClick={async () => {
-            try {
-              const data = await api(`/${integrationId}/personalizados/pedidos/${order.id}/logs`);
-              setLogs(data.logs || []);
-            } catch (error) { toast.error(error.message); }
-          }}>Ver logs</button>
-        </div>
-      </header>
-      <div className="mt-4 space-y-3">
-        {order.items?.map(item => {
-          const rows = item.personalizations?.length ? item.personalizations : (item.personalization ? [item.personalization] : []);
-          const forms = [...rows, null];
-          const remainingQuantity = Math.max(1, Number(item.quantidade || 1) - rows.reduce((sum, row) => sum + Number(row.quantity_to_personalize || 0), 0));
-          return (
-            <div key={item.id} className="space-y-2 rounded-md bg-muted/40 p-3">
-              <div>
-                <p className="text-sm font-medium">{item.titulo_anuncio || item.descricao} {item.variacao_externa ? `· ${item.variacao_externa}` : ''}</p>
-                <p className="text-xs text-muted-foreground">SKU {item.sku_externo || '—'} · quantidade {item.quantidade}</p>
-              </div>
-              {forms.map((value, index) => <details key={value?.id || `new-${item.id}-${index}`} className="rounded border bg-background p-2">
-                <summary className="cursor-pointer text-sm">
-                  {value ? <span className={value.status === 'SUCCESS' ? 'text-green-700' : 'text-amber-700'}>{value.customization_name || 'Sem nome'}{value.customization_initial ? ` · ${value.customization_initial}` : ''} · {value.quantity_to_personalize || 1} un. · {value.status === 'SUCCESS' ? 'Pronto para impressão' : 'Revisar'}</span> : <span className="text-muted-foreground">Adicionar personalização manual</span>}
-                </summary>
-                <form onSubmit={event => save(event, item, value)} className="mt-3 grid gap-2 md:grid-cols-[1fr_1fr_100px_auto] md:items-end">
-                <div className="md:col-span-4 text-xs">
-                  <span className={value?.status === 'SUCCESS' ? 'text-green-700' : 'text-amber-700'}>{value?.status === 'SUCCESS' ? 'Extração concluída' : value ? 'Requer revisão' : rows.length ? 'Adicionar outra personalização' : 'Aguardando extração ou revisão'}</span>
-                </div>
-                <label className="text-xs">Nome<input name="customization_name" defaultValue={value?.customization_name || ''} className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm" /></label>
-                <label className="text-xs">Inicial<input name="customization_initial" defaultValue={value?.customization_initial || ''} className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm" /></label>
-                <label className="text-xs">Unidades<input name="quantity_to_personalize" type="number" min="1" max={item.quantidade || 1} defaultValue={value?.quantity_to_personalize || (rows.length && !value ? remainingQuantity : item.quantidade) || 1} className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm" /></label>
-                <button disabled={busy} className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50">{value ? 'Confirmar' : 'Salvar'}</button>
-                </form>
-              </details>)}
-            </div>
-          );
-        })}
-      </div>
-      {logs && <section className="mt-4 rounded border p-3">
-        <div className="flex justify-between"><h3 className="font-medium">Histórico de extração e revisão</h3><button onClick={() => setLogs(null)}>Fechar</button></div>
-        {!logs.length && <p className="py-2 text-sm text-muted-foreground">Nenhum registro ainda.</p>}
-        <div className="mt-2 space-y-2">{logs.map(log => <div key={log.id} className="rounded bg-muted p-2 text-xs"><div className="flex justify-between"><strong>{log.status}</strong><span>{log.executed_at}</span></div>{log.error_message && <p className="mt-1 text-red-700">{log.error_message}</p>}{log.metadata?.confirmed_by && <p className="mt-1">Confirmado pelo usuário {log.metadata.confirmed_by}</p>}</div>)}</div>
-      </section>}
-      {chat && <section className="mt-4 rounded border p-3" aria-live="polite">
-        <div className="flex justify-between"><h3 className="font-medium">Mensagens privadas do pacote</h3><button onClick={() => setChat(null)} aria-label="Fechar conversa">Fechar</button></div>
-        {!chat.messages?.length && <p className="py-3 text-sm text-muted-foreground">Ainda não há conversa sincronizada para este pedido.</p>}
-        <div className="mt-2 max-h-72 space-y-2 overflow-auto">
-          {chat.messages?.map(message => <div key={message.provider_message_id} className="rounded bg-muted p-2 text-sm">
-            <div className="mb-1 flex justify-between text-xs text-muted-foreground"><span>{{ buyer: 'Comprador', seller: 'Vendedor', agent: 'Atendimento Mercado Livre', unknown: 'Participante' }[message.sender_role] || 'Participante'}</span><span>{message.created_at ? new Date(message.created_at).toLocaleString('pt-BR') : ''}</span></div>
-            <p className="whitespace-pre-wrap">{message.text_content || (message.attachments?.length ? `${message.attachments.length} anexo(s) — revisão manual necessária` : 'Mensagem sem texto')}</p>
-          </div>)}
-        </div>
-      </section>}
-    </article>
-  );
 }
 
 function AccountOrders({ integrationId }) {
   const navigate = useNavigate();
   const [account, setAccount] = useState(null);
   const [orders, setOrders] = useState([]);
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
-  const [batch, setBatch] = useState(null);
   const [error, setError] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [aiFilter, setAiFilter] = useState('');
+  const [chatFilter, setChatFilter] = useState('');
+  const [visibleCount, setVisibleCount] = useState(20);
+  const [activeBatch, setActiveBatch] = useState(null);
+  const [selectedChatOrder, setSelectedChatOrder] = useState(null);
+  const [highlightedMessages, setHighlightedMessages] = useState([]);
+  const [selectedOrderForLogs, setSelectedOrderForLogs] = useState(null);
+  const [aiLogs, setAiLogs] = useState([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
+  const [selectedOrderForFeedback, setSelectedOrderForFeedback] = useState(null);
+  const [feedbackNotes, setFeedbackNotes] = useState('');
   const storageKey = `mercadolivre-personalizacao:${integrationId}:batch`;
+
   const refresh = useCallback(async () => {
     const [accounts, result] = await Promise.all([
-      api('/personalizacoes'), api(`/${integrationId}/personalizados/pedidos`),
+      api('/personalizacoes'), api(`/${integrationId}/personalizados/pedidos?limit=5000`),
     ]);
     const selected = (accounts.accounts || []).find(row => String(row.integration_id) === String(integrationId));
     if (!selected) throw new Error('Conta Mercado Livre não encontrada.');
     setAccount(selected);
-    setOrders(result.orders || []);
+    setOrders((result.orders || []).map(normalizeOrder));
   }, [integrationId]);
+
   useEffect(() => {
     refresh().catch(err => setError(err.message)).finally(() => setLoading(false));
-    try { setBatch(JSON.parse(localStorage.getItem(storageKey) || 'null')); } catch { setBatch(null); }
+    try { setActiveBatch(JSON.parse(localStorage.getItem(storageKey) || 'null')); } catch { setActiveBatch(null); }
   }, [refresh, storageKey]);
+
   useEffect(() => {
-    if (!batch?.batch_id || ['COMPLETED', 'FAILED'].includes(batch.status)) return undefined;
+    if (!activeBatch?.batch_id || ['COMPLETED', 'FAILED'].includes(activeBatch.status)) return undefined;
     const timer = setInterval(async () => {
       try {
-        const current = await api(`/${integrationId}/personalizados/lotes/${batch.batch_id}`);
-        setBatch(current);
+        const current = await api(`/${integrationId}/personalizados/lotes/${activeBatch.batch_id}`);
+        setActiveBatch(current);
         localStorage.setItem(storageKey, JSON.stringify(current));
-        if (['COMPLETED', 'FAILED'].includes(current.status)) await refresh();
-      } catch { /* uma falha pontual não encerra o acompanhamento */ }
-    }, 5000);
+        if (['COMPLETED', 'FAILED'].includes(current.status)) {
+          await refresh();
+          if (current.status === 'FAILED') toast.error(`Extração concluída com ${current.falha || 0} falha(s).`);
+          else toast.success(`Extração concluída: ${current.sucesso || 0} pacote(s) processado(s).`);
+        }
+      } catch { /* Uma falha temporária não encerra o acompanhamento do lote. */ }
+    }, 3000);
     return () => clearInterval(timer);
-  }, [batch, integrationId, refresh, storageKey]);
-  const startExtraction = async (force = false) => {
+  }, [activeBatch, integrationId, refresh, storageKey]);
+
+  const statusCounts = useMemo(() => {
+    const counts = { pendente_ia: 0, com_chat: 0, sem_chat: 0, nome_identificado: 0, sem_nome: 0 };
+    orders.forEach(order => {
+      if (order.needs_ai_processing) counts.pendente_ia += 1;
+      if (order.has_chat_messages) counts.com_chat += 1;
+      else counts.sem_chat += 1;
+      const rows = order.itens.flatMap(item => item.personalizations);
+      if (rows.some(row => row.status === 'SUCCESS' && row.customization_name)) counts.nome_identificado += 1;
+      if (rows.some(row => row.status === 'NO_PERSONALIZATION_FOUND' || row.status === 'no_personalization_found'
+        || (!row.customization_name && row.status === 'SUCCESS'))
+        || ['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(order.ai_status)) counts.sem_nome += 1;
+    });
+    return counts;
+  }, [orders]);
+
+  const filteredOrders = useMemo(() => orders.filter(order => {
+    const search = `${order.numero || ''} ${order.numeroLoja || ''} ${order.cliente_nome || ''}`.toLowerCase();
+    if (searchTerm && !search.includes(searchTerm.toLowerCase())) return false;
+    const rows = order.itens.flatMap(item => item.personalizations);
+    if (aiFilter === 'pendente_ia' && !order.needs_ai_processing) return false;
+    if (aiFilter === 'nome_identificado' && !rows.some(row => row.status === 'SUCCESS' && row.customization_name)) return false;
+    if (aiFilter === 'sem_nome' && !rows.some(row => ['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(row.status)
+      || (!row.customization_name && row.status === 'SUCCESS'))
+      && !['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(order.ai_status)) return false;
+    if (chatFilter === 'com_chat' && !order.has_chat_messages) return false;
+    if (chatFilter === 'sem_chat' && order.has_chat_messages) return false;
+    return true;
+  }), [orders, searchTerm, aiFilter, chatFilter]);
+
+  const startExtraction = async (pedidoIds, force = false) => {
+    if (activeBatch?.batch_id && !['COMPLETED', 'FAILED'].includes(activeBatch.status)) return;
     try {
       const result = await api(`/${integrationId}/personalizados/extrair`, {
-        method: 'POST', body: JSON.stringify({ force }),
+        method: 'POST', body: JSON.stringify({ ...(pedidoIds ? { pedido_ids: [pedidoIds] } : {}), force, limit: 50 }),
       });
-      if (result.batch_id) {
-        const created = { batch_id: result.batch_id, status: 'PENDING', total: result.total, processed: 0 };
-        setBatch(created); localStorage.setItem(storageKey, JSON.stringify(created));
+      if (!result.batch_id) {
+        toast.success(result.message || 'Não há pedidos pendentes para extrair.');
+        await refresh();
+        return;
       }
+      const batch = { ...result, status: 'PENDING', processed: 0 };
+      setActiveBatch(batch);
+      localStorage.setItem(storageKey, JSON.stringify(batch));
       toast.success(result.message || 'Extração iniciada.');
     } catch (err) { toast.error(err.message); }
   };
-  if (loading) return <main className="p-6">Carregando pedidos da conta…</main>;
+
+  const openChat = (_username, _orderNumber, order) => {
+    setHighlightedMessages(order.itens.flatMap(item => item.personalizations.flatMap(value => [
+      value.name_source_message_id, value.initial_source_message_id,
+    ].filter(Boolean))));
+    setSelectedChatOrder(order);
+  };
+
+  const openLogs = async (_externalOrderId, order) => {
+    setSelectedOrderForLogs(order);
+    setAiLogs([]);
+    setLoadingLogs(true);
+    try {
+      const data = await api(`/${integrationId}/personalizados/pedidos/${order.id}/logs`);
+      setAiLogs(data.logs || []);
+    } catch (err) { toast.error(err.message); }
+    finally { setLoadingLogs(false); }
+  };
+
+  const deleteLogs = async () => {
+    if (!selectedOrderForLogs || !window.confirm('Deletar todos os logs deste pedido?')) return;
+    try {
+      const result = await api(`/${integrationId}/personalizados/pedidos/${selectedOrderForLogs.id}/logs`, { method: 'DELETE' });
+      setAiLogs([]);
+      toast.success(result.message || 'Logs deletados.');
+    } catch (err) { toast.error(err.message); }
+  };
+
+  const submitFeedback = async () => {
+    if (!selectedOrderForFeedback) return;
+    try {
+      await api(`/${integrationId}/personalizados/pedidos/${selectedOrderForFeedback.id}/feedback`, {
+        method: 'POST', body: JSON.stringify({ texto_feedback: feedbackNotes }),
+      });
+      setSelectedOrderForFeedback(null);
+      toast.success('Obrigado pelo relato. Vamos analisar o ocorrido.');
+    } catch (err) { toast.error(err.message); }
+  };
+
+  if (loading) return <div className="flex justify-center p-8"><Loader2 className="h-8 w-8 animate-spin" /></div>;
+  if (error) return <p className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{error}</p>;
+
   return (
-    <main className="mx-auto max-w-6xl space-y-5 p-6">
+    <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <button onClick={() => navigate('/vendas/personalizadas/mercadolivre')} className="mb-2 text-sm text-muted-foreground">← Contas Mercado Livre</button>
-          <h1 className="text-2xl font-semibold">Personalizações · {account?.name || `Conta ${integrationId}`}</h1>
-          <p className="text-sm text-muted-foreground">ID da conta conectada: {integrationId}</p>
+          <h2 className="text-xl font-semibold">{account?.name || `Conta ${integrationId}`}</h2>
+          <p className="text-sm text-muted-foreground">Pedidos personalizados · Mercado Livre</p>
         </div>
-        <div className="flex gap-2">
-          <Link className="rounded border px-3 py-2 text-sm" to={`/configuracoes/ia?integration_id=${integrationId}`}>Configuração de IA</Link>
-          <button onClick={() => startExtraction(false)} className="rounded bg-primary px-3 py-2 text-sm text-primary-foreground">Extrair pendentes</button>
-          <button onClick={() => startExtraction(true)} className="rounded border px-3 py-2 text-sm">Reprocessar</button>
+        <div className="flex flex-wrap gap-2">
+          <Link className="rounded border px-3 py-2 text-sm" to={`/configuracoes/ia?integration_id=${integrationId}`}><Settings className="mr-1 inline h-4 w-4" />Configuração IA</Link>
+          <Button variant="outline" onClick={() => startExtraction(null, false)} disabled={!!activeBatch?.batch_id && !['COMPLETED', 'FAILED'].includes(activeBatch.status)}>
+            <Brain className="mr-2 h-4 w-4" /> Extrair nomes pendentes
+          </Button>
         </div>
       </div>
-      {error && <p className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{error}</p>}
-      {batch && <p className="rounded border p-3 text-sm">Lote {batch.status} · {batch.processed || 0}/{batch.total || 0} pacotes</p>}
-      <div className="flex flex-wrap gap-2 rounded-lg border bg-card p-3">
-        <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Buscar pedido ou comprador" className="min-w-56 flex-1 rounded border bg-background px-3 py-2 text-sm" />
-        <select value={statusFilter} onChange={event => setStatusFilter(event.target.value)} className="rounded border bg-background px-3 py-2 text-sm">
-          <option value="all">Todos os pedidos</option><option value="review">Precisa de revisão</option><option value="ready">Personalizado</option><option value="waiting">Aguardando mensagem ou extração</option>
-        </select>
-      </div>
-      {!orders.length && !error && <p className="rounded border p-4 text-sm">Não há pedidos personalizados em andamento ou prontos para envio nesta conta.</p>}
-      <div className="space-y-4">{orders.filter(order => {
-        const text = `${order.numero_pedido || ''} ${order.external_order_id || ''} ${order.cliente_nome || ''}`.toLowerCase();
-        if (search && !text.includes(search.toLowerCase())) return false;
-        const rows = (order.items || []).flatMap(item => item.personalizations?.length ? item.personalizations : item.personalization ? [item.personalization] : []);
-        const review = rows.some(row => row.status !== 'SUCCESS');
-        const ready = rows.length > 0 && !review;
-        return statusFilter === 'all' || (statusFilter === 'review' && review) || (statusFilter === 'ready' && ready) || (statusFilter === 'waiting' && !rows.length);
-      }).map(order => <OrderCard key={order.id} integrationId={integrationId} order={order} refresh={refresh} />)}</div>
-    </main>
+      {activeBatch && <p className="rounded border p-3 text-sm">Lote {activeBatch.status} · {activeBatch.processed || 0}/{activeBatch.total || 0} pacotes · {activeBatch.sucesso || 0} OK · {activeBatch.falha || 0} falha(s)</p>}
+
+      <Card className="shadow-sm">
+        <CardHeader className="pb-3"><CardTitle className="text-sm font-medium text-muted-foreground">Filtrar pedidos</CardTitle></CardHeader>
+        <CardContent className="p-0">
+          <OrderFilters searchTerm={searchTerm} onSearchChange={value => { setSearchTerm(value); setVisibleCount(20); }}
+            aiFilter={aiFilter} onAiFilterChange={value => { setAiFilter(current => current === value ? '' : value); setVisibleCount(20); }}
+            chatFilter={chatFilter} onChatFilterChange={value => { setChatFilter(current => current === value ? '' : value); setVisibleCount(20); }}
+            statusCounts={statusCounts} />
+          {!filteredOrders.length ? (
+            <div className="py-12 text-center text-sm text-muted-foreground">Não há pedidos personalizados disponíveis para estes filtros.</div>
+          ) : (
+            <div className="space-y-4 bg-white p-4 md:p-6">
+              {filteredOrders.slice(0, visibleCount).map(order => (
+                <OrderCard key={order.id} order={order}
+                  onOpenChat={openChat}
+                  onOpenAiLogs={openLogs}
+                  onProcessAI={(_externalId, force) => startExtraction(order.id, force)}
+                  onReportProblem={(_externalId, selected) => { setFeedbackNotes(''); setSelectedOrderForFeedback(selected); }} />
+              ))}
+              {filteredOrders.length > visibleCount && (
+                <div className="flex justify-center pt-3"><Button variant="outline" onClick={() => setVisibleCount(value => value + 20)}>Carregar mais ({filteredOrders.length - visibleCount} restantes)</Button></div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <ChatSidebar open={!!selectedChatOrder} onOpenChange={open => { if (!open) setSelectedChatOrder(null); }}
+        username={selectedChatOrder?.buyer_username || 'Comprador Mercado Livre'}
+        orderId={selectedChatOrder?.external_order_id} marketplace="mercadolivre"
+        integrationId={integrationId} pedidoId={selectedChatOrder?.id}
+        highlightedMessageIds={highlightedMessages} />
+
+      <Dialog open={!!selectedOrderForLogs} onOpenChange={open => { if (!open) setSelectedOrderForLogs(null); }}>
+        <DialogContent className="max-h-[80vh] max-w-4xl overflow-y-auto">
+          <DialogHeader><DialogTitle className="flex items-center justify-between gap-2">
+            <span>Logs de execução da IA · Pedido {selectedOrderForLogs?.external_order_id}</span>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" disabled={loadingLogs} onClick={() => openLogs(null, selectedOrderForLogs)}><RefreshCw className="mr-1 h-3 w-3" />Atualizar</Button>
+              {!!aiLogs.length && <Button variant="outline" size="sm" onClick={deleteLogs}>Deletar logs</Button>}
+            </div>
+          </DialogTitle></DialogHeader>
+          {loadingLogs ? (
+            <div className="flex justify-center p-8"><Loader2 className="h-7 w-7 animate-spin" /></div>
+          ) : !aiLogs.length ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">Nenhum log de execução encontrado para este pedido.</p>
+          ) : (
+            <div className="space-y-3">{aiLogs.map(log => (
+              <Card key={log.id}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center justify-between text-sm">
+                    <span>{log.status}</span>
+                    <Badge variant={['success', 'no_personalization_found'].includes(log.status) ? 'default' : 'destructive'}>{log.status}</Badge>
+                  </CardTitle>
+                  <p className="text-xs text-muted-foreground">{log.executed_at ? new Date(log.executed_at).toLocaleString('pt-BR') : ''}</p>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  {log.error_message && <p className="text-red-700">{log.error_message}</p>}
+                  {log.model_result && <details><summary className="cursor-pointer">Resultado da IA</summary><pre className="mt-2 whitespace-pre-wrap text-xs">{JSON.stringify(log.model_result, null, 2)}</pre></details>}
+                  {log.input_data && <details><summary className="cursor-pointer">Dados enviados ({log.input_data.length} caracteres)</summary><pre className="mt-2 whitespace-pre-wrap text-xs">{log.input_data}</pre></details>}
+                </CardContent>
+              </Card>
+            ))}</div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!selectedOrderForFeedback} onOpenChange={open => { if (!open) setSelectedOrderForFeedback(null); }}>
+        <DialogContent className="max-w-md"><DialogHeader><DialogTitle className="flex items-center gap-2"><Flag className="h-5 w-5 text-red-500" />Relatar problema · {selectedOrderForFeedback?.external_order_id}</DialogTitle></DialogHeader>
+          <label className="block text-sm font-medium">Descreva o problema encontrado neste pedido:<Textarea value={feedbackNotes} onChange={event => setFeedbackNotes(event.target.value)} rows={4} className="mt-2" /></label>
+          <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setSelectedOrderForFeedback(null)}>Cancelar</Button><Button variant="destructive" disabled={!feedbackNotes.trim()} onClick={submitFeedback}>Enviar relato</Button></div>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 

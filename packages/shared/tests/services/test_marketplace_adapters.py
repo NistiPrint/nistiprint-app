@@ -39,6 +39,19 @@ class TestMercadoLivreAdapter(unittest.TestCase):
                 shipment_lookup=lambda _: {'codigo_pedido': 101, 'order_ids': [101, 102, 102]})
         self.assertEqual(result.resolved_order_ids, ('101', '102'))
 
+    def test_messages_topic_is_classified_as_chat_with_opaque_id(self):
+        parsed = self.adapter.parse_webhook({
+            "topic": "messages", "resource": "/messages/0033b582a1474fa98c02d229abcec43c",
+            "user_id": 123, "_id": "event-1",
+        })
+        self.assertEqual(parsed.classification, "chat")
+        self.assertEqual(parsed.primary_resource.resource_type, "message")
+        self.assertEqual(parsed.primary_resource.resource_id, "0033b582a1474fa98c02d229abcec43c")
+
+    def test_messages_topic_rejects_malformed_resource(self):
+        parsed = self.adapter.parse_webhook({"topic": "messages", "resource": "/messages/"})
+        self.assertEqual(parsed.classification, "invalid")
+
     def test_shared_shipment_fetches_sla_only_once(self):
         cache = {'555': {'shipment': {'id': 555, 'status': 'ready_to_ship'}}}
         with patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_order_detail',

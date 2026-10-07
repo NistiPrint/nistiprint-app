@@ -306,6 +306,13 @@ class MarketplaceWebhookIngestService:
         body = payload.get("data") if isinstance(payload.get("data"), dict) else payload
         parsed = mercadolivre_adapter.parse_webhook(payload)
         resource = parsed.primary_resource
+        if parsed.classification == "chat":
+            from nistiprint_shared.services.mercadolivre_personalization_service import enqueue_notification
+            return {**enqueue_notification(payload, webhook_event_id=webhook_event_id),
+                    "provider_topic": resource.topic if resource else "messages",
+                    "provider_resource": resource.resource_path if resource else None,
+                    "provider_resource_type": resource.resource_type if resource else "message",
+                    "provider_resource_id": resource.resource_id if resource else None}
         if parsed.classification == "unsupported":
             return {
                 "status": "skipped",

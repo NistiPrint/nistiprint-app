@@ -32,6 +32,9 @@ class FakeQuery:
     def limit(self, *_args):
         return self
 
+    def range(self, *_args):
+        return self
+
     def execute(self):
         rows = [row for row in self.rows if all(
             row.get(key) in value if isinstance(value, set) else row.get(key) == value
@@ -128,6 +131,21 @@ class MercadoLivrePersonalizationTests(unittest.TestCase):
         self.assertEqual(stored["provider_message_id"], result["resource_id"])
         self.assertEqual(stored["marketplace_integration_id"], 7)
         self.assertTrue(stored["dedupe_key"])
+
+    def test_full_mercado_livre_message_resource_is_reduced_to_opaque_id(self):
+        tables = {}
+        with patch.object(service, "_notification_account_candidates", return_value=(7, 7)), \
+             patch.object(service.supabase_db, "table", side_effect=lambda name: CaptureQuery(tables, name)):
+            result = service.enqueue_notification({
+                "topic": "messages", "user_id": 207584268,
+                "application_id": 2056757525653794,
+                "resource": "https://api.mercadolibre.com/messages/01a1140382b276859b6048108d33a481?foo=bar",
+                "actions": ["created"], "_id": "9b15a226-9c9a-4a4f-862d-823564cf8301",
+            }, webhook_event_id=102)
+        self.assertEqual(result["resource_id"], "01a1140382b276859b6048108d33a481")
+        stored = tables["mercadolivre_chat_inbox"][0]
+        self.assertEqual(stored["status"], "pending")
+        self.assertEqual(stored["marketplace_integration_id"], 7)
 
     def test_missing_webhook_identity_is_saved_as_unmatched_audit_item(self):
         tables = {}
@@ -228,9 +246,9 @@ class MercadoLivrePersonalizationTests(unittest.TestCase):
             "mercadolivre_personalizations": [
                 {**base, "id": 1, "quantity_to_personalize": 1, "customization_name": "Ana"},
                 {**base, "id": 2, "quantity_to_personalize": 1, "customization_name": "Bia"},
-                {**base, "id": 3, "marketplace_integration_id": 8,
+                {**base, "id": 3, "marketplace_integration_id": 8, "updated_at": "2026-10-03T10:00:00+00:00",
                  "quantity_to_personalize": 2, "customization_name": "Outro"},
-                {**base, "id": 4, "context_hash": "stale", "quantity_to_personalize": 2,
+                {**base, "id": 4, "context_hash": "stale", "updated_at": "2026-10-02T10:00:00+00:00", "quantity_to_personalize": 2,
                  "customization_name": "Antigo"},
             ],
             "mercadolivre_chat_conversations": [{"marketplace_integration_id": integration_id,
@@ -242,8 +260,8 @@ class MercadoLivrePersonalizationTests(unittest.TestCase):
         with patch.object(service, "_integration", return_value={}), \
              patch.object(service, "supabase_db", fake_db):
             result = service.printable_personalizations(integration_id, pedido_id)
-        self.assertTrue(result["ready"])
-        self.assertEqual([row["customization_name"] for row in result["by_item_id"][item_id]], ["Ana", "Bia"])
+        self.assertFalse(result["ready"])
+        self.assertEqual([row["customization_name"] for row in result["by_item_id"][item_id]], ["Bia", "Antigo"])
 
     def test_print_is_blocked_by_unconfirmed_review_or_unprocessed_message(self):
         integration_id, pedido_id, item_id = 7, 101, 201

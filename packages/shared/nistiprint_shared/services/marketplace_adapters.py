@@ -52,6 +52,7 @@ class MercadoLivreAdapter:
         "orders_v2": {"orders"},
         "shipments": {"shipments"},
         "payments": {"payments", "collections"},
+        "messages": {"messages"},
     }
     _KIND = {
         "orders": "order",
@@ -102,6 +103,23 @@ class MercadoLivreAdapter:
                 self.provider, "order_event", "parsed", resources=(reference,),
                 trace=({"step": "parse", "resource_type": "claim"},),
             )
+        if topic == "messages":
+            match = re.search(r"(?:^|/)messages/([^/?#]+)", resource_path)
+            message_id = _text(match.group(1)) if match else _text(body.get("id"))
+            if not message_id or not re.fullmatch(r"[a-zA-Z0-9_-]{1,160}", message_id):
+                return WebhookResolution(
+                    self.provider, "invalid", "invalid_message_resource",
+                    error_type="invalid_provider_resource",
+                    message="Recurso de mensagem Mercado Livre inválido",
+                )
+            reference = MarketplaceResourceRef(
+                provider=self.provider, resource_type="message", resource_id=message_id,
+                resource_path=resource_path or f"/messages/{message_id}",
+                account_id=_text(body.get("user_id") or body.get("seller_id")),
+                provider_event_id=_text(body.get("_id") or body.get("id")),
+                occurred_at=_text(body.get("sent") or body.get("received")), topic=topic,
+            )
+            return WebhookResolution(self.provider, "chat", "parsed", resources=(reference,))
         if topic not in self._TOPIC_RESOURCE:
             return WebhookResolution(
                 self.provider,
@@ -169,6 +187,8 @@ class MercadoLivreAdapter:
             "resolving",
             resources=(resource,),
         )
+        if resource.resource_type == "message":
+            return WebhookResolution(self.provider, "chat", "parsed", resources=(resource,))
         if resource.resource_type == "order":
             return base.with_orders([resource.resource_id], trace=[{"step": "direct_order"}])
 

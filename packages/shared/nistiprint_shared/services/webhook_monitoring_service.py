@@ -260,7 +260,12 @@ class WebhookMonitoringService:
         # nao retentar automaticamente, nao a impossibilidade de replay: quando a
         # causa do erro foi um bug nosso (ex.: resolucao de shipment), o operador
         # precisa poder reenfileirar o evento apos o deploy da correcao.
-        if event.get('last_status') not in REPROCESSABLE_STATUSES:
+        recoverable_meli_chat = (
+            event.get('source') == 'mercadolivre'
+            and event.get('last_status') == 'skipped_unsupported_topic'
+            and event.get('provider_topic') == 'messages'
+        )
+        if event.get('last_status') not in REPROCESSABLE_STATUSES and not recoverable_meli_chat:
             return {
                 'success': False,
                 'error': (
