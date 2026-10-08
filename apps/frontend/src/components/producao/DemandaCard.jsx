@@ -15,6 +15,7 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { usePermissions } from '@/contexts/PermissionsContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { calculateTimeRemaining, diasRestantes, isUrgente } from '@/lib/demandaUtils';
 import { deriveDemandFlow, getDemandFlowConfig, getModalidadeLabel } from '@/lib/demandaFlow';
 import { checkActionRequired } from '@/lib/notificationLogic';
@@ -56,6 +57,7 @@ const DemandaCard = React.memo(({
   handleCollectDemand,
   handleDeleteDemand,
   handleCancelDemand,
+  canCancelDemand = false,
   handlePublishDemand,
   isAdmin = false,
   isSelected,
@@ -63,7 +65,8 @@ const DemandaCard = React.memo(({
   isLateral
 }) => {
   const navigate = useNavigate();
-  const { canEditField } = usePermissions();
+  const { canEditField, canExecuteAction } = usePermissions();
+  const { hasPermission } = useAuth();
   const [isExpanded, setIsExpanded] = useState(false);
   const [showPedidosOrigem, setShowPedidosOrigem] = useState(false);
 
@@ -77,11 +80,13 @@ const DemandaCard = React.memo(({
   const modalidadeLogistica = demanda.modalidade_logistica || 'STANDARD';
   const flowConfig = getDemandFlowConfig(deriveDemandFlow(demanda));
   const hasObservacoes = Boolean(demanda.observacoes && demanda.observacoes.trim());
-  const setorNome = (userSetor?.nome || userSetor || '').trim().toLowerCase();
-  const isAdministrativo = setorNome === 'administrativo';
-  const isExpedicao = setorNome === 'expedição' || setorNome === 'expedicao';
-  const canUseAdminDemandActions = isAdmin || isAdministrativo;
-  const canUseExpeditionDemandActions = canUseAdminDemandActions || isExpedicao;
+  const canEditDemand = isAdmin || hasPermission('demanda_producao', 'editar');
+  const canUseAdminDemandActions = canEditDemand;
+  const canFinalizeDemand = isAdmin || (canEditDemand && canExecuteAction(userSetor, 'finalize_item'));
+  const canCollectDemand = isAdmin || (canEditDemand && canExecuteAction(userSetor, 'collect_demand'));
+  const canDeleteDemand = isAdmin || (
+    hasPermission('demanda_producao', 'excluir') && canExecuteAction(userSetor, 'delete_demand')
+  );
 
   // Verifica se é entrega expressa (substitui o is_flex)
   const isExpress = modalidadeLogistica === 'EXPRESS';
@@ -255,7 +260,7 @@ const DemandaCard = React.memo(({
                   <EditableCell
                     value={demanda.nome}
                     onSave={newValue => handleFieldUpdate(demanda.id, 'nome', newValue)}
-                    isEditable={canEditField(userSetor, 'nome')}
+                    isEditable={canEditDemand && canEditField(userSetor, 'nome')}
                     type="text"
                   />
                 </h3>
@@ -357,7 +362,7 @@ const DemandaCard = React.memo(({
                 <DropdownMenuItem onClick={(e) => { e.stopPropagation(); navigate(`/producao/demanda/${demanda.id}/dashboard`); }}>
                   <PlayCircle className="mr-2 h-4 w-4" /> Abrir Dashboard
                 </DropdownMenuItem>
-                {canUseAdminDemandActions && (
+                {canEditDemand && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); navigate(`/producao/demanda/${demanda.id}/editar`); }}>
                     <Edit className="mr-2 h-4 w-4" /> Editar
                   </DropdownMenuItem>
@@ -367,22 +372,22 @@ const DemandaCard = React.memo(({
                     <PlayCircle className="mr-2 h-4 w-4" /> Publicar
                   </DropdownMenuItem>
                 )}
-                {canUseExpeditionDemandActions && (
+                {canFinalizeDemand && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleFinalizeDemand(demanda.id); }}>
                     <CheckCircle className="mr-2 h-4 w-4" /> Finalizar
                   </DropdownMenuItem>
                 )}
-                {canUseExpeditionDemandActions && (
+                {canCollectDemand && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleCollectDemand(demanda.id); }}>
                     <Truck className="mr-2 h-4 w-4" /> Coletar
                   </DropdownMenuItem>
                 )}
-                {canUseAdminDemandActions && handleCancelDemand && (
+                {canCancelDemand && handleCancelDemand && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleCancelDemand(demanda.id); }} className="text-amber-600">
                     <Ban className="mr-2 h-4 w-4" /> Cancelar e devolver à torre
                   </DropdownMenuItem>
                 )}
-                {canUseAdminDemandActions && (
+                {canDeleteDemand && (
                   <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDeleteDemand(demanda.id); }} className="text-red-600">
                     <Trash2 className="mr-2 h-4 w-4" /> Deletar
                   </DropdownMenuItem>

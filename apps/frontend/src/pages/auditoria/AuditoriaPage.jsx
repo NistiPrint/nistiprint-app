@@ -1,342 +1,138 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { format } from 'date-fns';
-import { ptBR } from 'date-fns/locale';
-import { Calendar, Eye, Filter, RefreshCw, Search } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Eye, Filter, RefreshCw, Search } from 'lucide-react';
 import { toast } from 'sonner';
 
-const AuditoriaPage = () => {
+const PAGE_SIZE = 50;
+const FILTER_KEYS = ['event_type', 'user_id', 'start_date', 'end_date', 'entity_type', 'entity_id'];
+
+function formatDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('pt-BR');
+}
+
+function pretty(value) {
+  if (value == null || value === '') return '—';
+  return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+}
+
+export default function AuditoriaPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const page = Math.max(1, Number(searchParams.get('page') || 1));
+  const filters = useMemo(() => Object.fromEntries(FILTER_KEYS.map((key) => [key, searchParams.get(key) || ''])), [searchParams]);
+  const [draft, setDraft] = useState(filters);
   const [events, setEvents] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [filters, setFilters] = useState({
-    event_type: 'all',
-    user_id: '',
-    start_date: '',
-    end_date: '',
-    limit: 100
-  });
-  const [entitySearch, setEntitySearch] = useState({
-    entity_type: '',
-    entity_id: ''
-  });
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(null);
 
-  // Carregar eventos iniciais
-  useEffect(() => {
-    loadAuditEvents();
-  }, []);
+  useEffect(() => setDraft(filters), [filters]);
 
-  const loadAuditEvents = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const queryParams = new URLSearchParams();
+      const params = new URLSearchParams(searchParams);
+      params.set('page', String(page));
+      params.set('limit', String(PAGE_SIZE));
+      const response = await fetch(`/api/v2/auditoria?${params.toString()}`);
+      const body = await response.json();
+      if (!response.ok || !body.success) throw new Error(body.error || 'Não foi possível carregar a auditoria.');
+      setEvents(body.events || []);
+      setTotal(body.pagination?.total || 0);
+    } catch (error) {
+      toast.error(error.message || 'Não foi possível carregar a auditoria.');
+    } finally { setLoading(false); }
+  }, [searchParams, page]);
 
-      Object.entries(filters).forEach(([key, value]) => {
-        // Não incluir filtros vazios ou "all"
-        if (value && value !== 'all') {
-          queryParams.append(key, value);
-        }
+  useEffect(() => { load(); }, [load]);
+
+  const search = (event) => {
+    event.preventDefault();
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      FILTER_KEYS.forEach((key) => {
+        const value = draft[key]?.trim();
+        if (value) next.set(key, value); else next.delete(key);
       });
-
-      const response = await fetch(`/producao/api/auditoria?${queryParams}`);
-      const data = await response.json();
-
-      if (data.success) {
-        setEvents(data.events);
-      } else {
-        toast.error('Erro ao carregar eventos de auditoria');
-      }
-    } catch (error) {
-      console.error('Erro ao carregar auditoria:', error);
-      toast.error('Erro ao carregar eventos de auditoria');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadEventsByEntity = async () => {
-    if (!entitySearch.entity_type || !entitySearch.entity_id) {
-      toast.warning('Selecione o tipo e ID da entidade');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const response = await fetch(
-        `/producao/api/auditoria/entidade/${entitySearch.entity_type}/${entitySearch.entity_id}`
-      );
-      const data = await response.json();
-
-      if (data.success) {
-        setEvents(data.events);
-        toast.success(`Encontrados ${data.total} eventos para ${entitySearch.entity_type} ${entitySearch.entity_id}`);
-      } else {
-        toast.error('Erro ao buscar eventos da entidade');
-      }
-    } catch (error) {
-      console.error('Erro ao buscar eventos por entidade:', error);
-      toast.error('Erro ao buscar eventos da entidade');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleFilterChange = (field, value) => {
-    setFilters(prev => ({
-      ...prev,
-      [field]: value
-    }));
-  };
-
-  const handleEntitySearchChange = (field, value) => {
-    setEntitySearch(prev => ({
-      ...prev,
-      [field]: value
-    }));
-  };
-
-  const clearFilters = () => {
-    setFilters({
-      event_type: 'all',
-      user_id: '',
-      start_date: '',
-      end_date: '',
-      limit: 100
+      next.set('page', '1');
+      return next;
     });
   };
 
-  const getEventTypeColor = (eventType) => {
-    const colors = {
-      'ENTRADA_ESTOQUE': 'bg-green-100 text-green-800',
-      'SAIDA_ESTOQUE': 'bg-red-100 text-red-800',
-      'SAIDA_DISTRIBUIDA_DEMANDA': 'bg-blue-100 text-blue-800',
-      'REVERSAO_LANCAMENTO': 'bg-orange-100 text-orange-800',
-      'PRODUCAO_REGISTRADA': 'bg-purple-100 text-purple-800'
-    };
-    return colors[eventType] || 'bg-gray-100 text-gray-800';
-  };
-
-  const formatPayload = (payload) => {
-    if (!payload) return 'N/A';
-
-    // Formatar diferentes tipos de payload
-    const formatted = Object.entries(payload).map(([key, value]) => {
-      if (typeof value === 'object') {
-        return `${key}: ${JSON.stringify(value)}`;
-      }
-      return `${key}: ${value}`;
+  const clear = () => {
+    setDraft(Object.fromEntries(FILTER_KEYS.map((key) => [key, ''])));
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      [...FILTER_KEYS, 'page'].forEach((key) => next.delete(key));
+      return next;
     });
-
-    return formatted.join(', ');
   };
 
-  const formatTimestamp = (timestamp) => {
-    if (!timestamp) return 'N/A';
+  const showDetail = async (eventId) => {
     try {
-      return format(new Date(timestamp.seconds * 1000), 'dd/MM/yyyy HH:mm:ss', { locale: ptBR });
-    } catch {
-      return timestamp.toString();
-    }
+      const response = await fetch(`/api/v2/auditoria/${eventId}`);
+      const body = await response.json();
+      if (!response.ok || !body.success) throw new Error(body.error || 'Evento não encontrado.');
+      setSelected(body.event);
+    } catch (error) { toast.error(error.message || 'Não foi possível abrir o evento.'); }
   };
 
-  return (
-    <div className="container mx-auto p-6 space-y-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Auditoria do Sistema</h1>
-          <p className="text-gray-600 mt-1">
-            Rastreamento completo de todas as operações críticas do sistema
-          </p>
-        </div>
-        <Button onClick={loadAuditEvents} disabled={loading}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-          Atualizar
-        </Button>
-      </div>
+  const updatePage = (nextPage) => setSearchParams((current) => {
+    const next = new URLSearchParams(current);
+    next.set('page', String(nextPage));
+    return next;
+  });
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
-      {/* Filtros Gerais */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Filter className="h-5 w-5" />
-            Filtros Gerais
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-            <div>
-              <Label htmlFor="event_type">Tipo de Evento</Label>
-              <Select
-                value={filters.event_type}
-                onValueChange={(value) => handleFilterChange('event_type', value)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Todos os tipos" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos os tipos</SelectItem>
-                  <SelectItem value="ENTRADA_ESTOQUE">Entrada de Estoque</SelectItem>
-                  <SelectItem value="SAIDA_ESTOQUE">Saída de Estoque</SelectItem>
-                  <SelectItem value="SAIDA_DISTRIBUIDA_DEMANDA">Saída Distribuída</SelectItem>
-                  <SelectItem value="REVERSAO_LANCAMENTO">Reversão de Lançamento</SelectItem>
-                  <SelectItem value="PRODUCAO_REGISTRADA">Produção Registrada</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <Label htmlFor="user_id">Usuário</Label>
-              <Input
-                id="user_id"
-                placeholder="ID do usuário"
-                value={filters.user_id}
-                onChange={(e) => handleFilterChange('user_id', e.target.value)}
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="start_date">Data Inicial</Label>
-              <Input
-                id="start_date"
-                type="date"
-                value={filters.start_date}
-                onChange={(e) => handleFilterChange('start_date', e.target.value)}
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="end_date">Data Final</Label>
-              <Input
-                id="end_date"
-                type="date"
-                value={filters.end_date}
-                onChange={(e) => handleFilterChange('end_date', e.target.value)}
-              />
-            </div>
-
-            <div className="flex items-end gap-2">
-              <Button onClick={loadAuditEvents} className="flex-1">
-                <Search className="h-4 w-4 mr-2" />
-                Buscar
-              </Button>
-              <Button variant="outline" onClick={clearFilters}>
-                Limpar
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Busca por Entidade */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Eye className="h-5 w-5" />
-            Buscar por Entidade Específica
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div>
-              <Label htmlFor="entity_type">Tipo de Entidade</Label>
-              <Select
-                value={entitySearch.entity_type}
-                onValueChange={(value) => handleEntitySearchChange('entity_type', value)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione o tipo" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="produto">Produto</SelectItem>
-                  <SelectItem value="demanda">Demanda</SelectItem>
-                  <SelectItem value="lancamento">Lançamento</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <Label htmlFor="entity_id">ID da Entidade</Label>
-              <Input
-                id="entity_id"
-                placeholder="Digite o ID"
-                value={entitySearch.entity_id}
-                onChange={(e) => handleEntitySearchChange('entity_id', e.target.value)}
-              />
-            </div>
-
-            <div className="col-span-2 flex items-end">
-              <Button onClick={loadEventsByEntity} disabled={loading}>
-                <Search className="h-4 w-4 mr-2" />
-                Buscar Eventos da Entidade
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Tabela de Eventos */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            Eventos de Auditoria ({events.length} encontrados)
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="flex justify-center items-center py-8">
-              <RefreshCw className="h-8 w-8 animate-spin text-gray-400" />
-              <span className="ml-2 text-gray-600">Carregando eventos...</span>
-            </div>
-          ) : events.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
-              <Calendar className="h-12 w-12 mx-auto mb-4 opacity-50" />
-              <p>Nenhum evento encontrado com os filtros aplicados.</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Data/Hora</TableHead>
-                    <TableHead>Tipo de Evento</TableHead>
-                    <TableHead>Usuário</TableHead>
-                    <TableHead>Detalhes</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {events.map((event) => (
-                    <TableRow key={event.id}>
-                      <TableCell className="font-mono text-sm">
-                        {formatTimestamp(event.timestamp)}
-                      </TableCell>
-                      <TableCell>
-                        <Badge className={getEventTypeColor(event.event_type)}>
-                          {event.event_type.replace(/_/g, ' ')}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        {event.user_id || 'Sistema'}
-                      </TableCell>
-                      <TableCell className="max-w-md">
-                        <div className="text-sm text-gray-600 truncate" title={formatPayload(event.payload)}>
-                          {formatPayload(event.payload)}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+  return <div className="mx-auto max-w-7xl space-y-6 py-4">
+    <div className="flex flex-wrap items-end justify-between gap-3">
+      <div><h1 className="text-3xl font-semibold">Auditoria</h1><p className="mt-1 text-muted-foreground">Eventos registrados para usuários, setores e dados operacionais.</p></div>
+      <Button variant="outline" onClick={load} disabled={loading}><RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />Atualizar</Button>
     </div>
-  );
-};
 
-export default AuditoriaPage;
+    <Card>
+      <CardHeader><CardTitle className="flex items-center gap-2"><Filter className="h-5 w-5" />Filtros</CardTitle><CardDescription>Os filtros e a paginação permanecem no endereço da página.</CardDescription></CardHeader>
+      <CardContent><form onSubmit={search} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div><Label htmlFor="event_type">Evento</Label><Input id="event_type" value={draft.event_type} onChange={(e) => setDraft((v) => ({ ...v, event_type: e.target.value }))} placeholder="Ex.: USUARIO_CRIADO" /></div>
+        <div><Label htmlFor="user_id">ID do usuário</Label><Input id="user_id" inputMode="numeric" value={draft.user_id} onChange={(e) => setDraft((v) => ({ ...v, user_id: e.target.value }))} /></div>
+        <div><Label htmlFor="entity_type">Entidade</Label><Input id="entity_type" value={draft.entity_type} onChange={(e) => setDraft((v) => ({ ...v, entity_type: e.target.value }))} placeholder="Ex.: usuario ou setor" /></div>
+        <div><Label htmlFor="entity_id">ID da entidade</Label><Input id="entity_id" inputMode="numeric" value={draft.entity_id} onChange={(e) => setDraft((v) => ({ ...v, entity_id: e.target.value }))} /></div>
+        <div><Label htmlFor="start_date">De</Label><Input id="start_date" type="date" value={draft.start_date} onChange={(e) => setDraft((v) => ({ ...v, start_date: e.target.value }))} /></div>
+        <div><Label htmlFor="end_date">Até</Label><Input id="end_date" type="date" value={draft.end_date} onChange={(e) => setDraft((v) => ({ ...v, end_date: e.target.value }))} /></div>
+        <div className="flex gap-2 sm:col-span-2 lg:col-span-3"><Button type="submit"><Search className="mr-2 h-4 w-4" />Buscar</Button><Button type="button" variant="outline" onClick={clear}>Limpar</Button></div>
+      </form></CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader><CardTitle>Eventos ({total})</CardTitle></CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto"><Table>
+          <TableHeader><TableRow><TableHead>Data</TableHead><TableHead>Evento</TableHead><TableHead>Usuário</TableHead><TableHead>Entidade</TableHead><TableHead>Detalhes</TableHead></TableRow></TableHeader>
+          <TableBody>
+            {events.map((event) => <TableRow key={event.id}>
+              <TableCell className="whitespace-nowrap">{formatDate(event.created_at)}</TableCell>
+              <TableCell><Badge variant="outline">{event.tipo_evento || '—'}</Badge></TableCell>
+              <TableCell>{event.usuario_id ?? 'Sistema'}</TableCell>
+              <TableCell>{event.entidade_afetada || '—'}{event.registro_id != null ? ` · ${event.registro_id}` : ''}</TableCell>
+              <TableCell><Button size="sm" variant="ghost" onClick={() => showDetail(event.id)}><Eye className="mr-2 h-4 w-4" />Detalhes</Button></TableCell>
+            </TableRow>)}
+            {!events.length && <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">{loading ? 'Carregando eventos…' : 'Nenhum evento encontrado.'}</TableCell></TableRow>}
+          </TableBody>
+        </Table></div>
+        <div className="mt-4 flex items-center justify-between border-t pt-4"><span className="text-sm text-muted-foreground">Página {page} de {totalPages}</span><div className="flex gap-2"><Button variant="outline" disabled={page <= 1 || loading} onClick={() => updatePage(page - 1)}>Anterior</Button><Button variant="outline" disabled={page >= totalPages || loading} onClick={() => updatePage(page + 1)}>Próxima</Button></div></div>
+      </CardContent>
+    </Card>
+
+    {selected && <Card className="border-primary/40">
+      <CardHeader className="flex flex-row items-start justify-between"><div><CardTitle>{selected.tipo_evento}</CardTitle><CardDescription>{formatDate(selected.created_at)} · usuário {selected.usuario_id ?? 'Sistema'} · {selected.entidade_afetada || 'sem entidade'} {selected.registro_id ?? ''}</CardDescription></div><Button variant="ghost" onClick={() => setSelected(null)}>Fechar</Button></CardHeader>
+      <CardContent className="grid gap-4 md:grid-cols-2"><div><h3 className="mb-2 text-sm font-semibold">Dados anteriores</h3><pre className="max-h-96 overflow-auto rounded bg-muted p-3 text-xs">{pretty(selected.dados_anteriores)}</pre></div><div><h3 className="mb-2 text-sm font-semibold">Dados novos</h3><pre className="max-h-96 overflow-auto rounded bg-muted p-3 text-xs">{pretty(selected.dados_novos)}</pre></div></CardContent>
+    </Card>}
+  </div>;
+}

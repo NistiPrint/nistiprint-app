@@ -67,7 +67,7 @@ function SetorListPage() {
         icon={Building}
         actions={
           <Button asChild>
-            <Link to="/sistema/setores/novo">
+            <Link to="/configuracoes/acessos/setores/novo">
               <PlusCircle className="mr-2 h-4 w-4" />
               Novo Setor
             </Link>
@@ -98,13 +98,13 @@ function SetorListPage() {
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
                        <Button variant="outline" size="sm" asChild>
-                        <Link to={`/sistema/setores/${setor.id}/permissoes`}>
+                        <Link to={`/configuracoes/acessos/setores/${setor.id}/permissoes`}>
                           <Shield className="h-4 w-4 mr-2" />
                           Permissões
                         </Link>
                       </Button>
                       <Button variant="outline" size="sm" asChild>
-                        <Link to={`/sistema/setores/${setor.id}/editar`}>
+                        <Link to={`/configuracoes/acessos/setores/${setor.id}/editar`}>
                           <Edit className="h-4 w-4" />
                         </Link>
                       </Button>

@@ -19,7 +19,7 @@ from nistiprint_shared.services.ai_personalization_service import (
     save_feedback,
     update_ai_config,
 )
-from routes.auth import admin_required, login_required
+from routes.auth import admin_required, check_permission, get_current_user
 from utils.api_response import ApiResponse
 
 logger = logging.getLogger("PersonalizadosAPI")
@@ -61,7 +61,7 @@ def _parse_id_list(value):
 
 
 @personalizados_bp.route("", methods=["GET"])
-@login_required
+@check_permission("vendas", "ler")
 def listar_personalizados():
     try:
         order_sn = request.args.get("order_sn")
@@ -74,7 +74,7 @@ def listar_personalizados():
 
 
 @personalizados_bp.route("/processar", methods=["POST"])
-@login_required
+@check_permission("vendas", "editar")
 def processar():
     try:
         body = request.get_json(silent=True) or {}
@@ -83,6 +83,7 @@ def processar():
         limit = body.get("limit")
         integration_id = body.get("integration_id")
         force = _parse_bool(body.get("force"))
+        user = get_current_user()
 
         success, message, payload = process_orders(
             limit=limit,
@@ -90,6 +91,7 @@ def processar():
             pedido_ids=pedido_ids,
             force=force,
             integration_id=integration_id,
+            iniciado_por=user.get("id") if user else None,
         )
         if not success:
             return ApiResponse.error(message, 500)
@@ -102,9 +104,10 @@ def processar():
 
 
 @personalizados_bp.route("/processar/<batch_id>", methods=["GET"])
-@login_required
+@check_permission("vendas", "ler")
 def progresso(batch_id):
     try:
+        user = get_current_user()
         response = (
             supabase_db.table("execucoes_ai_batch")
             .select("*")
@@ -114,6 +117,8 @@ def progresso(batch_id):
         )
         if not response.data:
             return ApiResponse.error("Batch nao encontrado", 404)
+        if str(response.data.get("iniciado_por") or "") != str(user.get("id") if user else ""):
+            return ApiResponse.error("Batch nao encontrado", 404)
         return ApiResponse.success(response.data)
     except Exception as exc:
         logger.error("Erro ao consultar batch %s: %s", batch_id, exc, exc_info=True)
@@ -121,9 +126,20 @@ def progresso(batch_id):
 
 
 @personalizados_bp.route("/processar/<batch_id>/itens", methods=["GET"])
-@login_required
+@check_permission("vendas", "ler")
 def itens_batch(batch_id):
     try:
+        user = get_current_user()
+        batch = (
+            supabase_db.table("execucoes_ai_batch")
+            .select("id,iniciado_por")
+            .eq("id", batch_id)
+            .maybe_single()
+            .execute()
+            .data
+        )
+        if not batch or str(batch.get("iniciado_por") or "") != str(user.get("id") if user else ""):
+            return ApiResponse.error("Batch nao encontrado", 404)
         response = (
             supabase_db.table("execucoes_ai_item")
             .select("*")
@@ -139,13 +155,13 @@ def itens_batch(batch_id):
 
 
 @personalizados_bp.route("/logs", methods=["GET"])
-@login_required
+@check_permission("vendas", "ler")
 def listar_logs():
     try:
         order_sn = request.args.get("order_sn")
         status = request.args.get("status")
-        limit = request.args.get("limit", default=50, type=int)
-        offset = request.args.get("offset", default=0, type=int)
+        limit = max(1, min(200, request.args.get("limit", default=50, type=int)))
+        offset = max(0, request.args.get("offset", default=0, type=int))
         logs = get_all_logs(order_sn=order_sn, status=status, limit=limit, offset=offset)
         return ApiResponse.success(logs)
     except Exception as exc:
@@ -154,7 +170,7 @@ def listar_logs():
 
 
 @personalizados_bp.route("/logs", methods=["DELETE"])
-@login_required
+@admin_required
 def limpar_logs():
     try:
         order_sn = request.args.get("order_sn")
@@ -173,7 +189,7 @@ def limpar_logs():
 
 
 @personalizados_bp.route("/logs/<order_sn>", methods=["GET"])
-@login_required
+@check_permission("vendas", "ler")
 def get_logs(order_sn):
     try:
         logs = get_logs_by_order_sn(order_sn)
@@ -184,7 +200,7 @@ def get_logs(order_sn):
 
 
 @personalizados_bp.route("/logs/<order_sn>", methods=["DELETE"])
-@login_required
+@admin_required
 def delete_order_logs(order_sn):
     try:
         deleted_count = delete_logs(order_sn=order_sn)
@@ -198,7 +214,7 @@ def delete_order_logs(order_sn):
 
 
 @personalizados_bp.route("/feedback", methods=["POST"])
-@login_required
+@check_permission("vendas", "editar")
 def feedback():
     try:
         body = request.get_json(silent=True) or {}
@@ -251,7 +267,7 @@ def put_config():
 
 
 @personalizados_bp.route("/chat/<username>", methods=["GET"])
-@login_required
+@check_permission("vendas", "ler")
 def chat(username):
     try:
         limit = request.args.get("limit", type=int)
@@ -264,10 +280,14 @@ def chat(username):
 
 
 @personalizados_bp.route("/reprocessar/<order_sn>", methods=["POST"])
-@login_required
+@check_permission("vendas", "editar")
 def reprocessar(order_sn):
     try:
-        success, message, payload = process_orders(order_sn=order_sn, force=True)
+        user = get_current_user()
+        success, message, payload = process_orders(
+            order_sn=order_sn, force=True,
+            iniciado_por=user.get("id") if user else None,
+        )
         if not success:
             return ApiResponse.error(message, 500)
         if isinstance(payload, dict):
@@ -279,7 +299,7 @@ def reprocessar(order_sn):
 
 
 @personalizados_bp.route("/reclassificar-personalizado", methods=["POST"])
-@login_required
+@check_permission("vendas", "editar")
 def reclassificar_personalizado():
     try:
         body = request.get_json(silent=True) or {}

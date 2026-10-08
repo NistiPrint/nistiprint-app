@@ -4,7 +4,7 @@ import pytz
 import logging
 from datetime import datetime, timedelta
 from constants import APP_TIMEZONE
-from routes.auth import login_required, check_permission, get_current_user
+from routes.auth import login_required, check_permission, check_demand_action, get_current_user, _active_session_user, user_has_permission
 from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
 from nistiprint_shared.services.permissao_service import permissao_service
 from nistiprint_shared.services.canal_venda_service import canal_venda_service
@@ -13,12 +13,36 @@ from nistiprint_shared.services.app_config_service import app_config_service
 from nistiprint_shared.services.unit_of_work import UnitOfWork
 from nistiprint_shared.services.daily_production_log_service import daily_production_log_service
 from nistiprint_shared.services.order_erp_reference_service import order_erp_reference_service
+from nistiprint_shared.services.async_operation_service import async_operation_service
 from .demanda_producao_base import demanda_producao_api_bp
 
 from nistiprint_shared.services.previsao_consumo_service import previsao_consumo_service
 from nistiprint_shared.utils.date_utils import get_today
 
 logger = logging.getLogger(__name__)
+
+
+@demanda_producao_api_bp.before_request
+def enforce_demand_read_access():
+    user = _active_session_user()
+    if not user:
+        return jsonify({'success': False, 'message': 'Autenticação requerida.'}), 401
+    if request.method == 'GET' and not user_has_permission(user, 'demanda_producao', 'ler'):
+        return jsonify({'success': False, 'message': 'Acesso negado. Permissão de leitura de demanda necessária.'}), 403
+
+
+def _deny_unauthorized_demand_fields(fields):
+    user = get_current_user()
+    if not user or user.get('is_admin'):
+        return None
+    allowed = set(permissao_service.get_demand_permissions(user.get('setor_id')).get('fields') or [])
+    unauthorized = sorted(set(fields) - allowed)
+    if not unauthorized:
+        return None
+    return jsonify({
+        'success': False,
+        'message': 'Acesso negado. O setor não tem permissão para alterar: ' + ', '.join(unauthorized),
+    }), 403
 
 
 def _integration_to_bling_account_data(integration):
@@ -214,6 +238,59 @@ def api_generate_nfe_demanda(demanda_id):
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e)}), 500
 
+
+@demanda_producao_api_bp.route('/<string:demanda_id>/nfe/jobs', methods=['POST'])
+@login_required
+def api_enqueue_nfe_demanda(demanda_id):
+    """Queue NF-e generation so progress survives navigation and reconnects."""
+    user = get_current_user()
+    try:
+        demanda = demanda_producao_service.get_demanda_with_itens(demanda_id)
+        if not demanda:
+            return jsonify({'success': False, 'message': 'Demanda não encontrada.'}), 404
+        pedidos = demanda.get('pedidos_origem') or []
+        if not pedidos:
+            return jsonify({'success': False, 'message': 'A demanda não possui pedidos relacionados.'}), 400
+
+        body = request.get_json(silent=True) or {}
+        integration_id = body.get('bling_integration_id')
+        operation = async_operation_service.create_operation(
+            owner_user_id=int(user['id']),
+            categoria='NF-e',
+            titulo='Emissão de notas fiscais',
+            mensagem=f'0 de {len(pedidos)} pedidos verificados',
+            referencia_tipo='demanda_producao',
+            referencia_id=demanda_id,
+            rota_destino=f'/producao/demanda/{demanda_id}/dashboard',
+            progresso_total=len(pedidos),
+        )
+
+        try:
+            from nistiprint_shared.services.celery_app import celery_app
+            celery_app.send_task(
+                'nistiprint_shared.services.nfe_emission_service.emitir_nfes_demanda',
+                args=[operation['id'], demanda_id, integration_id],
+            )
+        except Exception as exc:
+            async_operation_service.update_operation(
+                operation['id'],
+                status='ERRO',
+                etapa='Não entrou na fila',
+                mensagem='O processo foi registrado, mas não entrou na fila de execução.',
+                erro_resumo=str(exc)[:500],
+            )
+            logger.exception('Falha ao enfileirar emissão de NF-e para demanda %s', demanda_id)
+            return jsonify({
+                'success': False,
+                'message': 'Não foi possível iniciar a emissão de NF-e agora. O erro ficou registrado na central de atividade.',
+                'operation_id': operation['id'],
+            }), 503
+
+        return jsonify({'success': True, 'data': {'operation': operation}}), 202
+    except Exception as exc:
+        logger.exception('Erro ao registrar emissão de NF-e para demanda %s', demanda_id)
+        return jsonify({'success': False, 'message': str(exc)}), 500
+
 @demanda_producao_api_bp.route('/<string:demanda_id>/coletas', methods=['GET'])
 def api_get_coletas_demanda(demanda_id):
     try:
@@ -238,7 +315,7 @@ def api_get_historico_coletas_global():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @demanda_producao_api_bp.route('/', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'criar')
 def create_demanda_api():
     try:
         data = request.get_json()
@@ -343,7 +420,7 @@ def create_demanda_api():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @demanda_producao_api_bp.route('/empresas', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'criar')
 def create_demanda_empresas_api():
     try:
         data = request.get_json()
@@ -463,7 +540,7 @@ def create_demanda_empresas_api():
 
 @demanda_producao_api_bp.route('/<string:demanda_id>', methods=['PUT'])
 @demanda_producao_api_bp.route('/<string:demanda_id>/atualizar-completo', methods=['PUT'])
-@login_required
+@check_permission('demanda_producao', 'editar')
 def atualizar_demanda_completa_api(demanda_id):
     try:
         user_id = session.get('user_id')
@@ -534,7 +611,7 @@ def atualizar_demanda_completa_api(demanda_id):
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/publicar', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'editar')
 def publicar_demanda_api(demanda_id):
     try:
         user_id = session.get('user_id')
@@ -576,7 +653,7 @@ def get_active_demandas():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/item/<string:item_id>/atualizar', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'editar')
 def update_item_progress(demanda_id, item_id):
     if not request.is_json:
         return jsonify({'success': False, 'message': 'Requisição deve ser JSON.'}), 400
@@ -587,43 +664,10 @@ def update_item_progress(demanda_id, item_id):
     if not quantities_to_update:
         return jsonify({'success': False, 'message': 'Nenhuma quantidade para atualizar fornecida.'}), 400
 
-    user_setor = session.get('user_setor')
-    is_admin = session.get('user_is_admin', False)
-
-    if not user_setor and not is_admin:
-        return jsonify({'success': False, 'message': 'Setor do usuário não identificado.'}), 403
-
     user_id = session.get('user_email', 'Unknown User')
-
-    field_permissions = {
-        'cpd': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd'],
-        'controle de produção': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd'],
-        'capas': ['capas_produzidas_qtd'],
-        'miolos': ['miolos_prontos_retirada_qtd'],
-        'expedição': ['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'],
-        'administrador': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
-                         'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'],
-        'administrativo': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
-                         'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd']
-    }
-
-    if not is_admin:
-        normalized_setor = user_setor.strip().lower() if user_setor else ''
-        allowed_fields = field_permissions.get(normalized_setor, [])
-
-        if not allowed_fields:
-            for key, value in field_permissions.items():
-                if key.lower() == normalized_setor:
-                    allowed_fields = value
-                    break
-
-        unauthorized_fields = [field for field in quantities_to_update.keys() if field not in allowed_fields]
-
-        if unauthorized_fields:
-            return jsonify({
-                'success': False,
-                'message': f'Acesso negado. O setor "{user_setor}" não tem permissão para alterar: {", ".join(unauthorized_fields)}'
-            }), 403
+    denied = _deny_unauthorized_demand_fields(quantities_to_update.keys())
+    if denied:
+        return denied
 
     try:
         updated_item = demanda_producao_service.atualizar_progresso_item(demanda_id, item_id, quantities_to_update, user_id)
@@ -634,7 +678,7 @@ def update_item_progress(demanda_id, item_id):
         return jsonify({'success': False, 'message': f'Erro interno ao atualizar progresso: {e}'}), 500
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/item/<string:item_id>/registrar-producao', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'editar')
 def registrar_producao_incremental(demanda_id, item_id):
     if not request.is_json:
         return jsonify({'success': False, 'message': 'Requisição deve ser JSON.'}), 400
@@ -650,46 +694,10 @@ def registrar_producao_incremental(demanda_id, item_id):
         is_removal = any(val < 0 for val in producao_incremental.values() if isinstance(val, (int, float)))
         origem_tipo = 2 if is_removal else 1
 
-    user_setor = session.get('user_setor')
-    is_admin = session.get('user_is_admin', False)
-
-    if not user_setor and not is_admin:
-        return jsonify({'success': False, 'message': 'Setor do usuário não identificado.'}), 403
-
     user_id = session.get('user_email', 'Unknown User')
-
-    if not is_admin:
-        for field in producao_incremental.keys():
-            if not permissao_service.has_permission(session.get('user_id'), 'campo_demanda', 'editar'):
-                user_setor_lower = user_setor.strip().lower() if user_setor else ''
-                field_permissions = {
-                    'cpd': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd'],
-                    'controle de produção': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd'],
-                    'capas': ['capas_produzidas_qtd'],
-                    'miolos': ['miolos_prontos_retirada_qtd'],
-                    'expedição': ['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'],
-                    'administrador': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
-                                     'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'],
-                    'administrativo': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
-                                     'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd']
-                }
-
-                normalized_setor = user_setor_lower
-                allowed_fields = field_permissions.get(normalized_setor, [])
-
-                if not allowed_fields:
-                    for key, value in field_permissions.items():
-                        if key.lower() == normalized_setor:
-                            allowed_fields = value
-                            break
-
-                unauthorized_fields = [field for field in producao_incremental.keys() if field not in allowed_fields]
-
-                if unauthorized_fields:
-                    return jsonify({
-                        'success': False,
-                        'message': f'Acesso negado. O setor "{user_setor}" não tem permissão para registrar produção para: {", ".join(unauthorized_fields)}'
-                    }), 403
+    denied = _deny_unauthorized_demand_fields(producao_incremental.keys())
+    if denied:
+        return denied
 
     try:
         retroactive_date = data.get('retroactive_date')
@@ -709,7 +717,7 @@ def registrar_producao_incremental(demanda_id, item_id):
         return jsonify({'success': False, 'message': f'Erro interno ao registrar produção: {e}'}), 500
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/itens/registrar-producao-lote', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'editar')
 def registrar_producao_lote(demanda_id):
     if not request.is_json:
         return jsonify({'success': False, 'message': 'Requisição deve ser JSON.'}), 400
@@ -721,44 +729,15 @@ def registrar_producao_lote(demanda_id):
     if not updates:
         return jsonify({'success': False, 'message': 'Dados de produção em lote não fornecidos.'}), 400
 
-    user_setor = session.get('user_setor')
-    is_admin = session.get('user_is_admin', False)
-
-    if not user_setor and not is_admin:
-        return jsonify({'success': False, 'message': 'Setor do usuário não identificado.'}), 403
-
     user_id = session.get('user_email', 'Unknown User')
-
-    field_permissions = {
-        'cpd': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd'],
-        'controle de produção': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd'],
-        'capas': ['capas_produzidas_qtd'],
-        'miolos': ['miolos_prontos_retirada_qtd'],
-        'expedição': ['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'],
-        'administrador': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
-                         'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'],
-        'administrativo': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
-                         'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd']
+    requested_fields = {
+        field
+        for update in updates
+        for field in (update.get('producao_incremental') or {}).keys()
     }
-
-    if not is_admin:
-        normalized_setor = user_setor.strip().lower() if user_setor else ''
-        allowed_fields = field_permissions.get(normalized_setor, [])
-
-        if not allowed_fields:
-            for key, value in field_permissions.items():
-                if key.lower() == normalized_setor:
-                    allowed_fields = value
-                    break
-
-        for update in updates:
-            producao_incremental = update.get('producao_incremental', {})
-            unauthorized_fields = [field for field in producao_incremental.keys() if field not in allowed_fields]
-            if unauthorized_fields:
-                return jsonify({
-                    'success': False,
-                    'message': f'Acesso negado. O setor "{user_setor}" não tem permissão para alterar: {", ".join(unauthorized_fields)}'
-                }), 403
+    denied = _deny_unauthorized_demand_fields(requested_fields)
+    if denied:
+        return denied
 
     try:
         batch_results = demanda_producao_service.registrar_producao_lote(
@@ -777,6 +756,8 @@ def registrar_producao_lote(demanda_id):
         return jsonify({'success': False, 'message': f'Erro interno ao registrar produção em lote: {e}'}), 500
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/item/<string:item_id>/finalizar-parcial', methods=['POST'])
+@check_permission('demanda_producao', 'editar')
+@check_demand_action('finalize_item')
 def finalizar_item_parcial_api(demanda_id, item_id):
     if not request.is_json:
         return jsonify({'success': False, 'message': 'Requisição deve ser JSON.'}), 400
@@ -786,17 +767,6 @@ def finalizar_item_parcial_api(demanda_id, item_id):
 
     if not quantidade_parcial or quantidade_parcial <= 0:
         return jsonify({'success': False, 'message': 'Quantidade parcial inválida.'}), 400
-
-    user_setor = session.get('user_setor')
-    if not user_setor:
-        return jsonify({'success': False, 'message': 'Setor do usuário não identificado.'}), 403
-
-    allowed_sectors = ['Expedição', 'Administrador', 'Administrativo']
-    if user_setor not in allowed_sectors:
-        return jsonify({
-            'success': False,
-            'message': 'Acesso negado. Apenas Expedição e Administrativo podem finalizar itens.'
-        }), 403
 
     try:
         user_id = session.get('user_email', 'System')
@@ -808,6 +778,8 @@ def finalizar_item_parcial_api(demanda_id, item_id):
         return jsonify({'success': False, 'message': f'Erro interno ao finalizar item: {e}'}), 500
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/item/<string:item_id>/finalizar', methods=['POST'])
+@check_permission('demanda_producao', 'editar')
+@check_demand_action('finalize_item')
 def finalizar_item_api(demanda_id, item_id):
     try:
         updated_item = demanda_producao_service.finalizar_item(demanda_id, item_id)
@@ -818,18 +790,10 @@ def finalizar_item_api(demanda_id, item_id):
         return jsonify({'success': False, 'message': f'Erro interno ao finalizar item: {e}'}), 500
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/item/<string:item_id>/reverter-finalizacao', methods=['POST'])
+@check_permission('demanda_producao', 'editar')
+@check_demand_action('revert_finalize_item')
 def reverter_finalizacao_item_api(demanda_id, item_id):
     try:
-        user_setor = session.get('user_setor')
-        user_is_admin = session.get('user_is_admin', False)
-
-        allowed_sectors = ['Administrador', 'Administrativo', 'Controle de Produção']
-        if not user_is_admin and user_setor not in allowed_sectors:
-            return jsonify({
-                'success': False,
-                'message': f'Acesso negado. Apenas {", ".join(allowed_sectors)} podem reverter finalizações.'
-            }), 403
-
         user_id = session.get('user_email', 'System')
         updated_item = demanda_producao_service.reverter_finalizacao_item(demanda_id, item_id, user_id)
         return jsonify({
@@ -844,6 +808,8 @@ def reverter_finalizacao_item_api(demanda_id, item_id):
         return jsonify({'success': False, 'message': f'Erro interno ao reverter finalização: {e}'}), 500
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/coletar', methods=['POST'])
+@check_permission('demanda_producao', 'editar')
+@check_demand_action('collect_demand')
 def marcar_coletado_api(demanda_id):
     try:
         data = request.get_json()
@@ -864,6 +830,8 @@ def marcar_coletado_api(demanda_id):
         return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
 
 @demanda_producao_api_bp.route('/batch/coletar', methods=['POST'])
+@check_permission('demanda_producao', 'editar')
+@check_demand_action('collect_demand')
 def marcar_lote_coletado_api():
     try:
         data = request.get_json()
@@ -878,6 +846,8 @@ def marcar_lote_coletado_api():
         return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/finalizar_demanda', methods=['POST'])
+@check_permission('demanda_producao', 'editar')
+@check_demand_action('finalize_item')
 def finalizar_demanda_api(demanda_id):
     try:
         user_id = session.get('user_email', 'System')
@@ -943,6 +913,7 @@ def get_calendar_data():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @demanda_producao_api_bp.route('/validate-schedule-conflict', methods=['POST'])
+@check_permission('demanda_producao', 'ler')
 def validate_schedule_conflict():
     try:
         from nistiprint_shared.services.calendar_service import calendar_service
@@ -959,6 +930,7 @@ def validate_schedule_conflict():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @demanda_producao_api_bp.route('/update-demand-schedule/<string:demanda_id>', methods=['PUT'])
+@check_permission('demanda_producao', 'editar')
 def update_demand_schedule(demanda_id):
     try:
         from nistiprint_shared.services.calendar_service import calendar_service
@@ -1070,11 +1042,14 @@ def api_get_ativas_por_item(produto_id):
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/item/<string:item_id>/retirar-expedicao', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'editar')
 def api_registrar_retirada_expedicao(demanda_id, item_id):
     try:
         data = request.get_json()
         quantidade = int(data.get('quantidade', 1))
+        denied = _deny_unauthorized_demand_fields(['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'])
+        if denied:
+            return denied
         user_id = session.get('user_email', 'System')
         updated_item = demanda_producao_service.registrar_retirada_expedicao(demanda_id, item_id, quantidade, user_id)
         return jsonify({'success': True, 'message': 'Retirada registrada com sucesso!', 'data': updated_item})
@@ -1093,7 +1068,7 @@ def api_get_prioritized_demandas():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @demanda_producao_api_bp.route('/demanda/<demanda_id>/detalhes', methods=['PUT'])
-@login_required
+@check_permission('demanda_producao', 'editar')
 def api_update_demanda_details(demanda_id):
     try:
         user_id = session.get('user_id')
@@ -1117,6 +1092,7 @@ def api_update_demanda_details(demanda_id):
         return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
 
 @demanda_producao_api_bp.route('/registrar-saida', methods=['POST'])
+@check_permission('demanda_producao', 'editar')
 def registrar_saida_distribuida():
     data = request.get_json()
     distributions = data.get('distributions')
@@ -1129,6 +1105,10 @@ def registrar_saida_distribuida():
     if not all([distributions, product_id, total_quantity, production_date_str]):
         return jsonify({'success': False, 'error': 'Dados incompletos.'}), 400
     try:
+        if update_demand:
+            denied = _deny_unauthorized_demand_fields(['miolos_prontos_retirada_qtd'])
+            if denied:
+                return denied
         user_id = session.get('user_id')
         production_date = datetime.strptime(production_date_str, '%Y-%m-%d').date()
         deposito_id = app_config_service.get_config('default_production_deposit_id') or 'principal'
@@ -1304,7 +1284,8 @@ def get_default_miolo_for_product(product_id):
         return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
 
 @demanda_producao_api_bp.route('/<demanda_id>', methods=['DELETE'])
-@login_required
+@check_permission('demanda_producao', 'excluir')
+@check_demand_action('delete_demand')
 def delete_demanda_api(demanda_id):
     """Exclui a demanda e devolve os pedidos a torre de despacho.
 
@@ -1347,7 +1328,8 @@ def delete_demanda_api(demanda_id):
 
 
 @demanda_producao_api_bp.route('/<demanda_id>/cancelar', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'excluir')
+@check_demand_action('delete_demand')
 def cancelar_demanda_api(demanda_id):
     """Cancela a demanda e devolve os pedidos a torre de despacho.
 
@@ -1390,7 +1372,7 @@ def cancelar_demanda_api(demanda_id):
 # ============================================================================
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/item/<string:item_id>/producao-sincrona', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'editar')
 def registrar_producao_sincrona(demanda_id, item_id):
     """
     Registra produção de forma SÍNCRONA e SIMPLIFICADA.
@@ -1429,40 +1411,9 @@ def registrar_producao_sincrona(demanda_id, item_id):
 
     user_id = session.get('user_email', 'System')
     user_setor = session.get('user_setor')
-    is_admin = session.get('user_is_admin', False)
-
-    if not user_setor and not is_admin:
-        return jsonify({'success': False, 'message': 'Setor do usuário não identificado.'}), 403
-
-    # Validação simplificada de permissões
-    field_permissions = {
-        'cpd': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd'],
-        'controle de produção': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd'],
-        'capas': ['capas_produzidas_qtd'],
-        'miolos': ['miolos_prontos_retirada_qtd'],
-        'expedição': ['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'],
-        'administrador': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
-                         'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'],
-        'administrativo': ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
-                         'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd']
-    }
-
-    if not is_admin:
-        normalized_setor = user_setor.strip().lower() if user_setor else ''
-        allowed_fields = field_permissions.get(normalized_setor, [])
-
-        if not allowed_fields:
-            for key, value in field_permissions.items():
-                if key.lower() == normalized_setor:
-                    allowed_fields = value
-                    break
-
-        unauthorized_fields = [field for field in producao_incremental.keys() if field not in allowed_fields]
-        if unauthorized_fields:
-            return jsonify({
-                'success': False,
-                'message': f'Acesso negado. O setor "{user_setor}" não pode alterar: {", ".join(unauthorized_fields)}'
-            }), 403
+    denied = _deny_unauthorized_demand_fields(producao_incremental.keys())
+    if denied:
+        return denied
 
     try:
         from nistiprint_shared.database.supabase_db_service import supabase_db
@@ -1523,7 +1474,7 @@ def registrar_producao_sincrona(demanda_id, item_id):
 
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/producao-sincrona-lote', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'editar')
 def registrar_producao_sincrona_lote(demanda_id):
     """
     Registra produção em lote de forma SÍNCRONA e SIMPLIFICADA.
@@ -1556,6 +1507,15 @@ def registrar_producao_sincrona_lote(demanda_id):
 
     if not updates:
         return jsonify({'success': False, 'message': 'Nenhuma atualização fornecida.'}), 400
+
+    requested_fields = {
+        field
+        for update in updates
+        for field in (update.get('producao_incremental') or {}).keys()
+    }
+    denied = _deny_unauthorized_demand_fields(requested_fields)
+    if denied:
+        return denied
 
     user_id = session.get('user_email', 'System')
     results = []
@@ -1630,7 +1590,7 @@ from nistiprint_shared.services.demandas_override_service import DemandasOverrid
 
 
 @demanda_producao_api_bp.route('/sugestoes', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'ler')
 def get_sugestoes_demanda():
     """
     Calcula sugestões de valores para criação de demanda.
@@ -1705,7 +1665,7 @@ def get_sugestoes_demanda():
 
 
 @demanda_producao_api_bp.route('/validar-override', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'ler')
 def validar_override():
     """
     Valida se um override é compatível com as regras do canal.
@@ -1818,7 +1778,7 @@ def get_overrides_demanda(demanda_id):
 
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/overrides', methods=['POST'])
-@login_required
+@check_permission('demanda_producao', 'editar')
 def create_override_demanda(demanda_id):
     """
     Cria um novo override para uma demanda.

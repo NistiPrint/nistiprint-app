@@ -43,13 +43,15 @@ function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-      <Card className="w-full max-w-md">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4 py-12 sm:px-6 lg:px-8">
+      <div aria-hidden="true" className="pointer-events-none absolute -left-24 -top-24 h-72 w-72 rounded-full bg-brand-aqua-soft blur-3xl" />
+      <div aria-hidden="true" className="pointer-events-none absolute -bottom-28 -right-20 h-80 w-80 rounded-full bg-brand-blue-soft blur-3xl" />
+      <Card className="relative w-full max-w-md border-primary/15 shadow-lg shadow-primary/5">
         <CardHeader className="text-center">
           <div className="flex justify-center mb-4">
             <img
               src="/logomarca.png"
-              alt="Logo"
+              alt="Nisti Print — papelaria criativa"
               className="h-12 w-auto object-contain"
             />
           </div>

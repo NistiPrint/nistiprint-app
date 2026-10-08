@@ -41,6 +41,21 @@ const SectorService = {
     // permissionData: { recurso: 'nome', ler: bool, criar: bool, editar: bool, excluir: bool }
     const response = await api.post(`/usuarios-setores/setor/${sectorId}/permissoes`, permissionData);
     return response.data.permissao;
+  },
+
+  getActive: async () => {
+    const response = await api.get('/usuarios-setores/setor?ativos=true');
+    return response.data.setores;
+  },
+
+  getDemandPermissions: async (sectorId) => {
+    const response = await api.get(`/usuarios-setores/setor/${sectorId}/permissoes-demanda`);
+    return response.data.permissoes;
+  },
+
+  updateDemandPermissions: async (sectorId, permissions) => {
+    const response = await api.put(`/usuarios-setores/setor/${sectorId}/permissoes-demanda`, permissions);
+    return response.data.permissoes;
   }
 };
 

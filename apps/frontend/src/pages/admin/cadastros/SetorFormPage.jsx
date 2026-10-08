@@ -50,7 +50,7 @@ function SetorFormPage() {
         }
       } catch (error) {
         toast.error(`Erro ao carregar dados: ${error.message}`);
-        navigate('/sistema/setores');
+        navigate('/configuracoes/acessos/setores');
       } finally {
         setLoadingInitialData(false);
       }
@@ -69,7 +69,7 @@ function SetorFormPage() {
         toast.success('Setor criado com sucesso!');
       }
 
-      navigate('/sistema/setores');
+      navigate('/configuracoes/acessos/setores');
     } catch (error) {
       toast.error(`Erro: ${error.response?.data?.error || error.message}`);
     } finally {
@@ -146,7 +146,7 @@ function SetorFormPage() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => navigate('/sistema/setores')}
+                onClick={() => navigate('/configuracoes/acessos/setores')}
                 className="flex-1"
               >
                 Cancelar

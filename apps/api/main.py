@@ -66,6 +66,7 @@ from routes.task_center_api import task_center_bp
 from routes.ai_personalization_config_api import ai_personalization_config_bp
 from routes.usuarios_setores import usuarios_setores_bp, usuarios_setores_api_bp
 from routes.notifications import notifications_bp
+from routes.operations_api import activity_api_bp
 from routes.orders import orders_api_bp
 from routes.marketplace_api_base import marketplace_api_bp
 from routes.marketplace_api_routes import marketplace_api_bp as marketplace_api_routes_bp
@@ -218,6 +219,7 @@ def create_app():
     app.register_blueprint(usuarios_setores_bp)
     app.register_blueprint(usuarios_setores_api_bp, url_prefix='/api/v2/usuarios-setores')
     app.register_blueprint(notifications_bp)
+    app.register_blueprint(activity_api_bp)
     app.register_blueprint(orders_api_bp, url_prefix='/api/v2/orders')
     app.register_blueprint(marketplace_api_bp, url_prefix='/api/v2/marketplace')
     app.register_blueprint(marketplace_bp)

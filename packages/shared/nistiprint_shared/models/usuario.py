@@ -12,6 +12,9 @@ class Usuario(db.Model):
     setor_id = db.Column(db.Integer, db.ForeignKey('setores.id'), nullable=False)
     ativo = db.Column(db.Boolean, default=True, nullable=False)
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
+    auth_user_id = db.Column(db.String(36), nullable=True, unique=True)
+    must_change_password = db.Column(db.Boolean, default=False, nullable=False)
+    session_version = db.Column(db.Integer, default=0, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_login = db.Column(db.DateTime, nullable=True)
@@ -39,6 +42,9 @@ class Usuario(db.Model):
             'setor_nome': self.setor_nome,  # Use the property to ensure consistent access
             'ativo': self.ativo,
             'is_admin': self.is_admin,
+            'auth_user_id': str(self.auth_user_id) if self.auth_user_id else None,
+            'must_change_password': bool(self.must_change_password),
+            'session_version': int(self.session_version or 0),
             'created_at': format_datetime(self.created_at),
             'updated_at': format_datetime(self.updated_at),
             'last_login': format_datetime(self.last_login)

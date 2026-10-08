@@ -4,8 +4,9 @@ Provides endpoints for monitoring and managing async task execution logs
 """
 from datetime import datetime
 from flask import Blueprint, request, jsonify
-from routes.auth import login_required, admin_required
+from routes.auth import admin_required, check_permission
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from routes.task_center_api import _sanitize
 
 tasks_api_bp = Blueprint('tasks_api', __name__, url_prefix='/api/v2/tasks')
 admin_worker_logs_bp = Blueprint('admin_worker_logs', __name__)
@@ -94,7 +95,7 @@ def _dedupe_by_identity(items):
 
 
 @tasks_api_bp.route('/execution-logs', methods=['GET'])
-@login_required
+@check_permission('central_operacoes', 'ler')
 def list_task_execution_logs():
     """
     List task execution logs with optional filtering.
@@ -110,10 +111,10 @@ def list_task_execution_logs():
         status = request.args.get('status')
         task_type = request.args.get('task_type')
         task_name = request.args.get('task_name')
-        limit = int(request.args.get('limit', 100))
-        offset = int(request.args.get('offset', 0))
+        limit = max(1, min(200, int(request.args.get('limit', 50))))
+        offset = max(0, int(request.args.get('offset', 0)))
         
-        query = supabase_db.table('task_execution_logs').select('*')
+        query = supabase_db.table('task_execution_logs').select('*', count='exact')
         
         if status:
             query = query.eq('status', status)
@@ -132,15 +133,17 @@ def list_task_execution_logs():
         
         return jsonify({
             'success': True,
-            'data': response.data or [],
-            'count': len(response.data) if response.data else 0
+            'data': _sanitize(response.data or []),
+            'count': int(getattr(response, 'count', 0) or 0),
+            'limit': limit,
+            'offset': offset,
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @admin_worker_logs_bp.route('/api/v2/admin/worker-logs', methods=['GET'])
-@admin_required
+@check_permission('central_operacoes', 'ler')
 def list_admin_worker_logs():
     """
     Busca logs de ingest e de task execution para troubleshooting.
@@ -170,8 +173,8 @@ def list_admin_worker_logs():
         per_page = max(1, min(int(request.args.get('per_page', 50)), 200))
         offset = (page - 1) * per_page
 
-        ingest_query = supabase_db.table('pedido_ingest_log').select('*')
-        task_query = supabase_db.table('task_execution_logs').select('*')
+        ingest_query = supabase_db.table('pedido_ingest_log').select('*', count='exact')
+        task_query = supabase_db.table('task_execution_logs').select('*', count='exact')
 
         if since:
             ingest_query = ingest_query.gte('created_at', since)
@@ -197,19 +200,24 @@ def list_admin_worker_logs():
             ingest_query = ingest_query.or_(f"message.ilike.%{q}%,stage.ilike.%{q}%")
             task_query = task_query.or_(f"error_message.ilike.%{q}%,task_name.ilike.%{q}%")
 
-        ingest_rows = ingest_query.order('created_at', desc=True).execute().data or []
-        task_rows = task_query.order('created_at', desc=True).execute().data or []
+        # Fetch only enough rows from each ordered source to assemble this page.
+        # The merged history remains bounded even when the underlying logs grow.
+        fetch_end = offset + per_page - 1
+        ingest_response = ingest_query.order('created_at', desc=True).range(0, fetch_end).execute()
+        task_response = task_query.order('created_at', desc=True).range(0, fetch_end).execute()
+        ingest_rows = ingest_response.data or []
+        task_rows = task_response.data or []
 
         merged = [_normalize_ingest_log(row) for row in ingest_rows] + [_normalize_task_log(row) for row in task_rows]
         merged = _dedupe_by_identity(merged)
         merged.sort(key=_sort_key, reverse=True)
 
-        total = len(merged)
+        total = int(getattr(ingest_response, 'count', 0) or 0) + int(getattr(task_response, 'count', 0) or 0)
         items = merged[offset:offset + per_page]
 
         return jsonify({
             'success': True,
-            'data': items,
+            'data': _sanitize(items),
             'pagination': {
                 'page': page,
                 'per_page': per_page,
@@ -222,7 +230,7 @@ def list_admin_worker_logs():
 
 
 @tasks_api_bp.route('/execution-logs/<task_log_id>', methods=['GET'])
-@login_required
+@check_permission('central_operacoes', 'ler')
 def get_task_execution_log_details(task_log_id):
     """
     Get detailed information about a specific task execution log.
@@ -235,7 +243,7 @@ def get_task_execution_log_details(task_log_id):
         
         return jsonify({
             'success': True,
-            'data': response.data[0]
+            'data': _sanitize(response.data[0])
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -256,36 +264,27 @@ def cancel_task(task_log_id):
 
 
 @tasks_api_bp.route('/stats', methods=['GET'])
-@login_required
+@check_permission('central_operacoes', 'ler')
 def get_task_stats():
     """
     Get statistics about task execution logs.
     """
     try:
-        # Get counts by status
-        response = supabase_db.table('task_execution_logs').select('status').execute()
-        
-        if not response.data:
-            return jsonify({
-                'success': True,
-                'stats': {
-                    'total': 0,
-                    'pending': 0,
-                    'processing': 0,
-                    'completed': 0,
-                    'failed': 0,
-                    'cancelled': 0
-                }
-            })
-        
-        total = len(response.data)
+        table = supabase_db.table('task_execution_logs')
+        total_response = table.select('id', count='exact', head=True).execute()
+        total = int(getattr(total_response, 'count', 0) or 0)
+        status_counts = {}
+        for status in ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELLED'):
+            result = (table.select('id', count='exact', head=True)
+                      .eq('status', status).execute())
+            status_counts[status] = int(getattr(result, 'count', 0) or 0)
         stats = {
             'total': total,
-            'pending': sum(1 for t in response.data if t.get('status') == 'PENDING'),
-            'processing': sum(1 for t in response.data if t.get('status') == 'PROCESSING'),
-            'completed': sum(1 for t in response.data if t.get('status') == 'COMPLETED'),
-            'failed': sum(1 for t in response.data if t.get('status') == 'FAILED'),
-            'cancelled': sum(1 for t in response.data if t.get('status') == 'CANCELLED')
+            'pending': status_counts['PENDING'],
+            'processing': status_counts['PROCESSING'],
+            'completed': status_counts['COMPLETED'],
+            'failed': status_counts['FAILED'],
+            'cancelled': status_counts['CANCELLED']
         }
         
         return jsonify({
@@ -326,7 +325,7 @@ def reprocess_events():
 
 
 @tasks_api_bp.route('/stock/reconcile-item/<item_id>', methods=['POST'])
-@login_required
+@admin_required
 def reconcile_item(item_id):
     """
     Trigger reconciliation for a specific item.

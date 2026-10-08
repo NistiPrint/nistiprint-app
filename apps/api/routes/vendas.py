@@ -1,5 +1,5 @@
 from flask import Blueprint, render_template, jsonify, request
-from routes.auth import login_required
+from routes.auth import login_required, require_request_permission
 from nistiprint_shared.services.orders_query_service import orders_query_service
 from nistiprint_shared.services.order_service import order_service
 from nistiprint_shared.services.integration_resolution_service import integration_resolution_service
@@ -7,6 +7,18 @@ from utils.api_response import ApiResponse
 
 vendas_bp = Blueprint('vendas', __name__, url_prefix='/vendas')
 vendas_api_bp = Blueprint('vendas_api', __name__, url_prefix='/api/v2/vendas')
+
+
+@vendas_bp.before_request
+def enforce_legacy_sales_permissions():
+    return require_request_permission('vendas', 'ler')
+
+
+@vendas_api_bp.before_request
+def enforce_sales_api_permissions():
+    if request.method == 'OPTIONS':
+        return None
+    return require_request_permission('vendas', 'ler')
 
 @vendas_api_bp.route('/order-status-options', methods=['GET'])
 @login_required

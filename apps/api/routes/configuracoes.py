@@ -5,27 +5,37 @@ from nistiprint_shared.services.deposito_service import deposito_service
 from nistiprint_shared.services.product_service import product_service
 from nistiprint_shared.services.conta_bling_service import conta_bling_service
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from routes.auth import admin_required, login_required
 
 configuracoes_bp = Blueprint('configuracoes', __name__, url_prefix='/configuracoes')
 configuracoes_api_bp = Blueprint('configuracoes_api', __name__, url_prefix='/api/v2/configuracoes')
 
 # API Configuracoes routes
-@configuracoes_api_bp.route('/demanda-permissions', methods=['GET', 'POST'])
+@configuracoes_api_bp.route('/demanda-permissions', methods=['GET'])
+@admin_required
 def api_demanda_permissions():
-    """Manages the permission mapping for Demanda Dashboard (API)."""
+    """Read-only compatibility endpoint for the migrated demand permission map."""
     key = 'demanda_dashboard_permissions'
-    if request.method == 'POST':
-        data = request.get_json()
-        app_config_service.set_config(key, data)
-        return jsonify({'success': True, 'message': 'Permissões atualizadas com sucesso!'})
-    else:
-        config = app_config_service.get_config(key)
-        return jsonify({'config': config, 'success': True})
+    config = app_config_service.get_config(key)
+    return jsonify({'config': config, 'success': True})
+
+
+@configuracoes_api_bp.route('/demanda-permissions', methods=['POST'])
+@admin_required
+def reject_legacy_demand_permission_update():
+    return jsonify({
+        'success': False,
+        'error': 'As permissões de demanda agora são configuradas por setor.',
+    }), 410
 
 @configuracoes_api_bp.route('/sistema', methods=['GET', 'POST'])
+@login_required
 def api_sistema_config():
     """Manages general system configurations (Operational Mode, etc)."""
     if request.method == 'POST':
+        from routes.auth import get_current_user
+        if not (get_current_user() or {}).get('is_admin'):
+            return jsonify({'success': False, 'error': 'Somente administradores podem alterar o modo operacional.'}), 403
         try:
             data = request.get_json()
             if not data:
@@ -50,6 +60,7 @@ def api_sistema_config():
 
 
 @configuracoes_api_bp.route('/producao', methods=['GET', 'POST'])
+@admin_required
 def api_producao_config():
     """Manages the production control screen configuration (API version)."""
     if request.method == 'POST':
@@ -109,6 +120,7 @@ def api_producao_config():
 
 # Regular Configuracoes routes
 @configuracoes_bp.route('/producao', methods=['GET', 'POST'])
+@admin_required
 def producao_config():
     """Manages the production control screen configuration."""
     if request.method == 'POST':
@@ -158,6 +170,7 @@ def producao_config():
     )
 
 @configuracoes_bp.route('/bling', methods=['GET', 'POST'])
+@admin_required
 def bling_config():
     """Manages the default Bling account configuration for product registration."""
     bling_account_config_key = 'default_bling_account_id'
@@ -183,6 +196,7 @@ def bling_config():
     )
 
 @configuracoes_api_bp.route('/bling', methods=['GET', 'POST'])
+@admin_required
 def api_bling_config():
     """Manages the default Bling account configuration (API v2)."""
     bling_account_config_key = 'default_bling_account_id'

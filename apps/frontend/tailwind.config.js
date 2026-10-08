@@ -40,6 +40,37 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        "brand-blue": {
+          DEFAULT: "hsl(var(--brand-blue))",
+          soft: "hsl(var(--brand-blue-soft))",
+        },
+        "brand-aqua": {
+          DEFAULT: "hsl(var(--brand-aqua))",
+          soft: "hsl(var(--brand-aqua-soft))",
+        },
+        "brand-pink": {
+          DEFAULT: "hsl(var(--brand-pink))",
+          soft: "hsl(var(--brand-pink-soft))",
+        },
+        "brand-yellow": {
+          DEFAULT: "hsl(var(--brand-yellow))",
+          soft: "hsl(var(--brand-yellow-soft))",
+        },
+        success: {
+          DEFAULT: "hsl(var(--success))",
+          soft: "hsl(var(--success-soft))",
+          foreground: "hsl(0 0% 100%)",
+        },
+        warning: {
+          DEFAULT: "hsl(var(--warning))",
+          soft: "hsl(var(--warning-soft))",
+          foreground: "hsl(0 0% 100%)",
+        },
+        info: {
+          DEFAULT: "hsl(var(--info))",
+          soft: "hsl(var(--info-soft))",
+          foreground: "hsl(0 0% 100%)",
+        },
         // Production Focus Semantics
         "main-line": {
           DEFAULT: "#ea580c", // orange-600

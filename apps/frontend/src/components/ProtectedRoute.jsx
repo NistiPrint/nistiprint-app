@@ -2,7 +2,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Navigate, useLocation } from 'react-router-dom';
 
 const ProtectedRoute = ({ children, requireAdmin = false, permission = null }) => {
-  const { isAuthenticated, isAdmin, hasPermission, loading } = useAuth();
+  const { isAuthenticated, isAdmin, hasPermission, user, loading } = useAuth();
   const location = useLocation();
 
   if (loading) {
@@ -16,6 +16,10 @@ const ProtectedRoute = ({ children, requireAdmin = false, permission = null }) =
   if (!isAuthenticated()) {
     // Redirect to login page with return url
     return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  if (user?.must_change_password && location.pathname !== '/perfil') {
+    return <Navigate to="/perfil?trocar-senha=1" replace />;
   }
 
   if (requireAdmin && !isAdmin()) {

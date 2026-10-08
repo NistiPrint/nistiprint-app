@@ -9,8 +9,16 @@ from nistiprint_shared.services.estoque_service import estoque_service
 from nistiprint_shared.services.consumption_service import consumption_service
 from nistiprint_shared.services.purchasing_advisor_service import purchasing_advisor_service
 from datetime import datetime, timedelta
+from routes.auth import require_request_permission
 
 relatorios_api_bp = Blueprint('relatorios_api', __name__, url_prefix='/api/v2/relatorios')
+
+
+@relatorios_api_bp.before_request
+def enforce_reports_permissions():
+    if request.method == 'OPTIONS':
+        return None
+    return require_request_permission('relatorios', 'ler')
 
 @relatorios_api_bp.route('/', methods=['GET'], strict_slashes=False)
 def relatorios_index():

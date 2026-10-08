@@ -3,10 +3,25 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Checkbox } from '@/components/ui/checkbox';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import SectorService from '@/services/SectorService';
-import { ArrowLeft, Loader2, Save } from 'lucide-react';
+import { ArrowLeft, Loader2, Save, ShieldCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
+
+const DEMAND_FIELDS = [
+  ['capas_impressas_qtd', 'Capas impressas'],
+  ['capas_produzidas_qtd', 'Capas produzidas'],
+  ['capas_prontas_retirada_qtd', 'Capas prontas para retirada'],
+  ['miolos_prontos_retirada_qtd', 'Miolos prontos para retirada'],
+  ['expedicao_capas_retiradas_qtd', 'Expedição de capas'],
+  ['expedicao_miolos_retirados_qtd', 'Expedição de miolos'],
+];
+const DEMAND_ACTIONS = [
+  ['delete_demand', 'Excluir demanda'],
+  ['finalize_item', 'Finalizar item'],
+  ['collect_demand', 'Coletar demanda'],
+  ['revert_finalize_item', 'Reverter finalização'],
+];
 
 const SetorPermissoesPage = () => {
   const { id } = useParams();
@@ -17,6 +32,7 @@ const SetorPermissoesPage = () => {
   const [setor, setSetor] = useState(null);
   const [recursos, setRecursos] = useState([]);
   const [permissoes, setPermissoes] = useState({});
+  const [permissoesDemanda, setPermissoesDemanda] = useState({ fields: [], actions: [] });
 
   useEffect(() => {
     fetchData();
@@ -25,19 +41,21 @@ const SetorPermissoesPage = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [setorData, recursosData, permissoesData] = await Promise.all([
+      const [setorData, recursosData, permissoesData, demandData] = await Promise.all([
         SectorService.getById(id),
         SectorService.getResources(),
-        SectorService.getPermissions(id)
+        SectorService.getPermissions(id),
+        SectorService.getDemandPermissions(id),
       ]);
       
       setSetor(setorData);
       setRecursos(recursosData);
       setPermissoes(permissoesData);
+      setPermissoesDemanda(demandData || { fields: [], actions: [] });
     } catch (error) {
       console.error('Erro ao carregar dados:', error);
       toast.error("Não foi possível carregar os dados do setor.");
-      navigate('/sistema/setores');
+      navigate('/configuracoes/acessos/setores');
     } finally {
       setLoading(false);
     }
@@ -89,6 +107,7 @@ const SetorPermissoesPage = () => {
       });
 
       await Promise.all(updatePromises);
+      await SectorService.updateDemandPermissions(id, permissoesDemanda);
       toast.success("Todas as permissões foram salvas com sucesso!");
     } catch (error) {
       console.error('Erro ao salvar permissões:', error);
@@ -129,7 +148,7 @@ const SetorPermissoesPage = () => {
     <div className="container mx-auto py-6 space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/sistema/setores')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/configuracoes/acessos/setores')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
@@ -247,6 +266,33 @@ const SetorPermissoesPage = () => {
               })}
             </TableBody>
           </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><ShieldCheck className="h-5 w-5" />Permissões de demanda</CardTitle>
+          <CardDescription>Essas permissões pertencem ao setor, sem depender do nome que ele recebe.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-6 lg:grid-cols-2">
+          <div>
+            <h3 className="mb-3 font-medium">Campos editáveis</h3>
+            <div className="space-y-3">
+              {DEMAND_FIELDS.map(([key, label]) => <label key={key} className="flex items-center gap-3 text-sm">
+                <Checkbox checked={(permissoesDemanda.fields || []).includes(key)} onCheckedChange={(checked) => setPermissoesDemanda((current) => ({ ...current, fields: checked ? [...new Set([...(current.fields || []), key])] : (current.fields || []).filter((item) => item !== key) }))} />
+                {label}
+              </label>)}
+            </div>
+          </div>
+          <div>
+            <h3 className="mb-3 font-medium">Ações permitidas</h3>
+            <div className="space-y-3">
+              {DEMAND_ACTIONS.map(([key, label]) => <label key={key} className="flex items-center gap-3 text-sm">
+                <Checkbox checked={(permissoesDemanda.actions || []).includes(key)} onCheckedChange={(checked) => setPermissoesDemanda((current) => ({ ...current, actions: checked ? [...new Set([...(current.actions || []), key])] : (current.actions || []).filter((item) => item !== key) }))} />
+                {label}
+              </label>)}
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>

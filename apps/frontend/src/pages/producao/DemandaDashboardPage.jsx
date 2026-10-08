@@ -59,8 +59,9 @@ import CapaPrintPlanner from '@/components/producao/CapaPrintPlanner'
 
 function DemandaDashboardPage() {
   const { id } = useParams()
-  const { user } = useAuth()
+  const { user, hasPermission } = useAuth()
   const { canEditField, canExecuteAction } = usePermissionsHook()
+  const canEditDemand = user?.is_admin === true || hasPermission('demanda_producao', 'editar')
   const { isAgentOnline, printMappedFile, getMappedFileForProduct } =
     useLocalAgent()
   const [demanda, setDemanda] = useState(null)
@@ -84,8 +85,9 @@ function DemandaDashboardPage() {
   const [nfeSidebarOpen, setNfeSidebarOpen] = useState(false)
   const [nfeResults, setNfeResults] = useState([])
   const [nfeGenerating, setNfeGenerating] = useState(false)
+  const [nfeOperationId, setNfeOperationId] = useState(null)
+  const [nfeOperation, setNfeOperation] = useState(null)
   const [progressoImpressao, setProgressoImpressao] = useState(null)
-  const nfeEventSourceRef = useRef(null)
 
   const debouncedSearchQuery = useDebounce(searchQuery, 300)
 
@@ -126,12 +128,34 @@ function DemandaDashboardPage() {
   }, [pendingChanges])
 
   useEffect(() => {
-    return () => {
-      if (nfeEventSourceRef.current) {
-        nfeEventSourceRef.current.close()
+    if (!nfeOperationId) return undefined
+    let cancelled = false
+    let timer
+    const refreshOperation = async () => {
+      try {
+        const response = await fetch(`/api/v2/notifications/operations/${encodeURIComponent(nfeOperationId)}`)
+        const result = await response.json()
+        if (!response.ok || !result.success) throw new Error(result.error || 'Falha ao consultar emissão de NF-e.')
+        if (cancelled) return
+        const operation = result.data
+        setNfeOperation(operation)
+        setNfeResults(operation.dados_adicionais?.resultados || [])
+        const finished = ['CONCLUIDO', 'ERRO'].includes(operation.status)
+        setNfeGenerating(!finished)
+        if (!finished) timer = window.setTimeout(refreshOperation, 2500)
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Falha temporária ao atualizar processo de NF-e:', error)
+          timer = window.setTimeout(refreshOperation, 5000)
+        }
       }
     }
-  }, [])
+    refreshOperation()
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [nfeOperationId])
 
   useEffect(() => {
     fetchDemanda()
@@ -485,45 +509,33 @@ function DemandaDashboardPage() {
   }
 
 
-  const handleGenerateDemandNfe = blingIntegrationId => {
+  const handleGenerateDemandNfe = async blingIntegrationId => {
     const pedidos = demanda?.pedidos_origem || []
     if (pedidos.length === 0) {
       toast.warning('Esta demanda nao possui pedidos relacionados.')
       return
     }
 
-    if (nfeEventSourceRef.current) {
-      nfeEventSourceRef.current.close()
-    }
-
     setNfeResults([])
+    setNfeOperation(null)
+    setNfeOperationId(null)
     setNfeGenerating(true)
     setNfeSidebarOpen(true)
-
-    const params = blingIntegrationId
-      ? `?bling_integration_id=${encodeURIComponent(blingIntegrationId)}`
-      : ''
-    const eventSource = new EventSource(`/api/v2/demanda_producao/${id}/nfe${params}`)
-    nfeEventSourceRef.current = eventSource
-
-    eventSource.onmessage = event => {
-      const data = JSON.parse(event.data)
-      if (data.status === 'complete') {
-        setNfeGenerating(false)
-        toast.success('Processamento de NFs concluido.')
-        eventSource.close()
-        return
-      }
-      setNfeResults(prev => [...prev, data])
-      if (data.status === 'error' || data.success === false) {
-        toast.error(data.error || 'Erro ao gerar NF.')
-      }
-    }
-
-    eventSource.onerror = () => {
-      toast.error('Erro na conexao com o servidor de NF.')
+    try {
+      const response = await fetch(`/api/v2/demanda_producao/${id}/nfe/jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bling_integration_id: blingIntegrationId || null }),
+      })
+      const result = await response.json()
+      if (!response.ok || !result.success) throw new Error(result.message || 'Não foi possível iniciar a emissão de NF-e.')
+      const operation = result.data.operation
+      setNfeOperation(operation)
+      setNfeOperationId(operation.id)
+      toast.info('Emissão iniciada. O andamento continuará disponível na central de atividade.')
+    } catch (error) {
       setNfeGenerating(false)
-      eventSource.close()
+      toast.error(error.message || 'Erro ao iniciar emissão de NF-e.')
     }
   }
 
@@ -790,7 +802,7 @@ function DemandaDashboardPage() {
 
       if (isTotalmenteFinalizado) {
         const canRevert =
-          user?.is_admin || canExecuteAction('revert_finalize_item')
+          user?.is_admin || (canEditDemand && canExecuteAction('revert_finalize_item'))
         return (
           <TableCell key={columnName} className='text-right'>
             <div className='flex items-center justify-end gap-2'>
@@ -813,7 +825,7 @@ function DemandaDashboardPage() {
         )
       }
 
-      if (!user?.is_admin && !canExecuteAction('finalize_item')) {
+      if (!user?.is_admin && !(canEditDemand && canExecuteAction('finalize_item'))) {
         return (
           <TableCell key={columnName} className='text-right'>
             -
@@ -876,7 +888,7 @@ function DemandaDashboardPage() {
 
     const fieldName = fieldMapping[columnName]
     const canEdit =
-      (user?.is_admin || canEditField(fieldName)) &&
+      (user?.is_admin || (canEditDemand && canEditField(fieldName))) &&
       item.status_item !== 'Concluído'
     const maxValue = getMaxValueForField(item, fieldName)
 
@@ -1015,7 +1027,7 @@ function DemandaDashboardPage() {
             </Button>
           </Link>
           {demanda.status !== 'Coletado' &&
-            canExecuteAction('collect_demand') && (
+            canEditDemand && canExecuteAction('collect_demand') && (
               <Button
                 onClick={handleCollectDemand}
                 className='bg-green-600 hover:bg-green-700'>
@@ -1154,7 +1166,7 @@ function DemandaDashboardPage() {
                         'expedicao_miolos',
                       ].includes(col) &&
                         statusFilter === 'ativos' &&
-                        (user?.is_admin || canEditField(fieldMapping[col])) && (
+                        (user?.is_admin || (canEditDemand && canEditField(fieldMapping[col]))) && (
                           <Button
                             variant='ghost'
                             size='icon'
@@ -1296,10 +1308,19 @@ function DemandaDashboardPage() {
             </Button>
           </div>
           <div className="flex-1 overflow-y-auto p-4">
-            {nfeGenerating && nfeResults.length === 0 && (
-              <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
-                <Loader2 className="mb-2 h-8 w-8 animate-spin" />
-                <p>Processando pedidos...</p>
+            {nfeGenerating && (
+              <div role="status" className="mb-4 flex items-start gap-3 rounded-lg border border-info/20 bg-info-soft p-3 text-sm text-info">
+                <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+                <div>
+                  <p className="font-semibold">Processo em andamento</p>
+                  <p className="mt-1">{nfeOperation?.etapa || 'Preparando emissão'} · {nfeOperation?.progresso_atual || 0} de {nfeOperation?.progresso_total || demanda?.pedidos_origem?.length || 0} pedidos</p>
+                  <p className="mt-1 text-xs">Você pode sair desta tela; o andamento está salvo na central de atividade.</p>
+                </div>
+              </div>
+            )}
+            {nfeOperation?.status === 'ERRO' && nfeOperation.erro_resumo && (
+              <div role="alert" className="mb-4 rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive">
+                {nfeOperation.erro_resumo}
               </div>
             )}
             {nfeResults.length > 0 && (
@@ -1331,6 +1352,9 @@ function DemandaDashboardPage() {
                   </li>
                 ))}
               </ul>
+            )}
+            {!nfeGenerating && !nfeResults.length && !nfeOperation?.erro_resumo && (
+              <div className="py-8 text-center text-sm text-muted-foreground">Nenhum resultado de emissão disponível.</div>
             )}
           </div>
         </div>

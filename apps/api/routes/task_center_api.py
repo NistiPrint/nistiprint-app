@@ -8,11 +8,15 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from flask import Blueprint, request
-from routes.auth import admin_required
+from routes.auth import admin_required, check_permission
 from nistiprint_shared.database.supabase_db_service import supabase_db
 
 task_center_bp = Blueprint("task_center", __name__)
-_SECRET_VALUE = re.compile(r"(?i)(access_token|refresh_token|client_secret|api[_-]?key|authorization)(\s*[\"'=:\s]+)([^,\s\"'&}]+)")
+_SECRET_VALUE = re.compile(
+    r"(?i)((?:access|refresh|id)?[_-]?(?:token|secret|password|senha)(?:[_-]?hash)?|"
+    r"api[_-]?key|access[_-]?key|private[_-]?key|service[_-]?role[_-]?key|partner[_-]?key|authorization|credential)"
+    r"(\s*[\"'=:\s]+)([^,\s\"'&}]+)"
+)
 
 
 def _now():
@@ -32,7 +36,7 @@ def _json(value):
 
 def _sanitize(value):
     if isinstance(value, dict):
-        return {key: ("[redigido]" if re.search(r"token|secret|password|api.?key|authorization|credential", str(key), re.I)
+        return {key: ("[redigido]" if re.search(r"token|secret|password|senha|api.?key|access.?key|private.?key|service.?role.?key|partner.?key|authorization|credential", str(key), re.I)
                        else _sanitize(item)) for key, item in value.items()}
     if isinstance(value, list):
         return [_sanitize(item) for item in value]
@@ -183,7 +187,7 @@ def _process_signals():
 
 
 @task_center_bp.get("/api/v2/admin/task-center/overview")
-@admin_required
+@check_permission("central_operacoes", "ler")
 def overview():
     try:
         hours = max(1, min(168, request.args.get("hours", 24, type=int)))
@@ -258,7 +262,7 @@ def overview():
         except Exception as exc:
             shopee_health_status = "unavailable"
             shopee_error = str(exc)[:300]
-        return {"success": True, "data": {
+        return {"success": True, "data": _sanitize({
             "hours": hours, "measured_at": _now().isoformat(), "task_stats": status_counts,
             "task_sample_size": len(rows), "queues": queues, "processes": processes,
             "mercadolivre": meli,
@@ -267,15 +271,15 @@ def overview():
             "shopee": shopee,
             "shopee_status": shopee_health_status,
             "shopee_error": locals().get("shopee_error"),
-            "recent_failures": [_sanitize(row) for row in rows if row.get("status") == "FAILED"][:20],
+            "recent_failures": [row for row in rows if row.get("status") == "FAILED"][:20],
             "overdue": [row for row in rows if row.get("status") in {"PENDING", "PROCESSING"}][:50],
-        }}
+        })}
     except Exception as exc:
         return {"success": False, "error": "Não foi possível consultar a saúde do sistema.", "detail": str(exc)[:300]}, 503
 
 
 @task_center_bp.get("/api/v2/admin/task-center/executions")
-@admin_required
+@check_permission("central_operacoes", "ler")
 def executions():
     try:
         hours = max(1, min(168, request.args.get("hours", 24, type=int)))
@@ -304,7 +308,7 @@ def executions():
 
 
 @task_center_bp.get("/api/v2/admin/task-center/executions/<task_log_id>")
-@admin_required
+@check_permission("central_operacoes", "ler")
 def execution_detail(task_log_id):
     try:
         rows = (supabase_db.table("task_execution_logs").select("*")
@@ -317,15 +321,15 @@ def execution_detail(task_log_id):
 
 
 @task_center_bp.get("/api/v2/admin/task-center/queues")
-@admin_required
+@check_permission("central_operacoes", "ler")
 def queues():
-    return {"success": True, "data": _queue_signals(), "measured_at": _now().isoformat()}
+    return {"success": True, "data": _sanitize(_queue_signals()), "measured_at": _now().isoformat()}
 
 
 @task_center_bp.get("/api/v2/admin/task-center/processes")
-@admin_required
+@check_permission("central_operacoes", "ler")
 def processes():
-    data = _process_signals()
+    data = _sanitize(_process_signals())
     return ({"success": True, "data": data} if data.get("status") == "available"
             else ({"success": False, "data": data}, 503))
 

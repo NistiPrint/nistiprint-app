@@ -61,6 +61,12 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  const refreshCurrentUser = async () => {
+    const current = await UserService.getCurrentUser();
+    setUser(current);
+    return current;
+  };
+
   const login = async (credentials) => {
     setLoading(true);
     try {
@@ -100,8 +106,6 @@ export const AuthProvider = ({ children }) => {
 
   const hasPermission = (recurso, acao) => {
     if (isAdmin()) return true;
-    // Check if user belongs to "Administrativo" sector and grant all permissions
-    if (user && user.setor_nome === 'Administrativo') return true;
     if (!user || !user.permissoes) return false;
 
     const permissaoRecurso = user.permissoes[recurso];
@@ -124,6 +128,7 @@ export const AuthProvider = ({ children }) => {
     isAdmin,
     hasPermission,
     checkAuthStatus,
+    refreshCurrentUser,
   };
 
   return (

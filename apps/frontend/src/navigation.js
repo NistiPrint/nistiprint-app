@@ -76,8 +76,8 @@ export const TOP_NAV = [
     icon: ScrollText,
     type: 'collapsible',
     children: [
+      { name: 'Central de Operações', href: '/monitoramento/operacoes', type: 'link' },
       { name: 'Índice de Relatórios', href: '/relatorios', type: 'link', permission: { a: 'relatorios', I: 'ler' } },
-      { name: 'Auditoria', href: '/relatorios/auditoria', type: 'link', adminOnly: true },
       { name: 'Histórico Gerencial', href: '/relatorios/gerencial-historico', type: 'link', adminOnly: true },
       { name: 'Webhooks', href: '/relatorios/webhooks', type: 'link', adminOnly: true },
       { name: 'Logs de IA', href: '/ai/logs', type: 'link', adminOnly: true },
@@ -89,9 +89,8 @@ export const TOP_NAV = [
     type: 'collapsible',
     children: [
       { name: 'Visão geral', href: '/configuracoes', icon: Settings, type: 'link', adminOnly: true },
-      { name: 'Acesso e Permissões', href: '/sistema', icon: Users, type: 'link', adminOnly: true },
+      { name: 'Pessoas e acesso', href: '/configuracoes/acessos', icon: Users, type: 'link', adminOnly: true },
       { name: 'Agente local', href: '/configuracoes/agente-local', icon: Download, type: 'link' },
-      { name: 'Central de Tarefas', href: '/admin/utilitarios/tasks', icon: HardDrive, type: 'link', adminOnly: true },
     ],
   },
 ];
@@ -143,11 +142,11 @@ export const SECOES = [
           // menu, competia com o painel de onde o operador acabou de sair.
           { name: 'Painel Geral', href: '/producao', icon: Trello, description: 'Kanban de produção por setor', adminOnly: true, exato: true },
           { name: 'Resumo Diário', href: '/producao/resumo', icon: BarChart3, description: 'Visão geral da produção do dia', adminOnly: true },
-          { name: 'Demandas', href: '/producao/demanda', icon: ClipboardList, description: 'Acompanhar as demandas publicadas' },
-          { name: 'Miolos', href: '/producao/miolos', icon: Layers, description: 'Controle de produção de miolos' },
-          { name: 'Capas', href: '/producao/capas', icon: Layers, description: 'Controle de produção de capas' },
-          { name: 'Expedição', href: '/producao/expedicao', icon: Package, description: 'Sincronia e retirada de itens' },
-          { name: 'Impressão', href: '/producao/impressao', icon: Printer, description: 'Fila de impressão de artes' },
+      { name: 'Demandas', href: '/producao/demanda', icon: ClipboardList, description: 'Acompanhar as demandas publicadas', permission: { a: 'demanda_producao', I: 'ler' } },
+          { name: 'Miolos', href: '/producao/miolos', icon: Layers, description: 'Controle de produção de miolos', permission: { a: 'producao', I: 'ler' } },
+          { name: 'Capas', href: '/producao/capas', icon: Layers, description: 'Controle de produção de capas', permission: { a: 'producao', I: 'ler' } },
+          { name: 'Expedição', href: '/producao/expedicao', icon: Package, description: 'Sincronia e retirada de itens', permission: { a: 'producao', I: 'ler' } },
+          { name: 'Impressão', href: '/producao/impressao', icon: Printer, description: 'Fila de impressão de artes', permission: { a: 'producao', I: 'ler' } },
         ],
       },
     ],
@@ -202,15 +201,15 @@ export const SECOES = [
           { name: 'Depósitos', href: '/cadastros/deposito', icon: Building, description: 'Locais de armazenamento', adminOnly: true },
           { name: 'Fornecedores', href: '/cadastros/fornecedor', icon: Truck, description: 'Parceiros de suprimento', adminOnly: true },
           { name: 'Parâmetros de Produção', href: '/configuracoes/producao', icon: Settings, description: 'Categorias de estágio, depósito padrão', adminOnly: true },
-          { name: 'Permissões de Demanda', href: '/configuracoes/demanda-permissions', icon: ShieldCheck, description: 'Quem acessa o dashboard', adminOnly: true },
         ],
       },
       {
         nome: 'Pessoas e acesso',
         description: 'Usuários, setores e permissões de acesso.',
         itens: [
-          { name: 'Usuários', href: '/sistema/usuarios', icon: Users, description: 'Contas e vínculos de setor', adminOnly: true },
-          { name: 'Setores', href: '/sistema/setores', icon: Building, description: 'Times da operação', adminOnly: true },
+          { name: 'Usuários', href: '/configuracoes/acessos/usuarios', icon: Users, description: 'Contas e vínculos de setor', adminOnly: true },
+          { name: 'Setores', href: '/configuracoes/acessos/setores', icon: Building, description: 'Times e permissões da operação', adminOnly: true },
+          { name: 'Acesso pendente', href: '/configuracoes/acessos/usuarios?status=pendente', icon: ShieldCheck, description: 'Regularizar contas sem autenticação', adminOnly: true },
         ],
       },
       {
@@ -224,7 +223,6 @@ export const SECOES = [
         nome: 'Sistema e ferramentas',
         description: 'Agente local, tarefas automáticas e manutenção.',
         itens: [
-          { name: 'Central de Tarefas', href: '/admin/utilitarios/tasks', icon: HardDrive, description: 'Agendamentos e execuções', adminOnly: true },
           { name: 'Agente local', href: '/configuracoes/agente-local', icon: Download, description: 'Instalação do agente de impressão' },
         ],
       },
@@ -233,16 +231,22 @@ export const SECOES = [
   {
     id: 'monitoramento',
     titulo: 'Monitoramento',
-    prefixos: ['/relatorios', '/ai/logs'],
+    prefixos: ['/monitoramento/operacoes', '/relatorios', '/ai/logs'],
     grupos: [
       {
         itens: [
+          { name: 'Minha atividade', href: '/monitoramento/operacoes/minha-atividade', icon: Activity, description: 'Seus processos e notificações' },
+          { name: 'Visão geral', href: '/monitoramento/operacoes/visao-geral', icon: Monitor, description: 'Saúde das filas e dos workers', permission: { a: 'central_operacoes', I: 'ler' } },
+          { name: 'Execuções', href: '/monitoramento/operacoes/execucoes', icon: Activity, description: 'Histórico de execução dos processos', permission: { a: 'central_operacoes', I: 'ler' } },
+          { name: 'Filas', href: '/monitoramento/operacoes/filas', icon: Database, description: 'Filas de processamento', permission: { a: 'central_operacoes', I: 'ler' } },
+          { name: 'Auditoria', href: '/monitoramento/operacoes/auditoria', icon: ScrollText, description: 'Eventos de usuários e do sistema', permission: { a: 'auditoria', I: 'ler' } },
+          { name: 'Agendamentos', href: '/monitoramento/operacoes/agendamentos', icon: CalendarClock, description: 'Tarefas periódicas do worker', adminOnly: true },
+          { name: 'Manutenção', href: '/monitoramento/operacoes/manutencao', icon: Settings, description: 'Ferramentas administrativas', adminOnly: true },
           { name: 'Dashboard', href: '/relatorios', icon: ScrollText, description: 'Página inicial de relatórios', exato: true },
-          { name: 'Histórico Produção', href: '/relatorios/historico-producao', icon: Factory, description: 'Relatórios de histórico de produção' },
-          { name: 'Histórico Coletas', href: '/relatorios/historico-coletas', icon: Truck, description: 'Histórico de saídas e coletas' },
-          { name: 'Monitoramento de Estoque', href: '/relatorios/monitoramento-estoque', icon: Activity, description: 'Status de processos assíncronos' },
+          { name: 'Histórico Produção', href: '/relatorios/historico-producao', icon: Factory, description: 'Relatórios de histórico de produção', permission: { a: 'relatorios', I: 'ler' } },
+          { name: 'Histórico Coletas', href: '/relatorios/historico-coletas', icon: Truck, description: 'Histórico de saídas e coletas', permission: { a: 'relatorios', I: 'ler' } },
+          { name: 'Monitoramento de Estoque', href: '/relatorios/monitoramento-estoque', icon: Activity, description: 'Status de processos assíncronos', permission: { a: 'relatorios', I: 'ler' } },
           { name: 'Webhooks', href: '/relatorios/webhooks', icon: Database, description: 'Entregas e reprocessamento de eventos' },
-          { name: 'Auditoria', href: '/relatorios/auditoria', icon: Monitor, description: 'Relatórios de auditoria do sistema' },
           { name: 'Histórico Gerencial', href: '/relatorios/gerencial-historico', icon: Factory, description: 'Consolidado gerencial por período' },
           { name: 'Logs de IA', href: '/ai/logs', icon: Database, description: 'Execuções e erros de IA', adminOnly: true, exato: true },
         ],

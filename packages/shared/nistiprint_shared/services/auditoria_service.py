@@ -6,7 +6,11 @@ class AuditoriaService:
     """Serviço para registro imutável de eventos de auditoria."""
 
     def __init__(self):
-        self.table = supabase_db.table('eventos_auditoria')
+        pass
+
+    @property
+    def table(self):
+        return supabase_db.table('eventos_auditoria')
 
     def log_event(self, event_type: str, payload: Dict[str, Any], user_id: Optional[Any] = None) -> str:
         """
@@ -45,7 +49,8 @@ class AuditoriaService:
         event_data = {
             'tipo_evento': event_type,
             'descricao': payload.get('descricao') or f"Evento {event_type} registrado",
-            'dados_novos': payload,
+            'dados_anteriores': payload.get('dados_anteriores'),
+            'dados_novos': payload.get('dados_novos', payload),
             'usuario_id': db_user_id,
             'entidade_afetada': entidade,
             'registro_id': db_registro_id

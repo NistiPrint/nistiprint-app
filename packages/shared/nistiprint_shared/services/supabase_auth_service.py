@@ -35,7 +35,10 @@ class SupabaseAuthService:
         """
         try:
             # Sign in with email and password
-            response = self.client.auth.sign_in_with_password({
+            # Auth clients keep mutable session state. Create one per login so
+            # concurrent requests never overwrite a different user's token.
+            client = create_client(self.supabase_url, self.supabase_key)
+            response = client.auth.sign_in_with_password({
                 "email": email,
                 "password": password
             })
@@ -50,6 +53,56 @@ class SupabaseAuthService:
         except Exception as e:
             print(f"Authentication failed: {e}")
             return None
+
+    def create_user(self, email: str, password: str, name: str):
+        """Create a confirmed account through the server-only Auth Admin API."""
+        response = self.client.auth.admin.create_user({
+            'email': email,
+            'password': password,
+            'email_confirm': True,
+            'user_metadata': {'name': name},
+        })
+        user = getattr(response, 'user', None)
+        if not user:
+            raise RuntimeError('Supabase Auth não retornou a conta criada.')
+        return user
+
+    def find_user_by_email(self, email: str):
+        """Find one existing Auth identity so interrupted provisioning can be resumed."""
+        normalized_email = str(email or '').strip().lower()
+        matches = []
+        per_page = 100
+        for page in range(1, 101):
+            users = self.client.auth.admin.list_users(page=page, per_page=per_page)
+            matches.extend(
+                user for user in users
+                if str(getattr(user, 'email', '') or '').strip().lower() == normalized_email
+            )
+            if len(matches) > 1 or len(users) < per_page:
+                break
+        if len(matches) > 1:
+            raise RuntimeError('Mais de uma identidade Auth corresponde ao e-mail informado.')
+        return matches[0] if matches else None
+
+    def update_user(self, auth_user_id: str, attributes: Dict):
+        response = self.client.auth.admin.update_user_by_id(auth_user_id, attributes)
+        user = getattr(response, 'user', None)
+        if not user:
+            raise RuntimeError('Supabase Auth não confirmou a atualização da conta.')
+        return user
+
+    def delete_user(self, auth_user_id: str):
+        self.client.auth.admin.delete_user(auth_user_id)
+
+    def change_password(self, email: str, current_password: str, new_password: str):
+        client = create_client(self.supabase_url, self.supabase_key)
+        signed_in = client.auth.sign_in_with_password({
+            'email': email,
+            'password': current_password,
+        })
+        if not getattr(signed_in, 'user', None):
+            raise ValueError('A senha atual está incorreta.')
+        client.auth.update_user({'password': new_password})
 
     def sign_up(self, email: str, password: str, user_metadata: Optional[Dict] = None) -> Optional[Dict]:
         """
