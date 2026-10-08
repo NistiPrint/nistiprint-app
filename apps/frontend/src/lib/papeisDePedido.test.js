@@ -249,6 +249,60 @@ test('usa o numero do pedido no cabecalho quando o Mercado Livre nao tem pacote'
 });
 
 
+test('combina pedidos do mesmo pacote Mercado Livre em uma unica folha', () => {
+  const html = montarDocumentoDePapeis([
+    {
+      id: 10,
+      numero: '9001',
+      marketplace_order_id: '9001',
+      pack_id: 'pack-42',
+      plataforma_slug: 'mercadolivre',
+      total_items: 2,
+      totalProdutos: 30,
+      itens: [{ descricao: 'Produto A', quantidade: 2, valor: 10 }],
+    },
+    {
+      id: 11,
+      numero: '9002',
+      marketplace_order_id: '9002',
+      pack_id: 'pack-42',
+      plataforma_slug: 'mercadolivre',
+      total_items: 1,
+      totalProdutos: 15,
+      itens: [{ descricao: 'Produto B', quantidade: 1, valor: 15 }],
+    },
+    {
+      id: 12,
+      numero: '9003',
+      marketplace_order_id: '9003',
+      pack_id: 'pack-43',
+      plataforma_slug: 'mercadolivre',
+      total_items: 1,
+      totalProdutos: 20,
+      itens: [{ descricao: 'Produto C', quantidade: 1, valor: 20 }],
+    },
+  ]);
+
+  assert.equal((html.match(/class="stamp-card"/g) || []).length, 2);
+  assert.match(html, /<div>Pedido 9001<\/div>/);
+  assert.doesNotMatch(html, /Pedido 9002/);
+  assert.match(html, /Produto A[\s\S]*Produto B/);
+  assert.match(html, /<div>pack-42<\/div>/);
+  assert.match(html, /<div>pack-43<\/div>/);
+});
+
+
+test('nao combina pedidos ML sem pacote nem pedidos de outros canais', () => {
+  const html = montarDocumentoDePapeis([
+    { id: 1, numero: '100', plataforma_slug: 'mercadolivre', pack_id: null, itens: [] },
+    { id: 2, numero: '200', plataforma_slug: 'shopee', pack_id: 'mesmo-valor', itens: [] },
+    { id: 3, numero: '201', plataforma_slug: 'shopee', pack_id: 'mesmo-valor', itens: [] },
+  ]);
+
+  assert.equal((html.match(/class="stamp-card"/g) || []).length, 3);
+});
+
+
 test('personalizacao pendente omite nomes, iniciais e mensagem de comprador', () => {
   const html = montarDocumentoDePapeis([{
     id: 4,

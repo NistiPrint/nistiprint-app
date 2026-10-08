@@ -224,6 +224,36 @@ function cartaoHtml(order) {
     </div>`;
 }
 
+function combinarPedidosDoMesmoPacote(orders) {
+  const grupos = new Map();
+  const resultado = [];
+  for (const order of orders) {
+    const packId = order.plataforma_slug === 'mercadolivre' && order.pack_id
+      ? String(order.pack_id)
+      : null;
+    if (!packId) {
+      resultado.push(order);
+      continue;
+    }
+    const existente = grupos.get(packId);
+    if (!existente) {
+      const combinado = { ...order, itens: [...(order.itens || [])], pedidosAssociados: [order.numero || order.marketplace_order_id || order.id || 'N/A'] };
+      grupos.set(packId, combinado);
+      resultado.push(combinado);
+      continue;
+    }
+    existente.itens.push(...(order.itens || []));
+    existente.pedidosAssociados.push(order.numero || order.marketplace_order_id || order.id || 'N/A');
+    existente.total_items = (Number(existente.total_items) || 0) + (Number(order.total_items) || 0);
+    existente.totalProdutos = (Number(existente.totalProdutos) || 0) + (Number(order.totalProdutos) || 0);
+    existente.personalizacao_pendente = Boolean(existente.personalizacao_pendente || order.personalizacao_pendente);
+    existente.mensagem_comprador = [existente.mensagem_comprador, order.mensagem_comprador]
+      .filter((mensagem, indice, mensagens) => mensagem && mensagens.indexOf(mensagem) === indice)
+      .join(' · ');
+  }
+  return resultado;
+}
+
 // CSS transcrito do legado (`results.html`, `printBlingData`).
 const ESTILO = `
   *{box-sizing:border-box}
@@ -259,8 +289,9 @@ const ESTILO = `
 
 /** Monta o documento completo dos papeis. Exportado para poder ser testado. */
 export function montarDocumentoDePapeis(orders) {
+  const pedidosParaImpressao = combinarPedidosDoMesmoPacote(orders || []);
   return `<!doctype html><html><head><meta charset="utf-8" /><title>Papeis dos Pedidos</title>
-    <style>${ESTILO}</style></head><body>${orders.map(cartaoHtml).join('')}</body></html>`;
+    <style>${ESTILO}</style></head><body>${pedidosParaImpressao.map(cartaoHtml).join('')}</body></html>`;
 }
 
 /**
@@ -293,5 +324,5 @@ export async function imprimirPapeisDePedido(pedidoIds, options) {
   iframe.contentDocument.write(montarDocumentoDePapeis(orders));
   iframe.contentDocument.close();
 
-  return { total: orders.length, blocked };
+  return { total: combinarPedidosDoMesmoPacote(orders).length, blocked };
 }
