@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from nistiprint_shared.database.database import db
 from nistiprint_shared.database.supabase_db_service import get_current_database_mode
 from nistiprint_shared.models.permissao import Recurso, PermissaoSetor
@@ -85,17 +87,13 @@ class PermissaoService:
             if usuario.get('is_admin'):
                 return True
             
-            sector_name = usuario.get('setores', {}).get('nome') if usuario.get('setores') else None
-            if sector_name == 'Administrativo':
-                return True
-
             # Check specific permission
             res_perm = supabase_db.execute_with_retry(
                 supabase_db.table('permissoes_setor')
                 .select("*, recursos!inner(nome)")
                 .eq('setor_id', usuario['setor_id'])
                 .eq('recursos.nome', recurso_nome)
-                .single()
+                .maybe_single()
             )
             permissao = res_perm.data
             if not permissao:
@@ -114,7 +112,7 @@ class PermissaoService:
             if not usuario or not usuario.ativo:
                 return False
 
-            if usuario.is_admin or (usuario.setor and usuario.setor.nome == 'Administrativo'):
+            if usuario.is_admin:
                 return True
 
             recurso = Recurso.query.filter_by(nome=recurso_nome).first()
@@ -134,6 +132,64 @@ class PermissaoService:
             if acao == 'editar': return permissao.pode_editar
             if acao == 'excluir': return permissao.pode_excluir
             return False
+
+    def get_demand_permissions(self, setor_id: int):
+        """Return demand fields/actions assigned to a sector ID."""
+        if not setor_id:
+            return {'fields': [], 'actions': []}
+        if get_current_database_mode().name == 'SUPABASE':
+            from nistiprint_shared.database.supabase_db_service import supabase_db
+            response = supabase_db.execute_with_retry(
+                supabase_db.table('permissoes_demanda_setor')
+                .select('campos_editaveis,acoes_permitidas')
+                .eq('setor_id', int(setor_id))
+            )
+            row = (response.data or [None])[0]
+            if not row:
+                return {'fields': [], 'actions': []}
+            return {
+                'fields': row.get('campos_editaveis') or [],
+                'actions': row.get('acoes_permitidas') or [],
+            }
+        from nistiprint_shared.models.permissao import PermissaoDemandaSetor
+        row = PermissaoDemandaSetor.query.filter_by(setor_id=int(setor_id)).first()
+        if not row:
+            return {'fields': [], 'actions': []}
+        return {'fields': row.campos_editaveis or [], 'actions': row.acoes_permitidas or []}
+
+    def update_demand_permissions(self, setor_id: int, fields, actions):
+        allowed_fields = {
+            'capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
+            'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd',
+            'expedicao_miolos_retirados_qtd',
+        }
+        allowed_actions = {'delete_demand', 'finalize_item', 'collect_demand', 'revert_finalize_item'}
+        if not isinstance(fields, list) or not isinstance(actions, list):
+            raise ValueError('Campos e ações devem ser listas.')
+        fields = sorted(set(fields))
+        actions = sorted(set(actions))
+        if not set(fields).issubset(allowed_fields) or not set(actions).issubset(allowed_actions):
+            raise ValueError('A permissão contém campos ou ações desconhecidos.')
+        if get_current_database_mode().name == 'SUPABASE':
+            from nistiprint_shared.database.supabase_db_service import supabase_db
+            response = supabase_db.table('permissoes_demanda_setor').upsert({
+                'setor_id': int(setor_id),
+                'campos_editaveis': fields,
+                'acoes_permitidas': actions,
+                'updated_at': datetime.utcnow().isoformat(),
+            }, on_conflict='setor_id').execute()
+            if not response.data:
+                raise RuntimeError('Não foi possível salvar as permissões de demanda.')
+        else:
+            from nistiprint_shared.models.permissao import PermissaoDemandaSetor
+            row = PermissaoDemandaSetor.query.filter_by(setor_id=int(setor_id)).first()
+            if not row:
+                row = PermissaoDemandaSetor(setor_id=int(setor_id))
+                db.session.add(row)
+            row.campos_editaveis = fields
+            row.acoes_permitidas = actions
+            db.session.commit()
+        return {'fields': fields, 'actions': actions}
 
     def update_setor_permission(self, setor_id: int, recurso_nome: str, pode_ler=None, pode_criar=None, pode_editar=None, pode_excluir=None):
         """Update permissions for a sector and resource."""

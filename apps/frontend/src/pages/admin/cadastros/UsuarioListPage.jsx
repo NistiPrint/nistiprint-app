@@ -22,14 +22,18 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import UserService from '@/services/UserService';
-import { Edit, PlusCircle, Trash2, Users } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Edit, KeyRound, PlusCircle, Trash2, Users } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 function UsuarioListPage() {
   const [usuarios, setUsuarios] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [searchParams] = useSearchParams();
+  const filteredUsers = useMemo(() => searchParams.get('status') === 'pendente'
+    ? usuarios.filter((usuario) => usuario.ativo && !usuario.auth_user_id)
+    : usuarios, [usuarios, searchParams]);
 
   useEffect(() => {
     fetchUsuarios();
@@ -53,6 +57,22 @@ function UsuarioListPage() {
       fetchUsuarios(); // Refresh the list
     } catch (error) {
       toast.error('Erro ao deletar usuário');
+    }
+  };
+
+  const handleProvisionAccess = async (usuario) => {
+    const password = window.prompt(`Defina uma senha inicial para ${usuario.nome} (mínimo 8 caracteres):`);
+    if (!password) return;
+    if (password.length < 8) {
+      toast.error('A senha inicial deve ter ao menos 8 caracteres.');
+      return;
+    }
+    try {
+      await UserService.provisionAccess(usuario.id, password);
+      toast.success('Acesso regularizado. O usuário trocará a senha no próximo login.');
+      await fetchUsuarios();
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Não foi possível regularizar o acesso.');
     }
   };
 
@@ -83,12 +103,13 @@ function UsuarioListPage() {
                 <TableHead>Email</TableHead>
                 <TableHead>Setor</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Acesso</TableHead>
                 <TableHead>Admin</TableHead>
                 <TableHead className="text-right">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {usuarios.map((usuario) => (
+              {filteredUsers.map((usuario) => (
                 <TableRow key={usuario.id}>
                   <TableCell className="font-medium">{usuario.nome}</TableCell>
                   <TableCell>{usuario.email}</TableCell>
@@ -96,6 +117,11 @@ function UsuarioListPage() {
                   <TableCell>
                     <Badge variant={usuario.ativo ? 'default' : 'secondary'}>
                       {usuario.ativo ? 'Ativo' : 'Inativo'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={usuario.auth_user_id ? (usuario.must_change_password ? 'info' : 'success') : 'outline'}>
+                      {usuario.auth_user_id ? (usuario.must_change_password ? 'Troca obrigatória' : 'Configurado') : 'Acesso pendente'}
                     </Badge>
                   </TableCell>
                   <TableCell>
@@ -110,7 +136,12 @@ function UsuarioListPage() {
                           <Edit className="h-4 w-4" />
                         </Link>
                       </Button>
-                      <AlertDialog>
+                      {usuario.ativo && usuario.email.toLowerCase() !== 'admin@admin.com' && (
+                        <Button variant="outline" size="sm" aria-label={`${usuario.auth_user_id ? 'Redefinir senha de' : 'Regularizar acesso de'} ${usuario.nome}`} onClick={() => handleProvisionAccess(usuario)}>
+                          <KeyRound className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {usuario.email.toLowerCase() !== 'admin@admin.com' && <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button variant="outline" size="sm">
                             <Trash2 className="h-4 w-4" />
@@ -134,7 +165,7 @@ function UsuarioListPage() {
                             </AlertDialogAction>
                           </AlertDialogFooter>
                         </AlertDialogContent>
-                      </AlertDialog>
+                      </AlertDialog>}
                     </div>
                   </TableCell>
                 </TableRow>
@@ -142,9 +173,9 @@ function UsuarioListPage() {
             </TableBody>
           </Table>
 
-          {usuarios.length === 0 && (
+          {filteredUsers.length === 0 && (
             <div className="text-center py-8 text-muted-foreground">
-              Nenhum usuário cadastrado.
+              {searchParams.get('status') === 'pendente' ? 'Nenhum usuário com acesso pendente.' : 'Nenhum usuário cadastrado.'}
             </div>
           )}
         </CardContent>

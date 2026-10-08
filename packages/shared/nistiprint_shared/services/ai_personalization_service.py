@@ -1425,16 +1425,25 @@ def _process_single_order_sync(pedido_id: int, force: bool = False):
         }
 
 
-def create_processing_batch(pedido_ids: List[int], skipped=None):
-    batch_res = supabase_db.table("execucoes_ai_batch").insert({
+def create_processing_batch(pedido_ids: List[int], skipped=None, iniciado_por=None):
+    batch_data = {
         "pedido_ids": pedido_ids,
         "total": len(pedido_ids),
         "status": "PENDENTE",
-    }).execute()
+    }
+    if iniciado_por is not None:
+        batch_data["iniciado_por"] = str(iniciado_por)
+    batch_res = supabase_db.table("execucoes_ai_batch").insert(batch_data).execute()
     if not batch_res.data:
         raise RuntimeError("Falha ao criar batch de IA")
 
     batch_id = batch_res.data[0]["id"]
+    if iniciado_por is not None:
+        try:
+            from nistiprint_shared.services.async_operation_service import async_operation_service
+            async_operation_service.sync_ai_batch(batch_res.data[0])
+        except Exception:
+            logger.exception("Não foi possível registrar o lote de IA na central de atividade: %s", batch_id)
 
     # O insert acima E o enfileiramento: a partir daqui o trabalho existe e
     # esta registrado, e o Postgres e a unica fonte da verdade sobre ele.
@@ -1477,6 +1486,12 @@ def processar_batch_ia(self, batch_id: str):
         return
 
     supabase_db.table("execucoes_ai_batch").update({"status": "RODANDO"}).eq("id", batch_id).execute()
+    batch["status"] = "RODANDO"
+    try:
+        from nistiprint_shared.services.async_operation_service import async_operation_service
+        async_operation_service.sync_ai_batch(batch)
+    except Exception:
+        logger.exception("Não foi possível atualizar o acompanhamento do lote de IA %s", batch_id)
 
     for pedido_id in batch["pedido_ids"]:
         processar_pedido_ia.apply_async(
@@ -1523,6 +1538,20 @@ def processar_pedido_ia(self, batch_id: str, pedido_id: int):
             "p_sucesso": 1 if status in {"OK", "UP_TO_DATE"} else 0,
             "p_falha": 1 if status == "ERRO" else 0,
         }).execute()
+        try:
+            batch = (
+                supabase_db.table("execucoes_ai_batch")
+                .select("id,iniciado_por,pedido_ids,total,processados,sucesso,falha,status,criado_em,finalizado_em")
+                .eq("id", batch_id)
+                .maybe_single()
+                .execute()
+                .data
+            )
+            if batch and batch.get("iniciado_por"):
+                from nistiprint_shared.services.async_operation_service import async_operation_service
+                async_operation_service.sync_ai_batch(batch)
+        except Exception:
+            logger.exception("Não foi possível publicar progresso do lote de IA %s", batch_id)
 
 
 #: Um lote que nasceu ha menos que isso ainda pode estar a caminho do worker;
@@ -1566,7 +1595,7 @@ def recolher_lotes_ia_parados(self):
     limite_pendente = (agora - timedelta(seconds=LOTE_PENDENTE_TOLERANCIA_SEGUNDOS)).isoformat()
     pendentes = (
         supabase_db.table("execucoes_ai_batch")
-        .select("id,total,criado_em")
+        .select("id,total,criado_em,iniciado_por,processados,sucesso,falha,status,finalizado_em")
         .eq("status", "PENDENTE")
         .lt("criado_em", limite_pendente)
         .execute()
@@ -1588,6 +1617,13 @@ def recolher_lotes_ia_parados(self):
             # Outra varredura (ou o proprio worker) chegou primeiro.
             continue
 
+        lote["status"] = "RODANDO"
+        try:
+            from nistiprint_shared.services.async_operation_service import async_operation_service
+            async_operation_service.sync_ai_batch(lote)
+        except Exception:
+            logger.exception("Não foi possível retomar o acompanhamento do lote de IA %s", batch_id)
+
         if _tocar_campainha_do_batch(batch_id):
             retomados.append(batch_id)
         else:
@@ -1597,11 +1633,17 @@ def recolher_lotes_ia_parados(self):
             supabase_db.table("execucoes_ai_batch").update(
                 {"status": "PENDENTE"}
             ).eq("id", batch_id).execute()
+            lote["status"] = "PENDENTE"
+            try:
+                from nistiprint_shared.services.async_operation_service import async_operation_service
+                async_operation_service.sync_ai_batch(lote)
+            except Exception:
+                logger.exception("Não foi possível atualizar fila do lote %s", batch_id)
 
     limite_rodando = (agora - timedelta(seconds=LOTE_RODANDO_TOLERANCIA_SEGUNDOS)).isoformat()
     travados = (
         supabase_db.table("execucoes_ai_batch")
-        .select("id,total,processados,criado_em")
+        .select("id,total,processados,sucesso,falha,status,criado_em,finalizado_em,iniciado_por")
         .eq("status", "RODANDO")
         .lt("criado_em", limite_rodando)
         .execute()
@@ -1618,12 +1660,24 @@ def recolher_lotes_ia_parados(self):
                 "status": "CONCLUIDO",
                 "finalizado_em": agora.isoformat(),
             }).eq("id", lote["id"]).eq("status", "RODANDO").execute()
+            lote.update({"status": "CONCLUIDO", "finalizado_em": agora.isoformat()})
+            try:
+                from nistiprint_shared.services.async_operation_service import async_operation_service
+                async_operation_service.sync_ai_batch(lote)
+            except Exception:
+                logger.exception("Não foi possível finalizar acompanhamento do lote %s", lote["id"])
             continue
 
         supabase_db.table("execucoes_ai_batch").update({
             "status": "ERRO",
             "finalizado_em": agora.isoformat(),
         }).eq("id", lote["id"]).eq("status", "RODANDO").execute()
+        lote.update({"status": "ERRO", "finalizado_em": agora.isoformat()})
+        try:
+            from nistiprint_shared.services.async_operation_service import async_operation_service
+            async_operation_service.sync_ai_batch(lote)
+        except Exception:
+            logger.exception("Não foi possível registrar falha do lote %s", lote["id"])
         encerrados.append(lote["id"])
 
     if retomados or encerrados:
@@ -1663,7 +1717,7 @@ def processar_pendentes_agendado(self, limit=None):
     return {"success": success, "message": message, "total": total}
 
 
-def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False, integration_id=None):
+def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False, integration_id=None, iniciado_por=None):
     effective_limit = limit
     if limit in (0, "0", ""):
         effective_limit = None
@@ -1692,7 +1746,11 @@ def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False, inte
             "status": "up_to_date" if skipped else "empty",
         }
 
-    batch = create_processing_batch([row["id"] for row in candidates], skipped=skipped)
+    batch = create_processing_batch(
+        [row["id"] for row in candidates],
+        skipped=skipped,
+        iniciado_por=iniciado_por,
+    )
     if not batch.get("enfileirado"):
         # Sucesso, e nao erro: o lote esta registrado e sera processado. O que
         # muda e o "quando", e a mensagem precisa dizer isso — prometer inicio

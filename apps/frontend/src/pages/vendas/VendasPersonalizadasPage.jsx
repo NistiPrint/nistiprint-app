@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import OrderCard from '@/components/vendas/OrderCard';
 import OrderFilters from '@/components/vendas/OrderFilters';
 import { personalizadosService } from '@/services/personalizadosService';
+import { useAuth } from '@/contexts/AuthContext';
 import { ArrowLeft, Brain, ChevronDown, ChevronRight, Database, FileText, Flag, Loader2, RefreshCw, Settings, Terminal } from 'lucide-react';
 import { createElement, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
@@ -39,6 +40,7 @@ const hasNoName = (order) =>
   ) || ['no_personalization_found', 'NO_PERSONALIZATION_FOUND'].includes(order.ai_status);
 
 function VendasPersonalizadasPage() {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const params = useParams();
   const outletContext = useOutletContext() || {};
@@ -118,21 +120,6 @@ function VendasPersonalizadasPage() {
           setActiveAIBatch(null);
           fetchOrdersRef.current?.();
 
-          const successCount = Number(batch.sucesso || 0);
-          const errorCount = Number(batch.falha || 0);
-          if (batch.status === 'ERRO') {
-            toast.error(`Lote encerrado com erro: ${successCount} concluído(s), ${errorCount} falha(s).`, {
-              id: processToastRef.current || undefined,
-            });
-          } else if (errorCount > 0) {
-            toast.warning(`Extração concluída: ${successCount} OK, ${errorCount} com erro.`, {
-              id: processToastRef.current || undefined,
-            });
-          } else {
-            toast.success(`Extração concluída: ${successCount} pedido(s) processado(s).`, {
-              id: processToastRef.current || undefined,
-            });
-          }
           processToastRef.current = null;
           return;
         }
@@ -499,20 +486,22 @@ function VendasPersonalizadasPage() {
           {isProcessingLote ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Brain className="mr-2 h-4 w-4" />}
           {isProcessingLote ? (loteProgress || 'Processando...') : 'Extrair nomes pendentes'}
         </Button>
-        <Button
-          variant={opMode === 'legacy' ? 'destructive' : 'outline'}
-          onClick={toggleOpMode}
-          disabled={updatingMode || opMode === null}
-          className="gap-2"
-          title={`Fonte atual: ${opMode === 'legacy' ? 'MySQL (Legado)' : opMode === 'v2' ? 'Supabase (V2)' : 'Carregando...'} — Clique para alternar`}
-        >
-          <Database className={`h-4 w-4 ${updatingMode ? 'animate-pulse' : ''}`} />
-          {opMode === null ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <>Fonte: {opMode.toUpperCase()}</>
-          )}
-        </Button>
+        {user?.is_admin && (
+          <Button
+            variant={opMode === 'legacy' ? 'destructive' : 'outline'}
+            onClick={toggleOpMode}
+            disabled={updatingMode || opMode === null}
+            className="gap-2"
+            title={`Fonte atual: ${opMode === 'legacy' ? 'MySQL (Legado)' : opMode === 'v2' ? 'Supabase (V2)' : 'Carregando...'} — Clique para alternar`}
+          >
+            <Database className={`h-4 w-4 ${updatingMode ? 'animate-pulse' : ''}`} />
+            {opMode === null ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <>Fonte: {opMode.toUpperCase()}</>
+            )}
+          </Button>
+        )}
         {account?.name || 'Pedidos Shopee'}
       </h1>
 

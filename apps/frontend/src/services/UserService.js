@@ -24,6 +24,16 @@ const UserService = {
     }
   },
 
+  updateProfile: async (data) => {
+    const response = await api.patch('/current-user', data);
+    return response.data.usuario;
+  },
+
+  changePassword: async (data) => {
+    const response = await api.post('/change-password', data);
+    return response.data.usuario;
+  },
+
   // Gerenciamento de usuários
   getAll: async () => {
     const response = await api.get('/usuarios-setores/usuario');
@@ -37,7 +47,7 @@ const UserService = {
 
   create: async (userData) => {
     const response = await api.post('/usuarios-setores/usuario', userData);
-    return response.data.usuario;
+    return response.data;
   },
 
   update: async (id, userData) => {
@@ -48,7 +58,12 @@ const UserService = {
   delete: async (id) => {
     const response = await api.delete(`/usuarios-setores/usuario/${id}`);
     return response.data;
-  }
+  },
+
+  provisionAccess: async (id, senhaInicial) => {
+    const response = await api.post(`/usuarios-setores/usuario/${id}/access`, { senha_inicial: senhaInicial });
+    return response.data.usuario;
+  },
 };
 
 export default UserService;

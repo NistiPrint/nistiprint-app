@@ -363,6 +363,7 @@ celery_app = Celery(
         'tasks.bom_cost_tasks',
         'nistiprint_shared.services.bling_status_sync_service',
         'nistiprint_shared.services.ai_personalization_service',
+        'nistiprint_shared.services.nfe_emission_service',
         'nistiprint_shared.services.mercadolivre_personalization_worker',
         'nistiprint_shared.services.order_erp_reference_service',
         'nistiprint_shared.services.order_dispatch_deadline_service',

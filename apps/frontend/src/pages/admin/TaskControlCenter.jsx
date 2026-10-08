@@ -21,9 +21,10 @@ import {
   Zap
 } from 'lucide-react';
 import { useEffect, useState, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import FerramentasPage from './FerramentasPage';
+import { useAuth } from '@/contexts/AuthContext';
 
 /**
  * Converte o cron gravado no banco para o valor de um <input type="time">.
@@ -61,15 +62,37 @@ function descreverCron(cron) {
  * Centralized dashboard for Celery task management.
  * Consolidates scheduling, execution monitoring, and queue visualization.
  */
-function TaskControlCenter() {
+const AREA_TO_TAB = {
+  'visao-geral': 'overview', agendamentos: 'schedules', execucoes: 'logs',
+  filas: 'queue', manutencao: 'maintenance',
+};
+const TAB_TO_AREA = Object.fromEntries(Object.entries(AREA_TO_TAB).map(([area, tab]) => [tab, area]));
+
+function TaskControlCenter({ basePath = null }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const tabFromUrl = ['overview', 'schedules', 'logs', 'queue', 'maintenance'].includes(searchParams.get('aba')) ? searchParams.get('aba') : 'overview';
+  const { area } = useParams();
+  const navigate = useNavigate();
+  const { isAdmin, hasPermission } = useAuth();
+  const canViewGlobal = isAdmin() || hasPermission('central_operacoes', 'ler');
+  const tabFromUrl = AREA_TO_TAB[area] || (['overview', 'schedules', 'logs', 'queue', 'maintenance'].includes(searchParams.get('aba')) ? searchParams.get('aba') : 'overview');
   const [activeTab, setActiveTab] = useState(tabFromUrl);
   useEffect(() => { setActiveTab(tabFromUrl); }, [tabFromUrl]);
   const changeTab = (value) => {
     setActiveTab(value);
-    setSearchParams((current) => { const next = new URLSearchParams(current); next.set('aba', value); return next; });
+    if (basePath && TAB_TO_AREA[value]) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('aba');
+      navigate({ pathname: `${basePath}/${TAB_TO_AREA[value]}`, search: next.toString() ? `?${next}` : '' });
+    } else {
+      setSearchParams((current) => { const next = new URLSearchParams(current); next.set('aba', value); return next; });
+    }
   };
+  const visibleTabs = [
+    ...(canViewGlobal ? ['overview'] : []),
+    ...(isAdmin() ? ['schedules'] : []),
+    ...(canViewGlobal ? ['logs', 'queue'] : []),
+    ...(isAdmin() ? ['maintenance'] : []),
+  ];
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [reprocessing, setReprocessing] = useState(false);
@@ -417,18 +440,18 @@ function TaskControlCenter() {
       </div>
 
       <Tabs value={activeTab} onValueChange={changeTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-2 sm:grid-cols-5">
-          <TabsTrigger value="overview"><Activity className="w-4 h-4 mr-2" /> Visão geral</TabsTrigger>
-          <TabsTrigger value="schedules">
+        <TabsList className="grid w-full" style={{ gridTemplateColumns: `repeat(${visibleTabs.length}, minmax(0, 1fr))` }}>
+          {canViewGlobal && <TabsTrigger value="overview"><Activity className="w-4 h-4 mr-2" /> Visão geral</TabsTrigger>}
+          {isAdmin() && <TabsTrigger value="schedules">
             <Clock className="w-4 h-4 mr-2" /> Agendamentos
-          </TabsTrigger>
-          <TabsTrigger value="logs">
+          </TabsTrigger>}
+          {canViewGlobal && <TabsTrigger value="logs">
             <Activity className="w-4 h-4 mr-2" /> Execuções
-          </TabsTrigger>
-          <TabsTrigger value="queue">
+          </TabsTrigger>}
+          {canViewGlobal && <TabsTrigger value="queue">
             <Zap className="w-4 h-4 mr-2" /> Fila em Tempo Real
-          </TabsTrigger>
-          <TabsTrigger value="maintenance"><Settings className="w-4 h-4 mr-2" />Manutenção</TabsTrigger>
+          </TabsTrigger>}
+          {isAdmin() && <TabsTrigger value="maintenance"><Settings className="w-4 h-4 mr-2" />Manutenção</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4 mt-6">
@@ -624,9 +647,9 @@ function TaskControlCenter() {
               <StatCard title="Cancelados" value={stats.cancelled} color="gray" />
             </div>
             <div className="flex flex-col gap-2">
-              <Button size="sm" variant="outline" onClick={() => confirmReprocess('events')} disabled={reprocessing}>
+              {isAdmin() && <Button size="sm" variant="outline" onClick={() => confirmReprocess('events')} disabled={reprocessing}>
                 <Zap className={`h-4 w-4 mr-2 ${reprocessing ? 'animate-pulse' : ''}`} /> Eventos
-              </Button>
+              </Button>}
             </div>
           </div>
 

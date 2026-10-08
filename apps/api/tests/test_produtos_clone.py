@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from flask import Flask
+from flask import Flask, jsonify
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -14,6 +14,7 @@ from nistiprint_shared.database.supabase_db_service import supabase_db  # noqa: 
 
 with patch.object(supabase_db, 'table', return_value=MagicMock()):
     import routes.produtos_api as produtos_api  # noqa: E402
+    import routes.produtos_base as produtos_base  # noqa: E402
 
 
 class DatabaseError(Exception):
@@ -28,6 +29,17 @@ class TestProdutosClone(unittest.TestCase):
         app.config['TESTING'] = True
         app.register_blueprint(produtos_api.produtos_api_bp)
         self.client = app.test_client()
+        self.permission_patch = patch.object(produtos_base, 'require_request_permission', return_value=None)
+        self.permission_patch.start()
+
+    def tearDown(self):
+        self.permission_patch.stop()
+
+    def test_clone_exige_permissao_de_criacao(self):
+        with patch.object(produtos_base, 'require_request_permission', side_effect=lambda *_: (jsonify({'error': 'Acesso negado.'}), 403)) as authorize:
+            response = self.client.post('/api/v2/produtos/433/clone', json={'new_sku': 'NOVO'})
+        self.assertEqual(response.status_code, 403)
+        authorize.assert_called_once_with('produtos', 'criar')
 
     def test_clone_retorna_produto_e_id_para_redirecionamento(self):
         cloned = {'id': 901, 'sku': 'NOVO', 'status': 'rascunho'}

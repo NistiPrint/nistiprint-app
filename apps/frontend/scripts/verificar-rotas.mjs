@@ -29,7 +29,6 @@ const ROTAS_SEM_MENU = new Set([
   '/producao/demanda/prioridade',
   '/producao/demanda/calendario',
   '/estoque/dashboard',
-  '/configuracoes/demanda-permissions',
   // Cadastros acessados pela área recolhível de Contas e integrações.
   '/cadastros/canal-venda',
   '/cadastros/plataforma',
@@ -38,6 +37,10 @@ const ROTAS_SEM_MENU = new Set([
   // Aba interna do hub de personalizados, sem item de menu independente.
   '/vendas/personalizadas/mercadolivre',
   '/relatorios/index',
+  // Rotas de compatibilidade que redirecionam favoritos antigos.
+  '/sistema/*',
+  '/relatorios/auditoria',
+  '/admin/utilitarios/tasks',
   // Raizes de layout: o filho index redireciona, ninguem aterrissa aqui.
   '/vendas',
   '/cadastros',
@@ -89,18 +92,34 @@ function lerRotas(origem) {
 }
 
 function lerHrefs(origem) {
-  return [...new Set([...origem.matchAll(/href:\s*'([^']+)'/g)].map((m) => m[1]))];
+  return [...new Set([...origem.matchAll(/href:\s*'([^']+)'/g)].map((m) => m[1].split(/[?#]/, 1)[0]))];
 }
 
 const rotas = lerRotas(readFileSync(join(raiz, 'src/App.jsx'), 'utf8'));
 const hrefs = lerHrefs(readFileSync(join(raiz, 'src/navigation.js'), 'utf8'));
+
+function correspondeRota(route, href) {
+  const segmentos = route.split('/').filter(Boolean);
+  let pattern = '^';
+  for (const segmento of segmentos) {
+    if (segmento.startsWith(':') && segmento.endsWith('?')) {
+      pattern += '(?:/[^/]+)?';
+    } else if (segmento.startsWith(':')) {
+      pattern += '/[^/]+';
+    } else {
+      pattern += `/${segmento.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}`;
+    }
+  }
+  pattern += '/?$';
+  return new RegExp(pattern).test(href);
+}
 
 const dinamica = (r) => r.includes(':');
 // Telas de criacao sao abertas pelo botao da listagem correspondente.
 const ehFormularioDeCriacao = (r) => /\/(novo|nova|new)$/.test(r);
 const rotasFixas = rotas.filter((r) => !dinamica(r) && !ehFormularioDeCriacao(r));
 
-const linksQuebrados = hrefs.filter((h) => !rotas.includes(h));
+const linksQuebrados = hrefs.filter((h) => !rotas.some((r) => correspondeRota(r, h)));
 const rotasOrfas = rotasFixas.filter((r) => !hrefs.includes(r) && !ROTAS_SEM_MENU.has(r));
 const permissoesObsoletas = [...ROTAS_SEM_MENU].filter((r) => !rotasFixas.includes(r));
 

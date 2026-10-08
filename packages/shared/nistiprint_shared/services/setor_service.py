@@ -20,6 +20,10 @@ class SetorService:
         setor = Setor.query.filter_by(id=setor_id, ativo=True).first()
         return setor.to_dict() if setor else None
 
+    def get_by_id_including_inactive(self, setor_id: int):
+        setor = Setor.query.filter_by(id=setor_id).first()
+        return setor.to_dict() if setor else None
+
     def create(self, setor_data):
         """Create a new setor."""
         # Check if name already exists
@@ -64,6 +68,17 @@ class SetorService:
         setor = Setor.query.filter_by(id=setor_id).first()
         if not setor:
             raise ValueError(f"Setor com ID '{setor_id}' não encontrado")
+
+        if setor_data.get('ativo') is False:
+            if get_current_database_mode().name == 'SUPABASE':
+                from nistiprint_shared.database.supabase_db_service import supabase_db
+                active_users = (supabase_db.table('usuarios').select('id', count='exact', head=True)
+                                .eq('setor_id', int(setor_id)).eq('ativo', True).execute())
+                has_active_users = int(getattr(active_users, 'count', 0) or 0) > 0
+            else:
+                has_active_users = hasattr(setor, 'usuarios') and any(usuario.ativo for usuario in setor.usuarios)
+            if has_active_users:
+                raise ValueError(f"Não é possível desativar setor '{setor.nome}' enquanto houver usuários ativos vinculados.")
 
         # Check if name conflicts with another setor
         if 'nome' in setor_data:
@@ -113,9 +128,14 @@ class SetorService:
         if not setor:
             raise ValueError(f"Setor com ID '{setor_id}' não encontrado")
 
-        # Check if there are users in this setor
-        if hasattr(setor, 'usuarios') and setor.usuarios:
-            raise ValueError(f"Não é possível excluir setor '{setor.nome}' pois existem usuários vinculados a ele")
+        if get_current_database_mode().name == 'SUPABASE':
+            from nistiprint_shared.database.supabase_db_service import supabase_db
+            active_users = (supabase_db.table('usuarios').select('id', count='exact', head=True)
+                            .eq('setor_id', int(setor_id)).eq('ativo', True).execute())
+            if int(getattr(active_users, 'count', 0) or 0) > 0:
+                raise ValueError(f"Não é possível desativar setor '{setor.nome}' enquanto houver usuários ativos vinculados.")
+        elif hasattr(setor, 'usuarios') and any(usuario.ativo for usuario in setor.usuarios):
+            raise ValueError(f"Não é possível desativar setor '{setor.nome}' enquanto houver usuários ativos vinculados.")
 
         setor.ativo = False
 

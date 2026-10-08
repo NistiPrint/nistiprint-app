@@ -14,6 +14,11 @@ class Notificacao(db.Model):
     data_envio = db.Column(db.DateTime, default=datetime.utcnow)
     data_visualizacao = db.Column(db.DateTime)
     dados_adicionais = db.Column(db.JSON)
+    owner_user_id = db.Column(db.Integer)
+    operacao_id = db.Column(db.String(36))
+    event_type = db.Column(db.String(100))
+    read_at = db.Column(db.DateTime)
+    terminal_notification = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

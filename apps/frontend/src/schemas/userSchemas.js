@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const userSchema = z.object({
   nome: z.string().min(1, { message: 'Nome é obrigatório' }),
   email: z.string().email({ message: 'Email inválido' }),
-  senha: z.string().min(6, { message: 'Senha deve ter pelo menos 6 caracteres' }).optional(),
+  senha: z.string().min(8, { message: 'Senha deve ter pelo menos 8 caracteres' }),
   setor_id: z.union([z.string(), z.number()]).transform((val) => {
     if (typeof val === 'string' && val === '') return undefined;
     return typeof val === 'string' ? parseInt(val) : val;

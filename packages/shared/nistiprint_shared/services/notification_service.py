@@ -1,8 +1,10 @@
 import json
+import os
 import threading
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from flask import jsonify
+import redis
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.auditoria_service import auditoria_service
 
@@ -16,7 +18,38 @@ class NotificationService:
     def __init__(self):
         self.clients = {}  # Dictionary to track connected clients
         self.lock = threading.Lock()  # Thread lock for thread-safe operations
-        self.notifications_table = supabase_db.table('notificacoes')
+        self.redis = redis.Redis.from_url(
+            os.environ.get('CELERY_BROKER_URL', 'redis://redis-celery:6379/0'),
+            decode_responses=True,
+            socket_connect_timeout=1,
+            socket_timeout=1,
+        )
+
+    @property
+    def notifications_table(self):
+        return supabase_db.table('notificacoes')
+
+    @staticmethod
+    def _user_channel(user_id: str) -> str:
+        return f"np:notifications:user:{user_id}"
+
+    def publish_user_event(self, user_id: str, event: Dict[str, Any]):
+        """Fan out an event to the authenticated user's SSE connections."""
+        try:
+            self.redis.publish(self._user_channel(str(user_id)), json.dumps(event, default=str))
+        except Exception as exc:
+            # The database remains the source of truth; the client refreshes its
+            # snapshot after reconnecting if Redis is temporarily unavailable.
+            print(f"Could not publish notification event for user {user_id}: {exc}")
+
+    def subscribe_user(self, user_id: str, sector: str | None = None):
+        """Subscribe to personal events plus legacy sector and global notices."""
+        subscription = self.redis.pubsub(ignore_subscribe_messages=True)
+        channels = [self._user_channel(str(user_id)), "np:notifications:all"]
+        if sector:
+            channels.append(f"np:notifications:sector:{sector}")
+        subscription.subscribe(*channels)
+        return subscription
         
     def register_client(self, user_id: str, sector: str, sse_connection):
         """
@@ -64,6 +97,17 @@ class NotificationService:
             target_sector: Optional sector to target (None for all sectors)
             exclude_user_id: Optional user ID to exclude from broadcast (typically the user who triggered the action)
         """
+        event = {
+            **notification_data,
+            "target_sector": target_sector,
+            "exclude_user_id": str(exclude_user_id) if exclude_user_id else None,
+        }
+        channel = f"np:notifications:sector:{target_sector}" if target_sector else "np:notifications:all"
+        try:
+            self.redis.publish(channel, json.dumps(event, default=str))
+        except Exception as exc:
+            print(f"Could not publish broadcast notification: {exc}")
+
         with self.lock:
             for user_id, client_info in list(self.clients.items()):
                 # Skip if this is the user who triggered the action
@@ -79,7 +123,7 @@ class NotificationService:
                     connection = client_info['connection']
                     if connection:
                         # Format as SSE message
-                        sse_message = f"data: {json.dumps(notification_data)}\n\n"
+                        sse_message = f"data: {json.dumps(event)}\n\n"
                         connection.put(sse_message)
                 except Exception as e:
                     # Remove client if connection fails
@@ -95,17 +139,7 @@ class NotificationService:
             user_id: The ID of the target user
             notification_data: The notification data to send
         """
-        with self.lock:
-            if user_id in self.clients:
-                try:
-                    client_info = self.clients[user_id]
-                    connection = client_info['connection']
-                    if connection:
-                        sse_message = f"data: {json.dumps(notification_data)}\n\n"
-                        connection.put(sse_message)
-                except Exception as e:
-                    print(f"Error sending notification to user {user_id}: {str(e)}")
-                    del self.clients[user_id]
+        self.publish_user_event(user_id, notification_data)
     
     def get_connected_users_count(self) -> int:
         """
@@ -145,17 +179,47 @@ class NotificationService:
         Returns:
             ID of the created notification
         """
+        payload = payload or {}
+        now = datetime.utcnow().isoformat()
+        title = str(payload.get('title') or payload.get('titulo') or 'Notificação')
+        message = str(payload.get('message') or payload.get('mensagem') or '')
+        operation_id = payload.get('operation_id') or payload.get('operacao_id')
         notification_data = {
+            'owner_user_id': int(user_id),
+            'operacao_id': operation_id,
             'event_type': event_type,
-            'user_id': user_id,
-            'payload': payload,
-            'target_sector': target_sector,
-            'timestamp': datetime.utcnow().isoformat(),
-            'created_at': datetime.utcnow().isoformat()
+            'terminal_notification': bool(
+                operation_id and event_type in {'operation.completed', 'operation.failed'}
+            ),
+            'titulo': title[:255],
+            'mensagem': message,
+            'tipo': payload.get('tipo') or 'informativo',
+            'nivel_critica': payload.get('nivel_critica') or 'MEDIA',
+            'destinatarios': {'user_id': int(user_id), 'target_sector': target_sector},
+            'lida': False,
+            'data_envio': now,
+            'dados_adicionais': payload,
+            'created_at': now,
+            'updated_at': now,
         }
 
-        # Store in Supabase
-        response = self.notifications_table.insert(notification_data).execute()
+        if operation_id and event_type in {'operation.completed', 'operation.failed'}:
+            existing = (self.notifications_table.select('id').eq('operacao_id', operation_id)
+                        .eq('owner_user_id', int(user_id)).eq('event_type', event_type)
+                        .limit(1).execute().data or [])
+            if existing:
+                return str(existing[0]['id'])
+
+        try:
+            response = self.notifications_table.insert(notification_data).execute()
+        except Exception:
+            if operation_id and event_type in {'operation.completed', 'operation.failed'}:
+                existing = (self.notifications_table.select('id').eq('operacao_id', operation_id)
+                            .eq('owner_user_id', int(user_id)).eq('event_type', event_type)
+                            .limit(1).execute().data or [])
+                if existing:
+                    return str(existing[0]['id'])
+            raise
         if response.data:
             notification_id = str(response.data[0]['id'])
         else:
@@ -173,6 +237,15 @@ class NotificationService:
             },
             user_id=user_id
         )
+
+        self.publish_user_event(user_id, {
+            'type': 'notification.created',
+            'notification': {
+                **notification_data,
+                'id': notification_id,
+                'read_at': None,
+            },
+        })
 
         return notification_id
 

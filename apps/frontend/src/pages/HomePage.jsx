@@ -15,32 +15,32 @@ function HomePage() {
       href: '/produtos',
       icon: Boxes,
       description: 'Gerencie seu catálogo',
-      color: 'from-blue-500 to-blue-600',
-      bgColor: 'bg-blue-50'
+      color: 'text-brand-aqua',
+      bgColor: 'bg-brand-aqua-soft'
     },
     {
       title: 'Vendas',
       href: '/vendas',
       icon: ShoppingCart,
       description: 'Acompanhe os pedidos',
-      color: 'from-green-500 to-green-600',
-      bgColor: 'bg-green-50'
+      color: 'text-brand-blue',
+      bgColor: 'bg-brand-blue-soft'
     },
     {
       title: 'Estoque',
       href: '/estoque',
       icon: Warehouse,
       description: 'Controle de inventário',
-      color: 'from-orange-500 to-orange-600',
-      bgColor: 'bg-orange-50'
+      color: 'text-amber-700',
+      bgColor: 'bg-brand-yellow-soft'
     },
     {
       title: 'Produção',
       href: '/producao',
       icon: TrendingUp,
       description: 'Painel operacional',
-      color: 'from-purple-500 to-purple-600',
-      bgColor: 'bg-purple-50'
+      color: 'text-brand-pink',
+      bgColor: 'bg-brand-pink-soft'
     }
   ];
 
@@ -63,12 +63,12 @@ function HomePage() {
           const Icon = action.icon;
           return (
             <Link key={index} to={action.href}>
-              <Card className="group hover:shadow-lg transition-all duration-300 hover:-translate-y-1 border-muted/50 h-full">
+              <Card className="group h-full border-border/80 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md">
                 <CardHeader className="pb-3">
                   <div
                     className={`w-12 h-12 rounded-xl ${action.bgColor} flex items-center justify-center mb-3 group-hover:scale-110 transition-transform duration-300`}
                   >
-                    <Icon className={`h-6 w-6 ${action.color.replace('from-', 'text-').split(' ')[0]}`} />
+                    <Icon className={`h-6 w-6 ${action.color}`} />
                   </div>
                   <CardTitle className="text-lg">{action.title}</CardTitle>
                   <CardDescription className="text-sm">

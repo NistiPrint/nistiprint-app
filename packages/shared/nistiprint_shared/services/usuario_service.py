@@ -3,13 +3,35 @@ from nistiprint_shared.database.supabase_db_service import get_current_database_
 from nistiprint_shared.models.usuario import Usuario
 from nistiprint_shared.models.setor import Setor
 from datetime import datetime
+from sqlalchemy import func
 
 class UsuarioService:
     """Service for managing usuários (users)."""
 
+    def _matching_email_ids(self, email, *, active=None):
+        normalized_email = str(email or '').strip().lower()
+        if get_current_database_mode().name == 'SUPABASE':
+            from nistiprint_shared.database.supabase_db_service import supabase_db
+            query = supabase_db.table('usuarios').select('id').ilike('email', normalized_email)
+            if active is not None:
+                query = query.eq('ativo', bool(active))
+            return [int(row['id']) for row in (query.execute().data or []) if row.get('id') is not None]
+        query = Usuario.query.filter(func.lower(Usuario.email) == normalized_email)
+        if active is not None:
+            query = query.filter(Usuario.ativo == bool(active))
+        return [int(row.id) for row in query.all()]
+
+    def _active_admin_count(self):
+        if get_current_database_mode().name == 'SUPABASE':
+            from nistiprint_shared.database.supabase_db_service import supabase_db
+            result = (supabase_db.table('usuarios').select('id', count='exact', head=True)
+                      .eq('ativo', True).eq('is_admin', True).execute())
+            return int(getattr(result, 'count', 0) or 0)
+        return Usuario.query.filter_by(ativo=True, is_admin=True).count()
+
     def get_all(self):
-        """Get all usuários ordered by name."""
-        usuarios = Usuario.query.filter_by(ativo=True).order_by(Usuario.nome).all()
+        """Get all usuários, including inactive accounts, ordered by name."""
+        usuarios = Usuario.query.order_by(Usuario.nome).all()
         results = [usuario.to_dict_without_password() for usuario in usuarios]
         
         # In Supabase mode, the relationship might not be loaded, so we manually populate setor_nome
@@ -46,6 +68,17 @@ class UsuarioService:
 
         return data
 
+    def get_by_id_including_inactive(self, usuario_id: int):
+        usuario = Usuario.query.filter_by(id=usuario_id).first()
+        if not usuario:
+            return None
+        data = usuario.to_dict_without_password()
+        if get_current_database_mode().name == 'SUPABASE' and not data.get('setor_nome'):
+            setor = Setor.query.get(data['setor_id'])
+            if setor:
+                data['setor_nome'] = setor.nome
+        return data
+
     def _populate_setor_nomes(self, usuario_dicts):
         """Helper to populate setor_nome for a list of user dictionaries."""
         if not usuario_dicts:
@@ -60,25 +93,20 @@ class UsuarioService:
 
     def get_by_email(self, email: str):
         """Get usuário by email."""
-        usuario = Usuario.query.filter_by(email=email, ativo=True).first()
-        if not usuario:
+        normalized_email = str(email or '').strip().lower()
+        matching_ids = self._matching_email_ids(normalized_email, active=True)
+        if len(matching_ids) != 1:
             return None
-            
-        data = usuario.to_dict_without_password()
+        data = self.get_by_id(matching_ids[0])
+        if not data:
+            return None
         
-        # In Supabase mode, the relationship might not be loaded, so we manually populate setor_nome
-        if get_current_database_mode().name == 'SUPABASE' and not data.get('setor_nome'):
-            setor = Setor.query.get(data['setor_id'])
-            if setor:
-                data['setor_nome'] = setor.nome
-        elif not data.get('setor_nome') and usuario.setor:
-            data['setor_nome'] = usuario.setor.nome
-            
         return data
 
     def authenticate(self, email: str, senha: str):
         """Authenticate user by email and password."""
-        usuario_model = Usuario.query.filter_by(email=email, ativo=True).first()
+        normalized_email = str(email or '').strip().lower()
+        usuario_model = Usuario.query.filter(func.lower(Usuario.email) == normalized_email, Usuario.ativo.is_(True)).first()
         if usuario_model and usuario_model.check_senha(senha):
             # Update last login
             usuario_model.last_login = datetime.utcnow()
@@ -102,10 +130,10 @@ class UsuarioService:
 
     def create(self, usuario_data):
         """Create a new usuário."""
+        normalized_email = str(usuario_data.get('email') or '').strip().lower()
         # Check if email already exists
-        existing = Usuario.query.filter_by(email=usuario_data['email']).first()
-        if existing:
-            raise ValueError(f"Usuário com email '{usuario_data['email']}' já existe")
+        if self._matching_email_ids(normalized_email):
+            raise ValueError(f"Usuário com email '{normalized_email}' já existe")
 
         # Check if setor exists
         setor = Setor.query.filter_by(id=usuario_data['setor_id'], ativo=True).first()
@@ -114,11 +142,14 @@ class UsuarioService:
 
         usuario = Usuario(
             nome=usuario_data['nome'],
-            email=usuario_data['email'],
+            email=normalized_email,
             setor_id=usuario_data['setor_id'],
             ativo=usuario_data.get('ativo', True),
             is_admin=usuario_data.get('is_admin', False)
         )
+        if usuario_data.get('auth_user_id'):
+            usuario.auth_user_id = usuario_data['auth_user_id']
+        usuario.must_change_password = bool(usuario_data.get('must_change_password', False))
 
         usuario.set_senha(usuario_data['senha'])
 
@@ -155,13 +186,29 @@ class UsuarioService:
         if not usuario:
             raise ValueError(f"Usuário com ID '{usuario_id}' não encontrado")
 
+        is_default_admin = str(usuario.email or '').strip().lower() == 'admin@admin.com'
+        next_email = str(usuario_data.get('email', usuario.email) or '').strip().lower()
+        if is_default_admin and (
+            usuario_data.get('ativo', usuario.ativo) is False
+            or usuario_data.get('is_admin', usuario.is_admin) is False
+            or next_email != 'admin@admin.com'
+        ):
+            raise ValueError('A conta administrativa padrão deve permanecer ativa, administrativa e com o e-mail padrão.')
+        loses_admin_access = bool(usuario.is_admin) and (
+            usuario_data.get('ativo', usuario.ativo) is False
+            or usuario_data.get('is_admin', usuario.is_admin) is False
+        )
+        if loses_admin_access and self._active_admin_count() <= 1:
+            raise ValueError('Não é possível desativar ou rebaixar o último administrador ativo.')
+
         # Check if email conflicts with another usuário
         if 'email' in usuario_data:
-            existing = Usuario.query.filter_by(email=usuario_data['email']).filter(Usuario.id != usuario_id).first()
-            if existing:
-                raise ValueError(f"Usuário com email '{usuario_data['email']}' já existe")
+            normalized_email = str(usuario_data['email'] or '').strip().lower()
+            existing_ids = self._matching_email_ids(normalized_email)
+            if any(existing_id != int(usuario_id) for existing_id in existing_ids):
+                raise ValueError(f"Usuário com email '{normalized_email}' já existe")
 
-            usuario.email = usuario_data['email']
+            usuario.email = normalized_email
 
         # Check if setor exists
         if 'setor_id' in usuario_data:
@@ -180,6 +227,13 @@ class UsuarioService:
         if 'is_admin' in usuario_data:
             usuario.is_admin = usuario_data['is_admin']
 
+        if 'auth_user_id' in usuario_data:
+            usuario.auth_user_id = usuario_data['auth_user_id']
+        if 'must_change_password' in usuario_data:
+            usuario.must_change_password = usuario_data['must_change_password']
+        if 'session_version' in usuario_data:
+            usuario.session_version = usuario_data['session_version']
+
         # Update password if provided
         if 'senha' in usuario_data and usuario_data['senha']:
             usuario.set_senha(usuario_data['senha'])
@@ -192,7 +246,7 @@ class UsuarioService:
             from nistiprint_shared.database.supabase_db_service import supabase_db
             # Convert the usuario object to a dictionary with only the fields to update
             update_data = {}
-            for attr_name in ['nome', 'email', 'setor_id', 'ativo', 'is_admin', 'senha_hash', 'last_login']:
+            for attr_name in ['nome', 'email', 'setor_id', 'ativo', 'is_admin', 'senha_hash', 'last_login', 'auth_user_id', 'must_change_password', 'session_version']:
                 if hasattr(usuario, attr_name):
                     attr_value = getattr(usuario, attr_name)
                     if attr_value is not None:
@@ -218,6 +272,13 @@ class UsuarioService:
         if not usuario:
             raise ValueError(f"Usuário com ID '{usuario_id}' não encontrado")
 
+        if str(usuario.email or '').strip().lower() == 'admin@admin.com':
+            raise ValueError('A conta administrativa padrão deve permanecer ativa.')
+        if usuario.is_admin and self._active_admin_count() <= 1:
+            raise ValueError('Não é possível desativar o último administrador ativo.')
+
+        usuario.session_version = int(usuario.session_version or 0) + 1
+
         usuario.ativo = False
 
         # Only commit if using SQLAlchemy mode, not Supabase
@@ -226,7 +287,10 @@ class UsuarioService:
         else:
             # For Supabase, update the record directly
             from nistiprint_shared.database.supabase_db_service import supabase_db
-            result = supabase_db.update('usuarios', usuario.id, {'ativo': False})
+            result = supabase_db.update('usuarios', usuario.id, {
+                'ativo': False,
+                'session_version': usuario.session_version,
+            })
             if result:
                 usuario.ativo = result.get('ativo', False)
 

@@ -49,7 +49,7 @@ function UsuarioFormPage() {
       setLoadingInitialData(true);
       try {
         // Fetch setores
-        const setoresData = await SectorService.getAll();
+        const setoresData = usuarioId ? await SectorService.getAll() : await SectorService.getActive();
         setSetores(setoresData);
 
         if (usuarioId) {
@@ -58,7 +58,7 @@ function UsuarioFormPage() {
             nome: usuarioResponse.nome || '',
             email: usuarioResponse.email || '',
             setor_id: usuarioResponse.setor_id || '',
-            ativo: usuarioResponse.ativo || true,
+            ativo: usuarioResponse.ativo ?? true,
             is_admin: usuarioResponse.is_admin || false,
           });
         }
@@ -79,8 +79,12 @@ function UsuarioFormPage() {
         await UserService.update(parseInt(usuarioId), data);
         toast.success('Usuário atualizado com sucesso!');
       } else {
-        await UserService.create(data);
-        toast.success('Usuário criado com sucesso!');
+        const result = await UserService.create(data);
+        if (result.access_pendente) {
+          toast.warning(result.message || 'Usuário criado com acesso pendente de regularização.');
+        } else {
+          toast.success(result.message || 'Usuário criado com sucesso!');
+        }
       }
 
       navigate('..');
@@ -165,7 +169,7 @@ function UsuarioFormPage() {
                     <SelectContent>
                       {setores.map((setor) => (
                         <SelectItem key={setor.id} value={setor.id.toString()}>
-                          {setor.nome}
+                          {setor.nome}{setor.ativo ? '' : ' — inativo'}
                         </SelectItem>
                       ))}
                     </SelectContent>

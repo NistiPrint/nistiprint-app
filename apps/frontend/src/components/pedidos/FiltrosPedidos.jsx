@@ -7,7 +7,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { CalendarRange, ChevronDown, ChevronUp, Filter, Loader2, Search, Store, Truck, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
-import FiltrosContextuais from './FiltrosContextuais';
 
 const toISODate = (date) => {
   const copy = new Date(date);
@@ -142,45 +141,14 @@ export default function FiltrosPedidos({ filtros, onFiltroChange, onLimparFiltro
     { label: 'Hoje + Amanhã', start: addDays(0), end: addDays(1) },
   ];
 
-  const handleFiltroContextual = (filtroContextual) => {
-    const novosFiltros = {};
-    const origemKey = filtroContextual.origem_pedido_key
-      || (filtroContextual.marketplace_integration_id != null
-        ? `source:${filtroContextual.marketplace_integration_id}`
-        : null);
-
-    switch (filtroContextual.tipo) {
-      case 'canal':
-        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id ?? null;
-        novosFiltros.origem_pedido_key = origemKey;
-        break;
-      case 'flex':
-        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id ?? null;
-        novosFiltros.origem_pedido_key = origemKey;
-        novosFiltros.is_flex = true;
-        break;
-      case 'sem_demanda':
-        novosFiltros.canal_venda_id = filtroContextual.canal_venda_id ?? null;
-        novosFiltros.origem_pedido_key = origemKey;
-        novosFiltros.has_demanda = false;
-        break;
-      default:
-        break;
-    }
-
-    onFiltroChange(novosFiltros);
-  };
-
   return (
     <>
-      <FiltrosContextuais onFiltroContextual={handleFiltroContextual} />
-
-      <Card className="mb-4">
-        <div className="p-4 border-b space-y-4">
+      <Card className="mb-4 border-muted/60 bg-muted/10 shadow-none">
+        <div className="px-4 py-3 border-b border-muted/60 space-y-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
-              <span className="font-medium text-sm">Filtros</span>
+              <span className="text-sm text-muted-foreground">Filtros</span>
               {hasFiltros && (
                 <Badge variant="secondary" className="text-xs">
                   {activeFilters.length} ativo{activeFilters.length > 1 ? 's' : ''}

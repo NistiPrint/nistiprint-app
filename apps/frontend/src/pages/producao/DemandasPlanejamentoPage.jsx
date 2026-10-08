@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAuth } from '@/contexts/AuthContext'
+import usePermissionsHook from '@/hooks/usePermissions'
 import { useRealtimeDemandas } from '@/lib/hooks/useRealtimeDemandas'
 import { deriveDemandFlow, DEMANDA_FLOW_OPTIONS } from '@/lib/demandaFlow'
 import {
@@ -45,15 +46,17 @@ function normalizeModalidade(value) {
 
 export default function DemandasPlanejamentoPage() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const { user } = useAuth()
+  const { user, hasPermission } = useAuth()
+  const { canExecuteAction } = usePermissionsHook()
 
   const userSetor = user?.setor_nome || (user?.is_admin ? 'Administrador' : null)
-  const normalizedUserSetor = (userSetor || '').trim().toLowerCase()
-  const canUseAdminDemandActions = user?.is_admin === true || normalizedUserSetor === 'administrativo'
-  const canUseExpeditionDemandActions =
-    canUseAdminDemandActions ||
-    normalizedUserSetor === 'expediÃ§Ã£o' ||
-    normalizedUserSetor === 'expedicao'
+  const canUseAdminDemandActions = user?.is_admin === true || hasPermission('demanda_producao', 'editar')
+  const canDeleteDemand = user?.is_admin === true || (hasPermission('demanda_producao', 'excluir') && canExecuteAction('delete_demand'))
+  const canCancelDemand = canDeleteDemand
+  const canUseExpeditionDemandActions = user?.is_admin === true || (
+    hasPermission('demanda_producao', 'editar') &&
+    (canExecuteAction('finalize_item') || canExecuteAction('collect_demand'))
+  )
 
   // 'planning' era a aba de sugestoes automaticas de lote. Um link antigo com
   // ?tab=planning cai em 'active' em vez de numa aba que nao existe mais.
@@ -284,7 +287,7 @@ export default function DemandasPlanejamentoPage() {
   // pedidos vira historico, as baixas de coleta sao estornadas e os pedidos
   // voltam para a torre. Deletar so serve para lote que nao deixou rastro.
   const handleCancelDemand = useCallback(async (id) => {
-    if (!canUseAdminDemandActions) return toast.error('Sem permissao.')
+    if (!canCancelDemand) return toast.error('Sem permissao.')
     const motivo = window.prompt('Cancelar a demanda e devolver os pedidos para a torre de despacho.\n\nMotivo (opcional):')
     if (motivo === null) return
     const response = await fetch(`/api/v2/demanda_producao/${id}/cancelar`, {
@@ -299,13 +302,13 @@ export default function DemandasPlanejamentoPage() {
       return
     }
     toast.error(data.message || 'Nao foi possivel cancelar.')
-  }, [canUseAdminDemandActions, refresh])
+  }, [canCancelDemand, refresh])
 
   // A rota podia responder 200 com success:false; checar so response.ok mostrava
   // "deletada" para uma demanda que continuava viva. Agora o 409 de demanda com
   // estoque oferece o cancelamento em vez de deixar o operador sem saida.
   const handleDeleteDemand = useCallback(async (id) => {
-    if (!canUseAdminDemandActions) return toast.error('Sem permissao.')
+    if (!canDeleteDemand) return toast.error('Sem permissao.')
     if (!window.confirm('Deletar permanentemente? Os pedidos voltam para a torre de despacho.')) return
     const response = await fetch(`/api/v2/demanda_producao/${id}`, { method: 'DELETE' })
     const data = await response.json().catch(() => ({}))
@@ -320,7 +323,7 @@ export default function DemandasPlanejamentoPage() {
       return
     }
     toast.error(data.message || 'Nao foi possivel deletar.')
-  }, [canUseAdminDemandActions, refresh, handleCancelDemand])
+  }, [canDeleteDemand, refresh, handleCancelDemand])
 
   const changeTab = (tab) => {
     setSelectedDemandIds([])
@@ -358,9 +361,11 @@ export default function DemandasPlanejamentoPage() {
           </div>
 
           <div className='flex flex-wrap gap-3'>
-            <Link to='/producao/demanda/nova'>
-              <Button>Nova demanda</Button>
-            </Link>
+            {user?.is_admin || hasPermission('demanda_producao', 'criar') ? (
+              <Link to='/producao/demanda/nova'>
+                <Button>Nova demanda</Button>
+              </Link>
+            ) : null}
             <Button variant='outline' onClick={() => setIsCollectedDemandsModalOpen(true)}>
               <Truck className='mr-2 h-4 w-4' />
               Coletas
@@ -380,7 +385,7 @@ export default function DemandasPlanejamentoPage() {
           </div>
         </div>
 
-        {['Administrativo', 'CPD'].includes(userSetor) && (
+        {hasPermission('demanda_producao', 'ler') && (
           <SummaryCards dashboardSummary={dashboardSummary} totals={totals} />
         )}
 
@@ -499,6 +504,7 @@ export default function DemandasPlanejamentoPage() {
                 handleCollectDemand={handleCollectDemand}
                 handleDeleteDemand={handleDeleteDemand}
                 handleCancelDemand={handleCancelDemand}
+                canCancelDemand={canCancelDemand}
                 handlePublishDemand={handlePublishDemand}
                 isAdmin={user?.is_admin === true}
                 isSelected={selectedDemandIds.includes(demanda.id)}
@@ -538,4 +544,3 @@ export default function DemandasPlanejamentoPage() {
     </TooltipProvider>
   )
 }
-

@@ -65,3 +65,13 @@ class PermissaoSetor(db.Model):
             'created_at': format_datetime(self.created_at),
             'updated_at': format_datetime(self.updated_at)
         }
+
+
+class PermissaoDemandaSetor(db.Model):
+    __tablename__ = 'permissoes_demanda_setor'
+
+    setor_id = db.Column(db.Integer, db.ForeignKey('setores.id'), primary_key=True)
+    campos_editaveis = db.Column(db.JSON, nullable=False, default=list)
+    acoes_permitidas = db.Column(db.JSON, nullable=False, default=list)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

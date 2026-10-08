@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import GerencialHistorico from './components/GerencialHistorico'
 import ProtectedRoute from './components/ProtectedRoute'
 import MainLayout from './components/layout/MainLayout'
@@ -39,16 +39,13 @@ import UomConversionsListPage from './pages/admin/cadastros/UomConversionsListPa
 import UsuarioFormPage from './pages/admin/cadastros/UsuarioFormPage'
 import UsuarioListPage from './pages/admin/cadastros/UsuarioListPage'
 import ConfiguracoesProducaoPage from './pages/admin/configuracoes/ConfiguracoesProducaoPage'
-import PermissoesDemandaPage from './pages/admin/configuracoes/PermissoesDemandaPage'
 import HistoricoColetasPage from './pages/admin/relatorios/HistoricoColetasPage'
 import HistoricoProducaoPage from './pages/admin/relatorios/HistoricoProducaoPage'
 import MonitoramentoEstoquePage from './pages/admin/relatorios/MonitoramentoEstoquePage'
 import RelatoriosIndexPage from './pages/admin/relatorios/RelatoriosIndexPage'
 import WebhooksPage from './pages/admin/relatorios/WebhooksPage'
 // AIDashboardPage removido — duplica VendasPersonalizadasPage
-import TaskControlCenter from './pages/admin/TaskControlCenter'
 import { AILogsPage } from './pages/ai/AILogsPage'
-import AuditoriaPage from './pages/auditoria/AuditoriaPage'
 import InteligenciaArtificialPage from './pages/configuracoes/InteligenciaArtificialPage'
 import TorreDespachoPage from './pages/despacho/TorreDespachoPage'
 import EscopoDespachoPage from './pages/despacho/EscopoDespachoPage'
@@ -85,6 +82,29 @@ import MercadoLivrePersonalizacoesPage from './pages/vendas/MercadoLivrePersonal
 import MercadoLivrePersonalizacaoConfigPage from './pages/admin/configuracoes/MercadoLivrePersonalizacaoConfigPage'
 import IntegrationAccountSettingsPage from './pages/admin/configuracoes/IntegrationAccountSettingsPage'
 import PerfilPage from './pages/PerfilPage'
+import OperationsCenterPage from './pages/operations/OperationsCenterPage'
+
+function LegacyTaskRedirect() {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const tab = params.get('aba');
+  const areas = { overview: 'visao-geral', logs: 'execucoes', queue: 'filas', schedules: 'agendamentos', maintenance: 'manutencao' };
+  const area = areas[tab] || 'visao-geral';
+  params.delete('aba');
+  return <Navigate to={{ pathname: `/monitoramento/operacoes/${area}`, search: params.toString() ? `?${params}` : '', hash: location.hash }} replace />;
+}
+
+function LegacyAccessRedirect() {
+  const location = useLocation();
+  const suffix = location.pathname.replace(/^\/sistema\/?/, '') || 'usuarios';
+  const pathname = `/configuracoes/acessos/${suffix}`;
+  return <Navigate to={{ pathname, search: location.search, hash: location.hash }} replace />;
+}
+
+function LegacyAuditRedirect() {
+  const location = useLocation();
+  return <Navigate to={{ pathname: '/monitoramento/operacoes/auditoria', search: location.search, hash: location.hash }} replace />;
+}
 
 function App() {
   return (
@@ -107,12 +127,12 @@ function App() {
           <Route path='perfil' element={<PerfilPage />} />
 
           {/* 1. Produtos (Dados Mestres) */}
-          <Route path='produtos' element={<ProdutoListPage />} />
-          <Route path='produtos/novo' element={<ProdutoFormPage />} />
-          <Route path='produtos/:id/editar' element={<ProdutoFormPage />} />
+          <Route path='produtos' element={<ProtectedRoute permission={{ a: 'produtos', I: 'ler' }}><ProdutoListPage /></ProtectedRoute>} />
+          <Route path='produtos/novo' element={<ProtectedRoute permission={{ a: 'produtos', I: 'criar' }}><ProdutoFormPage /></ProtectedRoute>} />
+          <Route path='produtos/:id/editar' element={<ProtectedRoute permission={{ a: 'produtos', I: 'editar' }}><ProdutoFormPage /></ProtectedRoute>} />
 
           {/* 2. Comercial (Vendas e Pedidos) */}
-          <Route path='vendas' element={<VendasPage />}>
+          <Route path='vendas' element={<ProtectedRoute permission={{ a: 'vendas', I: 'ler' }}><VendasPage /></ProtectedRoute>}>
             <Route index element={<Navigate to='pedidos' replace />} />
             <Route path='personalizadas' element={<PersonalizacoesLayoutPage />}>
               <Route index element={<VendasPersonalizadasPage />} />
@@ -124,20 +144,20 @@ function App() {
             <Route path='pedidos/:id' element={<PedidoDetalhePage />} />
           </Route>
 
-          <Route path='despacho' element={<TorreDespachoPage />} />
-          <Route path='despacho/escopo' element={<EscopoDespachoPage />} />
-          <Route path='despacho/plano-impressao' element={<PlanoImpressaoPage />} />
-          <Route path='despacho/arquivo' element={<ArquivoDespachoPage />} />
+          <Route path='despacho' element={<ProtectedRoute permission={{ a: 'vendas', I: 'ler' }}><TorreDespachoPage /></ProtectedRoute>} />
+          <Route path='despacho/escopo' element={<ProtectedRoute permission={{ a: 'vendas', I: 'ler' }}><EscopoDespachoPage /></ProtectedRoute>} />
+          <Route path='despacho/plano-impressao' element={<ProtectedRoute permission={{ a: 'vendas', I: 'ler' }}><PlanoImpressaoPage /></ProtectedRoute>} />
+          <Route path='despacho/arquivo' element={<ProtectedRoute permission={{ a: 'vendas', I: 'ler' }}><ArquivoDespachoPage /></ProtectedRoute>} />
           <Route path='consolidar' element={<Navigate to='/despacho' replace />} />
           <Route path='consolidar/rascunhos' element={<Navigate to='/despacho' replace />} />
           <Route path='consolidar/revisao' element={<Navigate to='/despacho' replace />} />
 
           {/* 3. Industrial (Produção) */}
-          <Route path='producao' element={<ProducaoPage />}>
-            <Route index element={<PainelProducaoPage />} />
+          <Route path='producao' element={<ProtectedRoute permission={{ a: 'producao', I: 'ler' }}><ProducaoPage /></ProtectedRoute>}>
+            <Route index element={<ProtectedRoute requireAdmin><PainelProducaoPage /></ProtectedRoute>} />
             <Route path='foco' element={<FocoProducaoPage />} />
-            <Route path='resumo' element={<ResumoProducaoPage />} />
-            <Route path='demanda' element={<DemandaListPage />} />
+            <Route path='resumo' element={<ProtectedRoute requireAdmin><ResumoProducaoPage /></ProtectedRoute>} />
+            <Route path='demanda' element={<ProtectedRoute permission={{ a: 'demanda_producao', I: 'ler' }}><DemandaListPage /></ProtectedRoute>} />
             {/* Rotas dos rascunhos automaticos (aposentados em 27/08/2026).
                 Redirecionam em vez de sumir: um link salvo ou uma aba aberta
                 nao pode terminar em 404, que parece indisponibilidade
@@ -145,19 +165,19 @@ function App() {
                 Torre de Despacho. */}
             <Route path='demanda/rascunhos' element={<Navigate to='/despacho' replace />} />
             <Route path='impressao' element={<CapaPrintQueuePage />} />
-            <Route path='demanda/nova' element={<NovaDemandaPage />} />
-            <Route path='demanda/:id/editar' element={<NovaDemandaPage />} />
+            <Route path='demanda/nova' element={<ProtectedRoute permission={{ a: 'demanda_producao', I: 'criar' }}><NovaDemandaPage /></ProtectedRoute>} />
+            <Route path='demanda/:id/editar' element={<ProtectedRoute permission={{ a: 'demanda_producao', I: 'editar' }}><NovaDemandaPage /></ProtectedRoute>} />
             <Route
               path='demanda/prioridade'
-              element={<DemandaPrioridadePage />}
+              element={<ProtectedRoute permission={{ a: 'demanda_producao', I: 'editar' }}><DemandaPrioridadePage /></ProtectedRoute>}
             />
             <Route
               path='demanda/calendario'
-              element={<DemandaCalendarPage />}
+              element={<ProtectedRoute permission={{ a: 'demanda_producao', I: 'ler' }}><DemandaCalendarPage /></ProtectedRoute>}
             />
             <Route
               path='demanda/:id/dashboard'
-              element={<DemandaDashboardPage />}
+              element={<ProtectedRoute permission={{ a: 'demanda_producao', I: 'ler' }}><DemandaDashboardPage /></ProtectedRoute>}
             />
             <Route
               path='miolos'
@@ -171,7 +191,7 @@ function App() {
           </Route>
 
           {/* 4. Logística (Estoque) */}
-          <Route path='estoque'>
+          <Route path='estoque' element={<ProtectedRoute permission={{ a: 'estoque', I: 'ler' }}><Outlet /></ProtectedRoute>}>
             <Route index element={<EstoqueDashboardPage />} />
             <Route path='dashboard' element={<EstoqueDashboardPage />} />
             <Route path='historico' element={<EstoqueHistoricoPage />} />
@@ -251,27 +271,6 @@ function App() {
             />
           </Route>
 
-          {/* 6. Administração e Sistema */}
-          <Route
-            path='sistema'
-            element={
-              <ProtectedRoute requireAdmin={true}>
-                <SistemaPage />
-              </ProtectedRoute>
-            }>
-            <Route index element={<Navigate to='/sistema/usuarios' replace />} />
-            <Route path='usuarios' element={<UsuarioListPage />} />
-            <Route path='usuarios/novo' element={<UsuarioFormPage />} />
-            <Route path='usuarios/:id/editar' element={<UsuarioFormPage />} />
-            <Route path='setores' element={<SetorListPage />} />
-            <Route path='setores/novo' element={<SetorFormPage />} />
-            <Route path='setores/:id/editar' element={<SetorFormPage />} />
-            <Route
-              path='setores/:id/permissoes'
-              element={<SetorPermissoesPage />}
-            />
-          </Route>
-
           <Route
             path='configuracoes'
             element={
@@ -281,10 +280,17 @@ function App() {
             }>
             <Route index element={<ConfiguracoesHomePage />} />
             <Route path='producao' element={<ConfiguracoesProducaoPage />} />
-            <Route
-              path='demanda-permissions'
-              element={<PermissoesDemandaPage />}
-            />
+            <Route path='demanda-permissions' element={<Navigate to='/configuracoes/acessos/setores' replace />} />
+            <Route path='acessos' element={<SistemaPage />}>
+              <Route index element={<Navigate to='/configuracoes/acessos/usuarios' replace />} />
+              <Route path='usuarios' element={<UsuarioListPage />} />
+              <Route path='usuarios/novo' element={<UsuarioFormPage />} />
+              <Route path='usuarios/:id/editar' element={<UsuarioFormPage />} />
+              <Route path='setores' element={<SetorListPage />} />
+              <Route path='setores/novo' element={<SetorFormPage />} />
+              <Route path='setores/:id/editar' element={<SetorFormPage />} />
+              <Route path='setores/:id/permissoes' element={<SetorPermissoesPage />} />
+            </Route>
             <Route path='ia' element={<InteligenciaArtificialPage />} />
             <Route path='personalizacao/mercadolivre' element={<MercadoLivrePersonalizacaoConfigPage />} />
             <Route path='personalizacao/mercadolivre/:integration_id' element={<MercadoLivrePersonalizacaoConfigPage />} />
@@ -311,7 +317,7 @@ function App() {
           <Route
             path='relatorios'
             element={
-              <ProtectedRoute requireAdmin={true}>
+              <ProtectedRoute permission={{ a: 'relatorios', I: 'ler' }}>
                 <RelatoriosPage />
               </ProtectedRoute>
             }>
@@ -326,12 +332,16 @@ function App() {
             <Route path='fila-estoque' element={<Navigate to='/relatorios/monitoramento-estoque' replace />} />
             <Route path='monitoramento-estoque' element={<MonitoramentoEstoquePage />} />
             <Route path='webhooks' element={<WebhooksPage />} />
-            <Route path='auditoria' element={<AuditoriaPage />} />
             <Route path='gerencial-historico' element={<GerencialHistorico />} />
           </Route>
 
+          <Route path='sistema/*' element={<LegacyAccessRedirect />} />
+          <Route path='relatorios/auditoria' element={<LegacyAuditRedirect />} />
+
+          <Route path='monitoramento/operacoes/:area?' element={<OperationsCenterPage />} />
+
           {/* IA & Utilitários */}
-          <Route path='ai/logs' element={<AILogsPage />} />
+          <Route path='ai/logs' element={<ProtectedRoute requireAdmin><AILogsPage /></ProtectedRoute>} />
           <Route path='ai' element={<Navigate to='/vendas/personalizadas' replace />} />
 
           {/* Redirects for legacy routes */}
@@ -342,7 +352,7 @@ function App() {
             path='ferramentas'
             element={
               <ProtectedRoute requireAdmin={true}>
-                <Navigate to='/admin/utilitarios/tasks?aba=maintenance' replace />
+                <Navigate to='/monitoramento/operacoes/manutencao' replace />
               </ProtectedRoute>
             }
           />
@@ -356,14 +366,7 @@ function App() {
             }
           />
 
-          <Route
-            path='admin/utilitarios/tasks'
-            element={
-              <ProtectedRoute requireAdmin={true}>
-                <TaskControlCenter />
-              </ProtectedRoute>
-            }
-          />
+          <Route path='admin/utilitarios/tasks' element={<LegacyTaskRedirect />} />
         </Route>
       </Routes>
       <Toaster />
