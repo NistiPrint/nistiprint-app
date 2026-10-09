@@ -23,9 +23,11 @@ DEFAULT_MODEL = "gemini-2.0-flash"
 class GeminiProvider:
     name = "gemini"
 
-    def __init__(self, model: Optional[str] = None, api_key: Optional[str] = None):
+    def __init__(self, model: Optional[str] = None, api_key: Optional[str] = None,
+                 timeout: float = 60.0):
         self.model = model or DEFAULT_MODEL
         self._api_key = api_key or os.getenv("NISTIPRINT_AI_KEY")
+        self._timeout = max(1.0, float(timeout))
         self._client = None
 
     def _get_client(self):
@@ -40,7 +42,11 @@ class GeminiProvider:
         except Exception as exc:  # pragma: no cover - depende de ambiente
             raise AIProviderError(f"Falha ao importar cliente Gemini: {exc}") from exc
 
-        self._client = genai.Client(api_key=self._api_key)
+        from google.genai import types
+        self._client = genai.Client(
+            api_key=self._api_key,
+            http_options=types.HttpOptions(timeout=int(self._timeout * 1000)),
+        )
         return self._client
 
     def supports(self, model: str) -> bool:

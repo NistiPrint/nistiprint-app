@@ -185,11 +185,21 @@ def replay_retained_chat_events(self, limit: int = 500):
              retry_backoff=True, retry_backoff_max=600, max_retries=3)
 def process_personalization_batch(self, integration_id: int, batch_id: str):
     from nistiprint_shared.services.mercadolivre_personalization_service import process_batch
+    from nistiprint_shared.database.supabase_db_service import supabase_db
     integration_id = int(integration_id)
-    return _run_logged_task(
+    result = _run_logged_task(
         TASK_PROCESS_BATCH, self.request, "manual_or_scheduled",
         lambda: process_batch(integration_id, str(batch_id)), integration_id=integration_id,
     )
+    if result.get("status") in {"completed", "failed"}:
+        queued = (supabase_db.table("mercadolivre_personalization_batches").select("id")
+                  .eq("marketplace_integration_id", integration_id).eq("status", "PENDING")
+                  .order("created_at").limit(1).execute().data or [])
+        if queued:
+            process_personalization_batch.apply_async(
+                args=[integration_id, str(queued[0]["id"])], queue=QUEUE,
+            )
+    return result
 
 
 @shared_task(name=TASK_RUN_DUE, bind=True, acks_late=True,

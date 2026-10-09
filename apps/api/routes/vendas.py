@@ -53,6 +53,21 @@ def api_canal_venda_options():
 def api_personalizadas():
     try:
         mode = request.args.get('mode')
+        page = request.args.get('page', type=int)
+        page_size = request.args.get('page_size', default=20, type=int)
+        integration_id = request.args.get('integration_id', type=int)
+        if page is not None and mode != 'legacy':
+            if page < 1 or not 1 <= page_size <= 100:
+                return ApiResponse.error(message='page deve ser positivo e page_size entre 1 e 100', status_code=400)
+            result = orders_query_service.get_personalized_orders_page(
+                page=page, page_size=page_size,
+                search=request.args.get('search', ''),
+                ai_filter=request.args.get('ai_filter', ''),
+                chat_filter=request.args.get('chat_filter', ''),
+                integration_id=integration_id,
+                include_unassigned=request.args.get('include_unassigned') == 'true',
+            )
+            return ApiResponse.success(data=result)
         orders = orders_query_service.get_personalized_orders(mode=mode)
         # Wrap in a dict with 'bling_orders' key to maintain backward compatibility 
         # with the frontend if it expects { bling_orders: [...] } inside the data, 
@@ -78,7 +93,6 @@ def personalizadas():
         import traceback
         traceback.print_exc()
         return render_template('error.html', error=str(e)), 500
-
 
 
 

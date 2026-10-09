@@ -157,6 +157,17 @@ export function NotificationManager() {
           const operation = data.operation;
           if (!operation) return;
           setOperations((current) => [operation, ...current.filter((item) => item.id !== operation.id)]);
+          const operationSource = operation.origem_tipo || operation.referencia_tipo;
+          const integrationId = operation.dados_adicionais?.integration_id;
+          if (TERMINAL.has(operation.status) && operationSource === 'mercadolivre_personalization_batch') {
+            window.dispatchEvent(new CustomEvent('activity:mercadolivre-batch', {
+              detail: { integrationId, status: operation.status },
+            }));
+          } else if (TERMINAL.has(operation.status) && operationSource === 'ai_batch') {
+            window.dispatchEvent(new CustomEvent('activity:shopee-batch', {
+              detail: { integrationId, status: operation.status },
+            }));
+          }
           const operationFailed = operation.status === 'ERRO' || Number(operation.dados_adicionais?.falha || operation.dados_adicionais?.falhas || operation.dados_adicionais?.erro || 0) > 0;
           if (TERMINAL.has(operation.status) && !terminalToastIdsRef.current.has(operation.id)) {
             terminalToastIdsRef.current.add(operation.id);

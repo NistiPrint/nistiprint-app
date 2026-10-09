@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Textarea } from '@/components/ui/textarea';
 import { Brain, Flag, Loader2, RefreshCw, Settings } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 const apiRoot = '/api/v2/mercadolivre/integracoes';
@@ -90,15 +90,20 @@ const orderHasIdentifiedName = order => order.itens.some(item =>
 
 function AccountOrders({ integrationId }) {
   const navigate = useNavigate();
-  const [account, setAccount] = useState(null);
+  const outletContext = useOutletContext() || {};
+  const [account, setAccount] = useState(outletContext.account || null);
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [aiFilter, setAiFilter] = useState('');
   const [chatFilter, setChatFilter] = useState('');
-  const [visibleCount, setVisibleCount] = useState(20);
-  const [activeBatch, setActiveBatch] = useState(null);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState({ page: 1, page_size: 20, total: 0, has_next: false });
+  const [statusCounts, setStatusCounts] = useState({ pendente_ia: 0, com_chat: 0, sem_chat: 0, nome_identificado: 0, sem_nome: 0 });
+  const [submittingExtraction, setSubmittingExtraction] = useState(false);
   const [selectedChatOrder, setSelectedChatOrder] = useState(null);
   const [highlightedMessages, setHighlightedMessages] = useState([]);
   const [selectedOrderForLogs, setSelectedOrderForLogs] = useState(null);
@@ -106,85 +111,75 @@ function AccountOrders({ integrationId }) {
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [selectedOrderForFeedback, setSelectedOrderForFeedback] = useState(null);
   const [feedbackNotes, setFeedbackNotes] = useState('');
-  const storageKey = `mercadolivre-personalizacao:${integrationId}:batch`;
-
-  const refresh = useCallback(async () => {
-    const [accounts, result] = await Promise.all([
-      api('/personalizacoes'), api(`/${integrationId}/personalizados/pedidos?limit=5000`),
-    ]);
-    const selected = (accounts.accounts || []).find(row => String(row.integration_id) === String(integrationId));
-    if (!selected) throw new Error('Conta Mercado Livre não encontrada.');
-    setAccount(selected);
-    setOrders((result.orders || []).map(normalizeOrder));
-  }, [integrationId]);
-
-  useEffect(() => {
-    refresh().catch(err => setError(err.message)).finally(() => setLoading(false));
-    try { setActiveBatch(JSON.parse(localStorage.getItem(storageKey) || 'null')); } catch { setActiveBatch(null); }
-  }, [refresh, storageKey]);
+  const refresh = useCallback(async (signal) => {
+    const query = new URLSearchParams({ page: String(page), page_size: '20' });
+    if (debouncedSearch) query.set('search', debouncedSearch);
+    if (aiFilter) query.set('ai_filter', aiFilter);
+    if (chatFilter) query.set('chat_filter', chatFilter);
+    const result = await api(`/${integrationId}/personalizados/pedidos?${query}`, { signal });
+    setOrders(current => page === 1
+      ? (result.orders || []).map(normalizeOrder)
+      : [...new Map([...current, ...(result.orders || []).map(normalizeOrder)].map(order => [order.id, order])).values()]);
+    setPagination(result.pagination || { page, page_size: 20, total: 0, has_next: false });
+    if (result.status_counts) setStatusCounts(result.status_counts);
+    setError('');
+  }, [integrationId, page, debouncedSearch, aiFilter, chatFilter]);
 
   useEffect(() => {
-    if (!activeBatch?.batch_id || ['COMPLETED', 'FAILED'].includes(activeBatch.status)) return undefined;
-    const timer = setInterval(async () => {
-      try {
-        const current = await api(`/${integrationId}/personalizados/lotes/${activeBatch.batch_id}`);
-        setActiveBatch(current);
-        localStorage.setItem(storageKey, JSON.stringify(current));
-        if (['COMPLETED', 'FAILED'].includes(current.status)) {
-          await refresh();
-          if (current.status === 'FAILED') toast.error(`Extração concluída com ${current.falha || 0} falha(s).`);
-          else toast.success(`Extração concluída: ${current.sucesso || 0} pacote(s) processado(s).`);
-        }
-      } catch { /* Uma falha temporária não encerra o acompanhamento do lote. */ }
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [activeBatch, integrationId, refresh, storageKey]);
+    const timer = setTimeout(() => setDebouncedSearch(searchTerm), 300);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
 
-  const statusCounts = useMemo(() => {
-    const counts = { pendente_ia: 0, com_chat: 0, sem_chat: 0, nome_identificado: 0, sem_nome: 0 };
-    orders.forEach(order => {
-      if (order.needs_ai_processing) counts.pendente_ia += 1;
-      if (order.has_chat_messages) counts.com_chat += 1;
-      else counts.sem_chat += 1;
-      const rows = order.itens.flatMap(item => item.personalizations);
-      if (orderHasIdentifiedName(order)) counts.nome_identificado += 1;
-      if (rows.some(row => row.status === 'NO_PERSONALIZATION_FOUND' || row.status === 'no_personalization_found'
-        || (!row.customization_name && row.status === 'SUCCESS'))
-        || ['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(order.ai_status)) counts.sem_nome += 1;
+  useEffect(() => { setPage(1); }, [debouncedSearch, aiFilter, chatFilter]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+    setRefreshing(true);
+    refresh(controller.signal).catch(err => {
+      if (!cancelled && err.name !== 'AbortError') setError(err.message);
+    }).finally(() => {
+      if (cancelled) return;
+      setLoading(false);
+      setRefreshing(false);
     });
-    return counts;
-  }, [orders]);
+    return () => { cancelled = true; controller.abort(); };
+  }, [refresh, page, debouncedSearch, aiFilter, chatFilter]);
 
-  const filteredOrders = useMemo(() => orders.filter(order => {
-    const search = `${order.numero || ''} ${order.numeroLoja || ''} ${order.cliente_nome || ''}`.toLowerCase();
-    if (searchTerm && !search.includes(searchTerm.toLowerCase())) return false;
-    const rows = order.itens.flatMap(item => item.personalizations);
-    if (aiFilter === 'pendente_ia' && !order.needs_ai_processing) return false;
-    if (aiFilter === 'nome_identificado' && !orderHasIdentifiedName(order)) return false;
-    if (aiFilter === 'sem_nome' && !rows.some(row => ['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(row.status)
-      || (!row.customization_name && row.status === 'SUCCESS'))
-      && !['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(order.ai_status)) return false;
-    if (chatFilter === 'com_chat' && !order.has_chat_messages) return false;
-    if (chatFilter === 'sem_chat' && order.has_chat_messages) return false;
-    return true;
-  }), [orders, searchTerm, aiFilter, chatFilter]);
+  useEffect(() => {
+    if (outletContext.account) setAccount(outletContext.account);
+  }, [outletContext.account]);
+
+  useEffect(() => {
+    const onBatch = event => {
+      if (event.detail?.integrationId && String(event.detail.integrationId) !== String(integrationId)) return;
+      setPage(1);
+      refresh().catch(err => setError(err.message));
+    };
+    window.addEventListener('activity:mercadolivre-batch', onBatch);
+    window.addEventListener('online', onBatch);
+    return () => {
+      window.removeEventListener('activity:mercadolivre-batch', onBatch);
+      window.removeEventListener('online', onBatch);
+    };
+  }, [integrationId, refresh]);
+
+  const filteredOrders = orders;
 
   const startExtraction = async (pedidoIds, force = false) => {
-    if (activeBatch?.batch_id && !['COMPLETED', 'FAILED'].includes(activeBatch.status)) return;
+    if (submittingExtraction) return;
+    setSubmittingExtraction(true);
     try {
       const result = await api(`/${integrationId}/personalizados/extrair`, {
         method: 'POST', body: JSON.stringify({ ...(pedidoIds ? { pedido_ids: [pedidoIds] } : {}), force, limit: 50 }),
       });
       if (!result.batch_id) {
         toast.success(result.message || 'Não há pedidos pendentes para extrair.');
-        await refresh();
         return;
       }
-      const batch = { ...result, status: 'PENDING', processed: 0 };
-      setActiveBatch(batch);
-      localStorage.setItem(storageKey, JSON.stringify(batch));
-      toast.success(result.message || 'Extração iniciada.');
+      toast.success('Extração iniciada. Acompanhe o andamento no sininho.');
     } catch (err) { toast.error(err.message); }
+    finally { setSubmittingExtraction(false); }
   };
 
   const openChat = (_username, _orderNumber, order) => {
@@ -225,8 +220,7 @@ function AccountOrders({ integrationId }) {
     } catch (err) { toast.error(err.message); }
   };
 
-  if (loading) return <div className="flex justify-center p-8"><Loader2 className="h-8 w-8 animate-spin" /></div>;
-  if (error) return <p className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{error}</p>;
+  if (loading && !orders.length) return <div className="flex justify-center p-8"><Loader2 className="h-8 w-8 animate-spin" /></div>;
 
   return (
     <div className="space-y-5">
@@ -238,33 +232,34 @@ function AccountOrders({ integrationId }) {
         </div>
         <div className="flex flex-wrap gap-2">
           <Link className="rounded border px-3 py-2 text-sm" to={`/configuracoes/integracoes/${integrationId}/ia`}><Settings className="mr-1 inline h-4 w-4" />Configuração IA</Link>
-          <Button variant="outline" onClick={() => startExtraction(null, false)} disabled={!!activeBatch?.batch_id && !['COMPLETED', 'FAILED'].includes(activeBatch.status)}>
+          <Button variant="outline" onClick={() => startExtraction(null, false)} disabled={submittingExtraction}>
             <Brain className="mr-2 h-4 w-4" /> Extrair nomes pendentes
           </Button>
         </div>
       </div>
-      {activeBatch && <p className="rounded border p-3 text-sm">Lote {activeBatch.status} · {activeBatch.processed || 0}/{activeBatch.total || 0} pacotes · {activeBatch.sucesso || 0} OK · {activeBatch.falha || 0} falha(s)</p>}
+      {error && <p role="alert" className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{error} <Button variant="link" onClick={() => refresh().catch(err => setError(err.message))}>Tentar novamente</Button></p>}
+      {refreshing && orders.length > 0 && <p role="status" className="text-xs text-muted-foreground">Atualizando pedidos…</p>}
 
       <Card className="shadow-sm">
         <CardHeader className="pb-3"><CardTitle className="text-sm font-medium text-muted-foreground">Filtrar pedidos</CardTitle></CardHeader>
         <CardContent className="p-0">
-          <OrderFilters searchTerm={searchTerm} onSearchChange={value => { setSearchTerm(value); setVisibleCount(20); }}
-            aiFilter={aiFilter} onAiFilterChange={value => { setAiFilter(current => current === value ? '' : value); setVisibleCount(20); }}
-            chatFilter={chatFilter} onChatFilterChange={value => { setChatFilter(current => current === value ? '' : value); setVisibleCount(20); }}
+          <OrderFilters searchTerm={searchTerm} onSearchChange={setSearchTerm}
+            aiFilter={aiFilter} onAiFilterChange={value => setAiFilter(current => current === value ? '' : value)}
+            chatFilter={chatFilter} onChatFilterChange={value => setChatFilter(current => current === value ? '' : value)}
             statusCounts={statusCounts} />
           {!filteredOrders.length ? (
             <div className="py-12 text-center text-sm text-muted-foreground">Não há pedidos personalizados disponíveis para estes filtros.</div>
           ) : (
             <div className="space-y-4 bg-white p-4 md:p-6">
-              {filteredOrders.slice(0, visibleCount).map(order => (
+              {filteredOrders.map(order => (
                 <OrderCard key={order.id} order={order}
                   onOpenChat={openChat}
                   onOpenAiLogs={openLogs}
                   onProcessAI={(_externalId, force) => startExtraction(order.id, force)}
                   onReportProblem={(_externalId, selected) => { setFeedbackNotes(''); setSelectedOrderForFeedback(selected); }} />
               ))}
-              {filteredOrders.length > visibleCount && (
-                <div className="flex justify-center pt-3"><Button variant="outline" onClick={() => setVisibleCount(value => value + 20)}>Carregar mais ({filteredOrders.length - visibleCount} restantes)</Button></div>
+              {pagination.has_next && (
+                <div className="flex justify-center pt-3"><Button variant="outline" disabled={refreshing} onClick={() => setPage(value => value + 1)}>Carregar mais ({Math.max(0, pagination.total - orders.length)} restantes)</Button></div>
               )}
             </div>
           )}

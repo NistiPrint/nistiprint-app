@@ -68,9 +68,26 @@ def salvar_config(integration_id):
 @check_permission("vendas", "ler")
 def listar_pedidos(integration_id):
     try:
-        limit = request.args.get("limit", default=200, type=int)
-        orders = service.list_personalized_orders(integration_id, limit=limit)
-        return ApiResponse.success({"orders": orders, "total": len(orders)})
+        pagination_requested = any(key in request.args for key in
+                                   ("page", "page_size", "search", "ai_filter", "chat_filter"))
+        if not pagination_requested:
+            limit = request.args.get("limit", default=200, type=int)
+            orders = service.list_personalized_orders(integration_id, limit=limit)
+            return ApiResponse.success({"orders": orders, "total": len(orders)})
+        try:
+            page = int(request.args.get("page", 1))
+            page_size = int(request.args.get("page_size", 20))
+        except (TypeError, ValueError):
+            return ApiResponse.error("page e page_size devem ser números inteiros", 400)
+        if page < 1 or not 1 <= page_size <= 100:
+            return ApiResponse.error("page deve ser maior que zero e page_size entre 1 e 100", 400)
+        result = service.list_personalized_order_page(
+            integration_id, page=page, page_size=page_size,
+            search=request.args.get("search", ""),
+            ai_filter=request.args.get("ai_filter", ""),
+            chat_filter=request.args.get("chat_filter", ""),
+        )
+        return ApiResponse.success(result)
     except Exception as exc:
         return _handle_error(exc)
 
@@ -195,6 +212,7 @@ def extrair(integration_id):
             pedido_ids=[int(value) for value in pedido_ids] if pedido_ids else None,
             force=body.get("force") is True,
             limit=limit,
+            created_by=_user_id(),
         )
         if result.get("batch_id"):
             from nistiprint_shared.services.mercadolivre_personalization_worker import submit_batch

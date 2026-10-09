@@ -90,6 +90,94 @@ class OrdersQueryService:
             traceback.print_exc()
             raise e
 
+    def get_personalized_orders_page(self, *, page=1, page_size=20, search="",
+                                    ai_filter="", chat_filter="",
+                                    integration_id=None, include_unassigned=False):
+        """Filter and count through the summary view, then assemble one page."""
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        page = max(1, int(page))
+        page_size = min(100, max(1, int(page_size)))
+        summary_table = "view_shopee_personalization_order_summary"
+
+        def scoped(query):
+            if integration_id is None:
+                return query
+            if include_unassigned:
+                return query.or_(
+                    f"marketplace_integration_id.eq.{int(integration_id)},marketplace_integration_id.is.null"
+                )
+            return query.eq("marketplace_integration_id", int(integration_id))
+
+        def count_for(**filters):
+            query = scoped(supabase_db.table(summary_table).select("id", count="exact", head=True))
+            for column, value in filters.items():
+                query = query.eq(column, value)
+            return int(getattr(query.execute(), "count", 0) or 0)
+
+        status_counts = {
+            "pendente_ia": count_for(needs_ai_processing=True),
+            "com_chat": count_for(has_chat_messages=True),
+            "sem_chat": count_for(has_chat_messages=False),
+            "nome_identificado": count_for(has_identified_name=True),
+            "sem_nome": count_for(has_no_name=True),
+        }
+        query = scoped(supabase_db.table(summary_table).select("id", count="exact"))
+        filters = {
+            "pendente_ia": ("needs_ai_processing", True),
+            "nome_identificado": ("has_identified_name", True),
+            "sem_nome": ("has_no_name", True),
+            "com_chat": ("has_chat_messages", True),
+            "sem_chat": ("has_chat_messages", False),
+        }
+        for selected_filter in (ai_filter, chat_filter):
+            if selected_filter in filters:
+                column, value = filters[selected_filter]
+                query = query.eq(column, value)
+        if search.strip():
+            value = search.strip().replace("%", "\\%").replace(",", "\\,")
+            query = query.or_(
+                f"numero_pedido.ilike.%{value}%,numero_loja.ilike.%{value}%,"
+                f"nome_cliente.ilike.%{value}%,buyer_username.ilike.%{value}%"
+            )
+        response = query.order("data_pedido", desc=True).order("id", desc=True).range(
+            (page - 1) * page_size, page * page_size - 1
+        ).execute()
+        ids = [row["id"] for row in response.data or []]
+        rows = (supabase_db.table("view_vendas_personalizadas_v3").select("*")
+                .in_("id", ids).execute().data or []) if ids else []
+        rows_by_id = {int(row["id"]): row for row in rows}
+        orders = []
+        for order_id in ids:
+            row = rows_by_id.get(int(order_id))
+            if not row:
+                continue
+            contato = self._parse_json_field(row.get("contato"), default={}) or {}
+            if not contato.get("nome"):
+                contato["nome"] = row.get("nome_cliente") or ""
+            items = [self._normalize_item(item) for item in self._parse_json_field(row.get("itens"), default=[])]
+            orders.append({
+                "id": row["id"], "numero": row.get("numero_pedido"),
+                "numeroLoja": row.get("numero_loja"), "nome_cliente": row.get("nome_cliente") or "",
+                "data": row.get("data_pedido"), "contato": contato, "itens": items,
+                "shopee": {"username": row.get("buyer_username") or "",
+                           "order_sn": row.get("numero_loja"),
+                           "message": row.get("shopee_message") or ""},
+                "personalizado": True, "has_chat_messages": bool(row.get("has_chat_messages")),
+                "deletado": bool(row.get("deletado")),
+                "last_ai_executed_at": row.get("last_ai_executed_at"),
+                "last_buyer_message_at": row.get("last_buyer_message_at"),
+                "needs_ai_processing": bool(row.get("needs_ai_processing")),
+                "ai_status": row.get("ai_status"),
+                "marketplace_integration_id": row.get("marketplace_integration_id"),
+            })
+        total = int(getattr(response, "count", 0) or 0)
+        return {
+            "bling_orders": orders,
+            "pagination": {"page": page, "page_size": page_size, "total": total,
+                           "has_next": page * page_size < total},
+            "status_counts": status_counts,
+        }
+
     @staticmethod
     def _parse_json_field(value, default):
         if value is None:

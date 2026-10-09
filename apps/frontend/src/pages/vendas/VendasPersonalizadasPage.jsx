@@ -9,22 +9,11 @@ import OrderFilters from '@/components/vendas/OrderFilters';
 import { personalizadosService } from '@/services/personalizadosService';
 import { useAuth } from '@/contexts/AuthContext';
 import { ArrowLeft, Brain, ChevronDown, ChevronRight, Database, FileText, Flag, Loader2, RefreshCw, Settings, Terminal } from 'lucide-react';
-import { createElement, useEffect, useMemo, useRef, useState } from 'react';
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 const ITEMS_PER_PAGE = 20;
-const ACTIVE_AI_BATCH_STORAGE_KEY = 'vendas-personalizadas:active-ai-batch';
-const TERMINAL_AI_BATCH_STATUSES = new Set(['CONCLUIDO', 'ERRO']);
-
-const readActiveAIBatch = () => {
-  try {
-    const saved = JSON.parse(localStorage.getItem(ACTIVE_AI_BATCH_STORAGE_KEY) || 'null');
-    return saved?.batchId ? saved : null;
-  } catch {
-    return null;
-  }
-};
 
 const hasIdentifiedName = (order) =>
   order.itens?.some(item =>
@@ -59,6 +48,9 @@ function VendasPersonalizadasPage() {
 
   // Pagination/Slicing
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
+  const [page, setPage] = useState(1);
+  const [serverPagination, setServerPagination] = useState({ page: 1, page_size: ITEMS_PER_PAGE, total: 0, has_next: false });
+  const [serverStatusCounts, setServerStatusCounts] = useState(null);
 
   // Chat State
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -83,65 +75,12 @@ function VendasPersonalizadasPage() {
   const [opMode, setOpMode] = useState(null); // null = ainda não carregou
   const [updatingMode, setUpdatingMode] = useState(false);
 
-  const [activeAIBatch, setActiveAIBatch] = useState(readActiveAIBatch);
-  const [batchProgress, setBatchProgress] = useState(null);
-  const [batchTrackingError, setBatchTrackingError] = useState(false);
-  const batchPollRef = useRef(null);
-  const processToastRef = useRef(null);
+  const [submittingBatch, setSubmittingBatch] = useState(false);
   const fetchOrdersRef = useRef(null);
 
   useEffect(() => {
     fetchMode();
-    // Cleanup polling on unmount
-    return () => {
-      if (batchPollRef.current) clearTimeout(batchPollRef.current);
-    };
   }, []);
-
-  useEffect(() => {
-    if (!activeAIBatch?.batchId) return undefined;
-
-    let cancelled = false;
-    const pollBatch = async () => {
-      let nextPollDelay = 2500;
-      try {
-        const response = await personalizadosService.statusBatch(activeAIBatch.batchId);
-        if (!response.success || !response.data) {
-          throw new Error(response.message || 'Não foi possível consultar o lote.');
-        }
-
-        const batch = response.data;
-        if (cancelled) return;
-        setBatchTrackingError(false);
-        setBatchProgress(batch);
-
-        if (TERMINAL_AI_BATCH_STATUSES.has(batch.status)) {
-          localStorage.removeItem(ACTIVE_AI_BATCH_STORAGE_KEY);
-          setActiveAIBatch(null);
-          fetchOrdersRef.current?.();
-
-          processToastRef.current = null;
-          return;
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setBatchTrackingError(true);
-          nextPollDelay = 5000;
-          console.warn('Falha temporária ao consultar progresso do lote de IA:', e);
-        }
-      }
-
-      if (!cancelled) {
-        batchPollRef.current = setTimeout(pollBatch, nextPollDelay);
-      }
-    };
-
-    pollBatch();
-    return () => {
-      cancelled = true;
-      if (batchPollRef.current) clearTimeout(batchPollRef.current);
-    };
-  }, [activeAIBatch?.batchId]);
 
   // Só carrega pedidos DEPOIS de saber o modo correto
   useEffect(() => {
@@ -167,17 +106,37 @@ function VendasPersonalizadasPage() {
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearchTerm(searchTerm);
-      setVisibleCount(ITEMS_PER_PAGE); // Reset pagination on search change
+      setVisibleCount(ITEMS_PER_PAGE);
+      setPage(1);
     }, 300);
     return () => clearTimeout(timer);
   }, [searchTerm]);
+
+  useEffect(() => { setVisibleCount(ITEMS_PER_PAGE); setPage(1); }, [debouncedSearchTerm, aiFilter, chatFilter]);
+
+  useEffect(() => {
+    if (!integrationId) return undefined;
+    const onBatch = event => {
+      if (event.detail?.integrationId && String(event.detail.integrationId) !== String(integrationId)) return;
+      setVisibleCount(ITEMS_PER_PAGE);
+      setPage(1);
+      fetchOrdersRef.current?.(true);
+    };
+    window.addEventListener('activity:shopee-batch', onBatch);
+    window.addEventListener('online', onBatch);
+    return () => {
+      window.removeEventListener('activity:shopee-batch', onBatch);
+      window.removeEventListener('online', onBatch);
+    };
+  }, [integrationId]);
 
   const fetchMode = async () => {
     try {
         const response = await fetch('/api/v2/configuracoes/sistema');
         const data = await response.json();
-        if (data.success) setOpMode(data.database_operational_mode);
-    } catch (e) { console.error(e); }
+        if (data.success) { setOpMode(data.database_operational_mode); setError(null); }
+        else setError(data.message || 'Não foi possível consultar o modo operacional.');
+    } catch (e) { setError(`Não foi possível consultar o modo operacional: ${e.message}`); }
   };
 
   const toggleOpMode = async () => {
@@ -204,32 +163,51 @@ function VendasPersonalizadasPage() {
     }
   };
 
-  const fetchOrders = async () => {
-    setLoading(true);
+  const fetchOrders = useCallback(async (reset = false, signal) => {
     setError(null);
     try {
-      const response = await fetch(`/api/v2/vendas/personalizadas?mode=${opMode}`, {
+      const query = new URLSearchParams({ mode: opMode, page: String(reset ? 1 : page), page_size: String(ITEMS_PER_PAGE) });
+      if (integrationId) query.set('integration_id', String(integrationId));
+      if (singleShopeeAccount) query.set('include_unassigned', 'true');
+      if (debouncedSearchTerm) query.set('search', debouncedSearchTerm);
+      if (aiFilter) query.set('ai_filter', aiFilter);
+      if (chatFilter) query.set('chat_filter', chatFilter);
+      const response = await fetch(`/api/v2/vendas/personalizadas?${query}`, {
+        signal,
         headers: { 'Accept': 'application/json' }
       });
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
       const rows = data.data?.bling_orders || [];
-      setOrders(integrationId
-        ? rows.filter(order => (order.marketplace_integration_id === null || order.marketplace_integration_id === undefined)
-          ? singleShopeeAccount
-          : String(order.marketplace_integration_id) === String(integrationId))
-        : rows);
+      const effectivePage = reset ? 1 : page;
+      setOrders(current => opMode === 'legacy'
+        ? rows.filter(order => !integrationId || (order.marketplace_integration_id == null
+          ? singleShopeeAccount : String(order.marketplace_integration_id) === String(integrationId)))
+        : effectivePage === 1 ? rows
+          : [...new Map([...current, ...rows].map(order => [order.id, order])).values()]);
+      setServerPagination(data.data?.pagination || { page: 1, page_size: rows.length, total: rows.length, has_next: false });
+      setServerStatusCounts(data.data?.status_counts || null);
     } catch (e) {
+      if (e.name === 'AbortError') return;
         setError(e.message);
       toast.error(`Erro ao carregar vendas: ${e.message}`);
     } finally {
       setLoading(false);
     }
-  };
+  }, [opMode, page, integrationId, singleShopeeAccount,
+    debouncedSearchTerm, aiFilter, chatFilter]);
   fetchOrdersRef.current = fetchOrders;
+
+  useEffect(() => {
+    if (opMode === null) return undefined;
+    const controller = new AbortController();
+    fetchOrders(false, controller.signal);
+    return () => controller.abort();
+  }, [fetchOrders, opMode]);
 
   // Memoized filtered orders
   const filteredOrders = useMemo(() => {
+    if (opMode === 'v2') return orders;
     let result = orders;
 
     // 1. Busca textual
@@ -260,10 +238,11 @@ function VendasPersonalizadasPage() {
     }
 
     return result;
-  }, [orders, debouncedSearchTerm, aiFilter, chatFilter]);
+  }, [orders, debouncedSearchTerm, aiFilter, chatFilter, opMode]);
 
   // Memoized status counts
   const statusCounts = useMemo(() => {
+    if (opMode === 'v2' && serverStatusCounts) return serverStatusCounts;
     const counts = {
       pendente_ia: 0,
       com_chat: 0,
@@ -281,15 +260,17 @@ function VendasPersonalizadasPage() {
     });
 
     return counts;
-  }, [orders]);
+  }, [orders, opMode, serverStatusCounts]);
 
   // Sliced orders for display
   const slicedOrders = useMemo(() => {
+    if (opMode === 'v2') return filteredOrders;
     return filteredOrders.slice(0, visibleCount);
-  }, [filteredOrders, visibleCount]);
+  }, [filteredOrders, visibleCount, opMode]);
 
   const loadMore = () => {
-    setVisibleCount(prev => prev + ITEMS_PER_PAGE);
+    if (opMode === 'v2') setPage(previous => previous + 1);
+    else setVisibleCount(prev => prev + ITEMS_PER_PAGE);
   };
 
   const handleProcessAI = async (orderSn, force = false) => {
@@ -313,20 +294,20 @@ function VendasPersonalizadasPage() {
   };
 
   const handleProcessarLote = async () => {
-    if (activeAIBatch?.batchId) return;
+    if (submittingBatch) return;
     const confirm = window.confirm(
       'Processar agora os pedidos pendentes (nunca processados ou com mensagem nova do comprador)? '
       + 'Esse mesmo lote roda sozinho todo dia as 12h; use isto para antecipar. Pode demorar alguns minutos.',
     );
     if (!confirm) return;
 
-    processToastRef.current = toast.loading('Preparando pedidos para extração...');
+    setSubmittingBatch(true);
+    const toastId = toast.loading('Preparando pedidos para extração...');
 
     try {
       const data = await personalizadosService.processar({ limit: 0, ...(integrationId ? { integration_id: Number(integrationId) } : {}) });
       if (!data.success) {
-        toast.error(data.message || 'Erro ao iniciar extração', { id: processToastRef.current });
-        processToastRef.current = null;
+        toast.error(data.message || 'Erro ao iniciar extração', { id: toastId });
         return;
       }
 
@@ -334,47 +315,20 @@ function VendasPersonalizadasPage() {
       if (!batchId) {
         const isEmpty = data.data?.status === 'empty' || data.data?.total === 0;
         if (isEmpty) {
-          toast.success(data.message || 'Não há pedidos pendentes para extrair.', {
-            id: processToastRef.current,
-          });
+          toast.success(data.message || 'Não há pedidos pendentes para extrair.', { id: toastId });
         } else {
-          toast.error(data.message || 'A API não retornou o identificador do lote.', {
-            id: processToastRef.current,
-          });
+          toast.error(data.message || 'A API não retornou o identificador do lote.', { id: toastId });
         }
-        processToastRef.current = null;
         return;
       }
 
-      const nextBatch = { batchId, enfileirado: data.data.enfileirado !== false };
-      localStorage.setItem(ACTIVE_AI_BATCH_STORAGE_KEY, JSON.stringify(nextBatch));
-      setBatchProgress(null);
-      setBatchTrackingError(false);
-      setActiveAIBatch(nextBatch);
-      toast.loading(
-        nextBatch.enfileirado
-          ? `Lote de ${data.data.total ?? '...'} pedido(s) iniciado.`
-          : 'Lote registrado. Aguardando a fila iniciar o processamento.',
-        { id: processToastRef.current },
-      );
+      toast.success('Extração iniciada. Acompanhe o andamento no sininho.', { id: toastId });
     } catch {
-      toast.error('Erro de rede ao iniciar extração', { id: processToastRef.current });
-      processToastRef.current = null;
+      toast.error('Erro de rede ao iniciar extração', { id: toastId });
+    } finally {
+      setSubmittingBatch(false);
     }
   };
-
-  const isProcessingLote = Boolean(activeAIBatch?.batchId);
-  const loteProgress = batchTrackingError
-    ? 'Falha ao consultar progresso — tentando novamente'
-    : batchProgress?.status === 'PENDENTE' && activeAIBatch?.enfileirado === false
-      ? 'Lote registrado — aguardando retomada automática'
-      : batchProgress?.status === 'PENDENTE'
-      ? 'Aguardando início da IA'
-      : batchProgress?.status === 'RODANDO'
-        ? `${batchProgress.processados || 0}/${batchProgress.total || 0} processados (${batchProgress.sucesso || 0} OK, ${batchProgress.falha || 0} erro)`
-        : activeAIBatch?.enfileirado === false
-          ? 'Lote registrado — aguardando a fila'
-          : 'Consultando progresso...';
 
   const handleOpenChat = async (username, orderId, orderData) => {
     if (!username) {
@@ -444,8 +398,7 @@ function VendasPersonalizadasPage() {
     }
   };
 
-  if (loading) return <div className="flex justify-center p-8"><Loader2 className="h-8 w-8 animate-spin" /></div>;
-  if (error) return <div className="text-center py-4 text-red-500">Erro: {error}</div>;
+  if (loading && orders.length === 0) return <div className="flex justify-center p-8"><Loader2 className="h-8 w-8 animate-spin" /></div>;
 
   // Componente colapsável para seções de log
   const CollapsibleSection = ({ icon, title, content, defaultOpen = false }) => {
@@ -481,10 +434,10 @@ function VendasPersonalizadasPage() {
         <Button
           variant="outline"
           onClick={handleProcessarLote}
-          disabled={isProcessingLote}
+          disabled={submittingBatch}
           title="Processa apenas pedidos pendentes: nunca processados ou com mensagem nova apos a ultima execucao. O mesmo lote roda automaticamente todo dia as 12h.">
-          {isProcessingLote ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Brain className="mr-2 h-4 w-4" />}
-          {isProcessingLote ? (loteProgress || 'Processando...') : 'Extrair nomes pendentes'}
+          {submittingBatch ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Brain className="mr-2 h-4 w-4" />}
+          {submittingBatch ? 'Enviando para a fila…' : 'Extrair nomes pendentes'}
         </Button>
         {user?.is_admin && (
           <Button
@@ -522,6 +475,8 @@ function VendasPersonalizadasPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
+          {error && <div role="alert" className="m-4 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{error} <Button variant="link" onClick={() => { setError(null); fetchMode(); if (opMode !== null) fetchOrdersRef.current?.(true); }}>Tentar novamente</Button></div>}
+          {loading && orders.length > 0 && <p role="status" className="px-4 pt-3 text-xs text-muted-foreground">Atualizando pedidos…</p>}
           {/* Filters */}
           <OrderFilters
             searchTerm={searchTerm}
@@ -571,11 +526,11 @@ function VendasPersonalizadasPage() {
                 />
               ))}
               
-              {filteredOrders.length > visibleCount && (
+              {(opMode === 'v2' ? serverPagination.has_next : filteredOrders.length > visibleCount) && (
                 <div className="flex justify-center pt-6">
                   <Button variant="outline" onClick={loadMore} className="gap-2">
                     <ChevronDown className="h-4 w-4" />
-                    Carregar mais ({filteredOrders.length - visibleCount} restantes)
+                    Carregar mais ({opMode === 'v2' ? Math.max(0, serverPagination.total - orders.length) : filteredOrders.length - visibleCount} restantes)
                   </Button>
                 </div>
               )}
