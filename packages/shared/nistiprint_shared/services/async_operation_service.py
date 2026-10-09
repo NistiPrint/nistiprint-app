@@ -76,7 +76,7 @@ class AsyncOperationService:
             .maybe_single()
             .execute()
         )
-        return response.data
+        return response.data if response is not None else None
 
     def sync_ai_batch(self, batch: dict) -> dict | None:
         """Mirror the durable AI batch state without taking ownership of its queue."""

@@ -783,16 +783,27 @@ def list_personalized_orders(integration_id: int, limit: int = 200) -> list[dict
         for row in valid_rows:
             if row.get("item_pedido_id"):
                 by_item.setdefault(int(row["item_pedido_id"]), []).append(row)
-        # Return one representative result per item, preferring the latest
-        # identified result. A later inconclusive execution must not replace
-        # a successful result from an earlier chat context in the card.
+        # Keep every personalization from the selected execution context:
+        # one item may have several distinct names. Prefer the newest context
+        # that identified a name so a later inconclusive run doesn't hide it.
         for item_id, rows in by_item.items():
-            rows.sort(key=lambda row: (
-                bool(str(row.get("customization_name") or "").strip()
-                     or str(row.get("customization_initial") or "").strip()),
-                str(row.get("updated_at") or ""),
-            ), reverse=True)
-            by_item[item_id] = rows[:1]
+            contexts: dict[str, list[dict]] = {}
+            for row in rows:
+                contexts.setdefault(str(row.get("context_hash") or ""), []).append(row)
+            identified_contexts = [context_rows for context_rows in contexts.values()
+                                   if any(str(row.get("customization_name") or "").strip()
+                                          or str(row.get("customization_initial") or "").strip()
+                                          for row in context_rows)]
+            candidates = identified_contexts or list(contexts.values())
+            selected_context = max(
+                candidates,
+                key=lambda context_rows: max(str(row.get("updated_at") or "")
+                                             for row in context_rows),
+            )
+            by_item[item_id] = sorted(
+                selected_context,
+                key=lambda row: (str(row.get("updated_at") or ""), int(row.get("id") or 0)),
+            )
         message_count = 0
         messages = []
         if linked:

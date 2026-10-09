@@ -147,8 +147,7 @@ function AccountOrders({ integrationId }) {
       if (order.has_chat_messages) counts.com_chat += 1;
       else counts.sem_chat += 1;
       const rows = order.itens.flatMap(item => item.personalizations);
-      counts.nome_identificado += order.itens.reduce((sum, item) =>
-        sum + item.personalizations.filter(personalizationHasName).length, 0);
+      if (orderHasIdentifiedName(order)) counts.nome_identificado += 1;
       if (rows.some(row => row.status === 'NO_PERSONALIZATION_FOUND' || row.status === 'no_personalization_found'
         || (!row.customization_name && row.status === 'SUCCESS'))
         || ['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(order.ai_status)) counts.sem_nome += 1;

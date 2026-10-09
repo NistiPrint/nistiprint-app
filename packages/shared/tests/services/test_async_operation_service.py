@@ -72,6 +72,32 @@ class TestAsyncOperationConsistency(unittest.TestCase):
         self.assertEqual(create.call_args.kwargs['payload']['message'], '3 concluído(s) com sucesso; 2 com falha.')
         publish.assert_called_once()
 
+    def test_find_by_source_aceita_resposta_nula(self):
+        query = self._query(None)
+        query.execute.return_value = None
+        service = AsyncOperationService()
+        with patch.object(service_module.supabase_db, 'table', return_value=query):
+            result = service.find_by_source('ai_batch', 'batch-1')
+
+        self.assertIsNone(result)
+
+    def test_sync_ai_batch_cria_operacao_quando_busca_retorna_nulo(self):
+        lookup = self._query(None)
+        lookup.execute.return_value = None
+        insert = MagicMock()
+        insert.insert.return_value = insert
+        insert.execute.return_value = SimpleNamespace(data=[{'id': 'op-1', 'owner_user_id': 7, 'status': 'EM_ANDAMENTO'}])
+        service = AsyncOperationService()
+        with patch.object(service_module.supabase_db, 'table', side_effect=[lookup, insert]), \
+             patch.object(service, '_publish') as publish:
+            result = service.sync_ai_batch({
+                'id': 'batch-1', 'iniciado_por': 7, 'status': 'RODANDO',
+                'processados': 1, 'total': 2,
+            })
+
+        self.assertEqual(result['id'], 'op-1')
+        publish.assert_called_once_with(result)
+
 
 if __name__ == '__main__':
     unittest.main()
