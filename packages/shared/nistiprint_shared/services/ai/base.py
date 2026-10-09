@@ -47,7 +47,8 @@ class AIResponse:
 class AIProvider(Protocol):
     name: str
 
-    def complete(self, system_prompt: str, user_payload: str) -> AIResponse: ...
+    def complete(self, system_prompt: str, user_payload: str,
+                 response_schema: Optional[Dict[str, Any]] = None) -> AIResponse: ...
 
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)

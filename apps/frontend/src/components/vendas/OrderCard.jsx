@@ -36,6 +36,11 @@ function getStatusBadge(order) {
   if (personalizations.some(p => p.status === 'NEEDS_REVIEW')) {
     return { label: 'A revisar', className: 'bg-orange-100 text-orange-900 border-orange-300' }
   }
+  if (['needs_review', 'error'].includes(String(order.ai_status || '').toLowerCase())) {
+    return String(order.ai_status).toLowerCase() === 'error'
+      ? { label: 'Falha na IA', className: 'bg-red-100 text-red-900 border-red-300' }
+      : { label: 'A revisar', className: 'bg-orange-100 text-orange-900 border-orange-300' }
+  }
   if (personalizations.some(p => p.customization_name?.trim() || p.customization_initial?.trim())) {
     return {
       label: 'Nome identificado',

@@ -67,6 +67,23 @@ class PedidosSchemaDatabase(FakeDatabase):
 
 
 class MercadoLivrePersonalizationTests(unittest.TestCase):
+    def test_missing_item_result_makes_current_extraction_incomplete(self):
+        database = FakeDatabase({"mercadolivre_personalizations": []})
+        with patch.object(service, "supabase_db", database):
+            self.assertFalse(service._has_current_extraction(7, "pack-7", "hash", [
+                {"id": 10, "quantidade": 1},
+            ]))
+
+    def test_complete_current_item_result_is_terminal(self):
+        database = FakeDatabase({"mercadolivre_personalizations": [{
+            "marketplace_integration_id": 7, "pack_id": "pack-7", "context_hash": "hash",
+            "item_pedido_id": 10, "quantity_to_personalize": 2, "status": "SUCCESS",
+        }]})
+        with patch.object(service, "supabase_db", database):
+            self.assertTrue(service._has_current_extraction(7, "pack-7", "hash", [
+                {"id": 10, "quantidade": 2},
+            ]))
+
     def test_shared_inbox_consumer_uses_each_webhook_integration(self):
         accounts = [
             {"integration_id": 7, "seller_id": "seller-a", "application_id": "app-a",
@@ -172,6 +189,38 @@ class MercadoLivrePersonalizationTests(unittest.TestCase):
         self.assertIn("packs", fetched_endpoints)
         self.assertIn("messages", fetched_endpoints)
         mark_persisted.assert_called_once_with(7, message_rows)
+
+    def test_reconciliation_stops_account_after_retryable_history_failure(self):
+        from unittest.mock import MagicMock
+        database = MagicMock()
+        database.table.return_value.select.return_value.eq.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value.data = [
+            {"pack_id": "pack-1", "seller_id": "seller-7", "raw_json": {}}
+        ]
+        rate_limit = service.ProviderRetryError("429", retry_after=60)
+        with patch.object(service, "_integration", return_value={"config": {"account_identifiers": {"primary": "seller-7"}}}), \
+             patch.object(service, "_meli_request", return_value={"results": []}), \
+             patch.object(service, "sync_pack", side_effect=rate_limit) as sync_pack, \
+             patch.object(service, "supabase_db", database):
+            with self.assertRaises(service.ProviderRetryError):
+                service._reconcile_account_once(7)
+
+        sync_pack.assert_called_once_with(7, "pack-1", "seller-7", order_id_fallback=None)
+
+    def test_unread_recovery_stops_account_after_retryable_failure(self):
+        from unittest.mock import MagicMock
+        database = MagicMock()
+        rate_limit = service.ProviderRetryError("429", retry_after=60)
+        with patch.object(service, "_integration", return_value={"config": {"account_identifiers": {"primary": "seller-7"}}}), \
+             patch.object(service, "_meli_request", return_value={"results": [
+                 {"resource": "/packs/pack-1/sellers/seller-7"},
+                 {"resource": "/packs/pack-2/sellers/seller-7"},
+             ]}), \
+             patch.object(service, "sync_pack", side_effect=rate_limit) as sync_pack, \
+             patch.object(service, "supabase_db", database):
+            with self.assertRaises(service.ProviderRetryError):
+                service._reconcile_account_once(7)
+
+        sync_pack.assert_called_once_with(7, "pack-1", "seller-7", order_id_fallback=None)
 
     def test_persisted_reconciliation_messages_complete_matching_inbox_rows(self):
         from unittest.mock import MagicMock

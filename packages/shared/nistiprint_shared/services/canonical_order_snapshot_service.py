@@ -170,16 +170,18 @@ class CanonicalOrderSnapshotService:
             return
         pedido_rows = (
             supabase_db.table("pedidos")
-            .select("pedido_bling_id")
+            .select("pedido_bling_id,ingest_source")
             .eq("id", pedido_id)
             .limit(1)
             .execute()
             .data
             or []
         )
-        if pedido_rows and pedido_rows[0].get("pedido_bling_id"):
+        if pedido_rows and (pedido_rows[0].get("pedido_bling_id")
+                            or str(pedido_rows[0].get("ingest_source") or "").lower()
+                            in {"mercadolivre", "shopee"}):
             logger.info(
-                "[snapshot] skipping item replacement for pedido_id=%s because pedido_bling_id exists",
+                "[snapshot] skipping item replacement for pedido_id=%s because marketplace owns its items",
                 pedido_id,
             )
             return

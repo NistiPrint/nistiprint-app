@@ -61,7 +61,8 @@ class OpenRouterProvider:
             )
         return self._client
 
-    def complete(self, system_prompt: str, user_payload: str) -> AIResponse:
+    def complete(self, system_prompt: str, user_payload: str,
+                 response_schema: Optional[Dict[str, Any]] = None) -> AIResponse:
         if not self._api_key:
             raise AIProviderError(
                 "OPENROUTER_API_KEY nao configurada — provedor openrouter indisponivel"
@@ -74,6 +75,13 @@ class OpenRouterProvider:
                 {"role": "user", "content": user_payload},
             ],
         }
+        if response_schema:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "mercadolivre_personalization", "strict": True,
+                                "schema": response_schema},
+            }
+            payload["provider"] = {"require_parameters": True}
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",

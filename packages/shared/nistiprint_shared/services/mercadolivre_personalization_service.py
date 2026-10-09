@@ -16,7 +16,28 @@ from nistiprint_shared.services.platform_drivers import mercadolivre as meli_dri
 
 logger = logging.getLogger(__name__)
 AGENT_IDS = {"3037675074", "3020819166", "3037204123", "3037204279", "3037674934", "3037204685"}
-DEFAULT_PROMPT = """Você extrai dados de personalização de pedidos do Mercado Livre. Analise os itens, a mensagem ao vendedor e a conversa completa em ordem cronológica. Use as instruções do comprador, preserve exatamente a grafia, os acentos e a correção mais recente para cada nome ou inicial. Uma confirmação do vendedor pode ajudar a entender o contexto, mas não substitui a instrução do comprador. Se a mensagem ao vendedor contiver a personalização e não houver correção posterior, use-a com name_source_message_id=\"message_to_seller\". Nunca use nome de cadastro ou apelido como personalização. Associe cada resultado ao item correto; para nomes distintos em várias unidades, devolva uma linha por unidade; se um nome valer para todas, devolva uma linha com a quantidade total. Retorne uma linha sem nome quando não houver instrução inequívoca. Use NEEDS_REVIEW somente se o contexto estiver incompleto, a atribuição de item/pedido for ambígua, um anexo for necessário para entender o pedido ou a quantidade for incompatível. Responda somente JSON: {\"status\":\"SUCCESS|NEEDS_REVIEW|NO_PERSONALIZATION_FOUND\",\"reasoning\":\"...\",\"personalized_items\":[{\"item_id\":\"ID interno informado\",\"quantity_to_personalize\":1,\"customization_name\":null,\"name_source_message_id\":null,\"customization_initial\":null,\"initial_source_message_id\":null}]}"""
+DEFAULT_PROMPT = """Extraia personalizações dos pedidos do Mercado Livre usando somente as instruções do comprador nos dados recebidos. Leia mensagem ao vendedor e conversa em ordem cronológica; aplique correções posteriores do comprador e preserve grafia e acentos. Nunca use nome cadastral, apelido ou mensagem de agente como personalização. Cada resultado deve usar exatamente um item_id interno recebido e a quantidade total daquele item não pode ser excedida. Nomes diferentes por unidade exigem uma linha por nome e quantity_to_personalize=1; um mesmo nome em várias unidades pode ser uma linha com a quantidade total. Toda linha com nome ou inicial precisa indicar o ID exato da mensagem do comprador que a comprova; mensagem ao vendedor usa name_source_message_id=\"message_to_seller\". Sem personalização inequívoca, retorne uma linha para cada item com nome e inicial nulos, quantidade total e fontes nulas, status NO_PERSONALIZATION_FOUND. Use SUCCESS se pelo menos um nome ou inicial inequívoco foi extraído; NEEDS_REVIEW se contexto, item, quantidade ou anexo necessário for ambíguo/incompleto; nesse caso retorne as linhas ainda determináveis e nulos para o que não puder ser atribuído. Não omita itens elegíveis. Exemplos: um item de quantidade 1 e mensagem ‘Nome: Ana’ → uma linha do item, Ana, quantidade 1, fonte da mensagem; item de quantidade 2 e mensagem ‘Ana e Bia’ → duas linhas de quantidade 1; ‘letra M’ → inicial M e fonte da mensagem; nenhuma instrução → linha sem nome/inicial; duas mensagens contraditórias sem correção clara → NEEDS_REVIEW. Responda somente o objeto JSON definido pelo schema da requisição."""
+LEGACY_DEFAULT_PROMPT = """Você extrai dados de personalização de pedidos do Mercado Livre. Analise os itens, a mensagem ao vendedor e a conversa completa em ordem cronológica. Use as instruções do comprador, preserve exatamente a grafia, os acentos e a correção mais recente para cada nome ou inicial. Uma confirmação do vendedor pode ajudar a entender o contexto, mas não substitui a instrução do comprador. Se a mensagem ao vendedor contiver a personalização e não houver correção posterior, use-a com name_source_message_id=\"message_to_seller\". Nunca use nome de cadastro ou apelido como personalização. Associe cada resultado ao item correto; para nomes distintos em várias unidades, devolva uma linha por unidade; se um nome valer para todas, devolva uma linha com a quantidade total. Retorne uma linha sem nome quando não houver instrução inequívoca. Use NEEDS_REVIEW somente se o contexto estiver incompleto, a atribuição de item/pedido for ambígua, um anexo for necessário para entender o pedido ou a quantidade for incompatível. Responda somente JSON: {\"status\":\"SUCCESS|NEEDS_REVIEW|NO_PERSONALIZATION_FOUND\",\"reasoning\":\"...\",\"personalized_items\":[{\"item_id\":\"ID interno informado\",\"quantity_to_personalize\":1,\"customization_name\":null,\"name_source_message_id\":null,\"customization_initial\":null,\"initial_source_message_id\":null}]}"""
+
+PERSONALIZATION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["SUCCESS", "NEEDS_REVIEW", "NO_PERSONALIZATION_FOUND"]},
+        "reasoning": {"type": "string"},
+        "personalized_items": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "item_id": {"type": "integer"},
+                "quantity_to_personalize": {"type": "integer", "minimum": 1},
+                "customization_name": {"type": ["string", "null"]},
+                "name_source_message_id": {"type": ["string", "null"]},
+                "customization_initial": {"type": ["string", "null"]},
+                "initial_source_message_id": {"type": ["string", "null"]},
+            }, "required": ["item_id", "quantity_to_personalize", "customization_name",
+                           "name_source_message_id", "customization_initial", "initial_source_message_id"],
+            "additionalProperties": False,
+        }},
+    }, "required": ["status", "reasoning", "personalized_items"], "additionalProperties": False,
+}
 
 
 class ProviderRetryError(RuntimeError):
@@ -95,7 +116,7 @@ def _settings(integration_id: int) -> dict:
     if rows:
         current = rows[0]
         prompt = current.get("prompt_template")
-        if not isinstance(prompt, str) or len(prompt.strip()) < 40:
+        if not isinstance(prompt, str) or len(prompt.strip()) < 40 or prompt.strip() == LEGACY_DEFAULT_PROMPT:
             update = {"prompt_template": DEFAULT_PROMPT, "updated_at": _now()}
             if prompt:
                 update["previous_prompt_template"] = prompt
@@ -689,8 +710,12 @@ def _reconcile_account_once(integration_id: int, *, limit: int = 25) -> dict:
             sync_pack(integration_id, resource_id, resource_seller_id or seller_id,
                       order_id_fallback=resource_id if is_order else None)
             unread_synced += 1
-        except Exception:
+        except Exception as exc:
             logger.exception("Mercado Livre unread recovery failed integration=%s resource=%s", integration_id, path)
+            # A provider rate limit applies to the whole account. Stop this
+            # reconciliation pass so later packs do not trigger more 429s.
+            if isinstance(exc, ProviderRetryError):
+                raise
     since = datetime.now(timezone.utc).timestamp() - 8 * 86400
     rows = (supabase_db.table("mercadolivre_chat_conversations").select("pack_id,seller_id,raw_json")
             .eq("marketplace_integration_id", int(integration_id)).gte("last_message_at",
@@ -704,8 +729,12 @@ def _reconcile_account_once(integration_id: int, *, limit: int = 25) -> dict:
             sync_pack(integration_id, row["pack_id"], row["seller_id"],
                       order_id_fallback=metadata.get("order_id_fallback"))
             synced += 1
-        except Exception:
+        except Exception as exc:
             logger.exception("Mercado Livre reconciliation failed integration=%s pack=%s", integration_id, row.get("pack_id"))
+            # Leave remaining packs for the next scheduled pass after the
+            # provider's retry window instead of continuing to call the API.
+            if isinstance(exc, ProviderRetryError):
+                raise
     return {"reconciled": synced, "unread_recovered": unread_synced}
 
 
@@ -821,7 +850,18 @@ def list_personalized_orders(integration_id: int, limit: int = 200) -> list[dict
         conversation_metadata = _json(conversation.get("raw_json"), {}) or {}
         has_chat_context = bool(conversation_metadata.get("order_id_fallback")
                                 or conversation_metadata.get("buyer_ids") or message_count)
-        needs_ai = bool(conversation.get("last_error")) or (
+        item_ids = {int(item["id"]) for item in items_by_order[order_id]}
+        current_rows = [row for row in valid_rows if int(row.get("item_pedido_id") or 0) in item_ids
+                        and row.get("context_hash") == current_hash]
+        quantity_by_item: dict[int, int] = {}
+        for row in current_rows:
+            item_id = int(row["item_pedido_id"])
+            quantity_by_item[item_id] = quantity_by_item.get(item_id, 0) + int(row.get("quantity_to_personalize") or 0)
+        extraction_missing = bool(current_hash and any(
+            quantity_by_item.get(int(item["id"]), 0) != max(1, int(item.get("quantidade") or 1))
+            for item in items_by_order[order_id]
+        ))
+        needs_ai = bool(conversation.get("last_error")) or extraction_missing or (
             not last_ai_at and (has_chat_context or has_buyer_message)
         ) or bool(last_buyer_message_at and last_ai_at and last_buyer_message_at > last_ai_at)
         for row in valid_rows:
@@ -1002,7 +1042,7 @@ def _ai_response(integration_id: int, settings: dict, system_prompt: str, payloa
                 OpenRouterProvider(model=settings.get("model_name"), api_key=keys["openrouter"],
                                    timeout=float(settings.get("timeout_seconds") or 60)))
     try:
-        response = provider.complete(system_prompt, payload)
+        response = provider.complete(system_prompt, payload, response_schema=PERSONALIZATION_RESPONSE_SCHEMA)
     except AIProviderError:
         fallback_name = settings.get("fallback_provider")
         if not fallback_name or not keys.get(fallback_name):
@@ -1012,8 +1052,24 @@ def _ai_response(integration_id: int, settings: dict, system_prompt: str, payloa
                     if fallback_name == "gemini" else
                     OpenRouterProvider(model=fallback_model, api_key=keys["openrouter"],
                                       timeout=float(settings.get("timeout_seconds") or 60)))
-        response = fallback.complete(system_prompt, payload)
+        response = fallback.complete(system_prompt, payload, response_schema=PERSONALIZATION_RESPONSE_SCHEMA)
     return extract_json(response.text), response
+
+
+def _has_current_extraction(integration_id: int, pack_id: str, digest: str,
+                            items: list[dict]) -> bool:
+    rows = (supabase_db.table("mercadolivre_personalizations").select(
+        "item_pedido_id,quantity_to_personalize,status,context_hash"
+    ).eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id))
+      .eq("context_hash", digest).execute().data or [])
+    quantity_by_item: dict[int, int] = {}
+    for row in rows:
+        item_id = int(row.get("item_pedido_id") or 0)
+        quantity_by_item[item_id] = quantity_by_item.get(item_id, 0) + int(row.get("quantity_to_personalize") or 0)
+    return all(
+        quantity_by_item.get(int(item["id"]), 0) == max(1, int(item.get("quantidade") or 1))
+        for item in items
+    )
 
 
 def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = None,
@@ -1030,7 +1086,9 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
     orders, items, digest, forced_review = _pack_context(integration_id, pack_id)
     conversation = (supabase_db.table("mercadolivre_chat_conversations").select("context_hash,ai_status")
                     .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id)).limit(1).execute().data or [{}])[0]
-    if not force and conversation.get("context_hash") == digest and conversation.get("ai_status") == "success":
+    if (not force and conversation.get("context_hash") == digest
+            and conversation.get("ai_status") == "success"
+            and _has_current_extraction(integration_id, pack_id, digest, items)):
         return {"status": "up_to_date", "pack_id": str(pack_id)}
     if not items:
         raise LookupError("Pacote sem itens personalizados elegíveis")
@@ -1046,16 +1104,23 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
                                   "created_at": message.get("created_at"), "text": message.get("text_content"),
                                   "attachments": message.get("attachments") or []} for message in messages]}
     user_payload = json.dumps(payload_obj, ensure_ascii=False, separators=(",", ":"))
-    prompt = str(settings.get("prompt_template") or DEFAULT_PROMPT)
+    prompt = (str(settings.get("prompt_template") or DEFAULT_PROMPT).strip()
+              + "\n\nContrato obrigatório: retorne exatamente um objeto conforme o schema JSON da chamada."
+              " Inclua todos os itens; use os IDs internos recebidos; não invente campos nem fontes;"
+              " todos os itens sem personalização também devem aparecer com campos nulos.")
     response = None
     try:
         result, response = _ai_response(integration_id, settings, prompt, user_payload)
-        status = str(result.get("status") or "NEEDS_REVIEW").upper()
+        if not isinstance(result, dict):
+            raise ValueError("Resposta da IA precisa ser um objeto JSON")
+        status = str(result.get("status") or "").upper()
         if status not in {"SUCCESS", "NEEDS_REVIEW", "NO_PERSONALIZATION_FOUND"}:
-            status = "NEEDS_REVIEW"
+            raise ValueError("Resposta da IA contém status inválido")
         entries = result.get("personalized_items")
         if not isinstance(entries, list):
-            status, entries = "NEEDS_REVIEW", []
+            raise ValueError("Resposta da IA não contém personalized_items em formato de lista")
+        if not isinstance(result.get("reasoning"), str):
+            raise ValueError("Resposta da IA não contém reasoning em formato de texto")
         item_map = {str(item["id"]): item for item in items}
         valid_message_ids = {str(message.get("provider_message_id")) for message in messages if message.get("sender_role") == "buyer"}
         if any(str(order.get("message_to_seller") or "").strip() for order in orders):
@@ -1063,27 +1128,45 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
         records = []
         seen: dict[int, int] = {}
         personalized_quantity: dict[int, int] = {}
+        names_found = False
         for entry in entries:
-            if not isinstance(entry, dict):
-                status = "NEEDS_REVIEW"
-                continue
-            item = item_map.get(str(entry.get("item_id") or ""))
+            required_fields = {"item_id", "quantity_to_personalize", "customization_name",
+                               "name_source_message_id", "customization_initial", "initial_source_message_id"}
+            if not isinstance(entry, dict) or set(entry) != required_fields:
+                raise ValueError("Linha da IA não corresponde ao schema de personalização")
+            raw_item_id = entry.get("item_id")
+            if isinstance(raw_item_id, bool) or not isinstance(raw_item_id, int):
+                raise ValueError("item_id da IA precisa ser um ID interno inteiro")
+            item = item_map.get(str(raw_item_id))
             source_id = str(entry.get("name_source_message_id") or "")
             initial_source_id = str(entry.get("initial_source_message_id") or "")
-            try:
-                quantity = int(entry.get("quantity_to_personalize") or 1)
-            except (TypeError, ValueError):
-                quantity = 0
+            raw_quantity = entry.get("quantity_to_personalize")
+            if isinstance(raw_quantity, bool) or not isinstance(raw_quantity, int):
+                raise ValueError("quantity_to_personalize da IA precisa ser inteiro")
+            quantity = raw_quantity
+            name = entry.get("customization_name")
+            initial = entry.get("customization_initial")
+            if (name is not None and not isinstance(name, str)) or (initial is not None and not isinstance(initial, str)):
+                raise ValueError("Nome e inicial da IA precisam ser texto ou nulos")
+            if (entry.get("name_source_message_id") is not None and not isinstance(entry.get("name_source_message_id"), str)
+                    or entry.get("initial_source_message_id") is not None
+                    and not isinstance(entry.get("initial_source_message_id"), str)):
+                raise ValueError("Fontes de personalização precisam ser texto ou nulas")
+            if ((entry.get("name_source_message_id") is not None
+                 and source_id not in valid_message_ids)
+                    or (entry.get("initial_source_message_id") is not None
+                        and initial_source_id not in valid_message_ids)):
+                raise ValueError("Resposta da IA referencia uma mensagem inexistente")
             if (not item or not 1 <= quantity <= max(1, int(item.get("quantidade") or 1))
-                    or (entry.get("customization_name") and source_id not in valid_message_ids)
-                    or (entry.get("customization_initial") and initial_source_id not in valid_message_ids)):
-                status = "NEEDS_REVIEW"
-                continue
+                    or (name and source_id not in valid_message_ids)
+                    or (initial and initial_source_id not in valid_message_ids)
+                    or (name and not source_id) or (initial and not initial_source_id)):
+                raise ValueError("Resposta da IA contém item, quantidade ou fonte inválida")
+            names_found = names_found or bool(_text(name) or _text(initial))
             seen[item["id"]] = seen.get(item["id"], 0) + 1
             personalized_quantity[item["id"]] = personalized_quantity.get(item["id"], 0) + quantity
             if personalized_quantity[item["id"]] > max(1, int(item.get("quantidade") or 1)):
-                status = "NEEDS_REVIEW"
-                continue
+                raise ValueError("A soma das quantidades personalizadas excede o item")
             message_id = (source_id if source_id in valid_message_ids else
                           initial_source_id if initial_source_id in valid_message_ids else None)
             provider_item_base = _text(entry.get("provider_item_id")) or f"local-item-{item['id']}"
@@ -1096,25 +1179,23 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
                 "provider_item_id": provider_item_id,
                 "provider_message_id": message_id,
                 "quantity_to_personalize": quantity,
-                "customization_name": _text(entry.get("customization_name")) or None,
-                "customization_initial": _text(entry.get("customization_initial")) or None,
+                "customization_name": _text(name) or None,
+                "customization_initial": _text(initial) or None,
                 "status": status, "reasoning": _text(result.get("reasoning"))[:1500],
                 "context_hash": digest, "source": "ai", "confirmed": False,
                 "details": {"name_source_message_id": source_id or None,
                             "initial_source_message_id": initial_source_id or None}})
-        for item in items:
-            if not any(int(record["item_pedido_id"]) == int(item["id"]) for record in records):
-                order = next(row for row in orders if int(row["id"]) == int(item["pedido_id"]))
-                provider_order_id = str(order.get("marketplace_order_id") or order.get("codigo_pedido_externo") or "")
-                records.append({"pedido_id": int(item["pedido_id"]), "item_pedido_id": int(item["id"]),
-                    "provider_order_id": provider_order_id, "provider_item_id": f"local-item-{item['id']}",
-                    "provider_message_id": None, "quantity_to_personalize": max(1, int(item.get("quantidade") or 1)),
-                    "customization_name": None, "customization_initial": None,
-                    "status": status, "reasoning": _text(result.get("reasoning"))[:1500],
-                    "context_hash": digest, "source": "ai", "confirmed": False, "details": {}})
+        if set(seen) != {int(item["id"]) for item in items}:
+            raise ValueError("A resposta da IA precisa incluir cada item personalizado elegível")
         for item in items:
             if personalized_quantity.get(item["id"], 0) not in (0, max(1, int(item.get("quantidade") or 1))):
-                status = "NEEDS_REVIEW"
+                raise ValueError("A soma das quantidades personalizadas diverge do item")
+        if status == "SUCCESS" and not names_found:
+            raise ValueError("A IA retornou SUCCESS sem nome nem inicial identificados")
+        if status == "NO_PERSONALIZATION_FOUND" and names_found:
+            raise ValueError("A IA retornou NO_PERSONALIZATION_FOUND apesar de identificar nomes")
+        if {int(record["item_pedido_id"]) for record in records} != {int(item["id"]) for item in items}:
+            raise ValueError("A resposta da IA não cobriu todos os itens personalizados")
         if status == "NEEDS_REVIEW":
             for record in records:
                 record["status"] = status
@@ -1130,12 +1211,18 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
                "model_result": result, "metadata": response.to_metadata() if response else {},
                "pedido_ids": sorted({int(order["id"]) for order in orders})}
         # SQL RPC validates account/order/item ownership and writes results + log atomically.
-        supabase_db.rpc("persist_mercadolivre_personalization_results", {
+        persisted = supabase_db.rpc("persist_mercadolivre_personalization_results", {
             "p_integration_id": int(integration_id), "p_pack_id": str(pack_id),
             "p_context_hash": digest, "p_status": status,
             "p_needs_review": bool(forced_review or status == "NEEDS_REVIEW"),
             "p_records": records, "p_log": log, "p_batch_id": batch_id,
         }).execute()
+        confirmation = getattr(persisted, "data", None)
+        if isinstance(confirmation, list):
+            confirmation = confirmation[0] if confirmation else None
+        if (not isinstance(confirmation, dict) or int(confirmation.get("saved", -1)) != len(records)
+                or str(confirmation.get("status") or "").upper() != status):
+            raise RuntimeError("Banco não confirmou a persistência integral dos resultados da IA")
         return {"status": status.lower(), "pack_id": str(pack_id), "personalizations": len(records)}
     except Exception as exc:
         for pedido_id in sorted({int(order["id"]) for order in orders}):

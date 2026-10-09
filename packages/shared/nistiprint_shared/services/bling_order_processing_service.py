@@ -1928,12 +1928,14 @@ def _upsert_itens_pedido(pedido_id, itens_bling):
 
     pedido_rows = (
         supabase_db.table('pedidos')
-        .select('ingest_source')
+        .select('ingest_source,marketplace_module_id')
         .eq('id', pedido_id)
         .limit(1)
         .execute().data or []
     )
-    if pedido_rows and str(pedido_rows[0].get('ingest_source') or '').lower() in ('shopee', 'mercadolivre'):
+    if pedido_rows and (str(pedido_rows[0].get('ingest_source') or '').lower() in ('shopee', 'mercadolivre')
+                        or str(pedido_rows[0].get('marketplace_module_id') or '').lower()
+                        in ('shopee', 'mercadolivre')):
         # Marketplace owns commercial item data. Bling may only enrich the
         # internal product mapping for an existing SKU.
         for item in itens_bling:

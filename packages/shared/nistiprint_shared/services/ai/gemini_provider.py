@@ -46,15 +46,20 @@ class GeminiProvider:
     def supports(self, model: str) -> bool:
         return model in ALLOWED_MODELS
 
-    def complete(self, system_prompt: str, user_payload: str) -> AIResponse:
+    def complete(self, system_prompt: str, user_payload: str,
+                 response_schema: Optional[dict] = None) -> AIResponse:
         client = self._get_client()
         prompt = f"{system_prompt}\n\n{user_payload}"
 
         started = time.monotonic()
         try:
-            response = client.models.generate_content(
-                model=self.model, contents=prompt
-            )
+            config = None
+            if response_schema:
+                from google.genai import types
+                config = types.GenerateContentConfig(
+                    response_mime_type="application/json", response_schema=response_schema,
+                )
+            response = client.models.generate_content(model=self.model, contents=prompt, config=config)
         except Exception as exc:
             raise AIProviderError(f"Gemini falhou: {exc}") from exc
         latency_ms = int((time.monotonic() - started) * 1000)

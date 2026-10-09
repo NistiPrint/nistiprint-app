@@ -115,6 +115,19 @@ class TestCanonicalOrderSnapshotService(unittest.TestCase):
         itens.delete.assert_not_called()
         itens.insert.assert_not_called()
 
+    def test_replace_items_skips_for_marketplace_owned_order(self):
+        service = snapshot_module.CanonicalOrderSnapshotService()
+        pedidos = MagicMock()
+        pedidos.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {'pedido_bling_id': None, 'ingest_source': 'mercadolivre'}
+        ]
+        itens = MagicMock()
+        with patch.object(snapshot_module.supabase_db, 'table',
+                          side_effect=lambda name: pedidos if name == 'pedidos' else itens):
+            service._replace_items(10, [{'sku': 'MLB1', 'name': 'Item'}])
+        itens.delete.assert_not_called()
+        itens.insert.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

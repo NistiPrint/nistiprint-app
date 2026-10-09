@@ -152,6 +152,19 @@ class TestOpenRouterProvider(unittest.TestCase):
         self.assertEqual(resp.usage["total_tokens"], 42)
         self.assertEqual(resp.provider, "openrouter")
 
+    def test_json_schema_exige_parametros_compativeis(self):
+        provider = self._provider(self._resposta(body={
+            "model": "openai/gpt-4o-mini",
+            "choices": [{"message": {"content": '{"status":"SUCCESS"}'}}],
+        }))
+        schema = {"type": "object", "properties": {"status": {"type": "string"}},
+                  "required": ["status"], "additionalProperties": False}
+        provider.complete("sistema", "payload", response_schema=schema)
+        body = provider._client.post.call_args.kwargs["json"]
+        self.assertEqual(body["response_format"]["type"], "json_schema")
+        self.assertEqual(body["response_format"]["json_schema"]["schema"], schema)
+        self.assertTrue(body["provider"]["require_parameters"])
+
     def test_sem_credencial_falha_com_mensagem_clara(self):
         provider = OpenRouterProvider(api_key=None, client=MagicMock())
         with self.assertRaises(AIProviderError) as ctx:
