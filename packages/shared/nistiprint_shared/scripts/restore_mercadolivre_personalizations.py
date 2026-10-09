@@ -19,9 +19,10 @@ from nistiprint_shared.services.mercadolivre_personalization_service import (
 
 
 def _message_fingerprint(rows: list[dict]) -> list[dict]:
-    return [{"id": str(row.get("provider_message_id") or ""),
+    return [{"id": str(row.get("provider_message_id") or row.get("id") or ""),
              "sender_role": row.get("sender_role"), "created_at": row.get("created_at"),
-             "text": row.get("text_content"), "attachments": row.get("attachments") or []}
+             "text": row.get("text_content") if "text_content" in row else row.get("text"),
+             "attachments": row.get("attachments") or []}
             for row in sorted(rows, key=lambda value: (str(value.get("created_at") or ""),
                                                        str(value.get("provider_message_id") or "")))]
 

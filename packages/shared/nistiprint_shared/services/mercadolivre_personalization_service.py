@@ -791,23 +791,59 @@ def list_personalized_orders(integration_id: int, limit: int = 200) -> list[dict
     conversations = (supabase_db.table("mercadolivre_chat_conversations").select(
         "pack_id,seller_id,order_ids,last_message_at,last_synced_at,context_hash,ai_status,needs_review,last_ai_executed_at,last_error,raw_json"
     ).eq("marketplace_integration_id", int(integration_id)).execute().data or [])
+    conversations_by_order: dict[str, list[dict]] = {}
+    for conversation in conversations:
+        for linked_order_id in (_json(conversation.get("order_ids"), []) or []):
+            conversations_by_order.setdefault(str(linked_order_id), []).append(conversation)
+
+    # The list screen can request thousands of orders. Fetch chat and result rows
+    # once per account instead of issuing two/three PostgREST requests per order.
+    pack_ids = sorted({str(row.get("pack_id")) for row in conversations if row.get("pack_id")})
+    messages = []
+    for pack_offset in range(0, len(pack_ids), 100):
+        pack_batch = pack_ids[pack_offset:pack_offset + 100]
+        for start in range(0, 100_000, 1000):
+            page = (supabase_db.table("mercadolivre_chat_messages").select(
+                "pack_id,provider_message_id,sender_role,created_at,text_content,moderation_status,attachments"
+            ).eq("marketplace_integration_id", int(integration_id)).in_("pack_id", pack_batch)
+             .order("created_at").range(start, start + 999).execute().data or [])
+            messages.extend(page)
+            if len(page) < 1000:
+                break
+    messages_by_pack: dict[str, list[dict]] = {}
+    for message in messages:
+        messages_by_pack.setdefault(str(message.get("pack_id")), []).append(message)
+    message_count_by_pack = {pack_id: len(pack_messages)
+                             for pack_id, pack_messages in messages_by_pack.items()}
+    result_rows = []
+    for order_offset in range(0, len(ids), 100):
+        order_batch = ids[order_offset:order_offset + 100]
+        for start in range(0, 100_000, 1000):
+            page = (supabase_db.table("mercadolivre_personalizations").select("*")
+                    .eq("marketplace_integration_id", int(integration_id)).in_("pedido_id", order_batch)
+                    .order("updated_at", desc=True).range(start, start + 999).execute().data or [])
+            result_rows.extend(page)
+            if len(page) < 1000:
+                break
+    results_by_order: dict[int, list[dict]] = {}
+    for row in result_rows:
+        try:
+            results_by_order.setdefault(int(row.get("pedido_id")), []).append(row)
+        except (TypeError, ValueError):
+            continue
+
     for order in orders:
         order_id = int(order["id"])
         if order_id not in items_by_order:
             continue
         external = str(order.get("marketplace_order_id") or order.get("codigo_pedido_externo") or "")
-        linked = [conversation for conversation in conversations if external in
-                  [str(item) for item in (_json(conversation.get("order_ids"), []) or [])]]
-        conversation_messages = (supabase_db.table("mercadolivre_chat_messages").select("*")
-                                 .eq("marketplace_integration_id", int(integration_id))
-                                 .eq("pack_id", linked[0]["pack_id"]).execute().data or []) if linked else []
+        linked = conversations_by_order.get(external, [])
+        conversation_messages = messages_by_pack.get(str(linked[0].get("pack_id")), []) if linked else []
         current_hash = (_context_hash(conversation_messages) if conversation_messages else
                         linked[0].get("context_hash") if linked else None)
-        result_rows = (supabase_db.table("mercadolivre_personalizations").select("*")
-                       .eq("marketplace_integration_id", int(integration_id)).eq("pedido_id", order_id)
-                       .order("updated_at", desc=True).execute().data or [])
+        order_result_rows = results_by_order.get(order_id, [])
         # Keep the last completed extraction visible while newer buyer context is pending.
-        valid_rows = result_rows
+        valid_rows = order_result_rows
         by_item: dict[int, list[dict]] = {}
         for row in valid_rows:
             if row.get("item_pedido_id"):
@@ -836,10 +872,8 @@ def list_personalized_orders(integration_id: int, limit: int = 200) -> list[dict
         message_count = 0
         messages = []
         if linked:
-            count_rows = (supabase_db.table("mercadolivre_chat_messages").select("*", count="exact")
-                          .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", linked[0]["pack_id"]).execute())
-            message_count = count_rows.count or len(count_rows.data or [])
-            messages = count_rows.data or []
+            message_count = message_count_by_pack.get(str(linked[0].get("pack_id")), 0)
+            messages = conversation_messages
         conversation = linked[0] if linked else {}
         last_buyer_message_at = max((row.get("created_at") or "" for row in messages
                                      if row.get("sender_role") == "buyer"), default="") or None
@@ -1123,8 +1157,7 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
             raise ValueError("Resposta da IA não contém reasoning em formato de texto")
         item_map = {str(item["id"]): item for item in items}
         valid_message_ids = {str(message.get("provider_message_id")) for message in messages if message.get("sender_role") == "buyer"}
-        if any(str(order.get("message_to_seller") or "").strip() for order in orders):
-            valid_message_ids.add("message_to_seller")
+        order_by_id = {int(order["id"]): order for order in orders}
         records = []
         seen: dict[int, int] = {}
         personalized_quantity: dict[int, int] = {}
@@ -1138,8 +1171,15 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
             if isinstance(raw_item_id, bool) or not isinstance(raw_item_id, int):
                 raise ValueError("item_id da IA precisa ser um ID interno inteiro")
             item = item_map.get(str(raw_item_id))
+            item_order = order_by_id.get(int(item["pedido_id"])) if item else None
             source_id = str(entry.get("name_source_message_id") or "")
             initial_source_id = str(entry.get("initial_source_message_id") or "")
+            valid_name_source = (source_id in valid_message_ids or
+                                 source_id == "message_to_seller" and bool(
+                                     _text((item_order or {}).get("message_to_seller"))))
+            valid_initial_source = (initial_source_id in valid_message_ids or
+                                    initial_source_id == "message_to_seller" and bool(
+                                        _text((item_order or {}).get("message_to_seller"))))
             raw_quantity = entry.get("quantity_to_personalize")
             if isinstance(raw_quantity, bool) or not isinstance(raw_quantity, int):
                 raise ValueError("quantity_to_personalize da IA precisa ser inteiro")
@@ -1153,13 +1193,13 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
                     and not isinstance(entry.get("initial_source_message_id"), str)):
                 raise ValueError("Fontes de personalização precisam ser texto ou nulas")
             if ((entry.get("name_source_message_id") is not None
-                 and source_id not in valid_message_ids)
+                 and not valid_name_source)
                     or (entry.get("initial_source_message_id") is not None
-                        and initial_source_id not in valid_message_ids)):
+                        and not valid_initial_source)):
                 raise ValueError("Resposta da IA referencia uma mensagem inexistente")
             if (not item or not 1 <= quantity <= max(1, int(item.get("quantidade") or 1))
-                    or (name and source_id not in valid_message_ids)
-                    or (initial and initial_source_id not in valid_message_ids)
+                    or (name and not valid_name_source)
+                    or (initial and not valid_initial_source)
                     or (name and not source_id) or (initial and not initial_source_id)):
                 raise ValueError("Resposta da IA contém item, quantidade ou fonte inválida")
             names_found = names_found or bool(_text(name) or _text(initial))
