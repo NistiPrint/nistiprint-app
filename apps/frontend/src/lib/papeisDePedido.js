@@ -179,9 +179,7 @@ function cartaoHtml(order) {
     || order.contato?.documento
     || order.contato?.document
     || order.documento;
-  const endereco = order.contato?.endereco
-    ? `<div>${escaparHtml(order.contato.endereco)}</div>`
-    : '';
+  const nomeUsuario = order.contato?.nomeUsuario || order.contato?.username || order.buyer_username;
   const ehMercadoLivre = order.plataforma_slug === 'mercadolivre';
   const idPedidoMercadoLivre = order.marketplace_order_id || order.numeroLoja || order.numero || order.id || 'N/A';
   const identificadorCabecalho = ehMercadoLivre
@@ -193,10 +191,10 @@ function cartaoHtml(order) {
   return `
     <div class="stamp-card">
       <div class="stamp-header">
-        <div>
-          <div>Nome: ${escaparHtml(order.contato?.nome || 'N/A')}</div>
-          <div>CPF: ${escaparHtml(documento || 'N/A')}</div>
-          ${endereco}
+        <div class="buyer-info">
+          <div class="buyer-name">${escaparHtml(order.contato?.nome || 'N/A')}</div>
+          ${nomeUsuario ? `<div class="buyer-username">${escaparHtml(nomeUsuario)}</div>` : ''}
+          <div class="buyer-document">Documento: ${escaparHtml(documento || 'N/A')}</div>
         </div>
         <div></div>
         <div class="origem">
@@ -205,7 +203,7 @@ function cartaoHtml(order) {
         </div>
       </div>
       <div class="stamp-content">
-        <div class="order-info"><div>Pedido ${escaparHtml(identificadorPedido)}</div></div>
+        <div class="order-info"><div>${escaparHtml(identificadorPedido)}</div></div>
         ${itens.map((item) => itemHtml(item, order.personalizacao_pendente)).join('')}
         ${mensagemHtml(order)}
         <div class="item">
@@ -260,9 +258,13 @@ const ESTILO = `
   body{margin:0;padding:0;font-family:Arial,sans-serif;color:#000}
   .stamp-card{border:1px solid #000;border-radius:8px;padding:20px;background:#fff;width:100%;
     height:100vh;box-sizing:border-box;page-break-after:always;display:flex;flex-direction:column}
-  .stamp-header{display:flex;justify-content:space-between;font-size:1.5rem;margin-bottom:30px}
-  .stamp-header div div{padding:15px 0}
-  .stamp-header .origem{text-align:right;font-weight:700}
+  .stamp-header{display:flex;justify-content:space-between;align-items:flex-start;font-size:1.5rem;margin-bottom:30px}
+  .stamp-header .buyer-info{display:flex;flex-direction:column;align-items:flex-start;gap:5px}
+  .stamp-header .buyer-name{font-size:1.5rem;font-weight:700}
+  .stamp-header .buyer-username{font-size:.8rem;color:#555}
+  .stamp-header .buyer-document{font-size:1rem}
+  .stamp-header .origem{display:flex;flex-direction:column;align-items:flex-end;gap:5px;text-align:right;font-weight:700}
+  .stamp-header .origem>div{padding:0}
   .stamp-content{flex-grow:1;min-height:0;display:flex;flex-direction:column;justify-content:flex-start}
   .stamp-content .order-info{text-align:center;font-size:2.5rem;margin-bottom:40px}
   .stamp-content .order-info div,.stamp-content .item-details div{margin-bottom:5px}

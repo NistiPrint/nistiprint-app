@@ -651,7 +651,13 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None, prepa
         snapshot_customer = snapshot.get('customer') or {}
         snapshot_logistics = snapshot.get('logistics') or {}
         snapshot_platform_fields = snapshot.get('platform_fields') or {}
-        if plataforma_slug == 'mercadolivre' and not prepared:
+        if not isinstance(snapshot_customer, dict):
+            snapshot_customer = {}
+        if not isinstance(snapshot_logistics, dict):
+            snapshot_logistics = {}
+        if not isinstance(snapshot_platform_fields, dict):
+            snapshot_platform_fields = {}
+        if not prepared:
             try:
                 snapshot_result = (
                     supabase_db.table('pedido_snapshots')
@@ -664,8 +670,14 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None, prepa
                 snapshot_customer = snapshot.get('customer') or {}
                 snapshot_logistics = snapshot.get('logistics') or {}
                 snapshot_platform_fields = snapshot.get('platform_fields') or {}
+                if not isinstance(snapshot_customer, dict):
+                    snapshot_customer = {}
+                if not isinstance(snapshot_logistics, dict):
+                    snapshot_logistics = {}
+                if not isinstance(snapshot_platform_fields, dict):
+                    snapshot_platform_fields = {}
             except Exception:
-                logger.warning('Falha ao ler dados do comprador MercadoLivre do pedido %s', pedido_id)
+                logger.warning('Falha ao ler dados do comprador do pedido %s', pedido_id)
 
         # 5b. Mensagem do comprador.
         #
@@ -706,34 +718,54 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None, prepa
         # `informacoes_cliente`; nesse caso `dict.get(..., fallback)` nao
         # aciona o fallback. Os pedidos novos tambem usam `document`/`documento`
         # no snapshot e `cliente_documento` na tabela principal.
+        snapshot_raw_customer = snapshot_customer.get('raw') or {}
+        if not isinstance(snapshot_raw_customer, dict):
+            snapshot_raw_customer = {}
+        meli_fields = snapshot_platform_fields.get('mercadolivre') or {}
+        if not isinstance(meli_fields, dict):
+            meli_fields = {}
+        meli_order = meli_fields.get('order') or {}
+        if not isinstance(meli_order, dict):
+            meli_order = {}
+        meli_buyer = meli_order.get('buyer') or {}
+        if not isinstance(meli_buyer, dict):
+            meli_buyer = {}
+        meli_billing = meli_buyer.get('billing_info') or {}
+        if not isinstance(meli_billing, dict):
+            meli_billing = {}
+        meli_identification = meli_buyer.get('identification') or {}
+        if not isinstance(meli_identification, dict):
+            meli_identification = {}
+        customer_billing = snapshot_customer.get('billing_info') or {}
+        if not isinstance(customer_billing, dict):
+            customer_billing = {}
+        raw_billing = snapshot_raw_customer.get('billing_info') or {}
+        if not isinstance(raw_billing, dict):
+            raw_billing = {}
+        customer_identification = snapshot_customer.get('identification') or {}
+        if not isinstance(customer_identification, dict):
+            customer_identification = {}
         documento = _primeiro_valor_preenchido(
             pedido.get('cliente_documento'),
             contato.get('numeroDocumento'),
             contato.get('document'),
             contato.get('documento'),
+            contato.get('doc_number'),
+            snapshot_customer.get('document'),
+            snapshot_customer.get('documento'),
+            snapshot_customer.get('numeroDocumento'),
+            snapshot_customer.get('doc_number'),
+            snapshot_raw_customer.get('document'),
+            snapshot_raw_customer.get('documento'),
+            snapshot_raw_customer.get('numeroDocumento'),
+            snapshot_raw_customer.get('document_number'),
+            raw_billing.get('doc_number'),
+            customer_billing.get('doc_number'),
+            customer_identification.get('number'),
+            meli_billing.get('doc_number'),
+            meli_billing.get('document_number'),
+            meli_identification.get('number'),
         )
-        if not documento:
-            try:
-                if not prepared:
-                    snapshot_result = (
-                        supabase_db.table('pedido_snapshots')
-                        .select('customer')
-                        .eq('pedido_id', pedido_id)
-                        .limit(1)
-                        .execute()
-                    )
-                    snapshot_customer = ((snapshot_result.data or [{}])[0] or {}).get('customer') or {}
-                snapshot_raw_customer = snapshot_customer.get('raw') or {}
-                documento = _primeiro_valor_preenchido(
-                    snapshot_customer.get('document'),
-                    snapshot_customer.get('documento'),
-                    snapshot_customer.get('numeroDocumento'),
-                    snapshot_raw_customer.get('document'),
-                    snapshot_raw_customer.get('documento'),
-                    snapshot_raw_customer.get('numeroDocumento'),
-                )
-            except Exception:
-                logger.warning('Falha ao ler documento do cliente do pedido %s', pedido_id)
 
         # 7. Nome de exibição da plataforma e numeroLoja
         plataforma_nome = MARKETPLACE_DISPLAY_NAMES.get(
@@ -756,7 +788,47 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None, prepa
         is_flex = pedido.get('is_flex', False)
         servico_logistico = pedido.get('servico_logistico', '')
 
-        nome_contato = pedido.get('cliente_nome', contato.get('nome', ''))
+        shopee_fields = snapshot_platform_fields.get('shopee') or {}
+        if not isinstance(shopee_fields, dict):
+            shopee_fields = {}
+        platform_buyer = shopee_fields.get('raw') or {}
+        if not isinstance(platform_buyer, dict):
+            platform_buyer = {}
+        recipient = platform_buyer.get('recipient_address') or {}
+        if not isinstance(recipient, dict):
+            recipient = {}
+        logistics_address = snapshot_logistics.get('address') or {}
+        if not isinstance(logistics_address, dict):
+            logistics_address = {}
+        nome_usuario = _primeiro_valor_preenchido(
+            pedido.get('buyer_username'),
+            snapshot_platform_fields.get('buyer_username'),
+            contato.get('buyer_username'),
+            contato.get('user_name'),
+            contato.get('username'),
+            contato.get('nickname'),
+            snapshot_customer.get('username'),
+            snapshot_customer.get('nickname'),
+            snapshot_raw_customer.get('username'),
+            snapshot_raw_customer.get('nickname'),
+            platform_buyer.get('buyer_username'),
+            meli_buyer.get('nickname'),
+        )
+        nome_candidatos = (
+            pedido.get('cliente_nome'),
+            contato.get('nome'),
+            snapshot_customer.get('name'),
+            snapshot_customer.get('nome'),
+            snapshot_raw_customer.get('name'),
+            recipient.get('name'),
+            logistics_address.get('receiver_name'),
+        )
+        nome_contato = next(
+            (str(valor).strip() for valor in nome_candidatos
+             if str(valor or '').strip()
+             and str(valor).strip().casefold() != str(nome_usuario or '').strip().casefold()),
+            '',
+        )
         if plataforma_slug == 'mercadolivre':
             nome_contato = _nome_comprador_mercadolivre(
                 logistics=snapshot_logistics,
@@ -766,12 +838,12 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None, prepa
                     'buyer_username': (
                         snapshot_platform_fields.get('buyer_username')
                         or pedido.get('buyer_username')
+                        or nome_usuario
                     ),
                 },
-                # cliente_nome e informacoes_cliente podem ter sido populados
-                # pelo nickname em registros antigos; nao os reutilizar como
-                # fallback do papel, para nunca imprimir o nome de usuario.
-                fallback='',
+                # O fallback ja foi filtrado contra o nome de usuario acima;
+                # evita perder um nome real gravado apenas no pedido legado.
+                fallback=nome_contato,
             )
 
         return {
@@ -790,6 +862,7 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None, prepa
             'plataforma_slug': plataforma_slug,
             'contato': {
                 'nome': nome_contato,
+                'nomeUsuario': nome_usuario,
                 'numeroDocumento': documento,
                 'endereco': contato.get('endereco', ''),
                 'telefone': contato.get('telefone', pedido.get('cliente_telefone', '')),

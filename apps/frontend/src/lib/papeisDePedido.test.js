@@ -174,8 +174,8 @@ test('agrega todos os lotes em um unico documento de impressao', async () => {
 
     assert.equal(result.total, 26);
     assert.equal(appendedIframes, 1);
-    assert.match(writtenHtml, /Pedido 1/);
-    assert.match(writtenHtml, /Pedido 26/);
+    assert.match(writtenHtml, /<div>1<\/div>/);
+    assert.match(writtenHtml, /<div>26<\/div>/);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalDocument === undefined) delete globalThis.document;
@@ -228,7 +228,8 @@ test('exibe o pacote no cabecalho e reaproveita o numero sem ERP no pedido', () 
   }]);
 
   assert.match(html, /<div>9007199254740999<\/div>/);
-  assert.match(html, /Pedido 9007199254740999/);
+  assert.match(html, /class="order-info"><div>9007199254740999<\/div>/);
+  assert.doesNotMatch(html, /Pedido 9007199254740999/);
   assert.doesNotMatch(html, /ordem-externa/);
 });
 
@@ -243,8 +244,8 @@ test('usa o numero do pedido no cabecalho quando o Mercado Livre nao tem pacote'
     itens: [],
   }]);
 
+  assert.match(html, /class="order-info"><div>8001234567890<\/div>/);
   assert.match(html, /<div>8001234567890<\/div>/);
-  assert.match(html, /Pedido 8001234567890/);
   assert.doesNotMatch(html, /Pacote não informado/);
 });
 
@@ -284,11 +285,43 @@ test('combina pedidos do mesmo pacote Mercado Livre em uma unica folha', () => {
   ]);
 
   assert.equal((html.match(/class="stamp-card"/g) || []).length, 2);
-  assert.match(html, /<div>Pedido 9001<\/div>/);
-  assert.doesNotMatch(html, /Pedido 9002/);
+  assert.match(html, /class="order-info"><div>9001<\/div>/);
+  assert.doesNotMatch(html, /class="order-info"><div>9002<\/div>/);
   assert.match(html, /Produto A[\s\S]*Produto B/);
   assert.match(html, /<div>pack-42<\/div>/);
   assert.match(html, /<div>pack-43<\/div>/);
+});
+
+
+test('exibe nome, usuario pequeno e documento no lado esquerdo do cabecalho', () => {
+  const html = montarDocumentoDePapeis([{
+    id: 20,
+    numero: '12345',
+    contato: {
+      nome: 'Maria da Silva',
+      nomeUsuario: 'maria_shop',
+      numeroDocumento: '123.456.789-00',
+    },
+    itens: [],
+  }]);
+
+  assert.match(html, /class="buyer-name">Maria da Silva<\/div>/);
+  assert.match(html, /class="buyer-username">maria_shop<\/div>/);
+  assert.match(html, /class="buyer-document">Documento: 123\.456\.789-00<\/div>/);
+  assert.match(html, /\.buyer-username\{font-size:\.8rem/);
+  assert.match(html, /\.stamp-header\{[^}]*align-items:flex-start/);
+  assert.match(html, /\.stamp-header \.origem>div\{padding:0\}/);
+  assert.match(html, /class="order-info"><div>12345<\/div>/);
+  assert.doesNotMatch(html, /Pedido 12345/);
+});
+
+
+test('mantem fallback para nome e documento ausentes e omite usuario vazio', () => {
+  const html = montarDocumentoDePapeis([{ id: 21, numero: '12346', itens: [] }]);
+
+  assert.match(html, /class="buyer-name">N\/A<\/div>/);
+  assert.match(html, /class="buyer-document">Documento: N\/A<\/div>/);
+  assert.doesNotMatch(html, /class="buyer-username"/);
 });
 
 

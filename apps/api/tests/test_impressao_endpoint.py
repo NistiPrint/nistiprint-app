@@ -139,6 +139,108 @@ class TestImpressaoEndpoint(unittest.TestCase):
             ('pedido_snapshots', 'pedido_id', list(range(100, 125))),
         ])
 
+    def test_dados_do_cabecalho_usam_nome_real_usuario_e_documento_do_snapshot(self):
+        class Query:
+            def select(self, *_args, **_kwargs): return self
+            def eq(self, *_args, **_kwargs): return self
+            def execute(self): return type('Result', (), {'data': []})()
+
+        pedido = {
+            'id': 90,
+            'marketplace_module_id': 'shopee',
+            'cliente_nome': 'maria_shop',
+            'buyer_username': 'maria_shop',
+            'cliente_documento': '',
+            'informacoes_cliente': {'numeroDocumento': ''},
+            'codigo_pedido_externo': 'SHOPEE-90',
+        }
+        snapshot = {
+            'customer': {
+                'name': 'Maria da Silva',
+                'document': '123.456.789-00',
+                'username': 'maria_shop',
+            },
+            'platform_fields': {'buyer_username': 'maria_shop'},
+        }
+        banco = type('Database', (), {'table': lambda _self, _name: Query()})()
+        with patch.object(impressao_module, 'supabase_db', banco):
+            papel = impressao_module._build_order_print_data(90, prepared={
+                'pedido': pedido,
+                'itens': [],
+                'snapshot': snapshot,
+            })
+
+        self.assertEqual(papel['contato']['nome'], 'Maria da Silva')
+        self.assertEqual(papel['contato']['nomeUsuario'], 'maria_shop')
+        self.assertEqual(papel['contato']['numeroDocumento'], '123.456.789-00')
+
+    def test_documento_vazio_no_campo_legado_usa_documento_do_snapshot(self):
+        class Query:
+            def select(self, *_args, **_kwargs): return self
+            def eq(self, *_args, **_kwargs): return self
+            def execute(self): return type('Result', (), {'data': []})()
+
+        pedido = {
+            'id': 91,
+            'marketplace_module_id': 'shopee',
+            'cliente_nome': 'Maria da Silva',
+            'buyer_username': 'maria_shop',
+            'cliente_documento': '',
+            'informacoes_cliente': {'numeroDocumento': ''},
+            'codigo_pedido_externo': 'SHOPEE-91',
+        }
+        banco = type('Database', (), {'table': lambda _self, _name: Query()})()
+        with patch.object(impressao_module, 'supabase_db', banco):
+            papel = impressao_module._build_order_print_data(91, prepared={
+                'pedido': pedido,
+                'itens': [],
+                'snapshot': {'customer': {'document': '987.654.321-00'}},
+            })
+
+        self.assertEqual(papel['contato']['numeroDocumento'], '987.654.321-00')
+
+    def test_mercadolivre_usa_usuario_e_documento_de_billing_info(self):
+        pedido = {
+            'id': 92,
+            'marketplace_module_id': 'mercadolivre',
+            'marketplace_order_id': '2000015337751535',
+            'cliente_nome': 'larissa-gato',
+            'buyer_username': None,
+            'cliente_documento': '',
+            'informacoes_cliente': {},
+        }
+        snapshot = {
+            'customer': {
+                'name': 'Larissa Gato de Lucena',
+                'nickname': 'larissa-gato',
+                'raw': {'nickname': 'larissa-gato'},
+            },
+            'platform_fields': {
+                'mercadolivre': {
+                    'order': {
+                        'buyer': {
+                            'nickname': 'larissa-gato',
+                            'billing_info': {
+                                'doc_type': 'CPF',
+                                'doc_number': '12345678901',
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        papel = impressao_module._build_order_print_data(92, prepared={
+            'pedido': pedido,
+            'itens': [],
+            'snapshot': snapshot,
+            'personalizacao': {'ready': True, 'by_item_id': {}},
+            'pack_id': None,
+        })
+
+        self.assertEqual(papel['contato']['nome'], 'Larissa Gato de Lucena')
+        self.assertEqual(papel['contato']['nomeUsuario'], 'larissa-gato')
+        self.assertEqual(papel['contato']['numeroDocumento'], '12345678901')
+
     def test_avaliador_em_lote_preserva_personalizacao_aprovada_e_estado_pendente(self):
         service = importlib.import_module(
             'nistiprint_shared.services.mercadolivre_personalization_service'
