@@ -80,6 +80,14 @@ function normalizeOrder(order) {
   };
 }
 
+const personalizationHasName = row => Boolean(
+  row?.customization_name?.trim() || row?.customization_initial?.trim(),
+);
+
+const orderHasIdentifiedName = order => order.itens.some(item =>
+  item.personalizations.some(personalizationHasName),
+);
+
 function AccountOrders({ integrationId }) {
   const navigate = useNavigate();
   const [account, setAccount] = useState(null);
@@ -139,7 +147,8 @@ function AccountOrders({ integrationId }) {
       if (order.has_chat_messages) counts.com_chat += 1;
       else counts.sem_chat += 1;
       const rows = order.itens.flatMap(item => item.personalizations);
-      if (rows.some(row => row.status === 'SUCCESS' && row.customization_name)) counts.nome_identificado += 1;
+      counts.nome_identificado += order.itens.reduce((sum, item) =>
+        sum + item.personalizations.filter(personalizationHasName).length, 0);
       if (rows.some(row => row.status === 'NO_PERSONALIZATION_FOUND' || row.status === 'no_personalization_found'
         || (!row.customization_name && row.status === 'SUCCESS'))
         || ['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(order.ai_status)) counts.sem_nome += 1;
@@ -152,7 +161,7 @@ function AccountOrders({ integrationId }) {
     if (searchTerm && !search.includes(searchTerm.toLowerCase())) return false;
     const rows = order.itens.flatMap(item => item.personalizations);
     if (aiFilter === 'pendente_ia' && !order.needs_ai_processing) return false;
-    if (aiFilter === 'nome_identificado' && !rows.some(row => row.status === 'SUCCESS' && row.customization_name)) return false;
+    if (aiFilter === 'nome_identificado' && !orderHasIdentifiedName(order)) return false;
     if (aiFilter === 'sem_nome' && !rows.some(row => ['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(row.status)
       || (!row.customization_name && row.status === 'SUCCESS'))
       && !['NO_PERSONALIZATION_FOUND', 'no_personalization_found'].includes(order.ai_status)) return false;

@@ -36,7 +36,7 @@ function getStatusBadge(order) {
   if (personalizations.some(p => p.status === 'NEEDS_REVIEW')) {
     return { label: 'A revisar', className: 'bg-orange-100 text-orange-900 border-orange-300' }
   }
-  if (personalizations.some(p => p.status === 'SUCCESS' && p.customization_name?.trim())) {
+  if (personalizations.some(p => p.customization_name?.trim() || p.customization_initial?.trim())) {
     return {
       label: 'Nome identificado',
       className: 'bg-green-100 text-green-900 border-green-300',

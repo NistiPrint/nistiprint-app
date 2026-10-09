@@ -783,6 +783,16 @@ def list_personalized_orders(integration_id: int, limit: int = 200) -> list[dict
         for row in valid_rows:
             if row.get("item_pedido_id"):
                 by_item.setdefault(int(row["item_pedido_id"]), []).append(row)
+        # Return one representative result per item, preferring the latest
+        # identified result. A later inconclusive execution must not replace
+        # a successful result from an earlier chat context in the card.
+        for item_id, rows in by_item.items():
+            rows.sort(key=lambda row: (
+                bool(str(row.get("customization_name") or "").strip()
+                     or str(row.get("customization_initial") or "").strip()),
+                str(row.get("updated_at") or ""),
+            ), reverse=True)
+            by_item[item_id] = rows[:1]
         message_count = 0
         messages = []
         if linked:

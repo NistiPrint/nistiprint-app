@@ -59,12 +59,13 @@ BEGIN
         -- The most recent AI output may be inconclusive. Carry the last
         -- identified name forward, but retain review status and the new
         -- context/source metadata so the operator can see reprocessing state.
-        IF v_name IS NULL AND v_initial IS NULL AND v_status <> 'SUCCESS' THEN
+        IF v_name IS NULL AND v_initial IS NULL THEN
             SELECT * INTO v_existing
               FROM mercadolivre_personalizations
              WHERE marketplace_integration_id = p_integration_id
                AND pedido_id = v_pedido_id AND item_pedido_id = v_item_id
-               AND pack_id = p_pack_id AND status = 'SUCCESS'
+               AND pack_id = p_pack_id
+               AND (status = 'SUCCESS' OR confirmed = TRUE)
                AND (NULLIF(btrim(customization_name), '') IS NOT NULL
                     OR NULLIF(btrim(customization_initial), '') IS NOT NULL)
              ORDER BY updated_at DESC, id DESC
@@ -91,11 +92,15 @@ BEGIN
         ) ON CONFLICT (marketplace_integration_id, pedido_id, item_pedido_id, provider_item_id, context_hash)
         DO UPDATE SET provider_message_id = EXCLUDED.provider_message_id,
                       quantity_to_personalize = EXCLUDED.quantity_to_personalize,
-                      customization_name = EXCLUDED.customization_name,
-                      customization_initial = EXCLUDED.customization_initial,
+                      customization_name = COALESCE(EXCLUDED.customization_name,
+                                                    mercadolivre_personalizations.customization_name),
+                      customization_initial = COALESCE(EXCLUDED.customization_initial,
+                                                       mercadolivre_personalizations.customization_initial),
                       status = EXCLUDED.status, reasoning = EXCLUDED.reasoning,
-                      source = 'ai', confirmed = FALSE, confirmed_by = NULL,
-                      confirmed_at = NULL, details = EXCLUDED.details, updated_at = now();
+                      source = 'ai', confirmed = mercadolivre_personalizations.confirmed,
+                      confirmed_by = mercadolivre_personalizations.confirmed_by,
+                      confirmed_at = mercadolivre_personalizations.confirmed_at,
+                      details = EXCLUDED.details, updated_at = now();
         v_rows := v_rows + 1;
     END LOOP;
 
