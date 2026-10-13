@@ -1544,10 +1544,8 @@ def _sync_batch_operation(batch: dict) -> None:
     operation = async_operation_service.find_by_source("mercadolivre_personalization_batch", batch_id)
     raw_status = batch.get("status")
     retrying = batch.get("phase") == "RETRY"
-    waiting_retry = raw_status == "PENDING" and int(batch.get("attempts") or 0) > 0
-    status = ("EM_ANDAMENTO" if retrying or waiting_retry else
-              {"PENDING": "AGUARDANDO", "RUNNING": "EM_ANDAMENTO",
-               "COMPLETED": "CONCLUIDO", "FAILED": "ERRO"}.get(raw_status, "AGUARDANDO"))
+    status = {"PENDING": "AGUARDANDO", "RUNNING": "EM_ANDAMENTO",
+              "COMPLETED": "CONCLUIDO", "FAILED": "ERRO"}.get(raw_status, "AGUARDANDO")
     processed, total = int(batch.get("processed") or 0), int(batch.get("total") or 0)
     failed = int(batch.get("failed_count") or 0)
     success = int(batch.get("success_count") or 0)
@@ -1582,7 +1580,9 @@ def _sync_batch_operation(batch: dict) -> None:
         "rota_destino": f"/vendas/personalizadas/mercadolivre/{batch['marketplace_integration_id']}",
     }
     if operation:
-        async_operation_service.update_operation(operation["id"], **values)
+        async_operation_service.update_operation(
+            operation["id"], allow_active_to_waiting=(raw_status == "PENDING"), **values,
+        )
     else:
         created = async_operation_service.create_operation(
             owner_user_id=int(owner_id), categoria="IA",
@@ -1654,18 +1654,49 @@ def process_batch(integration_id: int, batch_id: str) -> dict:
 
 def recover_batches(integration_id: int, *, limit: int = 20) -> dict:
     """Dispatch due work; recovery never occupies a worker processing batches."""
-    from nistiprint_shared.services.mercadolivre_personalization_worker import submit_batch
+    from nistiprint_shared.services.mercadolivre_personalization_worker import (
+        _redis_client, submit_batch,
+    )
     now = _now()
-    pending = (supabase_db.table("mercadolivre_personalization_batches").select("id")
+    pending = (supabase_db.table("mercadolivre_personalization_batches").select("*")
                .eq("marketplace_integration_id", int(integration_id)).eq("status", "PENDING")
                .lte("available_at", now).order("created_at").limit(limit).execute().data or [])
-    expired = (supabase_db.table("mercadolivre_personalization_batches").select("id")
+    expired = (supabase_db.table("mercadolivre_personalization_batches").select("*")
                .eq("marketplace_integration_id", int(integration_id)).eq("status", "RUNNING")
                .lte("available_at", now).lte("lease_until", now).limit(limit).execute().data or [])
-    batch_ids = list(dict.fromkeys(str(row["id"]) for row in [*pending, *expired]))
-    for batch_id in batch_ids:
-        submit_batch(int(integration_id), batch_id)
-    return {"recovered": len(batch_ids)}
+    batches = {str(row["id"]): row for row in [*pending, *expired]}
+    dispatched = 0
+    redis_client = None
+    for batch_id, batch in batches.items():
+        # Beat/recovery can run on multiple workers. Keep only one outstanding
+        # Celery message per batch while the first message waits in the queue.
+        token = str(uuid.uuid4())
+        lock_key = f"np:ml-personalization:dispatch:{integration_id}:{batch_id}"
+        try:
+            redis_client = redis_client or _redis_client()
+            acquired = redis_client.set(lock_key, token, nx=True, ex=120)
+        except Exception:
+            logger.exception("Could not acquire batch dispatch lock batch=%s", batch_id)
+            acquired = True  # Redis is best-effort; keep the durable DB recovery path.
+        if not acquired:
+            continue
+        try:
+            submit_batch(int(integration_id), batch_id)
+            dispatched += 1
+            if batch.get("status") == "PENDING":
+                _sync_batch_operation(batch)
+        except Exception:
+            if redis_client is not None:
+                try:
+                    redis_client.eval(
+                        "if redis.call('get', KEYS[1]) == ARGV[1] then "
+                        "return redis.call('del', KEYS[1]) else return 0 end",
+                        1, lock_key, token,
+                    )
+                except Exception:
+                    logger.exception("Could not release batch dispatch lock batch=%s", batch_id)
+            raise
+    return {"recovered": dispatched}
 
 
 def batch_status(integration_id: int, batch_id: str, *, include_items: bool = True) -> dict:

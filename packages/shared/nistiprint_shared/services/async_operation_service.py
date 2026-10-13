@@ -151,7 +151,8 @@ class AsyncOperationService:
             self._notify_terminal(current)
         return current
 
-    def update_operation(self, operation_id: str, **changes) -> dict | None:
+    def update_operation(self, operation_id: str, *, allow_active_to_waiting: bool = False,
+                         **changes) -> dict | None:
         current_response = (
             supabase_db.table("operacoes_assincronas")
             .select("*")
@@ -171,7 +172,8 @@ class AsyncOperationService:
             # Once a durable operation is terminal, stale queue events cannot
             # restart it or replace its outcome.
             return previous
-        if previous_status == "EM_ANDAMENTO" and requested_status == "AGUARDANDO":
+        if (previous_status == "EM_ANDAMENTO" and requested_status == "AGUARDANDO"
+                and not allow_active_to_waiting):
             # A delayed queue event must not make an in-flight operation look
             # as if it had returned to the waiting queue.
             return previous

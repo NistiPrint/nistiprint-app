@@ -107,7 +107,7 @@ def home_operational_summary():
     if user_has_permission(user, "estoque", "ler"):
         def inventory_counts():
             unconfirmed_operations = _count_rows(
-                supabase_db.table("estoque_operacoes").select("id", count="exact", head=True)
+                supabase_db.table("estoque_operacoes").select("operation_id", count="exact", head=True)
                 .eq("status", "PROCESSANDO")
             )
             outbox_pending = _count_rows(
