@@ -1598,16 +1598,18 @@ def process_batch(integration_id: int, batch_id: str) -> dict:
                 _sync_batch_operation({**batch, "processed": processed, "status": "RUNNING"})
 
         failures = [row for row in results if row["status"] == "FAILED"]
-        final = "FAILED" if failures else "COMPLETED"
-        retry_delays = [float(row["retry_after"]) for row in failures if row.get("retry_after") is not None]
+        # A pack failure is isolated to that order. Keep its ledger entry as
+        # FAILED (and the conversation's last_error so it remains eligible for
+        # processing), but finish this batch after every pack has been handled.
+        # Marking the whole batch FAILED would retry it and leave its activity
+        # looking active even though the other packs had already completed.
+        final = "COMPLETED"
         terminal = (supabase_db.table("mercadolivre_personalization_batches").update({
             "status": final, "processed": sum(row["status"] == "COMPLETED" for row in
                 (supabase_db.table("mercadolivre_personalization_batch_items").select("status")
                  .eq("batch_id", str(batch_id)).execute().data or [])),
             "finished_at": _now(), "lease_until": None, "run_token": None,
-            "available_at": datetime.fromtimestamp(
-                time.time() + min(3600, max([30.0, *retry_delays])), timezone.utc).isoformat()
-                if failures else _now(),
+            "available_at": _now(),
             "error_message": json.dumps(failures, ensure_ascii=False)[:2000] if failures else None,
         }).eq("id", str(batch_id)).eq("run_token", run_token).eq("status", "RUNNING").execute().data or [])
         if terminal:

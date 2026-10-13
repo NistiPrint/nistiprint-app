@@ -37,8 +37,12 @@ def _json(value):
 
 
 def _count_rows(query) -> int:
-    """Read an exact count without transferring the matching rows."""
-    result = query.select("id", count="exact", head=True).execute()
+    """Read an exact count without transferring the matching rows.
+
+    Supabase's synchronous table builder only exposes filter methods after a
+    select has been added, so callers pass an already-selected query.
+    """
+    result = query.execute()
     return int(getattr(result, "count", 0) or 0)
 
 
@@ -63,11 +67,11 @@ def home_operational_summary():
     if user_has_permission(user, "vendas", "ler"):
         def order_counts():
             webhook_attention = _count_rows(
-                supabase_db.table("webhook_events")
+                supabase_db.table("webhook_events").select("id", count="exact", head=True)
                 .in_("last_status", ["pending", "pending_retry", "manual_intervention"])
             )
             order_reconciliation = _count_rows(
-                supabase_db.table("pending_order_reconciliations")
+                supabase_db.table("pending_order_reconciliations").select("id", count="exact", head=True)
                 .in_("status", ["pending", "failed"])
             )
             return {
@@ -81,7 +85,8 @@ def home_operational_summary():
             "production",
             lambda: {
                 "items_with_processing_error": _count_rows(
-                    supabase_db.table("itens_demanda").eq("status_processamento", "ERRO")
+                    supabase_db.table("itens_demanda").select("id", count="exact", head=True)
+                    .eq("status_processamento", "ERRO")
                 )
             },
         )
@@ -89,11 +94,11 @@ def home_operational_summary():
     if user_has_permission(user, "producao", "ler"):
         def print_counts():
             unresolved = _count_rows(
-                supabase_db.table("impressao_capas_envios")
+                supabase_db.table("impressao_capas_envios").select("id", count="exact", head=True)
                 .in_("status", ["PREPARADO", "ENVIANDO", "ENVIADO_SPOOLER", "RESULTADO_DESCONHECIDO"])
             )
             unknown = _count_rows(
-                supabase_db.table("impressao_capas_envios")
+                supabase_db.table("impressao_capas_envios").select("id", count="exact", head=True)
                 .eq("status", "RESULTADO_DESCONHECIDO")
             )
             return {"unresolved_sends": unresolved, "unknown_results": unknown}
@@ -102,13 +107,15 @@ def home_operational_summary():
     if user_has_permission(user, "estoque", "ler"):
         def inventory_counts():
             unconfirmed_operations = _count_rows(
-                supabase_db.table("estoque_operacoes").eq("status", "PROCESSANDO")
+                supabase_db.table("estoque_operacoes").select("id", count="exact", head=True)
+                .eq("status", "PROCESSANDO")
             )
             outbox_pending = _count_rows(
-                supabase_db.table("estoque_eventos_outbox").is_("delivered_at", "null")
+                supabase_db.table("estoque_eventos_outbox").select("id", count="exact", head=True)
+                .is_("delivered_at", "null")
             )
             outbox_failed = _count_rows(
-                supabase_db.table("estoque_eventos_outbox")
+                supabase_db.table("estoque_eventos_outbox").select("id", count="exact", head=True)
                 .is_("delivered_at", "null")
                 .not_.is_("last_error", "null")
             )
@@ -118,6 +125,7 @@ def home_operational_summary():
                 "outbox_failed": outbox_failed,
                 "balance_divergences": _count_rows(
                     supabase_db.table("v_estoque_saldo_ledger_divergencias")
+                    .select("id", count="exact", head=True)
                 ),
             }
         sections["inventory"] = _summary_section("inventory", inventory_counts)
