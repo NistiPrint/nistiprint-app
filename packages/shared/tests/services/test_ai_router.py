@@ -20,6 +20,29 @@ def _config(**valores):
 
 
 class TestSelecaoDeProvedor(unittest.TestCase):
+    def test_settings_completos_e_clientes_sao_reutilizados_por_thread(self):
+        reads = []
+        router = AIRouter(config_reader=lambda key, default=None: reads.append(key) or default)
+        settings = {
+            "provider": "gemini", "model": "gemini-2.0-flash",
+            "fallback_provider": None, "timeout_seconds": 60.0,
+        }
+        provider = MagicMock()
+        provider.complete.return_value = MagicMock(text="{}")
+        cache = __import__("threading").local()
+        registry = []
+
+        with patch("nistiprint_shared.services.ai.router.build_provider", return_value=provider) as build:
+            router.complete("system", "one", settings=settings,
+                            provider_cache=cache, provider_registry=registry)
+            router.complete("system", "two", settings=settings,
+                            provider_cache=cache, provider_registry=registry)
+
+        build.assert_called_once()
+        self.assertEqual(provider.complete.call_count, 2)
+        self.assertEqual(reads, [])
+        self.assertEqual(registry, [provider])
+
     def test_default_e_gemini(self):
         router = AIRouter(config_reader=_config())
         s = router.resolve_settings()

@@ -96,7 +96,7 @@ def processar():
         if not success:
             return ApiResponse.error(message, 500)
 
-        status_code = 200 if order_sn else 202
+        status_code = 202 if payload.get("batch_id") else 200
         return ApiResponse.success(payload, message=message, status_code=status_code)
     except Exception as exc:
         logger.error("Erro ao iniciar processamento de IA: %s", exc, exc_info=True)
@@ -297,7 +297,7 @@ def reprocessar(order_sn):
             return ApiResponse.error(message, 500)
         if isinstance(payload, dict):
             payload["reprocessed_by"] = getattr(g, "user_email", None)
-        return ApiResponse.success(payload, message=message)
+        return ApiResponse.success(payload, message=message, status_code=202 if payload.get("batch_id") else 200)
     except Exception as exc:
         logger.error("Erro ao reprocessar pedido %s: %s", order_sn, exc, exc_info=True)
         return ApiResponse.error(str(exc), 500)

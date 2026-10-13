@@ -97,6 +97,14 @@ configure_worker_logging()
 
 # Configurações de execução do app
 celery_app.conf.update(
+    task_routes={
+        **(celery_app.conf.task_routes or {}),
+        'services.ai_personalization.processar_batch': {'queue': 'ai_personalization'},
+        'services.ai_personalization.processar_pedido': {'queue': 'ai_personalization'},
+        'services.ai_personalization.processar_conta': {'queue': 'ai_personalization'},
+        'services.ai_personalization.processar_pendentes': {'queue': 'ai_personalization'},
+        'services.ai_personalization.recolher_lotes_parados': {'queue': 'ai_personalization'},
+    },
     worker_log_format=LOG_FORMAT,
     worker_task_log_format=LOG_FORMAT,
     worker_hijack_root_logger=True, # Deixa o Celery propagar logs para o root que configuramos

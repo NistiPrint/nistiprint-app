@@ -43,7 +43,7 @@ A aplicação roda em um **servidor único**, com os processos da aplicação ge
 |---|---|---|
 | Frontend (React/Vite) | Servido por **Caddy** no host | `systemctl … caddy` |
 | API (Flask + gunicorn) | Processo no host | `systemd: nistiprint-api` |
-| Worker (Celery) | Processo no host | `systemd: nistiprint-worker` |
+| Worker (Celery) | Processos no host | `systemd: nistiprint-worker` e `nistiprint-ai-worker` |
 | Beat (Celery scheduler) | Processo no host | `systemd: nistiprint-beat` |
 | Ingest confiável (9 papéis) | Processos no host | `systemd: nistiprint-ingest@<papel>` |
 | Legado | Processo no host | `systemd: nistiprint-legado` |

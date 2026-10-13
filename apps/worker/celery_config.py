@@ -75,7 +75,7 @@ def get_default_schedules():
         },
         'recolher-lotes-ia-parados': {
             'task': 'services.ai_personalization.recolher_lotes_parados',
-            'schedule': 300,
+            'schedule': 30,
             'options': {'queue': 'ai_personalization'},
         },
     }
@@ -390,6 +390,7 @@ celery_app.conf.task_queues = {
 celery_app.conf.task_routes = {
     'services.ai_personalization.processar_batch': {'queue': 'ai_personalization'},
     'services.ai_personalization.processar_pedido': {'queue': 'ai_personalization'},
+    'services.ai_personalization.processar_conta': {'queue': 'ai_personalization'},
     'services.ai_personalization.processar_pendentes': {'queue': 'ai_personalization'},
     'services.ai_personalization.recolher_lotes_parados': {'queue': 'ai_personalization'},
     'services.bling_status_sync.sync_batch': {'queue': 'bling_status_sync'},

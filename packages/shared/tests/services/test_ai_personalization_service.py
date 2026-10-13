@@ -1,4 +1,5 @@
 import unittest
+import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -58,6 +59,7 @@ class TestAiPersonalizationService(unittest.TestCase):
 
         self.assertEqual([order["id"] for order in selected], [3, 4])
         self.assertEqual([order["id"] for order in skipped], [1, 2])
+
 
     def test_message_from_shopee_mirror_uses_explicit_message(self):
         message = service._message_from_shopee_mirror({
@@ -231,6 +233,13 @@ class _FakeQuery:
         self._modo, self._payload = "insert", payload
         return self
 
+    def delete(self):
+        self._modo = "delete"
+        return self
+
+    def limit(self, _limit):
+        return self
+
     def update(self, payload):
         self._modo, self._payload = "update", payload
         return self
@@ -265,11 +274,16 @@ class _FakeQuery:
     def execute(self):
         linhas = self._store.setdefault(self._tabela, [])
         if self._modo == "insert":
-            registro = dict(self._payload)
-            registro.setdefault("id", f"batch-{len(linhas) + 1}")
-            registro.setdefault("processados", 0)
-            linhas.append(registro)
-            return SimpleNamespace(data=[registro])
+            payloads = self._payload if isinstance(self._payload, list) else [self._payload]
+            registros = []
+            for payload in payloads:
+                registro = dict(payload)
+                if self._tabela == "execucoes_ai_batch":
+                    registro.setdefault("id", f"batch-{len(linhas) + 1}")
+                    registro.setdefault("processados", 0)
+                linhas.append(registro)
+                registros.append(registro)
+            return SimpleNamespace(data=registros)
 
         alvos = [row for row in linhas if self._casa(row)]
         if self._range is not None:
@@ -278,6 +292,8 @@ class _FakeQuery:
         if self._modo == "update":
             for row in alvos:
                 row.update(self._payload)
+        if self._modo == "delete":
+            self._store[self._tabela] = [row for row in linhas if row not in alvos]
         return SimpleNamespace(data=[dict(row) for row in alvos])
 
 
@@ -287,6 +303,47 @@ class _FakeDb:
 
     def table(self, nome):
         return _FakeQuery(self._store, nome)
+
+
+class TestParalelismoShopeeAI(unittest.TestCase):
+    def test_preenche_vaga_concluida_sem_ultrapassar_dez_em_voo(self):
+        lock = threading.Lock()
+        active = 0
+        maximum = 0
+        first_wave_started = threading.Event()
+        release_first = threading.Event()
+        replacement_started = threading.Event()
+
+        def process(item):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+                if active == 10:
+                    first_wave_started.set()
+            if item == 0:
+                release_first.wait(timeout=5)
+            elif item < 10:
+                first_wave_started.wait(timeout=5)
+                release_first.wait(timeout=5)
+            else:
+                replacement_started.set()
+            with lock:
+                active -= 1
+
+        results = []
+        caller = threading.Thread(
+            target=lambda: results.extend(service._iter_shopee_ai_pool(range(20), process)),
+            daemon=True,
+        )
+        caller.start()
+        self.assertTrue(first_wave_started.wait(timeout=2))
+        release_first.set()
+        self.assertTrue(replacement_started.wait(timeout=2))
+        caller.join(timeout=5)
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(len(results), 20)
+        self.assertLessEqual(maximum, 10)
 
 
 class TestStatusPersonalizados(unittest.TestCase):

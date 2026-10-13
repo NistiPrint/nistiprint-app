@@ -7,6 +7,7 @@ variavel de ambiente, e o banco guarda apenas *qual* provedor e *qual* modelo.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Dict, Optional
 
 from nistiprint_shared.services.ai.base import AIProvider, AIProviderError, AIResponse
@@ -92,7 +93,12 @@ class AIRouter:
         overrides = overrides or {}
 
         def configured(key: str, default: Any = None) -> Any:
-            return overrides.get(key, self._get_config(key, default))
+            # dict.get evaluates its default eagerly. Account-scoped execution
+            # passes a complete snapshot so resolving it must not hit Supabase
+            # once per order.
+            if key in overrides:
+                return overrides[key]
+            return self._get_config(key, default)
 
         provider = _normalize(configured(CONFIG_KEYS["provider"], DEFAULT_PROVIDER))
         if provider not in PROVIDERS:
@@ -124,11 +130,28 @@ class AIRouter:
         }
 
     def complete(self, system_prompt: str, user_payload: str,
-                 settings: Optional[Dict[str, Any]] = None) -> AIResponse:
-        settings = self.resolve_settings(settings)
-        primary = build_provider(
-            settings["provider"], settings["model"], settings["timeout_seconds"]
-        )
+                 settings: Optional[Dict[str, Any]] = None,
+                 provider_cache: Optional[threading.local] = None,
+                 provider_registry: Optional[list] = None) -> AIResponse:
+        if not (settings and {"provider", "model", "fallback_provider", "timeout_seconds"}.issubset(settings)):
+            settings = self.resolve_settings(settings)
+        cache = getattr(provider_cache, "providers", None) if provider_cache else None
+        if provider_cache is not None and cache is None:
+            cache = {}
+            provider_cache.providers = cache
+
+        def provider(name: str, model: str):
+            key = (name, model, settings["timeout_seconds"])
+            if cache is not None and key in cache:
+                return cache[key]
+            value = build_provider(name, model, settings["timeout_seconds"])
+            if cache is not None:
+                cache[key] = value
+                if provider_registry is not None:
+                    provider_registry.append(value)
+            return value
+
+        primary = provider(settings["provider"], settings["model"])
 
         try:
             return primary.complete(system_prompt, user_payload)
@@ -144,11 +167,7 @@ class AIRouter:
             )
             # O fallback usa o modelo default do proprio provedor: o modelo
             # configurado pertence ao primario e quase nunca existe no outro.
-            fallback = build_provider(
-                fallback_name,
-                DEFAULT_MODEL_BY_PROVIDER[fallback_name],
-                settings["timeout_seconds"],
-            )
+            fallback = provider(fallback_name, DEFAULT_MODEL_BY_PROVIDER[fallback_name])
             return fallback.complete(system_prompt, user_payload)
 
 

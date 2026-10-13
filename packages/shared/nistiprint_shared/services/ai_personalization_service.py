@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -886,6 +888,7 @@ def _select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, in
         stats = chat_stats.get(row["id"], {})
         selected.append({
             "id": row["id"],
+            "marketplace_integration_id": row.get("marketplace_integration_id"),
             "numero_loja": order_sn_value,
             "shopee_message": (
                 str(row.get("message_to_seller") or "").strip()
@@ -1274,12 +1277,10 @@ def generate_prompt_payload(order: Dict[str, Any]) -> str:
     return "\n".join(payload)
 
 
-def _persistir_personalizacao(order: Dict[str, Any], result: Dict[str, Any], *, model_name: str | None = None):
+def _registros_personalizacao(order: Dict[str, Any], result: Dict[str, Any], *, model_name: str | None = None):
     shopee_order_sn = str(order["shopee_order_sn"])
     items_by_id = {str(item.get("id")): item for item in (order.get("items") or [])}
     now_iso = datetime.now(timezone.utc).isoformat()
-
-    supabase_db.table("personalizacoes_pedido").delete().eq("shopee_order_sn", shopee_order_sn).execute()
 
     records = []
     for item in result.get("personalized_items", []):
@@ -1311,6 +1312,12 @@ def _persistir_personalizacao(order: Dict[str, Any], result: Dict[str, Any], *, 
             "updated_at": now_iso,
         })
 
+    return shopee_order_sn, records
+
+
+def _persistir_personalizacao(order: Dict[str, Any], result: Dict[str, Any], *, model_name: str | None = None):
+    shopee_order_sn, records = _registros_personalizacao(order, result, model_name=model_name)
+    supabase_db.table("personalizacoes_pedido").delete().eq("shopee_order_sn", shopee_order_sn).execute()
     if records:
         supabase_db.table("personalizacoes_pedido").insert(records).execute()
 
@@ -1335,7 +1342,12 @@ def log_ai_execution(order_sn, input_data, chat_context, status, result=None, er
         logger.error("Erro ao salvar log de IA para %s: %s", order_sn, exc)
 
 
-def _process_single_order_sync(pedido_id: int, force: bool = False):
+def _process_single_order_sync(pedido_id: int, force: bool = False, *,
+                               execution_context: dict | None = None,
+                               persist_result: bool = True):
+    order_sn = str(pedido_id)
+    prompt_payload = ""
+    chat_context = []
     order = _load_order_for_ai(pedido_id)
     order_sn = order["shopee_order_sn"]
 
@@ -1370,10 +1382,21 @@ def _process_single_order_sync(pedido_id: int, force: bool = False):
     try:
         account_overrides = None
         integration_id = order.get("marketplace_integration_id")
-        if integration_id:
+        if execution_context is not None:
+            account_overrides = execution_context.get("overrides")
+        elif integration_id:
             from nistiprint_shared.services.ai_personalization_account_config import shopee_overrides
             account_overrides = shopee_overrides(int(integration_id))
-        result, ai_response = run_model_detailed(prompt_payload, config_overrides=account_overrides)
+        if execution_context is not None:
+            ai_response = ai_router.complete(
+                execution_context.get("prompt_template") or load_prompt_template(account_overrides), prompt_payload,
+                settings=execution_context["settings"],
+                provider_cache=execution_context["providers"],
+                provider_registry=execution_context["provider_registry"],
+            )
+            result = extract_json(ai_response.text)
+        else:
+            result, ai_response = run_model_detailed(prompt_payload, config_overrides=account_overrides)
         if order.get("chat_context_ambiguous"):
             result["status"] = "NEEDS_REVIEW"
             result["reasoning"] = (
@@ -1391,41 +1414,74 @@ def _process_single_order_sync(pedido_id: int, force: bool = False):
                 "a decisao foi tomada sobre contexto incompleto. "
                 + str(result.get("reasoning") or "")
             ).strip()
-        _persistir_personalizacao(order, result, model_name=ai_response.model_used or (account_overrides or {}).get("ia_model"))
+        model_used = ai_response.model_used or (account_overrides or {}).get("ia_model")
+        if persist_result:
+            _persistir_personalizacao(order, result, model_name=model_used)
         # Provedor e modelo efetivo ficam no log: com `openrouter/auto` quem
         # escolhe o modelo e o OpenRouter, e sem isso nao ha como auditar
         # depois qual modelo produziu determinado nome.
-        log_ai_execution(
-            order_sn,
-            prompt_payload,
-            chat_context,
-            "success",
-            result=result,
-            metadata={
+        log_record = {
+            "order_sn": order_sn,
+            "executed_at": datetime.now(timezone.utc).isoformat(),
+            "input_data": _truncate(prompt_payload, 25000),
+            "chat_context": _truncate_json(chat_context, 12000),
+            "extracted_personalization": _truncate_json(result.get("personalized_items"), 12000),
+            "model_result": _truncate_json(result, 15000),
+            "status": "success",
+            "error_message": None,
+            "metadata": {
                 **ai_response.to_metadata(),
                 "chat_gate": gate,
                 "chat_janela": order.get("chat_janela"),
             },
-        )
-        return {
+        }
+        if persist_result:
+            log_ai_execution(order_sn, prompt_payload, chat_context, "success", result=result,
+                             metadata=log_record["metadata"])
+        response = {
             "success": True,
             "status": "success",
             "order_sn": order_sn,
             "message": "Pedido processado com sucesso.",
             "result": result,
         }
+        if not persist_result:
+            response.update(
+                order=order, personalization_records=_registros_personalizacao(
+                    order, result, model_name=model_used)[1],
+                log_record=log_record,
+            )
+        return response
+    except httpx.PoolTimeout:
+        raise
     except Exception as exc:
         logger.error("Erro ao processar pedido %s: %s", pedido_id, exc, exc_info=True)
-        log_ai_execution(order_sn, prompt_payload, chat_context, "error", error_message=str(exc))
-        return {
+        if persist_result:
+            log_ai_execution(order_sn, prompt_payload, chat_context, "error", error_message=str(exc))
+        response = {
             "success": False,
             "status": "error",
             "order_sn": order_sn,
             "message": str(exc),
         }
+        if not persist_result:
+            response["log_record"] = {
+                "order_sn": order_sn, "executed_at": datetime.now(timezone.utc).isoformat(),
+                "input_data": _truncate(prompt_payload, 25000),
+                "chat_context": _truncate_json(chat_context, 12000),
+                "extracted_personalization": None, "model_result": None,
+                "status": "error", "error_message": _truncate(str(exc), 1000),
+                "metadata": {"model_name": (execution_context or {}).get("settings", {}).get("model")
+                             or get_model_name()},
+            }
+        return response
 
 
-def create_processing_batch(pedido_ids: List[int], skipped=None, iniciado_por=None):
+def create_processing_batch(pedido_ids: List[int], skipped=None, iniciado_por=None,
+                            force: bool = False):
+    candidate_rows = pedido_ids
+    pedido_ids = [row["id"] if isinstance(row, dict) else int(row)
+                  for row in candidate_rows]
     batch_data = {
         "pedido_ids": pedido_ids,
         "total": len(pedido_ids),
@@ -1433,24 +1489,45 @@ def create_processing_batch(pedido_ids: List[int], skipped=None, iniciado_por=No
     }
     if iniciado_por is not None:
         batch_data["iniciado_por"] = str(iniciado_por)
+    batch_data["force"] = bool(force)
     batch_res = supabase_db.table("execucoes_ai_batch").insert(batch_data).execute()
     if not batch_res.data:
         raise RuntimeError("Falha ao criar batch de IA")
 
     batch_id = batch_res.data[0]["id"]
-    if iniciado_por is not None:
-        try:
-            from nistiprint_shared.services.async_operation_service import async_operation_service
-            async_operation_service.sync_ai_batch(batch_res.data[0])
-        except Exception:
-            logger.exception("Não foi possível registrar o lote de IA na central de atividade: %s", batch_id)
-
     # O insert acima E o enfileiramento: a partir daqui o trabalho existe e
     # esta registrado, e o Postgres e a unica fonte da verdade sobre ele.
     # A mensagem no broker e so a campainha que avisa o worker mais cedo.
     # Por isso ela e best-effort: se o Redis nao atender, o lote continua
     # PENDENTE e `recolher_lotes_ia_parados` o retoma na proxima varredura.
     # Falha de fila passa a atrasar o trabalho, nunca a perde-lo.
+    grouped = {}
+    for candidate in candidate_rows:
+        pedido_id = candidate["id"] if isinstance(candidate, dict) else candidate
+        integration_id = candidate.get("marketplace_integration_id") if isinstance(candidate, dict) else None
+        account_key = str(integration_id) if integration_id else "legacy"
+        grouped.setdefault(account_key, []).append(int(pedido_id))
+    if grouped:
+        try:
+            groups = [{"batch_id": batch_id, "account_key": key,
+                       "marketplace_integration_id": int(key) if key != "legacy" else None,
+                       "pedido_ids": ids, "force": bool(force), "status": "PENDENTE"}
+                      for key, ids in grouped.items()]
+            supabase_db.table("execucoes_ai_batch_conta").insert(groups).execute()
+            work = [{"batch_id": batch_id, "account_key": key, "pedido_id": pedido_id,
+                     "status": "PENDENTE"}
+                    for key, ids in grouped.items() for pedido_id in ids]
+            for start in range(0, len(work), 500):
+                supabase_db.table("execucoes_ai_batch_pedido").insert(work[start:start + 500]).execute()
+        except Exception:
+            supabase_db.table("execucoes_ai_batch").delete().eq("id", batch_id).execute()
+            raise
+    if iniciado_por is not None:
+        try:
+            from nistiprint_shared.services.async_operation_service import async_operation_service
+            async_operation_service.sync_ai_batch(batch_res.data[0])
+        except Exception:
+            logger.exception("Não foi possível registrar o lote de IA na central de atividade: %s", batch_id)
     enfileirado = _tocar_campainha_do_batch(batch_id)
 
     return {
@@ -1484,8 +1561,12 @@ def processar_batch_ia(self, batch_id: str):
     batch = supabase_db.table("execucoes_ai_batch").select("*").eq("id", batch_id).single().execute().data
     if not batch:
         return
+    if batch.get("status") in {"CONCLUIDO", "ERRO"}:
+        return
 
-    supabase_db.table("execucoes_ai_batch").update({"status": "RODANDO"}).eq("id", batch_id).execute()
+    if batch.get("status") == "PENDENTE":
+        supabase_db.table("execucoes_ai_batch").update({"status": "RODANDO"}).eq(
+            "id", batch_id).eq("status", "PENDENTE").execute()
     batch["status"] = "RODANDO"
     try:
         from nistiprint_shared.services.async_operation_service import async_operation_service
@@ -1493,65 +1574,198 @@ def processar_batch_ia(self, batch_id: str):
     except Exception:
         logger.exception("Não foi possível atualizar o acompanhamento do lote de IA %s", batch_id)
 
-    for pedido_id in batch["pedido_ids"]:
-        processar_pedido_ia.apply_async(
-            args=[batch_id, pedido_id],
-            queue="ai_personalization",
+    groups = (supabase_db.table("execucoes_ai_batch_conta").select("account_key")
+              .eq("batch_id", str(batch_id)).eq("status", "PENDENTE").execute().data or [])
+    for group in groups:
+        processar_conta_ia.apply_async(
+            args=[str(batch_id), group["account_key"]], queue="ai_personalization",
         )
+
+
+@shared_task(name="services.ai_personalization.processar_conta", bind=True,
+             acks_late=True, reject_on_worker_lost=True,
+             max_retries=None, soft_time_limit=7200, time_limit=7500)
+def processar_conta_ia(self, batch_id: str, account_key: str):
+    """Process up to ten orders while holding the durable account lease."""
+    token = str(__import__("uuid").uuid4())
+    claimed = (supabase_db.rpc("reivindicar_lote_ai_conta", {
+        "p_batch_id": str(batch_id), "p_account_key": str(account_key),
+        "p_run_token": token,
+    }).execute().data)
+    if not claimed:
+        group = (supabase_db.table("execucoes_ai_batch_conta").select("status")
+                 .eq("batch_id", str(batch_id)).eq("account_key", str(account_key))
+                 .limit(1).execute().data or [])
+        if not group or group[0].get("status") in {"CONCLUIDO", "ERRO"}:
+            return {"status": "completed", "batch_id": batch_id, "account_key": account_key}
+        raise self.retry(countdown=30, max_retries=None)
+
+    run = claimed[0] if isinstance(claimed, list) else claimed
+    pedido_ids = [int(value) for value in (run.get("pedido_ids") or [])]
+    force = bool(run.get("force"))
+    integration_id = run.get("marketplace_integration_id")
+    settings = None
+    overrides = None
+    if integration_id:
+        from nistiprint_shared.services.ai_personalization_account_config import shopee_overrides
+        overrides = shopee_overrides(int(integration_id))
+    prompt_template = load_prompt_template(overrides)
+    overrides = {**(overrides or {}), "prompt_template": prompt_template}
+    settings = ai_router.resolve_settings(overrides)
+    execution_context = {"settings": settings, "overrides": overrides,
+                         "prompt_template": prompt_template,
+                         "providers": threading.local(), "provider_registry": []}
+    stop = threading.Event()
+    heartbeat = threading.Thread(
+        target=_renew_shopee_ai_account_lease,
+        args=(str(batch_id), str(account_key), token, stop), daemon=True,
+    )
+    heartbeat.start()
+    try:
+        for pedido_id, failure in _iter_shopee_ai_pool(
+            pedido_ids,
+            lambda current_id: _run_shopee_ai_item(
+                str(batch_id), str(account_key), token, current_id, force,
+                execution_context,
+            ),
+        ):
+            if failure:
+                logger.error("Falha ao finalizar pedido IA batch=%s pedido=%s: %s",
+                             batch_id, pedido_id, failure)
+            _sync_ai_batch_progress(str(batch_id))
+    finally:
+        stop.set()
+        heartbeat.join(timeout=2)
+        for provider in execution_context["provider_registry"]:
+            close = getattr(provider, "close", None)
+            if close:
+                close()
+    supabase_db.rpc("finalizar_lote_ai_conta", {
+        "p_batch_id": str(batch_id), "p_account_key": str(account_key),
+        "p_run_token": token,
+    }).execute()
+    return {"status": "completed", "batch_id": batch_id, "account_key": account_key}
+
+
+def _iter_shopee_ai_pool(items, process_item, max_workers=10):
+    """Yield each completed item and keep no more than max_workers in flight."""
+    iterator = iter(items)
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="shopee-ai") as pool:
+        futures = {}
+
+        def submit_next():
+            try:
+                item = next(iterator)
+            except StopIteration:
+                return False
+            futures[pool.submit(process_item, item)] = item
+            return True
+
+        for _ in range(max_workers):
+            if not submit_next():
+                break
+        while futures:
+            completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in completed:
+                item = futures.pop(future)
+                try:
+                    future.result()
+                    yield item, None
+                except Exception as exc:
+                    yield item, exc
+                submit_next()
+
+
+def _sync_ai_batch_progress(batch_id: str):
+    try:
+        batch = (supabase_db.table("execucoes_ai_batch")
+                 .select("id,iniciado_por,pedido_ids,total,processados,sucesso,falha,status,criado_em,finalizado_em")
+                 .eq("id", batch_id).maybe_single().execute().data)
+        if batch and batch.get("iniciado_por"):
+            from nistiprint_shared.services.async_operation_service import async_operation_service
+            async_operation_service.sync_ai_batch(batch)
+    except Exception:
+        logger.exception("Não foi possível publicar progresso do lote IA %s", batch_id)
+
+
+def _renew_shopee_ai_account_lease(batch_id: str, account_key: str,
+                                   token: str, stop: threading.Event):
+    while not stop.wait(30):
+        try:
+            supabase_db.rpc("renovar_lote_ai_conta", {
+                "p_batch_id": batch_id, "p_account_key": account_key,
+                "p_run_token": token,
+            }).execute()
+        except Exception:
+            logger.exception("Falha ao renovar lease IA batch=%s conta=%s", batch_id, account_key)
+
+
+def _run_shopee_ai_item(batch_id: str, account_key: str, run_token: str,
+                        pedido_id: int, force: bool, execution_context: dict):
+    started = time.monotonic()
+    claim = supabase_db.rpc("reivindicar_item_ai", {
+        "p_batch_id": batch_id, "p_account_key": account_key,
+        "p_pedido_id": pedido_id, "p_run_token": run_token,
+    }).execute().data
+    if not claim:
+        return
+    attempt = (claim[0] if isinstance(claim, list) else claim).get("attempts", 1)
+    failure_message = None
+    try:
+        result = _process_single_order_sync(
+            pedido_id, force=force, execution_context=execution_context,
+            persist_result=False,
+        )
+    except httpx.PoolTimeout as exc:
+        if attempt <= 2:
+            supabase_db.rpc("adiar_item_ai", {
+                "p_batch_id": batch_id, "p_account_key": account_key,
+                "p_pedido_id": pedido_id, "p_run_token": run_token,
+                "p_error": str(exc)[:500], "p_delay_seconds": 30,
+            }).execute()
+            return
+        failure_message = str(exc)
+        result = None
+    except Exception as exc:
+        logger.exception("Erro ao preparar pedido IA %s", pedido_id)
+        failure_message = str(exc)
+        result = None
+    if result is None:
+        error = failure_message or "Falha ao executar o processamento de IA."
+        result = {"success": False, "status": "error", "message": error,
+                  "log_record": {"order_sn": str(pedido_id),
+                                 "executed_at": datetime.now(timezone.utc).isoformat(),
+                                 "status": "error", "error_message": error[:1000],
+                                 "metadata": {"model_name": execution_context["settings"]["model"]}}}
+    if result["status"] == "chat_incompleto":
+        status = "ADIADO"
+    elif result["status"] == "up_to_date":
+        status = "UP_TO_DATE"
+    elif result["success"]:
+        status = "OK"
+    else:
+        status = "ERRO"
+    order = result.get("order") or {}
+    log_record = result.get("log_record")
+    supabase_db.rpc("concluir_item_ai", {
+        "p_batch_id": batch_id, "p_account_key": account_key,
+        "p_pedido_id": pedido_id, "p_run_token": run_token,
+        "p_status": status, "p_error": _truncate(result.get("message"), 500),
+        "p_duration_ms": int((time.monotonic() - started) * 1000),
+        "p_shopee_order_sn": str(order.get("shopee_order_sn") or ""),
+        "p_personalizations": result.get("personalization_records") or [],
+            "p_log": log_record,
+    }).execute()
 
 
 @shared_task(name="services.ai_personalization.processar_pedido", bind=True, max_retries=2)
 def processar_pedido_ia(self, batch_id: str, pedido_id: int):
-    started_at = time.monotonic()
-    status = "OK"
-    error_message = None
-
-    try:
-        result = _process_single_order_sync(pedido_id)
-        if result["status"] == "up_to_date":
-            status = "UP_TO_DATE"
-        elif result["status"] == "chat_incompleto":
-            # Nem sucesso nem erro: o pedido volta ao proximo lote assim que a
-            # varredura fechar a conversa.
-            status = "ADIADO"
-            error_message = result["message"]
-        elif not result["success"]:
-            status = "ERRO"
-            error_message = result["message"]
-    except httpx.PoolTimeout as exc:
-        raise self.retry(exc=exc, countdown=30)
-    except Exception as exc:  # pragma: no cover - protecao de tarefa
-        status = "ERRO"
-        error_message = str(exc)
-        logger.error("Erro inesperado em processar_pedido_ia %s: %s", pedido_id, exc, exc_info=True)
-    finally:
-        supabase_db.table("execucoes_ai_item").insert({
-            "batch_id": batch_id,
-            "pedido_id": pedido_id,
-            "status": status,
-            "erro": _truncate(error_message, 500),
-            "duracao_ms": int((time.monotonic() - started_at) * 1000),
-        }).execute()
-
-        supabase_db.rpc("incrementar_batch_ia", {
-            "p_batch_id": batch_id,
-            "p_sucesso": 1 if status in {"OK", "UP_TO_DATE"} else 0,
-            "p_falha": 1 if status == "ERRO" else 0,
-        }).execute()
-        try:
-            batch = (
-                supabase_db.table("execucoes_ai_batch")
-                .select("id,iniciado_por,pedido_ids,total,processados,sucesso,falha,status,criado_em,finalizado_em")
-                .eq("id", batch_id)
-                .maybe_single()
-                .execute()
-                .data
-            )
-            if batch and batch.get("iniciado_por"):
-                from nistiprint_shared.services.async_operation_service import async_operation_service
-                async_operation_service.sync_ai_batch(batch)
-        except Exception:
-            logger.exception("Não foi possível publicar progresso do lote de IA %s", batch_id)
+    # Compatibility shim for messages already in Redis during rollout.
+    row = (supabase_db.table("execucoes_ai_batch_pedido").select("account_key")
+           .eq("batch_id", batch_id).eq("pedido_id", int(pedido_id)).limit(1).execute().data or [])
+    if row:
+        return processar_conta_ia.apply_async(args=[batch_id, row[0]["account_key"]],
+                                             queue="ai_personalization")
 
 
 #: Um lote que nasceu ha menos que isso ainda pode estar a caminho do worker;
@@ -1592,6 +1806,26 @@ def recolher_lotes_ia_parados(self):
     agora = datetime.now(timezone.utc)
     retomados, encerrados = [], []
 
+    due_groups = (supabase_db.table("execucoes_ai_batch_conta")
+                  .select("batch_id,account_key")
+                  .eq("status", "PENDENTE")
+                  .lt("available_at", agora.isoformat()).limit(500).execute().data or [])
+    due_groups.extend(
+        supabase_db.table("execucoes_ai_batch_conta")
+        .select("batch_id,account_key").eq("status", "RODANDO")
+        .lt("lease_until", agora.isoformat()).limit(500).execute().data or []
+    )
+    for group in due_groups:
+        try:
+            processar_conta_ia.apply_async(
+                args=[group["batch_id"], group["account_key"]],
+                queue="ai_personalization",
+            )
+            retomados.append(f"{group['batch_id']}:{group['account_key']}")
+        except Exception:
+            logger.exception("Falha ao reenfileirar grupo IA %s/%s",
+                             group["batch_id"], group["account_key"])
+
     limite_pendente = (agora - timedelta(seconds=LOTE_PENDENTE_TOLERANCIA_SEGUNDOS)).isoformat()
     pendentes = (
         supabase_db.table("execucoes_ai_batch")
@@ -1605,6 +1839,11 @@ def recolher_lotes_ia_parados(self):
 
     for lote in pendentes:
         batch_id = lote["id"]
+        has_account_groups = (supabase_db.table("execucoes_ai_batch_conta")
+                              .select("batch_id").eq("batch_id", batch_id)
+                              .limit(1).execute().data or [])
+        if has_account_groups:
+            continue
         reivindicado = (
             supabase_db.table("execucoes_ai_batch")
             .update({"status": "RODANDO"})
@@ -1652,6 +1891,11 @@ def recolher_lotes_ia_parados(self):
     )
 
     for lote in travados:
+        has_account_groups = (supabase_db.table("execucoes_ai_batch_conta")
+                              .select("batch_id").eq("batch_id", lote["id"])
+                              .limit(1).execute().data or [])
+        if has_account_groups:
+            continue
         if (lote.get("processados") or 0) >= (lote.get("total") or 0):
             # Terminou mas nao foi finalizado: o incremento do ultimo item
             # falhou depois de processar. Fechar como CONCLUIDO e mais fiel ao
@@ -1730,15 +1974,6 @@ def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False, inte
         integration_id=integration_id,
     )
 
-    if order_sn and candidates:
-        single = _process_single_order_sync(candidates[0]["id"], force=force)
-        return single["success"], single["message"], {
-            "processed": [single["order_sn"]],
-            "skipped": skipped,
-            "status": single["status"],
-            "result": single.get("result"),
-        }
-
     if not candidates:
         return True, "Nada a processar.", {
             "processed": [],
@@ -1747,9 +1982,10 @@ def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False, inte
         }
 
     batch = create_processing_batch(
-        [row["id"] for row in candidates],
+        candidates,
         skipped=skipped,
         iniciado_por=iniciado_por,
+        force=force,
     )
     if not batch.get("enfileirado"):
         # Sucesso, e nao erro: o lote esta registrado e sera processado. O que

@@ -49,6 +49,12 @@ class GeminiProvider:
         )
         return self._client
 
+    def close(self) -> None:
+        close = getattr(self._client, "close", None)
+        if close:
+            close()
+        self._client = None
+
     def supports(self, model: str) -> bool:
         return model in ALLOWED_MODELS
 

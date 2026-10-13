@@ -39,6 +39,13 @@ class CeleryConfigTest(TestCase):
         self.assertEqual(entrada["task"], "services.ai_personalization.processar_pendentes")
         self.assertEqual(entrada["options"], {"queue": "ai_personalization"})
 
+    def test_ai_batch_recovery_dispatches_due_retries_every_thirty_seconds(self):
+        schedules = celery_config.get_default_schedules()
+        recovery = schedules["recolher-lotes-ia-parados"]
+        self.assertEqual(recovery["task"], "services.ai_personalization.recolher_lotes_parados")
+        self.assertEqual(recovery["schedule"], 30)
+        self.assertEqual(recovery["options"], {"queue": "ai_personalization"})
+
     def test_mercadolivre_functions_are_always_in_default_celery_queue(self):
         schedules = celery_config.get_default_schedules()
         self.assertEqual(schedules["mercadolivre-chat-inbox"]["task"],

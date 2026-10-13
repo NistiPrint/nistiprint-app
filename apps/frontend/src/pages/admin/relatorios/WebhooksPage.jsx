@@ -76,6 +76,7 @@ function WebhooksPage() {
   const [logs, setLogs] = useState([]);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [reprocessing, setReprocessing] = useState(false);
+  const [reprocessError, setReprocessError] = useState('');
   const [showUnmappedListings, setShowUnmappedListings] = useState(false);
   const [unmappedListings, setUnmappedListings] = useState([]);
   const [unmappedPage, setUnmappedPage] = useState(1);
@@ -124,6 +125,7 @@ function WebhooksPage() {
 
   const fetchDetails = async (eventId) => {
     setDetailsLoading(true);
+    setReprocessError('');
     try {
       const [eventResponse, logsResponse] = await Promise.all([
         fetch(`/api/v2/webhooks/events/${eventId}`),
@@ -169,6 +171,7 @@ function WebhooksPage() {
   const reprocessSelected = async () => {
     if (!selectedEvent) return;
     setReprocessing(true);
+    setReprocessError('');
     try {
       const response = await fetch(`/api/v2/webhooks/events/${selectedEvent.id}/reprocess`, { method: 'POST' });
       const data = await response.json();
@@ -179,13 +182,16 @@ function WebhooksPage() {
       await fetchEvents();
       await fetchDetails(selectedEvent.id);
     } catch (error) {
+      setReprocessError(error.message);
       toast.error(error.message);
     } finally {
       setReprocessing(false);
     }
   };
 
-  const canReprocess = selectedEvent && ['failed', 'dead_letter'].includes(selectedEvent.last_status);
+  const canReprocess = selectedEvent
+    && ['failed', 'failed_terminal', 'dead_letter', 'manual_intervention', 'pending_retry'].includes(selectedEvent.last_status)
+    && selectedEvent.raw_payload && !selectedEvent.raw_payload._purgado_retencao;
 
   return (
     <div className="container mx-auto py-6 space-y-6">
@@ -269,6 +275,9 @@ function WebhooksPage() {
               <option value="skipped_inactive_source">skipped_inactive_source</option>
               <option value="failed">failed</option>
               <option value="dead_letter">dead_letter</option>
+              <option value="pending_retry">pending_retry</option>
+              <option value="manual_intervention">manual_intervention</option>
+              <option value="failed_terminal">failed_terminal</option>
             </select>
             <Input placeholder="bling_id" value={filters.bling_id} onChange={(event) => setFilters({ ...filters, bling_id: event.target.value })} />
             <Input placeholder="numero_loja" value={filters.numero_loja} onChange={(event) => setFilters({ ...filters, numero_loja: event.target.value })} />
@@ -354,6 +363,7 @@ function WebhooksPage() {
             )}
           </CardHeader>
           <CardContent>
+            {reprocessError && <p role="alert" className="mb-4 text-sm text-destructive">{reprocessError}</p>}
             {!selectedEvent ? (
               <div className="text-center py-16 text-muted-foreground">Nenhum evento selecionado.</div>
             ) : detailsLoading ? (

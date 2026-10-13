@@ -61,6 +61,11 @@ class OpenRouterProvider:
             )
         return self._client
 
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
     def complete(self, system_prompt: str, user_payload: str,
                  response_schema: Optional[Dict[str, Any]] = None) -> AIResponse:
         if not self._api_key:

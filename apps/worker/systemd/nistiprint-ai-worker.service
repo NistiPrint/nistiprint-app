@@ -1,0 +1,17 @@
+[Unit]
+Description=NistiPrint Celery Worker for Shopee AI personalization
+After=network.target
+
+[Service]
+Type=simple
+User=nistiprint
+Group=nistiprint
+WorkingDirectory=/opt/nistiprint/apps/worker
+EnvironmentFile=/opt/nistiprint/.env
+ExecStart=/opt/nistiprint/.venv/bin/celery -A worker_entrypoint worker --loglevel=info --queues=ai_personalization --concurrency=2 --prefetch-multiplier=1
+Restart=always
+RestartSec=5
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

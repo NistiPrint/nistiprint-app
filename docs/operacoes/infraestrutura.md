@@ -74,13 +74,27 @@ User=nistiprint
 Group=nistiprint
 WorkingDirectory=/opt/nistiprint/apps/worker
 EnvironmentFile=/opt/nistiprint/.env
-ExecStart=/opt/nistiprint/.venv/bin/celery -A worker_entrypoint worker --loglevel=info --concurrency=2
+ExecStart=/opt/nistiprint/.venv/bin/celery -A worker_entrypoint worker --loglevel=info --queues=celery,bling_status_sync --concurrency=2
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+### `nistiprint-ai-worker.service`
+
+Install this unit from `apps/worker/systemd/nistiprint-ai-worker.service`. It
+consumes only the Shopee AI queue; two Celery processes coordinate separate
+accounts, each processing up to ten orders concurrently.
+
+```ini
+ExecStart=/opt/nistiprint/.venv/bin/celery -A worker_entrypoint worker --loglevel=info --queues=ai_personalization --concurrency=2 --prefetch-multiplier=1
+```
+
+During rollout, drain the old AI queue before restarting the existing worker
+with its restricted queue list and enabling the dedicated AI unit. Then apply
+the Supabase migration and start `nistiprint-ai-worker.service`.
 
 Preparação do diretório de log no host:
 

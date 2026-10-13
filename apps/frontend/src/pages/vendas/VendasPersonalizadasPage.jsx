@@ -283,8 +283,31 @@ function VendasPersonalizadasPage() {
       // Backend espera 'order_sn', não 'shopee_order_sn'
       const data = await personalizadosService.processar({ order_sn: orderSn, limit: 1, force, ...(integrationId ? { integration_id: Number(integrationId) } : {}) });
       if (data.success) {
-        toast.success(data.message || 'Pedido processado com sucesso!', { id: toastId });
-        fetchOrders();
+        const batchId = data.data?.batch_id;
+        if (!batchId) {
+          toast.success(data.message || 'Pedido já está atualizado.', { id: toastId });
+          fetchOrders();
+          return;
+        }
+        toast.success('Pedido enfileirado para processamento de IA.', { id: toastId });
+        void (async () => {
+          for (let attempt = 0; attempt < 200; attempt += 1) {
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            try {
+              const progress = await personalizadosService.statusBatch(batchId);
+              const status = progress.data?.status;
+              if (['CONCLUIDO', 'ERRO'].includes(status)) {
+                fetchOrders();
+                toast[status === 'CONCLUIDO' ? 'success' : 'error'](
+                  status === 'CONCLUIDO' ? 'Processamento de IA concluído.' : 'O processamento de IA terminou com falhas.',
+                );
+                return;
+              }
+            } catch {
+              // Continue polling after transient network errors.
+            }
+          }
+        })();
       } else {
         toast.error(data.message || 'Erro ao processar pedido', { id: toastId });
       }

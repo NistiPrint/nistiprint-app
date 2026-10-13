@@ -105,7 +105,7 @@ function IAPage({ integrationId = null }) {
     addLog(`Parâmetros: limit=${aiLimit === '0' ? 'todos' : (aiLimit || 'todos')}, order_sn=${aiOrderSn || 'todos'}`, 'info');
 
     const orderSn = aiOrderSn || null;
-    const lastKnownLogIds = new Set();
+    const seenItems = new Set();
 
     try {
       const data = await personalizadosService.processar({
@@ -117,18 +117,14 @@ function IAPage({ integrationId = null }) {
       addLog(`Resposta da API: ${data.success ? 'OK' : 'ERRO'} - ${data.message || ''}`,
              data.success ? 'success' : 'error');
 
-      if (data.task_id) {
-        addLog(`Task ID: ${data.task_id} (background Celery)`, 'info');
-      } else {
-        addLog('Processamento síncrono — logs aparecerão conforme concluídos', 'info');
-      }
-
-      if (integrationId) {
+      const batchId = data.data?.batch_id;
+      if (!batchId) {
         setIsProcessing(false);
-        setProcessingComplete({ success: Boolean(data.success), message: data.message || 'Solicitação enviada para esta conta.' });
-        addLog(data.message || 'Solicitação enviada para esta conta.', data.success ? 'success' : 'error');
+        setProcessingComplete({ success: Boolean(data.success), message: data.message || 'Não há pedidos pendentes.' });
+        addLog(data.message || 'Não há pedidos pendentes.', data.success ? 'success' : 'error');
         return;
       }
+      addLog(`Lote ${batchId} enfileirado. Acompanhando o progresso...`, 'info');
 
       let pollCount = 0;
       let processingDone = false;
@@ -139,35 +135,27 @@ function IAPage({ integrationId = null }) {
         if (processingDone) return;
 
         try {
-          const params = { limit: 50 };
-          if (orderSn) params.order_sn = orderSn;
-          const logData = await personalizadosService.getAllLogs(params);
-
-          if (logData.success && logData.data.logs) {
-            for (const log of logData.data.logs) {
-              if (!lastKnownLogIds.has(log.id)) {
-                lastKnownLogIds.add(log.id);
-                const statusLabel = log.status ? log.status.toUpperCase() : 'UNKNOWN';
-                const color = log.status === 'error' ? 'error' : log.status === 'success' ? 'success' : 'info';
-                addLog(`[${statusLabel}] ${log.order_sn} — ${log.executed_at ? new Date(log.executed_at).toLocaleTimeString('pt-BR') : ''}`, color);
-                if (log.error_message) {
-                  addLog(`  Erro: ${log.error_message}`, 'error');
-                }
-              }
-            }
-
-            if (logData.data.logs.length > 0 && pollCount > 3) {
-              const latest = logData.data.logs[0];
-              const age = Date.now() - new Date(latest.executed_at).getTime();
-              if (age > 20000) {
-                processingDone = true;
-                stopPolling();
-                setIsProcessing(false);
-                setProcessingComplete({ success: true, message: `Processamento concluído. ${logData.data.total || logData.data.logs.length} log(s) encontrado(s).` });
-                addLog('✓ Processamento concluído!', 'success');
-                loadLogs();
-              }
-            }
+          const [batchResponse, itemsResponse] = await Promise.all([
+            personalizadosService.statusBatch(batchId),
+            personalizadosService.itensBatch(batchId),
+          ]);
+          for (const item of itemsResponse.data?.items || []) {
+            if (seenItems.has(item.pedido_id)) continue;
+            seenItems.add(item.pedido_id);
+            const status = String(item.status || 'UNKNOWN').toUpperCase();
+            const color = status === 'ERRO' ? 'error' : status === 'OK' ? 'success' : 'info';
+            addLog(`[${status}] pedido ${item.pedido_id} — ${item.duracao_ms ?? 0} ms`, color);
+            if (item.erro) addLog(`  Erro: ${item.erro}`, 'error');
+          }
+          const batchStatus = batchResponse.data?.status;
+          if (['CONCLUIDO', 'ERRO'].includes(batchStatus)) {
+            processingDone = true;
+            stopPolling();
+            setIsProcessing(false);
+            const summary = `${batchResponse.data.processados || 0} de ${batchResponse.data.total || 0} pedidos processados; ${batchResponse.data.falha || 0} falha(s).`;
+            setProcessingComplete({ success: batchStatus === 'CONCLUIDO', message: summary });
+            addLog(batchStatus === 'CONCLUIDO' ? '✓ Processamento concluído!' : 'Processamento concluído com falhas.', batchStatus === 'CONCLUIDO' ? 'success' : 'error');
+            loadLogs();
           }
         } catch {
           // Continue polling; transient request errors are handled by the timeout below.
@@ -177,8 +165,8 @@ function IAPage({ integrationId = null }) {
           processingDone = true;
           stopPolling();
           setIsProcessing(false);
-          setProcessingComplete({ success: true, message: 'Timeout: processamento pode ainda estar em andamento.' });
-          addLog('⏱ Timeout após 10 minutos. Verifique os logs.', 'warning');
+          setProcessingComplete({ success: true, message: 'O lote segue em andamento. Consulte o progresso no sininho.' });
+          addLog('⏱ Acompanhamento pausado após 10 minutos; o lote continua na fila.', 'warning');
         }
       }, 3000);
 

@@ -61,6 +61,13 @@ export const personalizadosService = {
     return res.json();
   },
 
+  itensBatch: async (batchId) => {
+    const res = await fetch(`${BASE}/processar/${encodeURIComponent(batchId)}/itens`, {
+      headers: { Accept: 'application/json' },
+    });
+    return res.json();
+  },
+
   reclassificarPersonalizados: async (data = {}) => {
     const res = await fetch(`${BASE}/reclassificar-personalizado`, {
       method: 'POST',
