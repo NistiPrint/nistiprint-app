@@ -1,5 +1,6 @@
+import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts import backfill_mercadolivre_chat as chat_backfill
 from nistiprint_shared.services import mercadolivre_personalization_service as service
@@ -51,6 +52,110 @@ class FakeDatabase:
 
     def table(self, name):
         return FakeQuery(self.tables.get(name, []))
+
+
+class ProjectedQuery(FakeQuery):
+    """Model PostgREST's projection instead of returning unselected fields."""
+
+    def select(self, columns, **_kwargs):
+        self.columns = columns
+        return self
+
+    def execute(self):
+        response = super().execute()
+        if getattr(self, "columns", "*") != "*":
+            response.data = [
+                {column: row.get(column) for column in self.columns.split(",")}
+                for row in response.data
+            ]
+        return response
+
+
+class ProjectedDatabase(FakeDatabase):
+    def __init__(self, tables):
+        super().__init__(tables)
+        self.rpc = Mock()
+        self.rpc.return_value.execute.return_value = FakeResponse(
+            {"saved": 1, "status": "SUCCESS"}
+        )
+
+    def table(self, name):
+        return ProjectedQuery(self.tables.get(name, []))
+
+
+class PackContextExtractionTests(unittest.TestCase):
+    def setUp(self):
+        self.database = ProjectedDatabase({
+            "mercadolivre_chat_conversations": [{
+                "marketplace_integration_id": 7, "pack_id": "pack-7",
+                "seller_id": "seller-a", "order_ids": ["order-1"],
+                "raw_json": {}, "ai_status": "pending",
+            }],
+            "pedidos": [{
+                "id": 42, "marketplace_integration_id": 7,
+                "codigo_pedido_externo": "order-1", "marketplace_order_id": "order-1",
+            }],
+            "itens_pedido": [{
+                "id": 10, "pedido_id": 42, "personalizado": True,
+                "descricao": "Caneca personalizada", "quantidade": 1,
+            }],
+            "mercadolivre_chat_messages": [{
+                "marketplace_integration_id": 7, "pack_id": "pack-7",
+                "provider_message_id": "msg-1", "sender_role": "buyer",
+                "created_at": "2026-10-13T09:00:00-03:00", "text_content": "Nome: Ana",
+            }],
+        })
+        self.ai = Mock(return_value=({
+            "status": "SUCCESS", "reasoning": "Nome informado pelo comprador",
+            "personalized_items": [{
+                "item_id": 10, "quantity_to_personalize": 1,
+                "customization_name": "Ana", "name_source_message_id": "msg-1",
+                "customization_initial": None, "initial_source_message_id": None,
+            }],
+        }, None))
+        for target, kwargs in (
+            ("supabase_db", {"new": self.database}),
+            ("_integration", {"return_value": {"id": 7}}),
+            ("_settings", {"return_value": {}}),
+            ("_ai_response", {"new": self.ai}),
+        ):
+            patcher = patch.object(service, target, **kwargs)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_imported_pack_reaches_ai_and_persists_personalization(self):
+        with patch.object(service, "sync_pack") as sync_pack:
+            result = service.process_pack(7, "pack-7")
+        self.assertEqual(result, {
+            "status": "success", "pack_id": "pack-7", "personalizations": 1,
+        })
+        payload = json.loads(self.ai.call_args.args[3])
+        self.assertEqual(payload["orders"][0]["pedido_id"], 42)
+        self.assertEqual(payload["orders"][0]["items"][0]["item_id"], 10)
+        self.assertEqual(payload["messages"][0]["text"], "Nome: Ana")
+        records = self.database.rpc.call_args.args[1]["p_records"]
+        self.assertEqual(records[0]["customization_name"], "Ana")
+        self.assertEqual(records[0]["marketplace_integration_id"], 7)
+        sync_pack.assert_not_called()
+
+    def test_imported_pack_can_find_marketplace_order_id(self):
+        self.database.tables["pedidos"][0]["codigo_pedido_externo"] = None
+        self.assertEqual(service.process_pack(7, "pack-7")["status"], "success")
+        self.ai.assert_called_once()
+
+    def test_pack_without_imported_orders_still_waits(self):
+        self.database.tables["pedidos"] = []
+        with self.assertRaisesRegex(LookupError, "Aguardando importação dos pedidos"):
+            service.process_pack(7, "pack-7")
+        self.ai.assert_not_called()
+        self.database.rpc.assert_not_called()
+
+    def test_pack_does_not_use_orders_from_another_integration(self):
+        self.database.tables["pedidos"][0]["marketplace_integration_id"] = 8
+        with self.assertRaisesRegex(LookupError, "Aguardando importação dos pedidos"):
+            service.process_pack(7, "pack-7")
+        self.ai.assert_not_called()
+        self.database.rpc.assert_not_called()
 
 
 class PedidosSchemaQuery(FakeQuery):

@@ -47,6 +47,7 @@ TEST_MODULES = (
     "test_estoque_service_comandos",
     "test_access_control",
     "tests.services.test_marketplace_webhook_ingest_service",
+    "tests.services.test_mercadolivre_personalization_service",
     "tests.services.test_ressincronizacao_pendentes",
     "tests.services.test_marketplace_logistics_facts",
     "tests.services.test_ordem_producao_atomica",

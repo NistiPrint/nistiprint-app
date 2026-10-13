@@ -43,6 +43,31 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
         self.assertIsNone(row["expected_date"])
         self.assertIsNone(row["date_approved"])
 
+    def test_meli_mirror_normalizes_optional_timestamps(self):
+        for value, expected in (
+            (None, None),
+            ("   ", None),
+            ("2026-10-13T09:30:00-03:00", "2026-10-13T09:30:00-03:00"),
+            ("2026-10-13T12:30:00Z", "2026-10-13T12:30:00+00:00"),
+        ):
+            with self.subTest(value=value), patch(
+                "nistiprint_shared.services.bling_order_processing_service.supabase_db.table"
+            ) as table:
+                query = table.return_value
+                query.upsert.return_value.execute.return_value = SimpleNamespace(data=[{"id": 42}])
+                order = {"status": "paid"}
+                sla = {}
+                if value is not None:
+                    order["payments"] = [{"date_approved": value}]
+                    sla["expected_date"] = value
+                result = _upsert_pedido_meli({
+                    "external_id": "123", "order": order, "shipment": {}, "sla": sla,
+                }, marketplace_integration_id=7)
+                self.assertEqual(result, 42)
+                row = query.upsert.call_args.args[0]
+                self.assertEqual(row["expected_date"], expected)
+                self.assertEqual(row["date_approved"], expected)
+
     def test_meli_messages_notification_is_enqueued_for_private_chat(self):
         service = MarketplaceWebhookIngestService()
         resource = SimpleNamespace(topic='messages', resource_path='/messages/msg-1',

@@ -1203,7 +1203,7 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
     _integration(integration_id)
     settings = settings or _settings(integration_id)
     conversation_rows = (supabase_db.table("mercadolivre_chat_conversations").select(
-        "seller_id,raw_json,context_hash,current_context_hash,ai_status"
+        "seller_id,order_ids,raw_json,context_hash,current_context_hash,ai_status"
     )
                          .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id))
                          .limit(1).execute().data or [])
@@ -1664,11 +1664,12 @@ def batch_status(integration_id: int, batch_id: str) -> dict:
     if not rows:
         raise LookupError("Lote não encontrado nesta conta")
     batch = rows[0]
-    items = (supabase_db.table("mercadolivre_personalization_batch_items").select("status")
-             .eq("batch_id", str(batch_id)).execute().data or [])
+    items = (supabase_db.table("mercadolivre_personalization_batch_items")
+             .select("pack_id,status,error_message,attempts,finished_at")
+             .eq("batch_id", str(batch_id)).order("pack_id").execute().data or [])
     batch["sucesso"] = sum(row.get("status") == "COMPLETED" for row in items)
     batch["falha"] = sum(row.get("status") == "FAILED" for row in items)
-    terminal = batch.get("status") in {"COMPLETED", "FAILED"}
+    batch["items"] = items
     return batch
 
 
