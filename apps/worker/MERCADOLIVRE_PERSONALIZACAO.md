@@ -69,9 +69,10 @@ a implantação. Os testes PostgreSQL usam apenas um banco isolado local
 - O Beat verifica agendamentos diários por integração a cada minuto. Uma trava
   Redis por integração/data evita execução duplicada; lotes não confirmados são
   recuperados periodicamente.
-- As chaves de provedor de IA por conta continuam no ambiente do worker
-  compartilhado: `MERCADOLIVRE_PERSONALIZACAO_GEMINI_API_KEY_<integration_id>`
-  e `MERCADOLIVRE_PERSONALIZACAO_OPENROUTER_API_KEY_<integration_id>`.
+- As credenciais de IA são compartilhadas pela empresa no ambiente do worker:
+  `NISTIPRINT_AI_KEY` para Gemini e `OPENROUTER_API_KEY` para OpenRouter.
+  Provedor, modelo e fallback continuam configuráveis por integração; chaves
+  exclusivas do Mercado Livre não são utilizadas.
 - A Central de Tarefas mostra a saúde da ingestão, das contas e dos lotes a
   partir das execuções e pendências registradas, sem exigir heartbeat de
   processos do Mercado Livre.

@@ -37,12 +37,11 @@ class SavedResultError(RuntimeError):
 
 class BatchClients:
     """One provider instance per thread/account/model, closed with the batch run."""
-    def __init__(self, integration_id, settings):
+    def __init__(self, settings):
         self.settings = dict(settings)
         self.keys = {
-            name: (os.getenv(f"MERCADOLIVRE_PERSONALIZACAO_{name.upper()}_API_KEY_{integration_id}")
-                   or os.getenv(f"MERCADOLIVRE_PERSONALIZACAO_{name.upper()}_API_KEY"))
-            for name in ("gemini", "openrouter")
+            "gemini": os.getenv("NISTIPRINT_AI_KEY"),
+            "openrouter": os.getenv("OPENROUTER_API_KEY"),
         }
         self.local = threading.local()
         self.registry = []
@@ -183,7 +182,7 @@ def process_batch(service, integration_id, batch_id):
     heartbeat.start()
     clients = None
     try:
-        clients = BatchClients(integration_id, service._settings(integration_id))
+        clients = BatchClients(service._settings(integration_id))
         status = "PENDING" if batch["phase"] == "FIRST_PASS" else "RETRY_PENDING"
         items = (supabase_db.table("mercadolivre_personalization_batch_items").select("*")
                  .eq("batch_id", str(batch_id)).eq("status", status).eq("phase", batch["phase"])

@@ -1201,12 +1201,9 @@ def _ai_response(integration_id: int, settings: dict, system_prompt: str, payloa
         finally:
             execution_context["metrics"]["ai_ms"] = int((time.monotonic() - started) * 1000)
 
-    suffix = str(int(integration_id))
     keys = {
-        "gemini": (os.getenv(f"MERCADOLIVRE_PERSONALIZACAO_GEMINI_API_KEY_{suffix}")
-                   or os.getenv("MERCADOLIVRE_PERSONALIZACAO_GEMINI_API_KEY")),
-        "openrouter": (os.getenv(f"MERCADOLIVRE_PERSONALIZACAO_OPENROUTER_API_KEY_{suffix}")
-                       or os.getenv("MERCADOLIVRE_PERSONALIZACAO_OPENROUTER_API_KEY")),
+        "gemini": os.getenv("NISTIPRINT_AI_KEY"),
+        "openrouter": os.getenv("OPENROUTER_API_KEY"),
     }
     provider_name = str(settings.get("provider") or "gemini")
     timeout = max(1, min(600, int(settings.get("timeout_seconds") or 60)))

@@ -80,13 +80,47 @@ class Ledger:
 
 
 class MercadoLivreDeferredRetryTests(unittest.TestCase):
+    def test_clients_use_company_wide_credentials_and_ignore_legacy_account_keys(self):
+        env = {
+            "NISTIPRINT_AI_KEY": "company-gemini",
+            "OPENROUTER_API_KEY": "company-openrouter",
+            "MERCADOLIVRE_PERSONALIZACAO_GEMINI_API_KEY_7": "legacy-gemini-key",
+            "MERCADOLIVRE_PERSONALIZACAO_OPENROUTER_API_KEY_7": "legacy-account-key",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            clients = batch_service.BatchClients({"provider": "openrouter"})
+        self.assertEqual(clients.keys["openrouter"], "company-openrouter")
+        self.assertEqual(clients.keys["gemini"], "company-gemini")
+
+    def test_missing_company_wide_credential_is_reported_as_non_retryable(self):
+        with patch.dict(os.environ, {
+            "MERCADOLIVRE_PERSONALIZACAO_OPENROUTER_API_KEY_7": "legacy-account-key",
+        }, clear=True):
+            clients = batch_service.BatchClients({"provider": "openrouter"})
+        with self.assertRaisesRegex(AIProviderError, "Credencial.*openrouter") as raised:
+            clients.complete("FIRST_PASS", "prompt", "payload", {})
+        self.assertFalse(raised.exception.retryable)
+
+    def test_individual_processing_uses_shared_provider_credential(self):
+        response = AIResponse(text='{"ok": true}', provider="openrouter", model_requested="openrouter/auto")
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "company-openrouter"}, clear=True), \
+             patch("nistiprint_shared.services.ai.openrouter_provider.OpenRouterProvider") as provider:
+            provider.return_value.complete.return_value = response
+            parsed, actual_response = service._ai_response(
+                7, {"provider": "openrouter", "model_name": "openrouter/auto", "timeout_seconds": 45},
+                "system", "payload",
+            )
+        self.assertEqual(parsed, {"ok": True})
+        self.assertIs(actual_response, response)
+        provider.assert_called_once_with(model="openrouter/auto", api_key="company-openrouter", timeout=45.0)
+
     def _run(self, ledger, process):
         with patch.object(batch_service, "supabase_db", ledger), patch.object(batch_service, "_rpc", side_effect=ledger.rpc), \
              patch.object(service, "_integration"), patch.object(service, "_settings", return_value={
                  "provider": "gemini", "fallback_provider": "openrouter", "model_name": "gemini-2.5-flash"}), \
              patch.object(service, "_sync_batch_operation"), patch.object(service, "_renew_batch_lease"), \
              patch.object(service, "process_pack", side_effect=process), \
-             patch.dict(os.environ, {"MERCADOLIVRE_PERSONALIZACAO_OPENROUTER_API_KEY": "test"}):
+             patch.dict(os.environ, {"OPENROUTER_API_KEY": "test"}):
             return service.process_batch(7, "batch")
 
     def test_all_first_attempts_finish_before_retry_and_successes_are_never_replayed(self):
@@ -151,11 +185,11 @@ class MercadoLivreDeferredRetryTests(unittest.TestCase):
         self.assertEqual(rpc.call_args.args[0],"ml_ai_persist_result")
 
     def test_primary_failure_does_not_call_fallback_and_clients_are_reused(self):
-        with patch.dict(os.environ, {"MERCADOLIVRE_PERSONALIZACAO_GEMINI_API_KEY":"g", "MERCADOLIVRE_PERSONALIZACAO_OPENROUTER_API_KEY":"o"}), \
+        with patch.dict(os.environ, {"NISTIPRINT_AI_KEY":"g", "OPENROUTER_API_KEY":"o"}), \
              patch.object(batch_service,"GeminiProvider") as primary, patch.object(batch_service,"OpenRouterProvider") as fallback:
             primary.return_value.complete.side_effect = AIProviderError("timeout")
             fallback.return_value.complete.return_value = AIResponse(text="{}",provider="openrouter",model_requested="auto")
-            clients = batch_service.BatchClients(7,{"provider":"gemini","model_name":"gemini-2.5-flash","fallback_provider":"openrouter","timeout_seconds":45})
+            clients = batch_service.BatchClients({"provider":"gemini","model_name":"gemini-2.5-flash","fallback_provider":"openrouter","timeout_seconds":45})
             for _ in range(2):
                 with self.assertRaises(AIProviderError): clients.complete("FIRST_PASS","prompt","data",{})
             fallback.assert_not_called()
