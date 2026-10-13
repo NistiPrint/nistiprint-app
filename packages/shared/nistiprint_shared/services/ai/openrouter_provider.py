@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from nistiprint_shared.services.ai.base import AIProviderError, AIResponse
+from nistiprint_shared.services.ai.base import AIProviderError, AIResponse, retry_after_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,8 @@ class OpenRouterProvider:
                  response_schema: Optional[Dict[str, Any]] = None) -> AIResponse:
         if not self._api_key:
             raise AIProviderError(
-                "OPENROUTER_API_KEY nao configurada — provedor openrouter indisponivel"
+                "OPENROUTER_API_KEY nao configurada — provedor openrouter indisponivel",
+                retryable=False,
             )
 
         payload: Dict[str, Any] = {
@@ -105,7 +106,10 @@ class OpenRouterProvider:
             # O corpo do erro do OpenRouter costuma dizer exatamente o que
             # faltou (credito, modelo, permissao). Truncado para nao poluir log.
             raise AIProviderError(
-                f"OpenRouter respondeu {response.status_code}: {response.text[:300]}"
+                f"OpenRouter respondeu {response.status_code}: {response.text[:300]}",
+                status_code=response.status_code,
+                retry_after=retry_after_seconds(response.headers.get("Retry-After")),
+                retryable=response.status_code in (408, 429) or response.status_code >= 500,
             )
 
         try:
@@ -114,7 +118,12 @@ class OpenRouterProvider:
             raise AIProviderError("OpenRouter devolveu corpo nao-JSON") from exc
 
         if body.get("error"):
-            raise AIProviderError(f"OpenRouter: {str(body['error'])[:300]}")
+            error = body["error"]
+            code = error.get("code") if isinstance(error, dict) else None
+            code = int(code) if str(code).isdigit() else None
+            raise AIProviderError(f"OpenRouter: {str(error)[:300]}", status_code=code,
+                                  retry_after=retry_after_seconds(response.headers.get("Retry-After")),
+                                  retryable=code is None or code in (408,429) or code >= 500)
 
         choices = body.get("choices") or []
         if not choices:

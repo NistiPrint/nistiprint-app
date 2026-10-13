@@ -1,5 +1,6 @@
 import { ChatSidebar } from '@/components/chat/ChatSidebar';
 import OrderCard from '@/components/vendas/OrderCard';
+import MercadoLivreBatchPanel from '@/components/vendas/MercadoLivreBatchPanel';
 import OrderFilters from '@/components/vendas/OrderFilters';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -104,6 +105,7 @@ function AccountOrders({ integrationId }) {
   const [pagination, setPagination] = useState({ page: 1, page_size: 20, total: 0, has_next: false });
   const [statusCounts, setStatusCounts] = useState({ pendente_ia: 0, com_chat: 0, sem_chat: 0, nome_identificado: 0, sem_nome: 0 });
   const [submittingExtraction, setSubmittingExtraction] = useState(false);
+  const [queuedBatchId, setQueuedBatchId] = useState(null);
   const [selectedChatOrder, setSelectedChatOrder] = useState(null);
   const [highlightedMessages, setHighlightedMessages] = useState([]);
   const [selectedOrderForLogs, setSelectedOrderForLogs] = useState(null);
@@ -171,13 +173,14 @@ function AccountOrders({ integrationId }) {
     setSubmittingExtraction(true);
     try {
       const result = await api(`/${integrationId}/personalizados/extrair`, {
-        method: 'POST', body: JSON.stringify({ ...(pedidoIds ? { pedido_ids: [pedidoIds] } : {}), force, limit: 50 }),
+        method: 'POST', body: JSON.stringify({ ...(pedidoIds ? { pedido_ids: Array.isArray(pedidoIds) ? pedidoIds : [pedidoIds] } : {}), force, limit: 50 }),
       });
       if (!result.batch_id) {
         toast.success(result.message || 'Não há pedidos pendentes para extrair.');
         return;
       }
-      toast.success('Extração iniciada. Acompanhe o andamento no sininho.');
+      setQueuedBatchId(result.batch_id);
+      toast.success('Extração enfileirada. Acompanhe o progresso abaixo.');
     } catch (err) { toast.error(err.message); }
     finally { setSubmittingExtraction(false); }
   };
@@ -239,6 +242,9 @@ function AccountOrders({ integrationId }) {
       </div>
       {error && <p role="alert" className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{error} <Button variant="link" onClick={() => refresh().catch(err => setError(err.message))}>Tentar novamente</Button></p>}
       {refreshing && orders.length > 0 && <p role="status" className="text-xs text-muted-foreground">Atualizando pedidos…</p>}
+      <MercadoLivreBatchPanel integrationId={integrationId} refreshKey={queuedBatchId}
+        onRefreshOrders={() => refresh().catch(err => setError(err.message))}
+        onReprocess={startExtraction} />
 
       <Card className="shadow-sm">
         <CardHeader className="pb-3"><CardTitle className="text-sm font-medium text-muted-foreground">Filtrar pedidos</CardTitle></CardHeader>

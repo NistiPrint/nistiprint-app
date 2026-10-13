@@ -136,8 +136,13 @@ export function NotificationManager() {
     if (!user) return undefined;
     const source = new EventSource('/api/v2/notifications/stream');
     eventSourceRef.current = source;
+    const reportStream = () => window.dispatchEvent(new CustomEvent('activity:stream-state', {
+      detail: { connected: source.readyState === EventSource.OPEN },
+    }));
+    window.addEventListener('activity:stream-query', reportStream);
 
     source.onopen = () => {
+      reportStream();
       window.dispatchEvent(new CustomEvent('stock:stream-state', { detail: { connected: true } }));
       loadCenter();
     };
@@ -162,6 +167,11 @@ export function NotificationManager() {
           setOperations((current) => [operation, ...current.filter((item) => item.id !== operation.id)]);
           const operationSource = operation.origem_tipo || operation.referencia_tipo;
           const integrationId = operation.dados_adicionais?.integration_id;
+          if (operationSource === 'mercadolivre_personalization_batch') {
+            window.dispatchEvent(new CustomEvent('activity:mercadolivre-progress', {
+              detail: { integrationId, operation },
+            }));
+          }
           if (TERMINAL.has(operation.status) && operationSource === 'mercadolivre_personalization_batch') {
             window.dispatchEvent(new CustomEvent('activity:mercadolivre-batch', {
               detail: { integrationId, status: operation.status },
@@ -207,12 +217,15 @@ export function NotificationManager() {
       }
     };
     source.onerror = () => {
+      window.dispatchEvent(new CustomEvent('activity:stream-state', { detail: { connected: false } }));
       // EventSource reconnects automatically; polling keeps the saved view current meanwhile.
       window.dispatchEvent(new CustomEvent('stock:stream-state', { detail: { connected: false } }));
     };
 
     return () => {
       source.close();
+      window.removeEventListener('activity:stream-query', reportStream);
+      window.dispatchEvent(new CustomEvent('activity:stream-state', { detail: { connected: false } }));
       window.dispatchEvent(new CustomEvent('stock:stream-state', { detail: { connected: false } }));
       eventSourceRef.current = null;
     };

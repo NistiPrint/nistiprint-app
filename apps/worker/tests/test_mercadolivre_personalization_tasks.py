@@ -6,6 +6,28 @@ from nistiprint_shared.services import mercadolivre_personalization_worker as ta
 
 
 class MercadoLivreCeleryTaskTests(unittest.TestCase):
+    def test_retry_is_scheduled_at_persisted_due_time_without_waiting(self):
+        now = datetime(2026, 10, 13, 12, 0, tzinfo=timezone.utc)
+        outcome = {"status": "waiting_retry", "next_attempt_at": "2026-10-13T12:01:15+00:00"}
+        query = Mock()
+        for method in ("select", "eq", "neq", "lte", "order", "limit"):
+            getattr(query, method).return_value = query
+        query.execute.return_value.data = []
+        with patch.object(tasks, "_now", return_value=now), \
+             patch.object(tasks, "_run_logged_task", return_value=outcome), \
+             patch("nistiprint_shared.database.supabase_db_service.supabase_db") as db, \
+             patch.object(tasks.process_personalization_batch, "apply_async") as dispatch:
+            db.table.return_value = query
+            result = tasks.process_personalization_batch.run(7, "batch")
+        self.assertEqual(result, outcome)
+        dispatch.assert_called_once_with(args=[7, "batch"], countdown=75, queue="celery")
+
+    def test_account_wait_does_not_create_another_countdown_delivery(self):
+        with patch.object(tasks, "_run_logged_task", return_value={"status": "waiting_for_account_slot"}), \
+             patch.object(tasks.process_personalization_batch, "apply_async") as dispatch:
+            tasks.process_personalization_batch.run(7, "batch")
+        dispatch.assert_not_called()
+
     def test_ingestion_task_only_calls_message_inbox_processor(self):
         expected = {"claimed": 1, "synced": 1, "retried": 0, "failed": 0}
         with patch("nistiprint_shared.services.mercadolivre_personalization_service.process_inbox_once",

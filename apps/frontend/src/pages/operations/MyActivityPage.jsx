@@ -1,4 +1,6 @@
 import { Badge } from '@/components/ui/badge';
+import MercadoLivreBatchPanel from '@/components/vendas/MercadoLivreBatchPanel';
+import { batchStage } from '@/lib/mercadolivreBatchProgress';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -47,9 +49,6 @@ export default function MyActivityPage() {
   const operationId = searchParams.get('operation_id');
   const [data, setData] = useState({ operations: [], notifications: [], unread_count: 0, pagination: {} });
   const [selected, setSelected] = useState(null);
-  const [batchDetails, setBatchDetails] = useState(null);
-  const [batchDetailsLoading, setBatchDetailsLoading] = useState(false);
-  const [batchDetailsError, setBatchDetailsError] = useState('');
   const [selectedLoading, setSelectedLoading] = useState(false);
   const [selectedError, setSelectedError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -126,45 +125,23 @@ export default function MyActivityPage() {
     return () => { cancelled = true; };
   }, [operationId]);
 
+  const hasSelected = Boolean(selected);
   useEffect(() => {
-    if (operationId && (selected || selectedError)) {
+    if (operationId && (hasSelected || selectedError)) {
       detailsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [operationId, selected, selectedError]);
+  }, [operationId, hasSelected, selectedError]);
 
   useEffect(() => {
-    const integrationId = selected?.dados_adicionais?.integration_id;
-    const batchId = selected?.origem_id || selected?.referencia_id;
-    const isMercadoLivreBatch = selected?.origem_tipo === 'mercadolivre_personalization_batch'
-      || selected?.referencia_tipo === 'mercadolivre_personalization_batch';
-    if (!isMercadoLivreBatch || !integrationId || !batchId) {
-      setBatchDetails(null);
-      setBatchDetailsError('');
-      setBatchDetailsLoading(false);
-      return undefined;
-    }
-
-    let cancelled = false;
-    setBatchDetails(null);
-    setBatchDetailsError('');
-    setBatchDetailsLoading(true);
-    const loadBatchDetails = async () => {
-      try {
-        const { response, body } = await fetchActivity(
-          `/api/v2/mercadolivre/integracoes/${encodeURIComponent(integrationId)}/personalizados/lotes/${encodeURIComponent(batchId)}`,
-          { credentials: 'same-origin' },
-        );
-        if (!response.ok || !body.success) throw new Error(body.error || body.message || 'Falha ao carregar os erros do lote.');
-        if (!cancelled) setBatchDetails(body.data);
-      } catch (error) {
-        if (!cancelled) setBatchDetailsError(error.message || 'Não foi possível carregar os erros do lote.');
-      } finally {
-        if (!cancelled) setBatchDetailsLoading(false);
-      }
+    const onProgress = event => {
+      const operation = event.detail?.operation;
+      if (!operation) return;
+      setData(current => ({ ...current, operations: [operation, ...current.operations.filter(item => item.id !== operation.id)] }));
+      setSelected(current => current?.id === operation.id ? operation : current);
     };
-    loadBatchDetails();
-    return () => { cancelled = true; };
-  }, [selected]);
+    window.addEventListener('activity:mercadolivre-progress', onProgress);
+    return () => window.removeEventListener('activity:mercadolivre-progress', onProgress);
+  }, []);
 
   const closeOperation = () => {
     setSelected(null);
@@ -280,23 +257,16 @@ export default function MyActivityPage() {
           <div className="mb-3 flex flex-wrap gap-3 text-sm"><Badge variant={selected.status === 'ERRO' || Number(selected.dados_adicionais?.falha || selected.dados_adicionais?.falhas || selected.dados_adicionais?.erro || 0) > 0 ? 'destructive' : 'outline'}>{selected.status === 'CONCLUIDO' && Number(selected.dados_adicionais?.falha || selected.dados_adicionais?.falhas || selected.dados_adicionais?.erro || 0) > 0 ? 'Concluído com falhas' : statusLabel(selected.status)}</Badge><span>Iniciado {formatDate(selected.created_at)}</span>{selected.finalizado_em && <span>Finalizado {formatDate(selected.finalizado_em)}</span>}</div>
           {selected.mensagem && <p className="mb-3 text-sm">{selected.mensagem}</p>}
           {selected.erro_resumo && <p className="mb-3 rounded border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{selected.erro_resumo}</p>}
-          {batchDetailsLoading && <p className="mb-3 text-sm text-muted-foreground">Carregando detalhes dos pacotes…</p>}
-          {batchDetailsError && <p role="alert" className="mb-3 rounded border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{batchDetailsError}</p>}
-          {batchDetails && <div className="mb-3 space-y-2 rounded border border-destructive/30 bg-destructive/5 p-3">
-            <h3 className="text-sm font-semibold">Detalhes do lote Mercado Livre</h3>
-            {batchDetails.error_message && <pre className="overflow-auto whitespace-pre-wrap text-xs">{batchDetails.error_message}</pre>}
-            {(batchDetails.items || []).filter((item) => item.status === 'FAILED').length > 0
-              ? <ul className="space-y-2 text-sm">
-                {(batchDetails.items || []).filter((item) => item.status === 'FAILED').map((item) => (
-                  <li key={item.pack_id} className="break-words">
-                    <span className="font-medium">Pacote {item.pack_id}:</span> {item.error_message || 'Falha sem mensagem detalhada.'}
-                    {Number(item.attempts) > 0 && <span className="text-muted-foreground"> ({item.attempts} tentativa(s))</span>}
-                  </li>
-                ))}
-              </ul>
-              : <p className="text-sm text-muted-foreground">O lote não registrou falhas por pacote.</p>}
-          </div>}
-          {selected.dados_adicionais && <pre className="overflow-auto rounded bg-muted p-3 text-xs">{JSON.stringify(selected.dados_adicionais, null, 2)}</pre>}
+          {(selected.origem_tipo === 'mercadolivre_personalization_batch' || selected.referencia_tipo === 'mercadolivre_personalization_batch') && selected.dados_adicionais?.integration_id &&
+            <MercadoLivreBatchPanel integrationId={selected.dados_adicionais.integration_id}
+              focusBatchId={selected.origem_id || selected.referencia_id}
+              onSnapshot={batch => setSelected(current => current ? ({ ...current,
+                status: batch.status === 'COMPLETED' ? 'CONCLUIDO' : batch.status === 'FAILED' ? 'ERRO' : 'EM_ANDAMENTO',
+                etapa: batchStage(batch), progresso_atual: batch.processed, progresso_total: batch.total,
+                mensagem: `${batch.processed || 0} de ${batch.total || 0} pacotes analisados; ${batch.success_count || 0} sucesso(s); ${batch.failed_count || 0} falha(s) definitiva(s).`,
+                dados_adicionais: { ...current.dados_adicionais, sucesso: batch.success_count, falha: batch.failed_count },
+              }) : current)} />}
+          {selected.dados_adicionais && selected.origem_tipo !== 'mercadolivre_personalization_batch' && <pre className="overflow-auto rounded bg-muted p-3 text-xs">{JSON.stringify(selected.dados_adicionais, null, 2)}</pre>}
         </CardContent>
       </Card>}
       </div>}

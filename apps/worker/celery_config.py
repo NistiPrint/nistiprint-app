@@ -110,7 +110,7 @@ def mercadolivre_schedules():
         },
         "mercadolivre-personalization-dispatch-recovery": {
             "task": "mercadolivre.personalization.dispatch_recovery",
-            "schedule": 300,
+            "schedule": 30,
             "options": {"queue": "celery"},
         },
     }

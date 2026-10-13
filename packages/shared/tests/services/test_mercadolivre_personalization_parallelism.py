@@ -7,6 +7,37 @@ from nistiprint_shared.services import mercadolivre_personalization_service as s
 
 
 class MercadoLivrePersonalizationParallelismTests(unittest.TestCase):
+    def test_failure_releases_slot_before_other_first_attempts_finish(self):
+        initial_started = threading.Barrier(10)
+        eleventh_started = threading.Event()
+        release = threading.Event()
+
+        def process_pack(_integration_id, pack_id, **_kwargs):
+            if int(pack_id) < 10:
+                initial_started.wait(timeout=3)
+                if pack_id == "0":
+                    raise TimeoutError("first attempt failed")
+            else:
+                eleventh_started.set()
+            release.wait(timeout=3)
+            return {"status": "success"}
+
+        def run():
+            return list(service._iter_pack_results(
+                7, "batch", [{"pack_id": str(i)} for i in range(11)], False, {}, "token",
+            ))
+
+        with patch.object(service, "process_pack", side_effect=process_pack):
+            with ThreadPoolExecutor(max_workers=1) as caller:
+                future = caller.submit(run)
+                try:
+                    self.assertTrue(eleventh_started.wait(timeout=2))
+                finally:
+                    release.set()
+                outcomes = future.result(timeout=4)
+        self.assertEqual(len(outcomes), 11)
+        self.assertEqual(sum(error is not None for _, _, error in outcomes), 1)
+
     def test_each_account_runs_at_most_ten_packs_and_refills_available_slots(self):
         lock = threading.Lock()
         started = {7: 0, 8: 0}

@@ -228,6 +228,18 @@ def extrair(integration_id):
 @check_permission("vendas", "ler")
 def progresso_lote(integration_id, batch_id):
     try:
-        return ApiResponse.success(service.batch_status(integration_id, batch_id))
+        include_items = request.args.get("include_items", "true").lower() not in {"0", "false"}
+        return ApiResponse.success(service.batch_status(integration_id, batch_id, include_items=include_items))
+    except Exception as exc:
+        return _handle_error(exc)
+
+
+@mercadolivre_personalizados_bp.get(
+    "/api/v2/mercadolivre/integracoes/<int:integration_id>/personalizados/lotes"
+)
+@check_permission("vendas", "ler")
+def lotes_recentes(integration_id):
+    try:
+        return ApiResponse.success(service.list_batches(integration_id, limit=request.args.get("limit",5,type=int)))
     except Exception as exc:
         return _handle_error(exc)

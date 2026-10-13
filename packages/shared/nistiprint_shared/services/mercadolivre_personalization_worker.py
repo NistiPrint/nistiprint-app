@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import math
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -182,7 +183,8 @@ def replay_retained_chat_events(self, limit: int = 500):
 
 @shared_task(name=TASK_PROCESS_BATCH, bind=True, acks_late=True,
              reject_on_worker_lost=True, autoretry_for=(Exception,),
-             retry_backoff=True, retry_backoff_max=600, max_retries=3)
+             retry_backoff=True, retry_backoff_max=600, max_retries=3,
+             soft_time_limit=7200, time_limit=7500)
 def process_personalization_batch(self, integration_id: int, batch_id: str):
     from nistiprint_shared.services.mercadolivre_personalization_service import process_batch
     from nistiprint_shared.database.supabase_db_service import supabase_db
@@ -191,9 +193,22 @@ def process_personalization_batch(self, integration_id: int, batch_id: str):
         TASK_PROCESS_BATCH, self.request, "manual_or_scheduled",
         lambda: process_batch(integration_id, str(batch_id)), integration_id=integration_id,
     )
-    if result.get("status") in {"completed", "failed"}:
+    if result.get("status") == "waiting_retry":
+        due = result.get("next_attempt_at")
+        if due:
+            due = datetime.fromisoformat(str(due).replace("Z", "+00:00"))
+            if due.tzinfo is None:
+                due = due.replace(tzinfo=timezone.utc)
+            delay = max(1, math.ceil((due-_now()).total_seconds()))
+        else:
+            delay = 30
+        process_personalization_batch.apply_async(
+            args=[integration_id, str(batch_id)], countdown=delay, queue=QUEUE,
+        )
+    if result.get("status") in {"completed", "failed", "waiting_retry"}:
         queued = (supabase_db.table("mercadolivre_personalization_batches").select("id")
                   .eq("marketplace_integration_id", integration_id).eq("status", "PENDING")
+                  .lte("available_at", _now().isoformat()).neq("id", str(batch_id))
                   .order("created_at").limit(1).execute().data or [])
         if queued:
             process_personalization_batch.apply_async(

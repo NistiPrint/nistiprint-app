@@ -27,6 +27,40 @@ são específicos.
 
 ## Operação e recuperação
 
+### IA: primeira passagem e retentativas
+
+Cada conta mantém até dez pacotes simultâneos, repondo a vaga assim que um
+pacote termina. A primeira passagem chama apenas o principal. Depois que todos
+os pacotes terminam essa passagem, somente as falhas elegíveis recebem uma
+nova chamada, com fallback configurado ou principal. O limite é duas chamadas
+por pacote; os retries internos do SDK estão desativados nesse executor.
+
+`Retry-After` determina a próxima execução; sem prazo, falhas temporárias
+aguardam 30 segundos. A espera libera o worker e o lease da conta. O Beat
+verifica trabalhos vencidos a cada 30 segundos e apenas despacha tarefas.
+Tokens e transições no PostgreSQL protegem contra entregas duplicadas. Uma
+resposta validada é salva antes da gravação final: falhas de persistência
+retomam essa resposta, sem chamar a IA novamente.
+
+O painel dos pedidos e a Central de Atividade mostram a primeira passagem,
+sucessos, erros definitivos, pacotes ativos e retentativas. A primeira passagem
+pode chegar a 100% enquanto o lote continua ativo. Eventos atualizam o painel;
+sem stream, a consulta ocorre a cada dois segundos. Os detalhes incluem
+provedor, tentativas, próxima execução e tempos de preparação, IA e gravação.
+
+Para ativar, drene as tarefas antigas de personalização, aplique a migração
+`20261013150000_mercadolivre_deferred_ai_retry.sql` e então publique API,
+frontend e worker, reiniciando também o Beat. Mantenha a fila compartilhada
+`celery`. Confira seus consumidores e a concorrência instalada; cada processo
+coordenador permite uma conta ativa. Lotes terminais antigos são preservados.
+
+Compare lotes equivalentes usando `created_at`, `started_at`, `finished_at`
+e as métricas `preparation_ms`, `ai_ms`, `persistence_ms` e `duration_ms` dos
+itens. Separe espera na fila, duração total, pacotes por minuto, erros e
+retentativas. O ganho com chamadas reais ao provedor precisa ser medido após
+a implantação. Os testes PostgreSQL usam apenas um banco isolado local
+`nistiprint_test`, configurado por `NISTIPRINT_TEST_DATABASE_URL`.
+
 - Todas as funções do Mercado Livre usam a fila padrão `celery`; tarefas
   manuais e periódicas são executadas pelo worker compartilhado.
 - O intervalo de segurança da inbox e da reconciliação usa

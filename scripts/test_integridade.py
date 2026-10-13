@@ -48,6 +48,8 @@ TEST_MODULES = (
     "test_access_control",
     "tests.services.test_marketplace_webhook_ingest_service",
     "tests.services.test_mercadolivre_personalization_service",
+    "tests.services.test_mercadolivre_personalization_parallelism",
+    "tests.services.test_mercadolivre_ai_batch",
     "tests.services.test_ressincronizacao_pendentes",
     "tests.services.test_marketplace_logistics_facts",
     "tests.services.test_ordem_producao_atomica",
@@ -66,6 +68,7 @@ TEST_MODULES = (
 if os.getenv("NISTIPRINT_TEST_DATABASE_URL"):
     TEST_MODULES = (
         "tests.services.test_estoque_command_postgres",
+        "tests.services.test_mercadolivre_ai_batch_postgres",
         *TEST_MODULES,
     )
 

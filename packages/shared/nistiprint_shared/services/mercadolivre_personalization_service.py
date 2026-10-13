@@ -9,7 +9,7 @@ import re
 import time
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,7 +19,43 @@ from nistiprint_shared.services.platform_drivers import mercadolivre as meli_dri
 
 logger = logging.getLogger(__name__)
 AGENT_IDS = {"3037675074", "3020819166", "3037204123", "3037204279", "3037674934", "3037204685"}
-DEFAULT_PROMPT = """Extraia personalizações dos pedidos do Mercado Livre usando somente as instruções do comprador nos dados recebidos. Leia mensagem ao vendedor e conversa em ordem cronológica; aplique correções posteriores do comprador e preserve grafia e acentos. Nunca use nome cadastral, apelido ou mensagem de agente como personalização. Cada resultado deve usar exatamente um item_id interno recebido e a quantidade total daquele item não pode ser excedida. Nomes diferentes por unidade exigem uma linha por nome e quantity_to_personalize=1; um mesmo nome em várias unidades pode ser uma linha com a quantidade total. Toda linha com nome ou inicial precisa indicar o ID exato da mensagem do comprador que a comprova; mensagem ao vendedor usa name_source_message_id=\"message_to_seller\". Sem personalização inequívoca, retorne uma linha para cada item com nome e inicial nulos, quantidade total e fontes nulas, status NO_PERSONALIZATION_FOUND. Use SUCCESS se pelo menos um nome ou inicial inequívoco foi extraído; NEEDS_REVIEW se contexto, item, quantidade ou anexo necessário for ambíguo/incompleto; nesse caso retorne as linhas ainda determináveis e nulos para o que não puder ser atribuído. Não omita itens elegíveis. Exemplos: um item de quantidade 1 e mensagem ‘Nome: Ana’ → uma linha do item, Ana, quantidade 1, fonte da mensagem; item de quantidade 2 e mensagem ‘Ana e Bia’ → duas linhas de quantidade 1; ‘letra M’ → inicial M e fonte da mensagem; nenhuma instrução → linha sem nome/inicial; duas mensagens contraditórias sem correção clara → NEEDS_REVIEW. Responda somente o objeto JSON definido pelo schema da requisição."""
+DEFAULT_PROMPT = """Você é um extrator de dados de personalização pós-venda do Mercado Livre. Analise os itens elegíveis, a mensagem do comprador ao vendedor e todas as mensagens da conversa em ordem cronológica. Use apenas instruções atribuíveis ao comprador. Nunca deduza personalização a partir do nome cadastral, apelido, nome da loja ou texto escrito pelo vendedor/agente. Preserve exatamente a grafia, os acentos e a decisão final do comprador; uma correção posterior explícita substitui a anterior.
+
+PROCESSO OBRIGATÓRIO
+1. Leia todos os pedidos e itens do pacote. Cada item inclui um item_id interno inteiro, pedido_id, descrição e quantidade. Não invente IDs e não use IDs externos no campo item_id.
+2. Leia a mensagem ao vendedor e o histórico completo. Mensagens do comprador trazem sender_role=buyer e um id; somente esses IDs podem ser usados como fonte. Se a instrução válida vier da mensagem ao vendedor, use a string exata \"message_to_seller\" como fonte. Mensagem do vendedor pode dar contexto, mas nunca é prova da personalização.
+3. Para cada item personalizado elegível, produza pelo menos uma linha. Não omita nenhum item. item_id deve ser o inteiro interno exato. quantity_to_personalize deve ser inteiro positivo e a soma de todas as linhas daquele item não pode exceder sua quantidade comprada.
+4. Se várias unidades do mesmo item tiverem nomes diferentes, produza uma linha por unidade/nome, cada uma com quantity_to_personalize=1. Se o mesmo nome ou inicial for válido para várias unidades, uma linha pode usar a quantidade correspondente. Não replique um nome entre itens distintos sem instrução clara de que ele vale para todos.
+5. Nome ou inicial só pode ser preenchido quando houver evidência inequívoca. Em cada campo preenchido, informe a fonte correspondente: o ID exato de uma mensagem do comprador ou \"message_to_seller\". Se o campo estiver nulo, sua fonte também deve ser nula. Não cite IDs que não aparecem nos dados.
+6. Escolha o status global de forma consistente:
+   - SUCCESS: pelo menos um nome ou inicial foi extraído com evidência inequívoca. Todos os itens elegíveis ainda devem aparecer; itens sem informação podem ter os campos de personalização e fontes nulos.
+   - NO_PERSONALIZATION_FOUND: nenhum nome nem inicial foi informado de forma inequívoca e não há ambiguidade que exija revisão. Para cada item, retorne uma linha com a quantidade total, nome=null, inicial=null e ambas as fontes=null. Nunca use SUCCESS com todos os nomes e iniciais nulos.
+   - NEEDS_REVIEW: há ambiguidade, contradição sem correção final clara, mensagem incompleta, atribuição incerta entre itens/pedidos ou anexo necessário indisponível. Retorne todos os itens; preencha apenas o que estiver comprovado e deixe o restante nulo.
+
+FORMATO DE SAÍDA OBRIGATÓRIO
+Responda somente um objeto JSON válido, sem markdown, comentários, texto antes/depois ou propriedades extras. A estrutura exata é:
+{
+  \"status\": \"SUCCESS | NEEDS_REVIEW | NO_PERSONALIZATION_FOUND\",
+  \"reasoning\": \"Explicação curta e objetiva da decisão\",
+  \"personalized_items\": [
+    {
+      \"item_id\": 123,
+      \"quantity_to_personalize\": 1,
+      \"customization_name\": null,
+      \"name_source_message_id\": null,
+      \"customization_initial\": null,
+      \"initial_source_message_id\": null
+    }
+  ]
+}
+
+EXEMPLOS DE STATUS
+- Comprador: \"Nome: Ana\", mensagem com id \"msg-1\", item_id 123, quantidade 1: use status SUCCESS e uma linha com customization_name=\"Ana\", name_source_message_id=\"msg-1\", inicial nula e fonte da inicial nula.
+- Nenhuma mensagem ou instrução de personalização: use status NO_PERSONALIZATION_FOUND e uma linha por item, com nome/inicial/fontes nulos e quantity_to_personalize igual à quantidade do item.
+- Comprador pergunta se é possível gravar um logotipo, sem fornecer nome/inicial: use NEEDS_REVIEW se a resposta depender de confirmação humana; não use SUCCESS.
+- O comprador primeiro pede \"Ana\" e depois corrige explicitamente para \"Anna\": use Anna e o ID da mensagem de correção.
+
+Antes de responder, confira: o JSON contém exatamente as três propriedades raiz; cada linha tem exatamente os seis campos especificados; todos os item_id são inteiros recebidos; todos os itens elegíveis foram incluídos; quantidades e fontes são válidas; SUCCESS tem pelo menos um nome ou inicial; NO_PERSONALIZATION_FOUND não tem nenhum."""
 LEGACY_DEFAULT_PROMPT = """Você extrai dados de personalização de pedidos do Mercado Livre. Analise os itens, a mensagem ao vendedor e a conversa completa em ordem cronológica. Use as instruções do comprador, preserve exatamente a grafia, os acentos e a correção mais recente para cada nome ou inicial. Uma confirmação do vendedor pode ajudar a entender o contexto, mas não substitui a instrução do comprador. Se a mensagem ao vendedor contiver a personalização e não houver correção posterior, use-a com name_source_message_id=\"message_to_seller\". Nunca use nome de cadastro ou apelido como personalização. Associe cada resultado ao item correto; para nomes distintos em várias unidades, devolva uma linha por unidade; se um nome valer para todas, devolva uma linha com a quantidade total. Retorne uma linha sem nome quando não houver instrução inequívoca. Use NEEDS_REVIEW somente se o contexto estiver incompleto, a atribuição de item/pedido for ambígua, um anexo for necessário para entender o pedido ou a quantidade for incompatível. Responda somente JSON: {\"status\":\"SUCCESS|NEEDS_REVIEW|NO_PERSONALIZATION_FOUND\",\"reasoning\":\"...\",\"personalized_items\":[{\"item_id\":\"ID interno informado\",\"quantity_to_personalize\":1,\"customization_name\":null,\"name_source_message_id\":null,\"customization_initial\":null,\"initial_source_message_id\":null}]}"""
 
 PERSONALIZATION_RESPONSE_SCHEMA = {
@@ -27,7 +63,7 @@ PERSONALIZATION_RESPONSE_SCHEMA = {
     "properties": {
         "status": {"type": "string", "enum": ["SUCCESS", "NEEDS_REVIEW", "NO_PERSONALIZATION_FOUND"]},
         "reasoning": {"type": "string"},
-        "personalized_items": {"type": "array", "items": {
+        "personalized_items": {"type": "array", "minItems": 1, "items": {
             "type": "object", "properties": {
                 "item_id": {"type": "integer"},
                 "quantity_to_personalize": {"type": "integer", "minimum": 1},
@@ -1147,11 +1183,23 @@ def _pack_context(integration_id: int, pack_id: str, *, include_messages: bool =
     return orders, items, digest, flags
 
 
-def _ai_response(integration_id: int, settings: dict, system_prompt: str, payload: str):
+def _ai_response(integration_id: int, settings: dict, system_prompt: str, payload: str,
+                 *, execution_context: dict | None = None):
     from nistiprint_shared.services.ai import extract_json
     from nistiprint_shared.services.ai.base import AIProviderError
     from nistiprint_shared.services.ai.gemini_provider import GeminiProvider
     from nistiprint_shared.services.ai.openrouter_provider import OpenRouterProvider
+
+    if execution_context is not None:
+        started = time.monotonic()
+        try:
+            response = execution_context["clients"].complete(
+                execution_context["phase"], system_prompt, payload, PERSONALIZATION_RESPONSE_SCHEMA,
+            )
+            execution_context["metrics"]["provider"] = response.provider
+            return extract_json(response.text), response
+        finally:
+            execution_context["metrics"]["ai_ms"] = int((time.monotonic() - started) * 1000)
 
     suffix = str(int(integration_id))
     keys = {
@@ -1199,8 +1247,16 @@ def _has_current_extraction(integration_id: int, pack_id: str, digest: str,
 
 def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = None,
                  force: bool = False, settings: dict | None = None,
-                 run_token: str | None = None) -> dict:
-    _integration(integration_id)
+                 run_token: str | None = None, execution_context: dict | None = None) -> dict:
+    preparation_started = time.monotonic()
+    if execution_context is not None and execution_context.get("prepared_payload"):
+        from nistiprint_shared.services.mercadolivre_ai_batch import persist_pack_result
+        return persist_pack_result(
+            str(batch_id), str(pack_id), str(run_token), execution_context["prepared_payload"],
+            {**execution_context["metrics"], "reused_response": True}, checkpoint=False,
+        )
+    if execution_context is None:
+        _integration(integration_id)
     settings = settings or _settings(integration_id)
     conversation_rows = (supabase_db.table("mercadolivre_chat_conversations").select(
         "seller_id,order_ids,raw_json,context_hash,current_context_hash,ai_status"
@@ -1228,7 +1284,7 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
         return {"status": "up_to_date", "pack_id": str(pack_id)}
     if not items:
         raise LookupError("Pacote sem itens personalizados elegíveis")
-    if run_token and batch_id:
+    if run_token and batch_id and execution_context is None:
         _assert_batch_run(integration_id, batch_id, run_token)
     payload_obj = {"pack_id": str(pack_id), "orders": [{"pedido_id": order["id"],
                     "external_order_id": order.get("marketplace_order_id") or order.get("codigo_pedido_externo"),
@@ -1245,8 +1301,17 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
               " Inclua todos os itens; use os IDs internos recebidos; não invente campos nem fontes;"
               " todos os itens sem personalização também devem aparecer com campos nulos.")
     response = None
+    if execution_context is not None:
+        execution_context["metrics"].update(
+            preparation_ms=int((time.monotonic()-preparation_started)*1000),
+            pedido_ids=sorted({int(order["id"]) for order in orders}),
+        )
     try:
-        result, response = _ai_response(integration_id, settings, prompt, user_payload)
+        if execution_context is None:
+            result, response = _ai_response(integration_id, settings, prompt, user_payload)
+        else:
+            result, response = _ai_response(integration_id, settings, prompt, user_payload,
+                                           execution_context=execution_context)
         if not isinstance(result, dict):
             raise ValueError("Resposta da IA precisa ser um objeto JSON")
         status = str(result.get("status") or "").upper()
@@ -1333,9 +1398,15 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
             if personalized_quantity.get(item["id"], 0) not in (0, max(1, int(item.get("quantidade") or 1))):
                 raise ValueError("A soma das quantidades personalizadas diverge do item")
         if status == "SUCCESS" and not names_found:
-            raise ValueError("A IA retornou SUCCESS sem nome nem inicial identificados")
-        if status == "NO_PERSONALIZATION_FOUND" and names_found:
-            raise ValueError("A IA retornou NO_PERSONALIZATION_FOUND apesar de identificar nomes")
+            # Providers sometimes return a structurally valid but contradictory
+            # status. Preserve the item coverage and treat it as an explicit
+            # no-personalization result instead of failing the whole pack.
+            status = "NO_PERSONALIZATION_FOUND"
+            result["reasoning"] = "Nenhum nome ou inicial inequívoco foi identificado."
+        elif status == "NO_PERSONALIZATION_FOUND" and names_found:
+            # The extracted fields and their buyer-message sources are the
+            # evidence; normalize the global label to match them.
+            status = "SUCCESS"
         if {int(record["item_pedido_id"]) for record in records} != {int(item["id"]) for item in items}:
             raise ValueError("A resposta da IA não cobriu todos os itens personalizados")
         if status == "NEEDS_REVIEW":
@@ -1352,15 +1423,22 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
                "status": "success", "input_data": user_payload[:25000],
                "model_result": result, "metadata": response.to_metadata() if response else {},
                "pedido_ids": sorted({int(order["id"]) for order in orders})}
-        # SQL RPC validates account/order/item ownership and writes results + log atomically.
-        if run_token and batch_id:
-            _assert_batch_run(integration_id, batch_id, run_token)
-        persisted = supabase_db.rpc("persist_mercadolivre_personalization_results", {
+        persistence_payload = {
             "p_integration_id": int(integration_id), "p_pack_id": str(pack_id),
             "p_context_hash": digest, "p_status": status,
             "p_needs_review": bool(forced_review or status == "NEEDS_REVIEW"),
             "p_records": records, "p_log": log, "p_batch_id": batch_id,
-        }).execute()
+        }
+        if execution_context is not None:
+            from nistiprint_shared.services.mercadolivre_ai_batch import persist_pack_result
+            execution_context["metrics"]["duration_ms"] = int(
+                (time.monotonic()-execution_context["started"])*1000)
+            return persist_pack_result(str(batch_id), str(pack_id), str(run_token),
+                                       persistence_payload, execution_context["metrics"])
+        # SQL RPC validates account/order/item ownership and writes results + log atomically.
+        if run_token and batch_id:
+            _assert_batch_run(integration_id, batch_id, run_token)
+        persisted = supabase_db.rpc("persist_mercadolivre_personalization_results", persistence_payload).execute()
         confirmation = getattr(persisted, "data", None)
         if isinstance(confirmation, list):
             confirmation = confirmation[0] if confirmation else None
@@ -1369,17 +1447,32 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
             raise RuntimeError("Banco não confirmou a persistência integral dos resultados da IA")
         return {"status": status.lower(), "pack_id": str(pack_id), "personalizations": len(records)}
     except Exception as exc:
-        if run_token and batch_id:
+        if execution_context is not None:
+            from nistiprint_shared.services.mercadolivre_ai_batch import SavedResultError
+            if isinstance(exc, SavedResultError):
+                raise
+            if response is not None and isinstance(exc, ValueError):
+                exc.retryable = True
+            # Batch failures are recorded by the token-fenced outcome RPC.
+            # A late response from an expired run must not overwrite chat state.
+            raise
+        if run_token and batch_id and execution_context is None:
             _assert_batch_run(integration_id, batch_id, run_token)
-        for pedido_id in sorted({int(order["id"]) for order in orders}):
-            supabase_db.table("mercadolivre_personalization_logs").insert({
-                "marketplace_integration_id": int(integration_id), "batch_id": batch_id,
-                "pedido_id": pedido_id, "pack_id": str(pack_id), "status": "error",
-                "input_data": user_payload[:25000], "error_message": str(exc)[:1000],
-            }).execute()
-        supabase_db.table("mercadolivre_chat_conversations").update({
-            "ai_status": "error", "last_error": str(exc)[:1000], "needs_review": True,
-        }).eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id)).execute()
+        try:
+            for pedido_id in sorted({int(order["id"]) for order in orders}):
+                supabase_db.table("mercadolivre_personalization_logs").insert({
+                    "marketplace_integration_id": int(integration_id), "batch_id": batch_id,
+                    "pedido_id": pedido_id, "pack_id": str(pack_id), "status": "error",
+                    "input_data": user_payload[:25000], "error_message": str(exc)[:1000],
+                    "metadata": {**((execution_context or {}).get("metrics") or {}),
+                                 "phase": (execution_context or {}).get("phase"),
+                                 "attempt": (execution_context or {}).get("attempt")},
+                }).execute()
+            supabase_db.table("mercadolivre_chat_conversations").update({
+                "ai_status": "error", "last_error": str(exc)[:1000], "needs_review": True,
+            }).eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id)).execute()
+        except Exception:
+            logger.exception("Could not record pack failure integration=%s pack=%s", integration_id, pack_id)
         raise
 
 
@@ -1422,9 +1515,14 @@ def queue_manual(integration_id: int, *, pedido_ids: list[int] | None = None,
     _integration(integration_id)
     result = _queue_packs(integration_id, limit=limit, pedido_ids=pedido_ids, force=force)
     if result.get("batch_id") and created_by:
-        supabase_db.table("mercadolivre_personalization_batches").update({
+        rows = supabase_db.table("mercadolivre_personalization_batches").update({
             "created_by": int(created_by),
-        }).eq("id", result["batch_id"]).execute()
+        }).eq("id", result["batch_id"]).execute().data or []
+        if rows:
+            try:
+                _sync_batch_operation(rows[0])
+            except Exception:
+                logger.exception("Could not publish queued Mercado Livre batch")
     return result
 
 
@@ -1445,27 +1543,42 @@ def _sync_batch_operation(batch: dict) -> None:
     batch_id = str(batch["id"])
     operation = async_operation_service.find_by_source("mercadolivre_personalization_batch", batch_id)
     raw_status = batch.get("status")
-    retrying = raw_status == "FAILED" and int(batch.get("attempts") or 0) < 3
+    retrying = batch.get("phase") == "RETRY"
     waiting_retry = raw_status == "PENDING" and int(batch.get("attempts") or 0) > 0
     status = ("EM_ANDAMENTO" if retrying or waiting_retry else
               {"PENDING": "AGUARDANDO", "RUNNING": "EM_ANDAMENTO",
                "COMPLETED": "CONCLUIDO", "FAILED": "ERRO"}.get(raw_status, "AGUARDANDO"))
     processed, total = int(batch.get("processed") or 0), int(batch.get("total") or 0)
-    items = (supabase_db.table("mercadolivre_personalization_batch_items").select("status")
-             .eq("batch_id", batch_id).execute().data or [])
-    failed = sum(row.get("status") == "FAILED" for row in items)
-    success = sum(row.get("status") == "COMPLETED" for row in items)
+    failed = int(batch.get("failed_count") or 0)
+    success = int(batch.get("success_count") or 0)
+    retry_total = int(batch.get("retry_total") or 0)
+    retry_processed = int(batch.get("retry_processed") or 0)
+    retry_pending = int(batch.get("retry_pending_count") or 0)
+    stage = ("Aguardando retentativa" if raw_status == "PENDING" and retrying else
+             "Retentando falhas" if raw_status == "RUNNING" and retrying else
+             "Concluído com falhas" if raw_status == "COMPLETED" and failed else
+             "Concluído" if raw_status == "COMPLETED" else
+             "Na fila" if status == "AGUARDANDO" else "Processando personalizações")
     values = {
-        "mensagem": (f"{processed} de {total} pacotes processados; nova tentativa agendada"
-                     if retrying else f"{processed} de {total} pacotes processados"),
+        "mensagem": (f"{processed} de {total} pacotes analisados; {success} sucesso(s); "
+                     f"{failed} falha(s) definitiva(s)" +
+                     (f"; retentativas {retry_processed} de {retry_total}" if retrying else "")),
         "status": status,
-        "etapa": {"AGUARDANDO": "Na fila", "EM_ANDAMENTO": "Processando personalizações",
-                  "CONCLUIDO": "Concluído", "ERRO": "Falhou"}[status],
+        "etapa": stage,
         "progresso_atual": processed, "progresso_total": total,
         "erro_resumo": f"{failed} pacote(s) com falha" if failed else None,
         "dados_adicionais": {"sucesso": success, "falha": failed,
                              "marketplace": "mercadolivre",
-                             "integration_id": batch["marketplace_integration_id"]},
+                             "integration_id": batch["marketplace_integration_id"],
+                             "batch_id": batch_id, "phase": batch.get("phase", "FIRST_PASS"),
+                             "processed": processed, "total": total,
+                             "retry_total": retry_total, "retry_processed": retry_processed,
+                             "retry_pending_count": retry_pending,
+                             "running_count": int(batch.get("running_count") or 0),
+                             "next_attempt_at": batch.get("available_at") if raw_status == "PENDING" else None,
+                             "started_at": batch.get("started_at"), "finished_at": batch.get("finished_at"),
+                             "updated_at": batch.get("updated_at"),
+                             "batch_status": raw_status},
         "rota_destino": f"/vendas/personalizadas/mercadolivre/{batch['marketplace_integration_id']}",
     }
     if operation:
@@ -1496,183 +1609,91 @@ def _renew_batch_lease(integration_id: int, batch_id: str, run_token: str,
 
 
 def _iter_pack_results(integration_id: int, batch_id: str, items: list[dict],
-                       force: bool, settings: dict, run_token: str):
+                       force: bool, settings: dict, run_token: str, *, process_fn=None, progress_fn=None):
     """Run up to ten account-scoped AI calls and yield as slots complete."""
     with ThreadPoolExecutor(max_workers=10, thread_name_prefix=f"ml-ai-{integration_id}") as executor:
-        futures = {
-            executor.submit(process_pack, integration_id, str(item["pack_id"]),
-                            batch_id=str(batch_id), force=force,
-                            settings=settings, run_token=run_token): item
-            for item in items
-        }
-        for future in as_completed(futures):
-            try:
-                yield futures[future], future.result(), None
-            except Exception as exc:
-                yield futures[future], None, exc
+        pending = iter(items)
+        futures = {}
+
+        def submit_next():
+            item = next(pending, None)
+            if item is None:
+                return False
+            future = (executor.submit(process_fn, item) if process_fn else
+                      executor.submit(process_pack, integration_id, str(item["pack_id"]),
+                                      batch_id=str(batch_id), force=force,
+                                      settings=settings, run_token=run_token))
+            futures[future] = item
+            return True
+
+        for _ in range(10):
+            if not submit_next():
+                break
+        while futures:
+            ready, _ = wait(futures, timeout=1, return_when=FIRST_COMPLETED)
+            if not ready and progress_fn is not None:
+                progress_fn()
+            for future in ready:
+                item = futures.pop(future)
+                # Refill before publishing progress: a slow UI/database write
+                # must not leave an inference slot idle.
+                submit_next()
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    yield item, None, exc
+                else:
+                    yield item, result, None
 
 
 def process_batch(integration_id: int, batch_id: str) -> dict:
-    rows = (supabase_db.table("mercadolivre_personalization_batches").select("*")
-            .eq("id", batch_id).eq("marketplace_integration_id", int(integration_id)).limit(1).execute().data or [])
-    if not rows:
-        raise LookupError("Lote não encontrado nesta conta")
-    batch = rows[0]
-    if batch.get("status") == "COMPLETED":
-        return {"status": "completed", "processed": batch.get("processed", 0)}
-    if batch.get("status") == "FAILED" and int(batch.get("attempts") or 0) >= 3:
-        return {"status": "failed", "processed": batch.get("processed", 0)}
-    run_token = str(uuid.uuid4())
-    try:
-        claim = (supabase_db.table("mercadolivre_personalization_batches").update({
-            "status": "RUNNING", "started_at": _now(), "run_token": run_token,
-            "attempts": int(batch.get("attempts") or 0) + 1,
-            "lease_until": datetime.fromtimestamp(time.time() + 300, timezone.utc).isoformat(),
-        }).eq("id", batch_id).eq("marketplace_integration_id", int(integration_id))
-          .eq("status", "PENDING").execute().data or [])
-    except Exception as exc:
-        # The partial unique index is the cross-worker/account lock.
-        if "uq_ml_personalization_one_running_batch_per_account" in str(exc):
-            return {"status": "waiting_for_account_slot", "processed": batch.get("processed", 0)}
-        raise
-    if not claim:
-        return {"status": batch.get("status", "PENDING"), "processed": batch.get("processed", 0)}
-    batch = {**batch, **claim[0]}
-    _sync_batch_operation(batch)
-    stopped = threading.Event()
-    heartbeat = threading.Thread(target=_renew_batch_lease,
-        args=(integration_id, batch_id, run_token, stopped), daemon=True,
-        name=f"ml-ai-lease-{integration_id}")
-    heartbeat.start()
-    try:
-        supabase_db.table("mercadolivre_personalization_batch_items").update({
-            "status": "PENDING", "error_message": "Retomada após expiração da execução anterior.",
-        }).eq("batch_id", str(batch_id)).eq("status", "RUNNING").execute()
-        successful_logs = (supabase_db.table("mercadolivre_personalization_logs").select("pack_id")
-                           .eq("marketplace_integration_id", int(integration_id))
-                           .eq("batch_id", str(batch_id)).eq("status", "success")
-                           .execute().data or [])
-        if successful_logs:
-            supabase_db.table("mercadolivre_personalization_batch_items").upsert([
-                {"batch_id": str(batch_id), "marketplace_integration_id": int(integration_id),
-                 "pack_id": str(row["pack_id"]), "status": "COMPLETED", "error_message": None,
-                 "finished_at": _now(), "updated_at": _now()}
-                for row in successful_logs if row.get("pack_id")
-            ], on_conflict="batch_id,pack_id").execute()
-        items = (supabase_db.table("mercadolivre_personalization_batch_items").select("*")
-                 .eq("batch_id", str(batch_id)).in_("status", ["PENDING", "FAILED"])
-                 .order("pack_id").execute().data or [])
-        # Recover batches created before the per-pack ledger migration.
-        if not items:
-            existing = (supabase_db.table("mercadolivre_personalization_batch_items").select("pack_id")
-                        .eq("batch_id", str(batch_id)).execute().data or [])
-            if not existing:
-                items = [{"pack_id": str(pack)} for pack in (_json(batch.get("pack_ids"), []) or [])]
-                supabase_db.table("mercadolivre_personalization_batch_items").upsert([
-                    {"batch_id": str(batch_id), "marketplace_integration_id": int(integration_id),
-                     "pack_id": item["pack_id"], "status": "PENDING"} for item in items
-                ], on_conflict="batch_id,pack_id").execute()
-        settings = _settings(integration_id)
-        results = []
-        for item, result, failure in _iter_pack_results(
-            integration_id, str(batch_id), items, bool(batch.get("force")), settings, run_token,
-        ):
-                pack_id = str(item["pack_id"])
-                status = "FAILED" if failure else "COMPLETED"
-                error = str(failure)[:500] if failure else None
-                _assert_batch_run(integration_id, batch_id, run_token)
-                supabase_db.table("mercadolivre_personalization_batch_items").upsert({
-                    "batch_id": str(batch_id), "marketplace_integration_id": int(integration_id),
-                    "pack_id": pack_id, "status": status, "attempts": int(item.get("attempts") or 0) + 1,
-                    "error_message": error, "finished_at": _now(), "updated_at": _now(),
-                }, on_conflict="batch_id,pack_id").execute()
-                results.append({"pack_id": pack_id, "status": status, "error": error,
-                                "retry_after": getattr(failure, "retry_after", None) if failure else None})
-                totals = (supabase_db.table("mercadolivre_personalization_batch_items")
-                          .select("status").eq("batch_id", str(batch_id)).execute().data or [])
-                processed = sum(row.get("status") == "COMPLETED" for row in totals)
-                supabase_db.table("mercadolivre_personalization_batches").update({
-                    "processed": processed,
-                    "lease_until": datetime.fromtimestamp(time.time() + 300, timezone.utc).isoformat(),
-                }).eq("id", str(batch_id)).eq("run_token", run_token).eq("status", "RUNNING").execute()
-                _sync_batch_operation({**batch, "processed": processed, "status": "RUNNING"})
-
-        failures = [row for row in results if row["status"] == "FAILED"]
-        # A pack failure is isolated to that order. Keep its ledger entry as
-        # FAILED (and the conversation's last_error so it remains eligible for
-        # processing), but finish this batch after every pack has been handled.
-        # Marking the whole batch FAILED would retry it and leave its activity
-        # looking active even though the other packs had already completed.
-        final = "COMPLETED"
-        terminal = (supabase_db.table("mercadolivre_personalization_batches").update({
-            "status": final, "processed": sum(row["status"] == "COMPLETED" for row in
-                (supabase_db.table("mercadolivre_personalization_batch_items").select("status")
-                 .eq("batch_id", str(batch_id)).execute().data or [])),
-            "finished_at": _now(), "lease_until": None, "run_token": None,
-            "available_at": _now(),
-            "error_message": json.dumps(failures, ensure_ascii=False)[:2000] if failures else None,
-        }).eq("id", str(batch_id)).eq("run_token", run_token).eq("status", "RUNNING").execute().data or [])
-        if terminal:
-            _sync_batch_operation({**batch, **terminal[0]})
-        return {"status": final.lower(), "processed": terminal[0].get("processed", 0) if terminal else batch.get("processed", 0),
-                "failures": failures}
-    except Exception:
-        supabase_db.table("mercadolivre_personalization_batches").update({
-            "status": "PENDING", "lease_until": None, "run_token": None,
-        }).eq("id", str(batch_id)).eq("run_token", run_token).eq("status", "RUNNING").execute()
-        raise
-    finally:
-        stopped.set()
-        heartbeat.join(timeout=1)
+    from nistiprint_shared.services import mercadolivre_ai_batch
+    import sys
+    return mercadolivre_ai_batch.process_batch(sys.modules[__name__], integration_id, str(batch_id))
 
 
 def recover_batches(integration_id: int, *, limit: int = 20) -> dict:
-    cutoff = datetime.fromtimestamp(time.time() - 300, timezone.utc).isoformat()
+    """Dispatch due work; recovery never occupies a worker processing batches."""
+    from nistiprint_shared.services.mercadolivre_personalization_worker import submit_batch
     now = _now()
-    stale = (supabase_db.table("mercadolivre_personalization_batches").select("id,status")
-             .eq("marketplace_integration_id", int(integration_id)).eq("status", "PENDING")
-             .lt("created_at", cutoff).limit(limit).execute().data or [])
-    # A running batch is only recoverable after its per-account lease expires.
-    expired = (supabase_db.table("mercadolivre_personalization_batches").select("id,status")
+    pending = (supabase_db.table("mercadolivre_personalization_batches").select("id")
+               .eq("marketplace_integration_id", int(integration_id)).eq("status", "PENDING")
+               .lte("available_at", now).order("created_at").limit(limit).execute().data or [])
+    expired = (supabase_db.table("mercadolivre_personalization_batches").select("id")
                .eq("marketplace_integration_id", int(integration_id)).eq("status", "RUNNING")
-               .lt("lease_until", now).limit(limit).execute().data or [])
-    failed = (supabase_db.table("mercadolivre_personalization_batches").select("id,status")
-              .eq("marketplace_integration_id", int(integration_id)).eq("status", "FAILED")
-              .lt("attempts", 3).lte("available_at", now).limit(limit).execute().data or [])
-    stale = list({row["id"]: row for row in [*stale, *expired, *failed]}.values())
-    for batch in stale:
-        if batch["status"] in {"RUNNING", "FAILED"}:
-            status = batch["status"]
-            if status == "RUNNING":
-                reset = (supabase_db.table("mercadolivre_personalization_batches").update({
-                    "status": "PENDING", "lease_until": None, "finished_at": None,
-                    "error_message": "Lote retomado após expiração da execução anterior.",
-                }).eq("id", batch["id"]).eq("marketplace_integration_id", int(integration_id))
-                  .eq("status", "RUNNING").lt("lease_until", now).execute().data or [])
-            else:
-                reset = (supabase_db.table("mercadolivre_personalization_batches").update({
-                    "status": "PENDING", "finished_at": None,
-                }).eq("id", batch["id"]).eq("marketplace_integration_id", int(integration_id))
-                  .eq("status", "FAILED").lt("attempts", 3).lte("available_at", now).execute().data or [])
-            if not reset:
-                continue
-        process_batch(integration_id, batch["id"])
-    return {"recovered": len(stale)}
+               .lte("available_at", now).lte("lease_until", now).limit(limit).execute().data or [])
+    batch_ids = list(dict.fromkeys(str(row["id"]) for row in [*pending, *expired]))
+    for batch_id in batch_ids:
+        submit_batch(int(integration_id), batch_id)
+    return {"recovered": len(batch_ids)}
 
 
-def batch_status(integration_id: int, batch_id: str) -> dict:
+def batch_status(integration_id: int, batch_id: str, *, include_items: bool = True) -> dict:
     rows = (supabase_db.table("mercadolivre_personalization_batches").select("*")
             .eq("id", batch_id).eq("marketplace_integration_id", int(integration_id)).limit(1).execute().data or [])
     if not rows:
         raise LookupError("Lote não encontrado nesta conta")
     batch = rows[0]
-    items = (supabase_db.table("mercadolivre_personalization_batch_items")
-             .select("pack_id,status,error_message,attempts,finished_at")
-             .eq("batch_id", str(batch_id)).order("pack_id").execute().data or [])
-    batch["sucesso"] = sum(row.get("status") == "COMPLETED" for row in items)
-    batch["falha"] = sum(row.get("status") == "FAILED" for row in items)
-    batch["items"] = items
+    batch["sucesso"] = int(batch.get("success_count") or 0)
+    batch["falha"] = int(batch.get("failed_count") or 0)
+    batch["next_attempt_at"] = batch.get("available_at") if batch.get("status") == "PENDING" else None
+    if include_items:
+        batch["items"] = (supabase_db.table("mercadolivre_personalization_batch_items")
+            .select("pack_id,status,error_message,attempts,phase,next_attempt_at,provider,pedido_ids,"
+                    "metrics,retry_kind,persistence_attempts,started_at,attempt_started_at,finished_at")
+            .eq("batch_id", str(batch_id)).order("pack_id").execute().data or [])
     return batch
+
+
+def list_batches(integration_id: int, *, limit: int = 5) -> dict:
+    _integration(integration_id)
+    rows = (supabase_db.table("mercadolivre_personalization_batches")
+            .select("id,marketplace_integration_id,created_by,status,phase,total,processed,success_count,"
+                    "failed_count,retry_pending_count,running_count,retry_total,retry_processed,"
+                    "available_at,created_at,started_at,finished_at,error_message,updated_at")
+            .eq("marketplace_integration_id", int(integration_id)).order("created_at", desc=True)
+            .limit(min(20,max(1,int(limit)))).execute().data or [])
+    return {"batches": rows}
 
 
 def logs_for_order(integration_id: int, pedido_id: int) -> list[dict]:

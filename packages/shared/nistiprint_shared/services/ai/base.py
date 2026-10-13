@@ -8,12 +8,36 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Protocol
 
 
 class AIProviderError(RuntimeError):
     """Falha atribuivel ao provedor: credencial, transporte, resposta vazia."""
+
+    def __init__(self, message: str, *, status_code: int | None = None,
+                 retry_after: float | None = None, retryable: bool = True):
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after = retry_after
+        self.retryable = retryable
+
+
+def retry_after_seconds(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except (ValueError, TypeError):
+        try:
+            date = parsedate_to_datetime(str(value))
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            return max(0.0, (date - datetime.now(timezone.utc)).total_seconds())
+        except (ValueError, TypeError, OverflowError):
+            return None
 
 
 class AIResponseParseError(AIProviderError):
