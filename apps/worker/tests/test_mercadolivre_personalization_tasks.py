@@ -65,7 +65,7 @@ class MercadoLivreCeleryTaskTests(unittest.TestCase):
         self.assertEqual(second["status"], "already_running")
         self.assertEqual(fake_redis.lock.call_args.args[0],
                          "np:ml-personalization:daily-lock:7:2026-10-07")
-        queue_packs.assert_called_once_with(7, limit=20)
+        queue_packs.assert_called_once_with(7, limit=None, source="scheduled")
         dispatch_batch.assert_called_once_with(args=[7, "batch-1"], queue="celery")
         db.table.assert_called_once_with("mercadolivre_personalization_config")
 

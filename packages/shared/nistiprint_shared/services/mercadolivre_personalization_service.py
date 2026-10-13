@@ -1473,8 +1473,8 @@ def process_pack(integration_id: int, pack_id: str, *, batch_id: str | None = No
         raise
 
 
-def _queue_packs(integration_id: int, *, limit: int = 50, pedido_ids: list[int] | None = None,
-                 force: bool = False) -> dict:
+def _queue_packs(integration_id: int, *, limit: int | None = 50, pedido_ids: list[int] | None = None,
+                 force: bool = False, source: str = "manual") -> dict:
     query = (supabase_db.table("view_mercadolivre_personalization_order_summary")
              .select("id,pack_id").eq("marketplace_integration_id", int(integration_id))
              .order("data_venda", desc=True).order("id", desc=True))
@@ -1484,42 +1484,85 @@ def _queue_packs(integration_id: int, *, limit: int = 50, pedido_ids: list[int] 
         query = query.in_("id", [int(value) for value in pedido_ids])
     candidates = []
     offset = 0
-    while len(candidates) < min(max(1, int(limit)), 500):
+    requested_limit = max(1, int(limit)) if limit is not None else 2**63 - 1
+    while len(candidates) < requested_limit:
         page = query.range(offset, offset + 499).execute().data or []
         candidates.extend(page)
         if len(page) < 500:
             break
         offset += 500
-    pack_ids = list(dict.fromkeys(str(order["pack_id"]) for order in candidates if order.get("pack_id")))[:limit]
+    pack_ids = list(dict.fromkeys(str(order["pack_id"]) for order in candidates if order.get("pack_id")))[:requested_limit]
     if not pack_ids:
-        return {"batch_id": None, "total": 0, "pack_ids": [], "message": "Nenhum pacote Mercado Livre pronto para extração."}
-    batch = (supabase_db.table("mercadolivre_personalization_batches").insert({
-        "marketplace_integration_id": int(integration_id), "pack_ids": pack_ids,
-        "total": len(pack_ids), "force": bool(force), "status": "PENDING",
-    }).execute().data or [])
-    if not batch:
-        raise RuntimeError("Falha ao registrar o lote Mercado Livre")
-    supabase_db.table("mercadolivre_personalization_batch_items").insert([
-        {"batch_id": batch[0]["id"], "marketplace_integration_id": int(integration_id),
-         "pack_id": pack_id, "status": "PENDING"} for pack_id in pack_ids
-    ]).execute()
-    return {"batch_id": batch[0]["id"], "total": len(pack_ids), "pack_ids": pack_ids,
-            "message": f"{len(pack_ids)} pacote(s) enfileirado(s)."}
+        return {"batch_id": None, "total": 0, "pack_ids": [], "execution_state": "empty",
+                "message": "Nenhum pacote Mercado Livre pronto para extração."}
+    settings = _settings(integration_id)
+    batch_size = max(1, min(500, int(settings.get("max_processing") or 50)))
+    batch_ids = []
+    for start in range(0, len(pack_ids), batch_size):
+        chunk = pack_ids[start:start + batch_size]
+        batch = (supabase_db.table("mercadolivre_personalization_batches").insert({
+            "marketplace_integration_id": int(integration_id), "pack_ids": chunk,
+            "total": len(chunk), "force": bool(force), "status": "PENDING", "source": source,
+        }).execute().data or [])
+        if not batch:
+            raise RuntimeError("Falha ao registrar o lote Mercado Livre")
+        batch_id = str(batch[0]["id"])
+        batch_ids.append(batch_id)
+        supabase_db.table("mercadolivre_personalization_batch_items").insert([
+            {"batch_id": batch_id, "marketplace_integration_id": int(integration_id),
+             "pack_id": pack_id, "status": "PENDING", "force": bool(force)} for pack_id in chunk
+        ]).execute()
+    return {"batch_id": batch_ids[0], "batch_ids": batch_ids,
+            "total": len(pack_ids), "pack_ids": pack_ids,
+            "message": f"{len(pack_ids)} pacote(s) dividido(s) em {len(batch_ids)} lote(s)."}
 
 
 def queue_manual(integration_id: int, *, pedido_ids: list[int] | None = None,
                  force: bool = False, limit: int = 50, created_by: int | None = None) -> dict:
     _integration(integration_id)
+    active = (supabase_db.table("mercadolivre_personalization_batches").select("id")
+              .eq("marketplace_integration_id", int(integration_id)).eq("status", "RUNNING")
+              .order("started_at").limit(1).execute().data or [])
     result = _queue_packs(integration_id, limit=limit, pedido_ids=pedido_ids, force=force)
+    if result.get("batch_id") and active:
+        merged = _row(supabase_db.rpc("ml_ai_merge_manual_packs", {
+            "p_integration_id": int(integration_id),
+            "p_running_batch_id": str(active[0]["id"]),
+            "p_new_batch_id": str(result["batch_id"]),
+        }).execute().data)
+        if isinstance(merged, dict) and merged.get("merged"):
+            if created_by:
+                supabase_db.table("mercadolivre_personalization_batch_subscribers").upsert({
+                    "batch_id": str(active[0]["id"]), "user_id": int(created_by),
+                }, on_conflict="batch_id,user_id").execute()
+                active_batch = (supabase_db.table("mercadolivre_personalization_batches").select("*")
+                                .eq("id", str(active[0]["id"])).limit(1).execute().data or [])
+                if active_batch:
+                    _sync_batch_operation(active_batch[0])
+            result.update(batch_id=str(active[0]["id"]),
+                          total=int(merged.get("added") or 0),
+                          execution_state="attached")
+            result["batch_ids"] = [str(active[0]["id"]), *result.get("batch_ids", [])[1:]]
+            if merged.get("added"):
+                result["message"] = f"{merged['added']} pacote(s) incluído(s) na execução em andamento."
+            else:
+                result["batch_id"] = None
+                result["message"] = "Os pedidos selecionados já fazem parte da execução em andamento."
     if result.get("batch_id") and created_by:
-        rows = supabase_db.table("mercadolivre_personalization_batches").update({
-            "created_by": int(created_by),
-        }).eq("id", result["batch_id"]).execute().data or []
-        if rows:
-            try:
-                _sync_batch_operation(rows[0])
-            except Exception:
-                logger.exception("Could not publish queued Mercado Livre batch")
+        for batch_id in result.get("batch_ids", [result["batch_id"]]):
+            if result.get("execution_state") == "attached" and str(batch_id) == str(active[0]["id"]):
+                continue
+            rows = supabase_db.table("mercadolivre_personalization_batches").update({
+                "created_by": int(created_by),
+            }).eq("id", str(batch_id)).execute().data or []
+            if rows:
+                try:
+                    _sync_batch_operation(rows[0])
+                except Exception:
+                    logger.exception("Could not publish queued Mercado Livre batch")
+    if result.get("batch_ids"):
+        result["activity_ids"] = list(result["batch_ids"])
+        result["activity_id"] = result.get("batch_id") or result["activity_ids"][0]
     return result
 
 
@@ -1533,12 +1576,11 @@ def _assert_batch_run(integration_id: int, batch_id: str, run_token: str) -> Non
 
 def _sync_batch_operation(batch: dict) -> None:
     owner_id = batch.get("created_by")
-    if not owner_id:
-        return
     from nistiprint_shared.database.supabase_db_service import supabase_db
     from nistiprint_shared.services.async_operation_service import async_operation_service
     batch_id = str(batch["id"])
-    operation = async_operation_service.find_by_source("mercadolivre_personalization_batch", batch_id)
+    operation = (async_operation_service.find_by_source("mercadolivre_personalization_batch", batch_id)
+                 if owner_id else None)
     raw_status = batch.get("status")
     retrying = batch.get("phase") == "RETRY"
     status = {"PENDING": "AGUARDANDO", "RUNNING": "EM_ANDAMENTO",
@@ -1580,7 +1622,7 @@ def _sync_batch_operation(batch: dict) -> None:
         async_operation_service.update_operation(
             operation["id"], allow_active_to_waiting=(raw_status == "PENDING"), **values,
         )
-    else:
+    elif owner_id:
         created = async_operation_service.create_operation(
             owner_user_id=int(owner_id), categoria="IA",
             titulo="Personalizações do Mercado Livre",
@@ -1591,6 +1633,33 @@ def _sync_batch_operation(batch: dict) -> None:
         )
         if status != "AGUARDANDO":
             async_operation_service.update_operation(created["id"], **values)
+
+    subscribers = (supabase_db.table("mercadolivre_personalization_batch_subscribers")
+                   .select("user_id").eq("batch_id", batch_id).execute().data or [])
+    for subscriber in subscribers:
+        subscriber_id = int(subscriber["user_id"])
+        if owner_id and subscriber_id == int(owner_id):
+            continue
+        source_id = f"{batch_id}:{subscriber_id}"
+        watched = async_operation_service.find_by_source(
+            "mercadolivre_personalization_batch_subscription", source_id,
+        )
+        if watched:
+            async_operation_service.update_operation(
+                watched["id"], allow_active_to_waiting=(raw_status == "PENDING"), **values,
+            )
+        else:
+            created = async_operation_service.create_operation(
+                owner_user_id=subscriber_id, categoria="IA",
+                titulo="Personalizações do Mercado Livre",
+                mensagem=values["mensagem"], referencia_tipo="mercadolivre_personalization_batch",
+                referencia_id=batch_id, rota_destino=values["rota_destino"],
+                progresso_total=total,
+                origem_tipo="mercadolivre_personalization_batch_subscription",
+                origem_id=source_id, dados_adicionais=values["dados_adicionais"],
+            )
+            if status != "AGUARDANDO":
+                async_operation_service.update_operation(created["id"], **values)
 
 
 def _renew_batch_lease(integration_id: int, batch_id: str, run_token: str,
@@ -1643,10 +1712,36 @@ def _iter_pack_results(integration_id: int, batch_id: str, items: list[dict],
                     yield item, result, None
 
 
-def process_batch(integration_id: int, batch_id: str) -> dict:
+def _process_batch_once(integration_id: int, batch_id: str) -> dict:
     from nistiprint_shared.services import mercadolivre_ai_batch
     import sys
     return mercadolivre_ai_batch.process_batch(sys.modules[__name__], integration_id, str(batch_id))
+
+
+def process_batch(integration_id: int, batch_id: str) -> dict:
+    """Run this batch, then drain every other due batch for the same account."""
+    result = _process_batch_once(integration_id, str(batch_id))
+    if result.get("status") not in {"completed", "waiting_retry"}:
+        return result
+
+    drained = [str(batch_id)]
+    while True:
+        next_id = _next_due_batch(integration_id, str(batch_id))
+        if not next_id:
+            return {**result, "drained_batches": drained}
+        following = _process_batch_once(integration_id, next_id)
+        drained.append(next_id)
+        if following.get("status") not in {"completed", "waiting_retry"}:
+            return {**following, "drained_batches": drained}
+        result = following
+
+
+def _next_due_batch(integration_id: int, current_batch_id: str) -> str | None:
+    rows = (supabase_db.table("mercadolivre_personalization_batches").select("id")
+            .eq("marketplace_integration_id", int(integration_id)).eq("status", "PENDING")
+            .lte("available_at", _now()).neq("id", str(current_batch_id))
+            .order("source").order("created_at").limit(1).execute().data or [])
+    return str(rows[0]["id"]) if rows else None
 
 
 def recover_batches(integration_id: int, *, limit: int = 20) -> dict:

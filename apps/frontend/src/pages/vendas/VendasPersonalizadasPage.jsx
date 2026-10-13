@@ -289,7 +289,7 @@ function VendasPersonalizadasPage() {
           fetchOrders();
           return;
         }
-        toast.success('Pedido enfileirado para processamento de IA.', { id: toastId });
+        toast.success('Execução em andamento. Acompanhe o progresso na Central de Atividade.', { id: toastId });
         void (async () => {
           for (let attempt = 0; attempt < 200; attempt += 1) {
             await new Promise(resolve => setTimeout(resolve, 3000));
@@ -318,14 +318,8 @@ function VendasPersonalizadasPage() {
 
   const handleProcessarLote = async () => {
     if (submittingBatch) return;
-    const confirm = window.confirm(
-      'Processar agora os pedidos pendentes (nunca processados ou com mensagem nova do comprador)? '
-      + 'Esse mesmo lote roda sozinho todo dia as 12h; use isto para antecipar. Pode demorar alguns minutos.',
-    );
-    if (!confirm) return;
-
     setSubmittingBatch(true);
-    const toastId = toast.loading('Preparando pedidos para extração...');
+    const toastId = toast.loading('Iniciando extração…');
 
     try {
       const data = await personalizadosService.processar({ limit: 0, ...(integrationId ? { integration_id: Number(integrationId) } : {}) });
@@ -345,7 +339,7 @@ function VendasPersonalizadasPage() {
         return;
       }
 
-      toast.success('Extração iniciada. Acompanhe o andamento no sininho.', { id: toastId });
+      toast.success('Extração iniciada. Acompanhe o andamento na Central de Atividade.', { id: toastId });
     } catch {
       toast.error('Erro de rede ao iniciar extração', { id: toastId });
     } finally {
@@ -463,9 +457,9 @@ function VendasPersonalizadasPage() {
           variant="outline"
           onClick={handleProcessarLote}
           disabled={submittingBatch}
-          title="Processa apenas pedidos pendentes: nunca processados ou com mensagem nova apos a ultima execucao. O mesmo lote roda automaticamente todo dia as 12h.">
+          title="Processa pedidos nunca analisados ou com mensagem nova do comprador.">
           {submittingBatch ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Brain className="mr-2 h-4 w-4" />}
-          {submittingBatch ? 'Enviando para a fila…' : 'Extrair nomes pendentes'}
+          {submittingBatch ? 'Iniciando extração…' : 'Extrair nomes pendentes'}
         </Button>
         {user?.is_admin && (
           <Button

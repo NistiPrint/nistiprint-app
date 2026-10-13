@@ -25,7 +25,8 @@ class MercadoLivreBatchPostgresTests(unittest.TestCase):
         with closing(psycopg2.connect(URL)) as connection, connection, connection.cursor() as cursor:
             for name in ['supabase/tests/fixtures/mercadolivre_ai_batch_schema.sql',
                          'supabase/migrations/20261009100000_preserve_ml_personalization_during_reprocessing.sql',
-                         'supabase/migrations/20261013150000_mercadolivre_deferred_ai_retry.sql']:
+                         'supabase/migrations/20261013150000_mercadolivre_deferred_ai_retry.sql',
+                         'supabase/migrations/20261013200000_ai_execution_source_and_item_force.sql']:
                 cursor.execute((ROOT/name).read_text(encoding='utf-8'))
 
     def sql(self,text,params=()):
@@ -102,6 +103,27 @@ class MercadoLivreBatchPostgresTests(unittest.TestCase):
         self.assertEqual(sum(bool(rows) for rows in claims),1)
         independent=self.batch(account=8,packs=('other',))
         self.assertTrue(self.claim(independent,account=8)[1])
+
+    def test_manual_batch_merges_under_the_account_lease_and_tracks_the_subscriber(self):
+        active=self.batch(packs=('p',))
+        token,_=self.claim(active)
+        requested=self.batch(packs=('q',))
+        merged=self.sql('SELECT public.ml_ai_merge_manual_packs(7,%s,%s)',(active,requested))[0][0]
+        self.assertTrue(merged['merged'])
+        self.assertEqual(merged['added'],1)
+        self.assertEqual(self.sql('SELECT total,pack_ids FROM public.mercadolivre_personalization_batches WHERE id=%s',(active,)),
+                         [(2,['p','q'])])
+        self.assertEqual(self.sql('SELECT pack_id,status FROM public.mercadolivre_personalization_batch_items '
+                                  'WHERE batch_id=%s ORDER BY pack_id',(active,)),
+                         [('p','RUNNING'),('q','PENDING')])
+        self.assertEqual(self.sql('SELECT count(*) FROM public.mercadolivre_personalization_batches WHERE id=%s',(requested,)),
+                         [(0,)])
+        self.sql('INSERT INTO public.usuarios(id) VALUES(1)')
+        self.sql('INSERT INTO public.mercadolivre_personalization_batch_subscribers(batch_id,user_id) VALUES(%s,1)',
+                 (active,))
+        self.assertEqual(self.sql('SELECT user_id FROM public.mercadolivre_personalization_batch_subscribers '
+                                  'WHERE batch_id=%s',(active,)),[(1,)])
+        self.assertTrue(token)
 
     def test_saved_result_survives_restart_and_stale_token_cannot_write(self):
         b=self.batch(packs=('p',))

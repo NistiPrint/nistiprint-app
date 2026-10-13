@@ -214,10 +214,23 @@ def extrair(integration_id):
             limit=limit,
             created_by=_user_id(),
         )
-        if result.get("batch_id"):
-            from nistiprint_shared.services.mercadolivre_personalization_worker import submit_batch
-            submit_batch(integration_id, result["batch_id"])
-        return ApiResponse.success(result, message=result.get("message", "Lote criado."), status_code=202)
+        if result.get("batch_id") and result.get("execution_state") != "attached":
+            from nistiprint_shared.services.ai_batch_runtime import start_background
+            from nistiprint_shared.services.mercadolivre_personalization_service import process_batch
+            started = start_background(process_batch, integration_id, str(result["batch_id"]))
+            result["execution_state"] = "starting" if started else "deferred"
+            result["activity_id"] = result["batch_id"]
+            result["activity_ids"] = result.get("batch_ids", [result["batch_id"]])
+            if not started:
+                return ApiResponse.error(
+                    "A capacidade de execução imediata está ocupada. O lote foi salvo e será retomado pelo worker.",
+                    503, errors={"batch_id": result["batch_id"],
+                                 "execution_state": "deferred",
+                                 "activity_id": result["batch_id"]},
+                )
+            result["message"] = "Extração iniciada. Acompanhe o andamento na Central de Atividade."
+        status_code = 202 if result.get("batch_id") or result.get("execution_state") == "attached" else 200
+        return ApiResponse.success(result, message=result.get("message", "Lote criado."), status_code=status_code)
     except Exception as exc:
         return _handle_error(exc)
 

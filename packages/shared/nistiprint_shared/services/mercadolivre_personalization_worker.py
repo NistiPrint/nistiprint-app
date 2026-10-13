@@ -249,7 +249,7 @@ def run_due_personalization(self, integration_id: int):
             if not _is_schedule_due(current, now):
                 return {"status": "not_due_or_already_ran", "integration_id": integration_id}
             queued = _queue_packs(
-                integration_id, limit=int(current.get("max_processing") or 50),
+                integration_id, limit=None, source="scheduled",
             )
             supabase_db.table("mercadolivre_personalization_config").update({
                 "last_scheduled_run_date": run_date,

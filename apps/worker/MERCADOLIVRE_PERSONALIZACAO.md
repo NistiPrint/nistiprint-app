@@ -42,6 +42,17 @@ Tokens e transições no PostgreSQL protegem contra entregas duplicadas. Uma
 resposta validada é salva antes da gravação final: falhas de persistência
 retomam essa resposta, sem chamar a IA novamente.
 
+Cliques manuais iniciam um executor em segundo plano na API. Cada processo da
+API inicia até duas contas ao mesmo tempo (`AI_MANUAL_MAX_ACCOUNTS`, padrão 2);
+uma conta continua limitada a dez chamadas simultâneas. O PostgreSQL coordena
+os leases da API e do worker. Se a capacidade da API estiver ocupada, o lote
+permanece persistido e a recuperação periódica o encaminha ao worker. A API
+precisa ter as mesmas credenciais de IA configuradas que o worker.
+
+O agendamento do Mercado Livre seleciona até 5.000 pacotes por ciclo e os divide
+em lotes do tamanho configurado. O executor drena os lotes prontos da conta em
+ordem manual e depois periódica; retentativas futuras não mantêm a conta ocupada.
+
 O painel dos pedidos e a Central de Atividade mostram a primeira passagem,
 sucessos, erros definitivos, pacotes ativos e retentativas. A primeira passagem
 pode chegar a 100% enquanto o lote continua ativo. Eventos atualizam o painel;

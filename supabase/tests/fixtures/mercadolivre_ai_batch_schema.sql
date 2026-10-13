@@ -7,8 +7,9 @@ END $$;
 DROP TABLE IF EXISTS public.mercadolivre_personalization_batch_items,
  public.mercadolivre_personalization_logs,public.mercadolivre_personalizations,
  public.mercadolivre_chat_conversations,public.mercadolivre_personalization_batches,
- public.itens_pedido,public.pedidos,public.installed_integrations CASCADE;
+ public.itens_pedido,public.pedidos,public.usuarios,public.installed_integrations CASCADE;
 CREATE TABLE public.installed_integrations(id integer PRIMARY KEY,module_id text);
+CREATE TABLE public.usuarios(id integer PRIMARY KEY);
 CREATE TABLE public.pedidos(id integer PRIMARY KEY,marketplace_integration_id integer,marketplace_module_id text);
 CREATE TABLE public.itens_pedido(id integer PRIMARY KEY,pedido_id integer);
 CREATE TABLE public.mercadolivre_personalization_batches(

@@ -733,7 +733,8 @@ def _assemble_orders(
     return assembled
 
 
-def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, force=False, integration_id=None):
+def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, force=False, integration_id=None,
+                                respect_account_limit=True):
     normalized_limit = None
     if limit not in (None, 0):
         normalized_limit = max(1, int(limit))
@@ -765,7 +766,7 @@ def select_orders_for_processing(order_sn=None, pedido_ids=None, limit=None, for
 
     # A tela de configuração guarda o limite por conta conectada. Pedidos
     # legados sem integração identificada mantêm o comportamento anterior.
-    if not pedido_ids and not order_sn and to_process:
+    if respect_account_limit and not pedido_ids and not order_sn and to_process:
         from nistiprint_shared.services.ai_personalization_account_config import get_config
         limits_by_account = {}
         counts_by_account = {}
@@ -1478,7 +1479,8 @@ def _process_single_order_sync(pedido_id: int, force: bool = False, *,
 
 
 def create_processing_batch(pedido_ids: List[int], skipped=None, iniciado_por=None,
-                            force: bool = False):
+                            force: bool = False, dispatch: bool = True,
+                            source: str = "manual"):
     candidate_rows = pedido_ids
     pedido_ids = [row["id"] if isinstance(row, dict) else int(row)
                   for row in candidate_rows]
@@ -1490,6 +1492,7 @@ def create_processing_batch(pedido_ids: List[int], skipped=None, iniciado_por=No
     if iniciado_por is not None:
         batch_data["iniciado_por"] = str(iniciado_por)
     batch_data["force"] = bool(force)
+    batch_data["source"] = source
     batch_res = supabase_db.table("execucoes_ai_batch").insert(batch_data).execute()
     if not batch_res.data:
         raise RuntimeError("Falha ao criar batch de IA")
@@ -1511,30 +1514,67 @@ def create_processing_batch(pedido_ids: List[int], skipped=None, iniciado_por=No
         try:
             groups = [{"batch_id": batch_id, "account_key": key,
                        "marketplace_integration_id": int(key) if key != "legacy" else None,
-                       "pedido_ids": ids, "force": bool(force), "status": "PENDENTE"}
+                       "pedido_ids": ids, "force": bool(force), "source": source,
+                       "status": "PENDENTE"}
                       for key, ids in grouped.items()]
             supabase_db.table("execucoes_ai_batch_conta").insert(groups).execute()
             work = [{"batch_id": batch_id, "account_key": key, "pedido_id": pedido_id,
-                     "status": "PENDENTE"}
+                     "status": "PENDENTE", "force": bool(force)}
                     for key, ids in grouped.items() for pedido_id in ids]
             for start in range(0, len(work), 500):
                 supabase_db.table("execucoes_ai_batch_pedido").insert(work[start:start + 500]).execute()
         except Exception:
             supabase_db.table("execucoes_ai_batch").delete().eq("id", batch_id).execute()
             raise
-    if iniciado_por is not None:
+    batch_ids = []
+    attached_ids = []
+    if source == "manual" and grouped:
+        for account_key in grouped:
+            active = (supabase_db.table("execucoes_ai_batch_conta")
+                      .select("batch_id")
+                      .eq("account_key", account_key).eq("status", "RODANDO")
+                      .limit(1).execute().data or [])
+            if not active:
+                continue
+            active_id = str(active[0]["batch_id"])
+            merged = supabase_db.rpc("ai_merge_manual_account_orders", {
+                "p_account_key": account_key,
+                "p_active_batch_id": active_id,
+                "p_new_batch_id": str(batch_id),
+            }).execute().data
+            result = merged[0] if isinstance(merged, list) and merged else merged
+            if result and result.get("merged"):
+                attached_ids.append(active_id)
+                if iniciado_por is not None:
+                    supabase_db.table("execucoes_ai_batch_subscribers").upsert({
+                        "batch_id": active_id, "user_id": int(iniciado_por),
+                    }, on_conflict="batch_id,user_id").execute()
+    remaining_rows = (supabase_db.table("execucoes_ai_batch").select("id,iniciado_por,total,status,criado_em")
+                      .eq("id", str(batch_id)).limit(1).execute().data or [])
+    remaining = remaining_rows[0] if remaining_rows else None
+    batch_ids.extend(dict.fromkeys(attached_ids))
+    if remaining:
+        batch_ids.append(str(batch_id))
+    if not batch_ids:
+        batch_ids = [str(batch_id)]
+    if remaining and iniciado_por is not None:
         try:
             from nistiprint_shared.services.async_operation_service import async_operation_service
-            async_operation_service.sync_ai_batch(batch_res.data[0])
+            async_operation_service.sync_ai_batch(remaining)
         except Exception:
             logger.exception("Não foi possível registrar o lote de IA na central de atividade: %s", batch_id)
-    enfileirado = _tocar_campainha_do_batch(batch_id)
+    for attached_id in dict.fromkeys(attached_ids):
+        _sync_ai_batch_progress(attached_id)
+    enfileirado = _tocar_campainha_do_batch(str(batch_id)) if dispatch and remaining else False
 
     return {
-        "batch_id": batch_id,
+        "batch_id": str(batch_id) if remaining else batch_ids[0],
+        "batch_ids": batch_ids,
         "total": len(pedido_ids),
         "skipped": skipped or [],
         "enfileirado": enfileirado,
+        "execution_state": ("starting" if remaining else ("attached" if attached_ids else "empty")),
+        "execution_batch_id": str(batch_id) if remaining else None,
     }
 
 
@@ -1557,7 +1597,7 @@ def _tocar_campainha_do_batch(batch_id: str) -> bool:
 
 
 @shared_task(name="services.ai_personalization.processar_batch", bind=True)
-def processar_batch_ia(self, batch_id: str):
+def processar_batch_ia(self, batch_id: str, direct: bool = False):
     batch = supabase_db.table("execucoes_ai_batch").select("*").eq("id", batch_id).single().execute().data
     if not batch:
         return
@@ -1577,15 +1617,18 @@ def processar_batch_ia(self, batch_id: str):
     groups = (supabase_db.table("execucoes_ai_batch_conta").select("account_key")
               .eq("batch_id", str(batch_id)).eq("status", "PENDENTE").execute().data or [])
     for group in groups:
-        processar_conta_ia.apply_async(
-            args=[str(batch_id), group["account_key"]], queue="ai_personalization",
-        )
+        if direct:
+            processar_conta_ia.run(str(batch_id), group["account_key"], direct=True)
+        else:
+            processar_conta_ia.apply_async(
+                args=[str(batch_id), group["account_key"]], queue="ai_personalization",
+            )
 
 
 @shared_task(name="services.ai_personalization.processar_conta", bind=True,
              acks_late=True, reject_on_worker_lost=True,
              max_retries=None, soft_time_limit=7200, time_limit=7500)
-def processar_conta_ia(self, batch_id: str, account_key: str):
+def processar_conta_ia(self, batch_id: str, account_key: str, direct: bool = False):
     """Process up to ten orders while holding the durable account lease."""
     token = str(__import__("uuid").uuid4())
     claimed = (supabase_db.rpc("reivindicar_lote_ai_conta", {
@@ -1598,6 +1641,8 @@ def processar_conta_ia(self, batch_id: str, account_key: str):
                  .limit(1).execute().data or [])
         if not group or group[0].get("status") in {"CONCLUIDO", "ERRO"}:
             return {"status": "completed", "batch_id": batch_id, "account_key": account_key}
+        if direct:
+            return {"status": "attached", "batch_id": batch_id, "account_key": account_key}
         raise self.retry(countdown=30, max_retries=None)
 
     run = claimed[0] if isinstance(claimed, list) else claimed
@@ -1621,9 +1666,18 @@ def processar_conta_ia(self, batch_id: str, account_key: str):
         args=(str(batch_id), str(account_key), token, stop), daemon=True,
     )
     heartbeat.start()
+
+    def next_pending_order():
+        rows = (supabase_db.table("execucoes_ai_batch_pedido").select("pedido_id")
+                .eq("batch_id", str(batch_id)).eq("account_key", str(account_key))
+                .eq("status", "PENDENTE")
+                .lte("available_at", datetime.now(timezone.utc).isoformat())
+                .order("pedido_id").limit(1).execute().data or [])
+        return int(rows[0]["pedido_id"]) if rows else None
+
     try:
         for pedido_id, failure in _iter_shopee_ai_pool(
-            pedido_ids,
+            next_pending_order,
             lambda current_id: _run_shopee_ai_item(
                 str(batch_id), str(account_key), token, current_id, force,
                 execution_context,
@@ -1644,20 +1698,37 @@ def processar_conta_ia(self, batch_id: str, account_key: str):
         "p_batch_id": str(batch_id), "p_account_key": str(account_key),
         "p_run_token": token,
     }).execute()
+    next_group = (supabase_db.table("execucoes_ai_batch_conta").select("batch_id,account_key")
+                  .eq("account_key", str(account_key)).eq("status", "PENDENTE")
+                  .lte("available_at", datetime.now(timezone.utc).isoformat())
+                  .order("source").order("available_at").limit(1).execute().data or [])
+    if next_group:
+        next_batch_id = str(next_group[0]["batch_id"])
+        if direct:
+            processar_conta_ia.run(next_batch_id, str(account_key), direct=True)
+        else:
+            processar_conta_ia.apply_async(
+                args=[next_batch_id, str(account_key)], queue="ai_personalization",
+            )
     return {"status": "completed", "batch_id": batch_id, "account_key": account_key}
 
 
 def _iter_shopee_ai_pool(items, process_item, max_workers=10):
     """Yield each completed item and keep no more than max_workers in flight."""
-    iterator = iter(items)
+    iterator = iter(items) if not callable(items) else None
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="shopee-ai") as pool:
         futures = {}
 
         def submit_next():
-            try:
-                item = next(iterator)
-            except StopIteration:
-                return False
+            if iterator is None:
+                item = items()
+                if item is None:
+                    return False
+            else:
+                try:
+                    item = next(iterator)
+                except StopIteration:
+                    return False
             futures[pool.submit(process_item, item)] = item
             return True
 
@@ -1681,9 +1752,16 @@ def _sync_ai_batch_progress(batch_id: str):
         batch = (supabase_db.table("execucoes_ai_batch")
                  .select("id,iniciado_por,pedido_ids,total,processados,sucesso,falha,status,criado_em,finalizado_em")
                  .eq("id", batch_id).maybe_single().execute().data)
-        if batch and batch.get("iniciado_por"):
+        if batch:
             from nistiprint_shared.services.async_operation_service import async_operation_service
-            async_operation_service.sync_ai_batch(batch)
+            if batch.get("iniciado_por"):
+                async_operation_service.sync_ai_batch(batch)
+            subscribers = (supabase_db.table("execucoes_ai_batch_subscribers")
+                           .select("user_id").eq("batch_id", str(batch_id)).execute().data or [])
+            for subscriber in subscribers:
+                async_operation_service.sync_ai_batch(
+                    batch, owner_user_id=subscriber["user_id"], subscription=True,
+                )
     except Exception:
         logger.exception("Não foi possível publicar progresso do lote IA %s", batch_id)
 
@@ -1709,7 +1787,9 @@ def _run_shopee_ai_item(batch_id: str, account_key: str, run_token: str,
     }).execute().data
     if not claim:
         return
-    attempt = (claim[0] if isinstance(claim, list) else claim).get("attempts", 1)
+    claimed_item = claim[0] if isinstance(claim, list) else claim
+    force = bool(claimed_item.get("force", force))
+    attempt = claimed_item.get("attempts", 1)
     failure_message = None
     try:
         result = _process_single_order_sync(
@@ -1951,7 +2031,8 @@ def processar_pendentes_agendado(self, limit=None):
     criado.
     """
     try:
-        success, message, payload = process_orders(limit=limit)
+        success, message, payload = process_orders(limit=limit, respect_account_limit=False,
+                                                   source="scheduled")
     except Exception as exc:
         logger.error("Lote agendado de personalizados falhou: %s", exc, exc_info=True)
         raise
@@ -1961,7 +2042,8 @@ def processar_pendentes_agendado(self, limit=None):
     return {"success": success, "message": message, "total": total}
 
 
-def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False, integration_id=None, iniciado_por=None):
+def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False, integration_id=None, iniciado_por=None,
+                   dispatch=True, respect_account_limit=True, source="manual"):
     effective_limit = limit
     if limit in (0, "0", ""):
         effective_limit = None
@@ -1972,6 +2054,7 @@ def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False, inte
         limit=effective_limit,
         force=force,
         integration_id=integration_id,
+        respect_account_limit=respect_account_limit,
     )
 
     if not candidates:
@@ -1986,7 +2069,11 @@ def process_orders(limit=None, order_sn=None, pedido_ids=None, force=False, inte
         skipped=skipped,
         iniciado_por=iniciado_por,
         force=force,
+        dispatch=dispatch,
+        source=source,
     )
+    if not dispatch:
+        return True, f"Lote de {batch['total']} pedido(s) registrado para início imediato.", batch
     if not batch.get("enfileirado"):
         # Sucesso, e nao erro: o lote esta registrado e sera processado. O que
         # muda e o "quando", e a mensagem precisa dizer isso — prometer inicio

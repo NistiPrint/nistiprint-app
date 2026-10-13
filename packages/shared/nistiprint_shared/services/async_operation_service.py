@@ -78,11 +78,11 @@ class AsyncOperationService:
         )
         return response.data if response is not None else None
 
-    def sync_ai_batch(self, batch: dict) -> dict | None:
+    def sync_ai_batch(self, batch: dict, *, owner_user_id=None, subscription=False) -> dict | None:
         """Mirror the durable AI batch state without taking ownership of its queue."""
         if not batch.get('id'):
             return None
-        owner = batch.get("iniciado_por")
+        owner = owner_user_id or batch.get("iniciado_por")
         if not owner:
             return None
         try:
@@ -102,7 +102,9 @@ class AsyncOperationService:
         total = int(batch.get("total") or 0)
         success = int(batch.get("sucesso") or 0)
         failed = int(batch.get("falha") or 0)
-        operation = self.find_by_source("ai_batch", batch.get("id"))
+        origin_type = "ai_batch_subscription" if subscription else "ai_batch"
+        origin_id = f"{batch.get('id')}:{owner}" if subscription else str(batch.get("id"))
+        operation = self.find_by_source(origin_type, origin_id)
         now = self._now()
         values = {
             "owner_user_id": owner,
@@ -117,8 +119,8 @@ class AsyncOperationService:
             "progresso_atual": processed,
             "progresso_total": total,
             "erro_resumo": f"{failed} pedido(s) com falha" if failed else None,
-            "origem_tipo": "ai_batch",
-            "origem_id": str(batch.get("id")),
+            "origem_tipo": origin_type,
+            "origem_id": origin_id,
             "dados_adicionais": {"sucesso": success, "falha": failed},
             "updated_at": now,
             "finalizado_em": batch.get("finalizado_em") if status in self.TERMINAL_STATUSES else None,
@@ -138,9 +140,9 @@ class AsyncOperationService:
                 response = supabase_db.table("operacoes_assincronas").insert(values).execute()
             except Exception:
                 # The unique origin index protects simultaneous batch events.
-                duplicate = self.find_by_source("ai_batch", batch.get("id"))
+                duplicate = self.find_by_source(origin_type, origin_id)
                 if duplicate:
-                    return self.sync_ai_batch(batch)
+                    return self.sync_ai_batch(batch, owner_user_id=owner, subscription=subscription)
                 raise
 
         if not response.data:

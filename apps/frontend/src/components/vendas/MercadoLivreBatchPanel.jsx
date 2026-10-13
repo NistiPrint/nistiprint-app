@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Link as RouterLink } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { batchFromOperation, batchStage, firstPassPercent, isBatchActive, mergeBatchSnapshots } from '@/lib/mercadolivreBatchProgress';
 
@@ -10,7 +11,7 @@ const itemLabel = item => ({ PENDING: 'Na fila', RUNNING: item.phase === 'RETRY'
   RETRY_PENDING: item.retry_kind === 'PERSISTENCE' ? 'Aguardando gravação' : 'Aguardando retentativa',
   COMPLETED: 'Concluído', FAILED: 'Falha definitiva' })[item.status] || item.status;
 
-export default function MercadoLivreBatchPanel({ integrationId, focusBatchId, refreshKey, onRefreshOrders, onReprocess, onSnapshot }) {
+export default function MercadoLivreBatchPanel({ integrationId, focusBatchId, refreshKey, onRefreshOrders, onReprocess, onSnapshot, compact = false }) {
   const [batches, setBatches] = useState([]);
   const [selectedId, setSelectedId] = useState(focusBatchId || null);
   const [expanded, setExpanded] = useState(Boolean(focusBatchId));
@@ -149,6 +150,16 @@ export default function MercadoLivreBatchPanel({ integrationId, focusBatchId, re
   if (!batch && !error) return null;
   const elapsed = batch?.started_at ? Math.max(0, Math.round(((batch.finished_at ? new Date(batch.finished_at).getTime() : now) - new Date(batch.started_at).getTime()) / 1000)) : 0;
   const retryAt = batch?.available_at || batch?.next_attempt_at;
+
+  if (compact) {
+    if (!batch || (!isBatchActive(batch) && !(batch.failed_count > 0))) return null;
+    return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm" role="status" aria-live="polite">
+      <Badge variant={batch.failed_count > 0 ? 'destructive' : 'outline'}>{batchStage(batch)}</Badge>
+      <span className="text-muted-foreground">Processando {batch.processed || 0} de {batch.total || 0}</span>
+      {error && <span className="text-amber-700">{error}</span>}
+      <RouterLink className="text-primary underline underline-offset-4" to="/monitoramento/operacoes/minha-atividade">Ver detalhes</RouterLink>
+    </div>;
+  }
 
   return <Card>
     <CardHeader className="pb-3"><CardTitle className="flex flex-wrap items-center justify-between gap-2 text-base">

@@ -21,7 +21,11 @@ async function api(path, options = {}) {
     ...options,
   });
   const body = await response.json();
-  if (!response.ok || body.success === false) throw new Error(body.message || 'Falha na operação');
+  if (!response.ok || body.success === false) {
+    const error = new Error(body.message || 'Falha na operação');
+    error.data = body.errors || null;
+    throw error;
+  }
   return body.data;
 }
 
@@ -173,15 +177,22 @@ function AccountOrders({ integrationId }) {
     setSubmittingExtraction(true);
     try {
       const result = await api(`/${integrationId}/personalizados/extrair`, {
-        method: 'POST', body: JSON.stringify({ ...(pedidoIds ? { pedido_ids: Array.isArray(pedidoIds) ? pedidoIds : [pedidoIds] } : {}), force, limit: 50 }),
+        method: 'POST', body: JSON.stringify({ ...(pedidoIds ? { pedido_ids: Array.isArray(pedidoIds) ? pedidoIds : [pedidoIds] } : {}), force, limit: 500 }),
       });
       if (!result.batch_id) {
         toast.success(result.message || 'Não há pedidos pendentes para extrair.');
         return;
       }
       setQueuedBatchId(result.batch_id);
-      toast.success('Extração enfileirada. Acompanhe o progresso abaixo.');
-    } catch (err) { toast.error(err.message); }
+      toast.success(result.execution_state === 'attached'
+        ? 'Pedidos incluídos na execução em andamento.'
+        : 'Extração iniciada. Acompanhe o andamento na Central de Atividade.');
+    } catch (err) {
+      if (err.data?.execution_state === 'deferred' && err.data.batch_id) {
+        setQueuedBatchId(err.data.batch_id);
+        toast.warning('O lote foi salvo; a capacidade está ocupada e o worker vai retomá-lo.');
+      } else toast.error(err.message);
+    }
     finally { setSubmittingExtraction(false); }
   };
 
@@ -236,16 +247,15 @@ function AccountOrders({ integrationId }) {
         <div className="flex flex-wrap gap-2">
           <Link className="rounded border px-3 py-2 text-sm" to={`/configuracoes/integracoes/${integrationId}/ia`}><Settings className="mr-1 inline h-4 w-4" />Configuração IA</Link>
           <Button variant="outline" onClick={() => startExtraction(null, false)} disabled={submittingExtraction}>
-            <Brain className="mr-2 h-4 w-4" /> Extrair nomes pendentes
+            <Brain className="mr-2 h-4 w-4" /> {submittingExtraction ? 'Iniciando extração…' : 'Extrair nomes pendentes'}
           </Button>
         </div>
       </div>
-      {error && <p role="alert" className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{error} <Button variant="link" onClick={() => refresh().catch(err => setError(err.message))}>Tentar novamente</Button></p>}
-      {refreshing && orders.length > 0 && <p role="status" className="text-xs text-muted-foreground">Atualizando pedidos…</p>}
-      <MercadoLivreBatchPanel integrationId={integrationId} refreshKey={queuedBatchId}
+      <MercadoLivreBatchPanel integrationId={integrationId} refreshKey={queuedBatchId} compact
         onRefreshOrders={() => refresh().catch(err => setError(err.message))}
         onReprocess={startExtraction} />
-
+      {error && <p role="alert" className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800">{error} <Button variant="link" onClick={() => refresh().catch(err => setError(err.message))}>Tentar novamente</Button></p>}
+      {refreshing && orders.length > 0 && <p role="status" className="text-xs text-muted-foreground">Atualizando pedidos…</p>}
       <Card className="shadow-sm">
         <CardHeader className="pb-3"><CardTitle className="text-sm font-medium text-muted-foreground">Filtrar pedidos</CardTitle></CardHeader>
         <CardContent className="p-0">

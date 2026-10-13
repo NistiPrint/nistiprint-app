@@ -124,7 +124,7 @@ function IAPage({ integrationId = null }) {
         addLog(data.message || 'Não há pedidos pendentes.', data.success ? 'success' : 'error');
         return;
       }
-      addLog(`Lote ${batchId} enfileirado. Acompanhando o progresso...`, 'info');
+      addLog(`Execução ${batchId} iniciada. Acompanhando o progresso…`, 'info');
 
       let pollCount = 0;
       let processingDone = false;
@@ -165,8 +165,8 @@ function IAPage({ integrationId = null }) {
           processingDone = true;
           stopPolling();
           setIsProcessing(false);
-          setProcessingComplete({ success: true, message: 'O lote segue em andamento. Consulte o progresso no sininho.' });
-          addLog('⏱ Acompanhamento pausado após 10 minutos; o lote continua na fila.', 'warning');
+          setProcessingComplete({ success: true, message: 'A execução continua na Central de Atividade.' });
+          addLog('⏱ Acompanhamento pausado após 10 minutos; a execução continua na Central de Atividade.', 'warning');
         }
       }, 3000);
 
@@ -298,7 +298,7 @@ function IAPage({ integrationId = null }) {
                     ) : (
                       <Play className="mr-2 h-4 w-4" />
                     )}
-                    {isProcessing ? 'Processando...' : 'Iniciar Processamento em Lote'}
+                    {isProcessing ? 'Processando…' : 'Extrair nomes pendentes'}
                   </Button>
                 </form>
               </CardContent>

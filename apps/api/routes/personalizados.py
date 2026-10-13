@@ -60,6 +60,19 @@ def _parse_id_list(value):
     return None
 
 
+def _can_access_ai_batch(batch_id, user):
+    if not user:
+        return False
+    batch = (supabase_db.table("execucoes_ai_batch").select("id,iniciado_por")
+             .eq("id", batch_id).maybe_single().execute().data)
+    if not batch:
+        return False
+    if str(batch.get("iniciado_por") or "") == str(user.get("id")):
+        return True
+    return bool(supabase_db.table("execucoes_ai_batch_subscribers").select("batch_id")
+                .eq("batch_id", batch_id).eq("user_id", int(user["id"])).limit(1).execute().data)
+
+
 @personalizados_bp.route("", methods=["GET"])
 @check_permission("vendas", "ler")
 def listar_personalizados():
@@ -92,9 +105,34 @@ def processar():
             force=force,
             integration_id=integration_id,
             iniciado_por=user.get("id") if user else None,
+            dispatch=False,
         )
         if not success:
             return ApiResponse.error(message, 500)
+
+        if payload.get("batch_ids"):
+            payload.setdefault("activity_ids", payload["batch_ids"])
+            payload.setdefault("activity_id", payload.get("batch_id"))
+        if payload.get("batch_id") and payload.get("execution_state") != "attached":
+            from nistiprint_shared.services.ai_batch_runtime import start_background
+            from nistiprint_shared.services.ai_personalization_service import processar_batch_ia
+            execution_batch_id = payload.get("execution_batch_id") or payload["batch_id"]
+            started = start_background(processar_batch_ia.run, str(execution_batch_id), True)
+            payload["execution_state"] = "starting" if started else "deferred"
+            payload["activity_id"] = execution_batch_id
+            payload["activity_ids"] = payload.get("batch_ids", [execution_batch_id])
+            if not started:
+                return ApiResponse.error(
+                    "A capacidade de execução imediata está ocupada. O lote foi salvo e será retomado pelo worker.",
+                    503, errors={"batch_id": payload["batch_id"], "execution_state": "deferred",
+                                 "activity_id": execution_batch_id},
+                )
+            message = ("Extração iniciada. Acompanhe o andamento na Central de Atividade."
+                       if started else "Pedidos incluídos na execução em andamento.")
+        elif payload.get("execution_state") == "attached":
+            message = "Pedidos incluídos na execução em andamento. Acompanhe na Central de Atividade."
+        elif payload.get("execution_state") == "empty":
+            message = "Não há pedidos pendentes para extrair."
 
         status_code = 202 if payload.get("batch_id") else 200
         return ApiResponse.success(payload, message=message, status_code=status_code)
@@ -108,17 +146,10 @@ def processar():
 def progresso(batch_id):
     try:
         user = get_current_user()
-        response = (
-            supabase_db.table("execucoes_ai_batch")
-            .select("*")
-            .eq("id", batch_id)
-            .maybe_single()
-            .execute()
-        )
-        if not response.data:
+        if not _can_access_ai_batch(batch_id, user):
             return ApiResponse.error("Batch nao encontrado", 404)
-        if str(response.data.get("iniciado_por") or "") != str(user.get("id") if user else ""):
-            return ApiResponse.error("Batch nao encontrado", 404)
+        response = (supabase_db.table("execucoes_ai_batch").select("*")
+                    .eq("id", batch_id).maybe_single().execute())
         return ApiResponse.success(response.data)
     except Exception as exc:
         logger.error("Erro ao consultar batch %s: %s", batch_id, exc, exc_info=True)
@@ -130,15 +161,7 @@ def progresso(batch_id):
 def itens_batch(batch_id):
     try:
         user = get_current_user()
-        batch = (
-            supabase_db.table("execucoes_ai_batch")
-            .select("id,iniciado_por")
-            .eq("id", batch_id)
-            .maybe_single()
-            .execute()
-            .data
-        )
-        if not batch or str(batch.get("iniciado_por") or "") != str(user.get("id") if user else ""):
+        if not _can_access_ai_batch(batch_id, user):
             return ApiResponse.error("Batch nao encontrado", 404)
         response = (
             supabase_db.table("execucoes_ai_item")

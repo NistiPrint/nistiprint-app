@@ -5,7 +5,7 @@ import time
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from nistiprint_shared.services import mercadolivre_ai_batch as batch_service
 from nistiprint_shared.services import mercadolivre_personalization_service as service
@@ -80,6 +80,19 @@ class Ledger:
 
 
 class MercadoLivreDeferredRetryTests(unittest.TestCase):
+    def test_account_drains_all_ready_batches_in_source_order_without_another_sweep(self):
+        completed = {"status": "completed", "processed": 1}
+        with patch.object(service, "_process_batch_once", return_value=completed) as process, \
+             patch.object(service, "_next_due_batch", side_effect=["manual-2", "manual-3", None]) as due:
+            result = service.process_batch(7, "manual-1")
+        self.assertEqual(process.call_args_list, [
+            call(7, "manual-1"),
+            call(7, "manual-2"),
+            call(7, "manual-3"),
+        ])
+        self.assertEqual(result["drained_batches"], ["manual-1", "manual-2", "manual-3"])
+        self.assertEqual(due.call_count, 3)
+
     def test_clients_use_company_wide_credentials_and_ignore_legacy_account_keys(self):
         env = {
             "NISTIPRINT_AI_KEY": "company-gemini",
@@ -119,6 +132,7 @@ class MercadoLivreDeferredRetryTests(unittest.TestCase):
              patch.object(service, "_integration"), patch.object(service, "_settings", return_value={
                  "provider": "gemini", "fallback_provider": "openrouter", "model_name": "gemini-2.5-flash"}), \
              patch.object(service, "_sync_batch_operation"), patch.object(service, "_renew_batch_lease"), \
+             patch.object(service, "_next_due_batch", return_value=None), \
              patch.object(service, "process_pack", side_effect=process), \
              patch.dict(os.environ, {"OPENROUTER_API_KEY": "test"}):
             return service.process_batch(7, "batch")
