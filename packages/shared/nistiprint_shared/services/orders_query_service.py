@@ -41,54 +41,52 @@ class OrdersQueryService:
 
             rows = get_orders_with_chats(situacao_ids=[2, 3, 4])
 
-            processed_orders = []
-            for row in rows:
-                contato = self._parse_json_field(row.get("contato"), default={}) or {}
-                itens = [self._normalize_item(item) for item in (row.get("items") or row.get("itens") or [])]
-
-                if not contato.get("nome"):
-                    nome_cliente = row.get("nome_cliente", "") or ""
-                    if nome_cliente:
-                        contato["nome"] = nome_cliente
-
-                processed_orders.append({
-                    "id": row["id"],
-                    "numero": row.get("order_id") or row.get("numero_pedido"),
-                    "nome_cliente": row.get("nome_cliente", "") or "",
-                    "numeroLoja": row.get("shopee_order_sn") or row.get("numero_loja"),
-                    "marketplace_integration_id": row.get("marketplace_integration_id"),
-                    "data": row.get("order_date") or row.get("data_pedido"),
-                    "contato": contato,
-                    "itens": itens,
-                    "shopee": {
-                        "username": row.get("buyer_username") or "",
-                        "order_sn": row.get("shopee_order_sn") or row.get("numero_loja"),
-                        "message": (
-                            row.get("latest_buyer_message")
-                            or row.get("message_to_seller")
-                            or row.get("shopee_message")
-                        ),
-                        "message_to_seller": row.get("message_to_seller") or row.get("shopee_message"),
-                        "latest_buyer_message": row.get("latest_buyer_message") or "",
-                    },
-                    "personalizado": row.get("personalizado", True),
-                    "has_chat_messages": row.get("has_chat_messages", False),
-                    "has_buyer_message": row.get("has_buyer_message", False),
-                    "deletado": row.get("deletado", False),
-                    "last_ai_executed_at": row.get("last_ai_executed_at"),
-                    "last_buyer_message_at": row.get("last_buyer_message_at"),
-                    "last_chat_message_at": row.get("last_chat_message_at"),
-                    "needs_ai_processing": row.get("needs_ai_processing", False),
-                    "ai_status": row.get("ai_status"),
-                    "chat_context_ambiguous": row.get("chat_context_ambiguous", False),
-                })
-
-            return processed_orders
+            return [self._map_v2_personalized_order(row) for row in rows]
         except Exception as e:
             print(f"Error executing view-based personalized orders query: {e}")
             import traceback
             traceback.print_exc()
             raise e
+
+    def _map_v2_personalized_order(self, row):
+        contato = self._parse_json_field(row.get("contato"), default={}) or {}
+        itens = [self._normalize_item(item) for item in (row.get("items") or row.get("itens") or [])]
+        if not contato.get("nome"):
+            nome_cliente = row.get("nome_cliente", "") or ""
+            if nome_cliente:
+                contato["nome"] = nome_cliente
+
+        return {
+            "id": row["id"],
+            "numero": row.get("order_id") or row.get("numero_pedido"),
+            "nome_cliente": row.get("nome_cliente", "") or "",
+            "numeroLoja": row.get("shopee_order_sn") or row.get("numero_loja"),
+            "marketplace_integration_id": row.get("marketplace_integration_id"),
+            "data": row.get("order_date") or row.get("data_pedido"),
+            "contato": contato,
+            "itens": itens,
+            "shopee": {
+                "username": row.get("buyer_username") or "",
+                "order_sn": row.get("shopee_order_sn") or row.get("numero_loja"),
+                "message": (
+                    row.get("latest_buyer_message")
+                    or row.get("message_to_seller")
+                    or row.get("shopee_message")
+                ),
+                "message_to_seller": row.get("message_to_seller") or row.get("shopee_message"),
+                "latest_buyer_message": row.get("latest_buyer_message") or "",
+            },
+            "personalizado": row.get("personalizado", True),
+            "has_chat_messages": row.get("has_chat_messages", False),
+            "has_buyer_message": row.get("has_buyer_message", False),
+            "deletado": row.get("deletado", False),
+            "last_ai_executed_at": row.get("last_ai_executed_at"),
+            "last_buyer_message_at": row.get("last_buyer_message_at"),
+            "last_chat_message_at": row.get("last_chat_message_at"),
+            "needs_ai_processing": row.get("needs_ai_processing", False),
+            "ai_status": row.get("ai_status"),
+            "chat_context_ambiguous": row.get("chat_context_ambiguous", False),
+        }
 
     def get_personalized_orders_page(self, *, page=1, page_size=20, search="",
                                     ai_filter="", chat_filter="",
@@ -101,6 +99,29 @@ class OrdersQueryService:
 
         search_value = search.strip()
         search_by_order_number = search_value.isdigit()
+
+        if search_by_order_number and not ai_filter and not chat_filter:
+            from nistiprint_shared.services.ai_personalization_service import get_orders_with_chats
+
+            matches = (supabase_db.rpc("search_personalized_shopee_order_ids", {
+                "p_prefix": search_value,
+                "p_page": page,
+                "p_page_size": page_size,
+            }).execute().data or [])
+            ids = [int(row["id"]) for row in matches]
+            total = int(matches[0].get("total_count") or 0) if matches else 0
+            service_rows = get_orders_with_chats(
+                pedido_ids=ids, situacao_ids=[2, 3, 4]
+            ) if ids else []
+            rows_by_id = {int(row["id"]): row for row in service_rows}
+            orders = [self._map_v2_personalized_order(rows_by_id[order_id])
+                      for order_id in ids if order_id in rows_by_id]
+            return {
+                "bling_orders": orders,
+                "pagination": {"page": page, "page_size": page_size, "total": total,
+                               "has_next": page * page_size < total},
+                "status_counts": None,
+            }
 
         def scoped(query, *, global_order_search=False):
             # A numeric order lookup must find the order regardless of the

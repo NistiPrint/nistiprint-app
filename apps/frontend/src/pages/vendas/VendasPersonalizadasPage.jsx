@@ -186,7 +186,7 @@ function VendasPersonalizadasPage() {
         : effectivePage === 1 ? rows
           : [...new Map([...current, ...rows].map(order => [order.id, order])).values()]);
       setServerPagination(data.data?.pagination || { page: 1, page_size: rows.length, total: rows.length, has_next: false });
-      setServerStatusCounts(data.data?.status_counts || null);
+      if (data.data?.status_counts) setServerStatusCounts(data.data.status_counts);
     } catch (e) {
       if (e.name === 'AbortError') return;
         setError(e.message);

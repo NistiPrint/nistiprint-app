@@ -46,61 +46,48 @@ class TestOrdersQueryService(unittest.TestCase):
         self.assertTrue(rows[0]["has_buyer_message"])
 
     def test_numeric_personalized_order_search_scans_all_accounts_before_paging(self):
-        calls = []
-
-        class Query:
-            def __init__(self, table):
-                self.table = table
-                self.count_only = False
-                self.filters = []
-
-            def select(self, *_args, **kwargs):
-                self.count_only = kwargs.get("head", False)
-                return self
-
-            def eq(self, column, value):
-                self.filters.append(("eq", column, value))
-                return self
-
-            def or_(self, expression):
-                self.filters.append(("or", expression))
-                return self
-
-            def order(self, *_args, **_kwargs):
-                return self
-
-            def range(self, start, end):
-                self.filters.append(("range", start, end))
-                return self
-
-            def in_(self, *_args):
-                return self
-
-            def execute(self):
-                calls.append((self.table, self.count_only, list(self.filters)))
-                if self.table == "view_shopee_personalization_order_summary" and not self.count_only:
-                    return type("Response", (), {"data": [{"id": 494099}], "count": 1})()
-                if self.table == "view_vendas_personalizadas_v3":
-                    return type("Response", (), {"data": []})()
-                return type("Response", (), {"count": 1, "data": []})()
-
-        class Supabase:
-            def table(self, name):
-                return Query(name)
-
+        rpc_query = MagicMock()
+        rpc_query.execute.return_value.data = [{"id": 679562, "total_count": 1}]
+        supabase = MagicMock()
+        supabase.rpc.return_value = rpc_query
+        service_rows = [{
+            "id": 679562,
+            "order_id": "494099",
+            "shopee_order_sn": "261011B24BQVJG",
+            "marketplace_integration_id": 6,
+            "items": [{"id": 3, "descricao": "Caderno", "personalizations": []}],
+        }]
         service = OrdersQueryService()
-        with patch("nistiprint_shared.database.supabase_db_service.supabase_db", Supabase()):
+        with (
+            patch("nistiprint_shared.database.supabase_db_service.supabase_db", supabase),
+            patch("nistiprint_shared.services.ai_personalization_service.get_orders_with_chats", return_value=service_rows) as get_orders,
+        ):
             service.get_personalized_orders_page(
-                page=1, page_size=20, search="494099", integration_id=6,
+                page=1, page_size=20, search="494", integration_id=99,
             )
 
-        result_query = next(
-            filters for table, count_only, filters in calls
-            if table == "view_shopee_personalization_order_summary" and not count_only
-        )
-        self.assertIn(("or", "numero_pedido.ilike.%494099%,numero_loja.ilike.%494099%,nome_cliente.ilike.%494099%,buyer_username.ilike.%494099%"), result_query)
-        self.assertIn(("range", 0, 19), result_query)
-        self.assertFalse(any(call[:2] == ("eq", "marketplace_integration_id") for call in result_query))
+        supabase.rpc.assert_called_once_with("search_personalized_shopee_order_ids", {
+            "p_prefix": "494", "p_page": 1, "p_page_size": 20,
+        })
+        get_orders.assert_called_once_with(pedido_ids=[679562], situacao_ids=[2, 3, 4])
+
+    def test_numeric_search_returns_same_contract_and_skips_expensive_counts(self):
+        rpc_query = MagicMock()
+        rpc_query.execute.return_value.data = [{"id": 1, "total_count": 1}]
+        supabase = MagicMock()
+        supabase.rpc.return_value = rpc_query
+        with (
+            patch("nistiprint_shared.database.supabase_db_service.supabase_db", supabase),
+            patch("nistiprint_shared.services.ai_personalization_service.get_orders_with_chats", return_value=[]),
+        ):
+            result = OrdersQueryService().get_personalized_orders_page(
+                page=1, page_size=20, search="123", integration_id=6,
+            )
+
+        self.assertEqual(result["pagination"], {
+            "page": 1, "page_size": 20, "total": 1, "has_next": False,
+        })
+        self.assertIsNone(result["status_counts"])
 
 
 if __name__ == "__main__":

@@ -333,6 +333,7 @@ def _fetch_recent_personalized_orders(
     limit=None,
     recent_days: Optional[int] = None,
     situacao_ids=None,
+    numero_pedido_prefix=None,
 ):
     query = (
         supabase_db.table("pedidos")
@@ -351,6 +352,13 @@ def _fetch_recent_personalized_orders(
         query = query.eq("codigo_pedido_externo", str(order_sn))
     elif pedido_ids:
         query = query.in_("id", pedido_ids)
+    elif numero_pedido_prefix is not None:
+        prefix = str(numero_pedido_prefix)
+        if not prefix.isdigit():
+            raise ValueError("O prefixo do número do pedido deve conter apenas dígitos")
+        query = query.or_(
+            f"numero_pedido.like.{prefix}%,codigo_pedido_externo.like.{prefix}%"
+        )
 
     if limit and not pedido_ids and not order_sn:
         query = query.limit(max(limit * 4, limit, 150))
@@ -542,6 +550,7 @@ def _assemble_orders(
     limit=None,
     recent_days: Optional[int] = None,
     situacao_ids=None,
+    numero_pedido_prefix=None,
 ):
     base_orders = _fetch_recent_personalized_orders(
         order_sn=order_sn,
@@ -549,6 +558,7 @@ def _assemble_orders(
         limit=limit,
         recent_days=recent_days,
         situacao_ids=situacao_ids,
+        numero_pedido_prefix=numero_pedido_prefix,
     )
     if not base_orders:
         return []
@@ -619,18 +629,23 @@ def _assemble_orders(
             personalizations_by_desc.setdefault(key, []).append(personalization)
 
     latest_logs = {}
+    latest_successful_logs = {}
     if order_sns:
         log_rows = (
             supabase_db.table("logs_execucao_ia")
-            .select("id,order_sn,executed_at,status")
+            .select("id,order_sn,executed_at,status,extracted_personalization,model_result")
             .in_("order_sn", order_sns)
             .order("executed_at", desc=True)
+            .order("id", desc=True)
             .execute()
             .data
             or []
         )
         for log in log_rows:
-            latest_logs.setdefault(str(log["order_sn"]), log)
+            key = str(log["order_sn"])
+            latest_logs.setdefault(key, log)
+            if str(log.get("status") or "").lower() == "success":
+                latest_successful_logs.setdefault(key, log)
 
     usernames = []
     order_dates = []
@@ -672,6 +687,32 @@ def _assemble_orders(
                     (order_sn_value, str(item.get("descricao") or "").strip()),
                     [],
                 )
+            if not item_personalizations:
+                successful_log = latest_successful_logs.get(order_sn_value) or {}
+                extracted = _parse_json_if_needed(
+                    successful_log.get("extracted_personalization"), []
+                )
+                if not isinstance(extracted, list):
+                    extracted = []
+                item_description = str(item.get("descricao") or "").strip()
+                item_personalizations = []
+                for personalization in extracted:
+                    if not isinstance(personalization, dict):
+                        continue
+                    extracted_description = str(
+                        personalization.get("item_description") or ""
+                    ).strip()
+                    extracted_item_id = str(personalization.get("item_id") or "")
+                    if extracted_description != item_description and extracted_item_id != str(item.get("id")):
+                        continue
+                    if not str(personalization.get("customization_name") or "").strip() and not str(
+                        personalization.get("customization_initial") or ""
+                    ).strip():
+                        continue
+                    item_personalizations.append({
+                        **personalization,
+                        "status": personalization.get("status") or "SUCCESS",
+                    })
             order_items.append({
                 "id": item.get("id"),
                 "codigo": item.get("sku_externo"),
@@ -1319,11 +1360,16 @@ def _registros_personalizacao(order: Dict[str, Any], result: Dict[str, Any], *, 
     return shopee_order_sn, records
 
 
-def _persistir_personalizacao(order: Dict[str, Any], result: Dict[str, Any], *, model_name: str | None = None):
+def _persistir_personalizacao(
+    order: Dict[str, Any], result: Dict[str, Any], *,
+    model_name: str | None = None, log_record: Dict[str, Any],
+):
     shopee_order_sn, records = _registros_personalizacao(order, result, model_name=model_name)
-    supabase_db.table("personalizacoes_pedido").delete().eq("shopee_order_sn", shopee_order_sn).execute()
-    if records:
-        supabase_db.table("personalizacoes_pedido").insert(records).execute()
+    supabase_db.rpc("persist_shopee_personalization_result", {
+        "p_shopee_order_sn": shopee_order_sn,
+        "p_personalizations": records,
+        "p_log": log_record,
+    }).execute()
 
 
 def log_ai_execution(order_sn, input_data, chat_context, status, result=None, error_message=None, metadata=None):
@@ -1419,8 +1465,6 @@ def _process_single_order_sync(pedido_id: int, force: bool = False, *,
                 + str(result.get("reasoning") or "")
             ).strip()
         model_used = ai_response.model_used or (account_overrides or {}).get("ia_model")
-        if persist_result:
-            _persistir_personalizacao(order, result, model_name=model_used)
         # Provedor e modelo efetivo ficam no log: com `openrouter/auto` quem
         # escolhe o modelo e o OpenRouter, e sem isso nao ha como auditar
         # depois qual modelo produziu determinado nome.
@@ -1440,8 +1484,9 @@ def _process_single_order_sync(pedido_id: int, force: bool = False, *,
             },
         }
         if persist_result:
-            log_ai_execution(order_sn, prompt_payload, chat_context, "success", result=result,
-                             metadata=log_record["metadata"])
+            _persistir_personalizacao(
+                order, result, model_name=model_used, log_record=log_record
+            )
         response = {
             "success": True,
             "status": "success",
@@ -2191,12 +2236,15 @@ def get_chat_messages(username, limit=None, integration_id=None, buyer_id=None):
     return compact_chat_messages(messages, username or "", buyer_id=buyer_id)
 
 
-def get_orders_with_chats(order_sn=None, limit=None, situacao_ids=None):
+def get_orders_with_chats(order_sn=None, limit=None, situacao_ids=None,
+                          pedido_ids=None, numero_pedido_prefix=None):
     rows = _assemble_orders(
         order_sn=order_sn,
+        pedido_ids=pedido_ids,
         limit=limit,
         recent_days=None,
         situacao_ids=situacao_ids,
+        numero_pedido_prefix=numero_pedido_prefix,
     )
     normalized_orders = [_normalize_order_row(row) for row in rows]
     if limit:

@@ -404,6 +404,49 @@ class TestStatusPersonalizados(unittest.TestCase):
         self.assertEqual(produced["itens"][0]["descricao"], "Planner personalizado")
         self.assertTrue(produced["needs_ai_processing"])
 
+    def test_personalizacao_recuperada_do_log_quando_registros_estao_ausentes(self):
+        self.store["logs_execucao_ia"] = [{
+            "id": 8,
+            "order_sn": "PEDIDO-4",
+            "executed_at": "2026-10-12T15:13:41+00:00",
+            "status": "success",
+            "extracted_personalization": [{
+                "item_id": "338353",  # ID antigo; a descrição identifica o item atual.
+                "item_description": "Planner personalizado",
+                "customization_name": "Inara Coelho",
+                "name_source_message_id": "message-1",
+            }],
+        }]
+
+        rows = service.get_orders_with_chats(situacao_ids=[2, 3, 4])
+        order = next(row for row in rows if row["id"] == 4)
+
+        self.assertEqual(order["items"][0]["personalizations"][0]["customization_name"], "Inara Coelho")
+        self.assertEqual(order["items"][0]["personalizations"][0]["status"], "SUCCESS")
+
+    def test_log_bem_sucedido_mais_recente_sem_nomes_nao_restaura_nome_antigo(self):
+        self.store["logs_execucao_ia"] = [{
+            "id": 9,
+            "order_sn": "PEDIDO-4",
+            "executed_at": "2026-10-13T15:13:41+00:00",
+            "status": "success",
+            "extracted_personalization": [],
+        }, {
+            "id": 8,
+            "order_sn": "PEDIDO-4",
+            "executed_at": "2026-10-12T15:13:41+00:00",
+            "status": "success",
+            "extracted_personalization": [{
+                "item_description": "Planner personalizado",
+                "customization_name": "Nome antigo",
+            }],
+        }]
+
+        rows = service.get_orders_with_chats(situacao_ids=[2, 3, 4])
+        order = next(row for row in rows if row["id"] == 4)
+
+        self.assertEqual(order["items"][0]["personalizations"], [])
+
     def test_processamento_inclui_pronto_envio(self):
         to_process, skipped = service.select_orders_for_processing(order_sn="PEDIDO-4")
 
