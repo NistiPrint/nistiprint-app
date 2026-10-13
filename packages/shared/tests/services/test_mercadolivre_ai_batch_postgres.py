@@ -108,6 +108,9 @@ class MercadoLivreBatchPostgresTests(unittest.TestCase):
     def test_manual_batch_merges_under_the_account_lease_and_tracks_the_subscriber(self):
         active=self.batch(packs=('p',))
         token,_=self.claim(active)
+        # The batch lease reserves the account; the pack has its own claim.
+        # Keep p in flight while q is merged into the running batch.
+        self.assertEqual(self.item(active,token,'p'),[(1,0)])
         requested=self.batch(packs=('q',))
         merged=self.sql('SELECT public.ml_ai_merge_manual_packs(7,%s,%s)',(active,requested))[0][0]
         self.assertTrue(merged['merged'])
