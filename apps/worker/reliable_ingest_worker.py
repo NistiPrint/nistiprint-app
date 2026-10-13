@@ -94,8 +94,14 @@ def _signature_result(item, client):
     if item.get("source") != "shopee":
         return validate_signature(item), None
 
+    policy = str(os.getenv("INGEST_SIGNATURE_POLICY_SHOPEE", "optional")).strip().lower()
+    if policy not in {"required", "optional", "observe", "disabled"}:
+        policy = "optional"
+    if policy == "disabled":
+        return SignatureResult("signature_disabled", True, False), None
+
     def quarantine_unverified(reason):
-        """Shopee must not reach domain workers without n8n's positive HMAC verdict."""
+        """Reject unverifiable deliveries only when the configured policy requires it."""
         return SignatureResult(
             "discarded_signature_unverifiable", False, True,
             reason or "shopee_hmac_verdict_missing",
@@ -109,16 +115,30 @@ def _signature_result(item, client):
         if status == "signature_valid":
             return SignatureResult(status, True, True, "n8n_post_ack_hmac_sha256"), verdict_key
         if status == "discarded_invalid_signature":
+            if policy == "observe":
+                return SignatureResult(
+                    "signature_invalid_observed", True, False,
+                    "n8n_post_ack_hmac_sha256_mismatch",
+                ), verdict_key
             return SignatureResult(
                 status,
                 False,
                 True,
                 "n8n_post_ack_hmac_sha256_mismatch",
             ), verdict_key
-        return quarantine_unverified("n8n_signature_verdict_unverified"), verdict_key
+        reason = str(verdict.get("signature_reason") or "n8n_signature_verdict_unverified")
+        if reason == "hmac_mismatch":
+            if policy == "observe":
+                return SignatureResult("signature_invalid_observed", True, False, reason), verdict_key
+            return SignatureResult("discarded_invalid_signature", False, True, reason), verdict_key
+        if policy == "required":
+            return quarantine_unverified(reason), verdict_key
+        return SignatureResult("signature_unverified", True, False, reason), verdict_key
     if int(item.get("attempt") or 0) < 3 and _is_within_signature_grace(item):
         raise SignatureVerdictPending("Shopee signature verdict is not available yet")
-    return quarantine_unverified("n8n_signature_verdict_missing"), None
+    if policy == "required":
+        return quarantine_unverified("n8n_signature_verdict_missing"), None
+    return validate_signature(item), None
 
 
 def route_once(client=None):

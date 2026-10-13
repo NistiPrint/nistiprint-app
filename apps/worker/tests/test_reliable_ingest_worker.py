@@ -128,7 +128,7 @@ class SignatureVerdictTest(unittest.TestCase):
         with self.assertRaises(worker.SignatureVerdictPending):
             worker._signature_result(item, FakeRedis())
 
-    def test_old_backlog_without_n8n_verdict_is_quarantined(self):
+    def test_old_backlog_without_n8n_verdict_is_quarantined_when_required(self):
         item = {
             "source": "shopee",
             "event_id": "old",
@@ -137,7 +137,8 @@ class SignatureVerdictTest(unittest.TestCase):
             ).isoformat(),
             "attempt": 0,
         }
-        with patch.object(worker, "validate_signature") as validate:
+        with patch.dict("os.environ", {"INGEST_SIGNATURE_POLICY_SHOPEE": "required"}), \
+             patch.object(worker, "validate_signature") as validate:
             result, verdict_key = worker._signature_result(item, FakeRedis())
         self.assertEqual(result.status, "discarded_signature_unverifiable")
         self.assertFalse(result.valid)
@@ -145,19 +146,48 @@ class SignatureVerdictTest(unittest.TestCase):
         self.assertIsNone(verdict_key)
         validate.assert_not_called()
 
-    def test_unverified_n8n_verdict_is_quarantined_even_under_optional_policy(self):
+    def test_unverified_n8n_verdict_passes_under_optional_policy(self):
         item = {"source": "shopee", "event_id": "unverified"}
         redis = FakeRedis('{"signature_status":"signature_unverified"}')
         with patch.dict("os.environ", {"INGEST_SIGNATURE_POLICY_SHOPEE": "optional"}):
             with patch.object(worker, "validate_signature") as validate:
                 result, verdict_key = worker._signature_result(item, redis)
-        self.assertEqual(result.status, "discarded_signature_unverifiable")
-        self.assertFalse(result.valid)
-        self.assertTrue(result.terminal)
+        self.assertEqual(result.status, "signature_unverified")
+        self.assertTrue(result.valid)
+        self.assertFalse(result.terminal)
         self.assertEqual(verdict_key, "np:ingest:signature:unverified")
         validate.assert_not_called()
 
-    def test_unverified_shopee_event_is_finalized_without_forwarding_to_domain_queue(self):
+    def test_audit_hmac_mismatch_passes_under_observe_policy(self):
+        item = {"source": "shopee", "event_id": "observed-invalid"}
+        redis = FakeRedis(
+            '{"signature_status":"signature_unverified",'
+            '"signature_reason":"hmac_mismatch"}'
+        )
+        with patch.dict("os.environ", {"INGEST_SIGNATURE_POLICY_SHOPEE": "observe"}):
+            result, _ = worker._signature_result(item, redis)
+        self.assertEqual(result.status, "signature_invalid_observed")
+        self.assertTrue(result.valid)
+        self.assertFalse(result.terminal)
+
+    def test_missing_verdict_falls_back_to_optional_signature_validation(self):
+        item = {
+            "source": "shopee",
+            "event_id": "old-unverified",
+            "received_at": (
+                datetime.now(timezone.utc) - timedelta(minutes=10)
+            ).isoformat(),
+            "attempt": 3,
+        }
+        expected = worker.SignatureResult("signature_unverified", True, False, "no_usable_secret")
+        with patch.dict("os.environ", {"INGEST_SIGNATURE_POLICY_SHOPEE": "optional"}), \
+             patch.object(worker, "validate_signature", return_value=expected) as validate:
+            result, verdict_key = worker._signature_result(item, FakeRedis())
+        self.assertEqual(result, expected)
+        self.assertIsNone(verdict_key)
+        validate.assert_called_once_with(item)
+
+    def test_unverified_shopee_event_is_forwarded_under_optional_policy(self):
         item = {
             "source": "shopee",
             "event_id": "unverified-route",
@@ -166,23 +196,22 @@ class SignatureVerdictTest(unittest.TestCase):
             "attempt": 3,
         }
         redis = FakeRedis('{"signature_status":"signature_unverified"}')
-        with patch.object(worker, "claim", return_value=item), \
+        with patch.dict("os.environ", {"INGEST_SIGNATURE_POLICY_SHOPEE": "optional"}), \
+             patch.object(worker, "claim", return_value=item), \
              patch.object(worker, "record_signature_result") as record_signature, \
              patch.object(worker, "finalize_event") as finalize, \
              patch.object(worker, "complete", return_value=True) as complete, \
-             patch.object(worker, "forward") as forward:
+             patch.object(worker, "_is_chat", return_value=False), \
+             patch.object(worker, "forward", return_value=True) as forward:
             self.assertTrue(worker.route_once(redis))
         record_signature.assert_called_once()
         self.assertEqual(record_signature.call_args.args[1].status,
-                         "discarded_signature_unverifiable")
-        finalize.assert_called_once_with(
-            123,
-            "discarded_signature_unverifiable",
-            error_type="discarded_signature_unverifiable",
-            error_message="n8n_signature_verdict_unverified",
+                         "signature_unverified")
+        finalize.assert_not_called()
+        complete.assert_not_called()
+        forward.assert_called_once_with(
+            item, worker.INBOX_PROCESSING, worker.ORDERS_READY, redis
         )
-        complete.assert_called_once_with(item, worker.INBOX_PROCESSING, redis)
-        forward.assert_not_called()
 
     def test_invalid_n8n_verdict_is_quarantined_under_optional_policy(self):
         item = {"source": "shopee", "event_id": "optional"}
