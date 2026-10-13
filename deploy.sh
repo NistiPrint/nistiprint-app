@@ -92,7 +92,7 @@ import subprocess
 from pathlib import Path
 from dotenv import dotenv_values
 
-frontend = Path('/opt/nistiprint/apps/frontend')
+frontend = Path.cwd().resolve()
 env_file = Path('/opt/nistiprint/.env')
 values = dotenv_values(env_file)
 url = values.get('VITE_SUPABASE_URL')
@@ -113,11 +113,27 @@ subprocess.run(['npm', 'run', 'build', '--', '--outDir', str(staged)],
                cwd=frontend, env=build_env, check=True)
 
 scripts = list((staged / 'assets').glob('*.js'))
-if not (staged / 'index.html').is_file() or not scripts:
-    raise SystemExit('Frontend build incomplete; current published build preserved')
-if not any(url in script.read_text(encoding='utf-8') and
-           anon_key in script.read_text(encoding='utf-8') for script in scripts):
-    raise SystemExit('Frontend build lacks Supabase URL or anon key; current published build preserved')
+missing_artifacts = []
+if not (staged / 'index.html').is_file():
+    missing_artifacts.append(str(staged / 'index.html'))
+if not scripts:
+    missing_artifacts.append(str(staged / 'assets/*.js'))
+if missing_artifacts:
+    raise SystemExit(
+        'Frontend build incomplete; missing ' + ', '.join(missing_artifacts) +
+        '; current published build preserved'
+    )
+bundles = [script.read_text(encoding='utf-8') for script in scripts]
+missing = []
+if not any(url in bundle for bundle in bundles):
+    missing.append('VITE_SUPABASE_URL')
+if not any(anon_key in bundle for bundle in bundles):
+    missing.append('VITE_SUPABASE_ANON_KEY')
+if missing:
+    raise SystemExit(
+        'Frontend build lacks ' + ' and '.join(missing) +
+        '; current published build preserved'
+    )
 
 if previous.exists():
     shutil.rmtree(previous)
