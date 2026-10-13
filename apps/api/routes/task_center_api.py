@@ -125,7 +125,7 @@ def home_operational_summary():
                 "outbox_failed": outbox_failed,
                 "balance_divergences": _count_rows(
                     supabase_db.table("v_estoque_saldo_ledger_divergencias")
-                    .select("id", count="exact", head=True)
+                    .select("produto_id", count="exact", head=True)
                 ),
             }
         sections["inventory"] = _summary_section("inventory", inventory_counts)

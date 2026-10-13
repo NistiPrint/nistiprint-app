@@ -180,8 +180,10 @@ class TestAccessControl(unittest.TestCase):
             def __init__(self, table_name):
                 self.table_name = table_name
                 self.count = counts[table_name]
+                self.selected_columns = []
 
-            def select(self, *_args, **_kwargs):
+            def select(self, columns, **_kwargs):
+                self.selected_columns.append(columns)
                 return self
 
             def execute(self):
@@ -197,9 +199,16 @@ class TestAccessControl(unittest.TestCase):
         def permission(_user, resource, action):
             return action == "ler" and resource in {"vendas", "demanda_producao", "producao", "estoque"}
 
+        queries = {}
+
+        def make_query(table_name):
+            query = Query(table_name)
+            queries[table_name] = query
+            return query
+
         with patch.object(task_center_api, "_active_session_user", return_value=user), \
                 patch.object(task_center_api, "user_has_permission", side_effect=permission), \
-                patch.object(task_center_api.supabase_db, "table", side_effect=lambda name: Query(name)):
+                patch.object(task_center_api.supabase_db, "table", side_effect=make_query):
             response = self.app.test_client().get("/api/v2/home/operational-summary")
 
         self.assertEqual(response.status_code, 200)
@@ -211,6 +220,12 @@ class TestAccessControl(unittest.TestCase):
         self.assertEqual(sections["printing"]["unresolved_sends"], 1)
         self.assertEqual(sections["inventory"]["outbox_pending"], 5)
         self.assertEqual(sections["inventory"]["balance_divergences"], 6)
+        self.assertEqual(sections["production"]["status"], "available")
+        self.assertEqual(sections["inventory"]["status"], "available")
+        self.assertEqual(
+            queries["v_estoque_saldo_ledger_divergencias"].selected_columns,
+            ["produto_id"],
+        )
 
     def test_stock_ledger_divergence_list_requires_stock_permission(self):
         self.app.register_blueprint(estoque_api.estoque_api_bp, url_prefix="/api/v2/estoque")
