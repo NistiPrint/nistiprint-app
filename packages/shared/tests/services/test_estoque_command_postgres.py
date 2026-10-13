@@ -16,6 +16,10 @@ import unittest
 import uuid
 from contextlib import closing, contextmanager
 from concurrent.futures import ThreadPoolExecutor
+<<<<<<< HEAD
+=======
+from functools import partial
+>>>>>>> 9de2ad7 (feat: add webhook synchronization and reporting functions for Shopee chat and ledger consumption)
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -35,7 +39,13 @@ class StockCommandPostgresTests(unittest.TestCase):
         if database_name != "nistiprint_test" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
             raise RuntimeError("PostgreSQL acceptance tests only allow loopback database nistiprint_test")
 
+<<<<<<< HEAD
         cls.connection_factory = lambda: psycopg2.connect(DATABASE_URL)
+=======
+        # A plain function assigned here becomes a descriptor and receives
+        # the test instance as an unexpected positional argument.
+        cls.connection_factory = partial(psycopg2.connect, DATABASE_URL)
+>>>>>>> 9de2ad7 (feat: add webhook synchronization and reporting functions for Shopee chat and ledger consumption)
         schema_fixture = ROOT / "supabase/tests/fixtures/estoque_command_schema.sql"
         migration = ROOT / "supabase/migrations/20261009175729_estoque_comando_idempotente.sql"
         allocation_migration = ROOT / "supabase/migrations/20261009181200_alocacoes_transacionais.sql"
