@@ -1461,14 +1461,23 @@ class MarketplaceWebhookIngestService:
             },
         ]
         if lifecycle_event:
+            projection_flag_enabled = str(
+                os.getenv("MARKETPLACE_LIFECYCLE_PROJECTION_ENABLED", "false")
+            ).strip().lower() in ("1", "true", "yes", "on")
+            # Mercado Livre emite a etiqueta/documentacao de envio antes da
+            # expedicao. Projetamos esse marco mesmo para pedidos existentes,
+            # sem habilitar a projecao geral de lifecycle para outros eventos.
+            meli_dispatch_ready = (
+                source == "mercadolivre"
+                and lifecycle_event.get("lifecycle_stage") == "fulfillment_ready"
+                and lifecycle_event.get("target_situacao_pedido_id") == 4
+            )
             transition = canonical_order_repository.apply_marketplace_event(
                 row,
                 lifecycle_event=lifecycle_event,
                 snapshot=snapshot,
                 refs=refs,
-                projection_enabled=str(
-                    os.getenv("MARKETPLACE_LIFECYCLE_PROJECTION_ENABLED", "false")
-                ).strip().lower() in ("1", "true", "yes", "on"),
+                projection_enabled=projection_flag_enabled or meli_dispatch_ready,
             )
             pedido_id = int(transition["pedido_id"])
         else:

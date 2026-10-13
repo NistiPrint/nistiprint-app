@@ -430,6 +430,34 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
             {'name': 'Cliente'},
         )
 
+    def test_meli_dispatch_ready_projects_existing_order_when_global_flag_is_off(self):
+        service = MarketplaceWebhookIngestService()
+        lifecycle_event = {
+            "lifecycle_stage": "fulfillment_ready",
+            "target_situacao_pedido_id": 4,
+        }
+
+        with patch.object(service, '_normalize_shopee_items', return_value=[]), \
+             patch.object(service, '_customer_name', return_value='Cliente'), \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.logistica_coleta_service.calcular_data_coleta', return_value={}), \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.apply_marketplace_event', return_value={"pedido_id": 55, "decision": "applied"}) as apply_event, \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.apply_pending_erp_reference_for_order'), \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.canonical_order_repository.defer_unresolved_erp_order'), \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.persist_classification_from_payload'), \
+             patch.dict('os.environ', {'MARKETPLACE_LIFECYCLE_PROJECTION_ENABLED': 'false'}):
+            service._upsert_pedido_status(
+                source='mercadolivre', external_order_id='ML123',
+                marketplace_integration_id=12, bling_integration_id=None,
+                bling_loja_id=None, channel_id=22, ingest_origin_mode='marketplace_direct',
+                situacao_pedido_id=4, status_original='ready_to_print',
+                mirror_fields={'pedido_mercadolivre_id': 44},
+                lifecycle_event=lifecycle_event, raw_customer={'name': 'Cliente'},
+                total=10, currency='BRL', data_venda='2026-06-23T10:00:00+00:00',
+                details={},
+            )
+
+        self.assertTrue(apply_event.call_args.kwargs['projection_enabled'])
+
     def test_upsert_pedido_status_does_not_require_bling_order_number(self):
         service = MarketplaceWebhookIngestService()
 

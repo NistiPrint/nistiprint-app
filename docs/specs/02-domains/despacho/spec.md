@@ -33,8 +33,14 @@ o lancamento de demanda ou a producao.
 - Origem da venda nao resolvida: prossegue em no proprio. Nao bloqueia.
 
 A resposta do sistema a dado faltante e **visibilidade**, nunca retencao. Todo
-pedido pertence a exatamente um no da arvore de despacho e sempre pode ser
+pedido elegivel para a torre pertence a exatamente um no da arvore e pode ser
 lancado.
+
+Excecao operacional: no Mercado Livre, `shipping_substatus` `ready_to_print`
+(nota/documentacao gerada) e `printed` (etiqueta impressa) indicam que o pedido
+ja avancou para a etapa de expedicao. Ele passa a situacao 4 e deixa de ser
+elegivel para a torre, embora ainda nao tenha sido coletado. O marco fica
+preservado mesmo se o substatus fiscal mudar depois.
 
 Consequencia direta nos contadores: nao existe categoria "retido" e nenhum
 pedido e subtraido de um totalizador. Ver "Arvore de totalizadores".
@@ -235,9 +241,10 @@ quando nenhum canal esta sem modalidade. E fila de trabalho, nao cadastro.
 A torre conta apenas pedido que ainda e trabalho do galpao:
 
 - `despachado_em IS NULL`, e
-- `situacao_pedido_id = 2` — exclusivamente Em Andamento, e
+- `situacao_pedido_id IN (2, 3, 4)`, e
 - modalidade com `entra_na_torre = true` (fallback `NOT is_fulfillment` para o
   pedido ainda nao classificado), e
+- nao seja Mercado Livre em situacao 4, e
 - nao pertence a demanda publicada (status diferente de `RASCUNHO` e nao
   cancelada).
 
@@ -373,8 +380,8 @@ Shopee (200)
 
 Invariantes:
 
-- A soma dos filhos e sempre igual ao pai. Nenhum pedido e omitido.
-- Todo pedido nao despachado pertence a exatamente um caminho da arvore.
+- A soma dos filhos e sempre igual ao pai.
+- Todo pedido elegivel para a torre pertence a exatamente um caminho da arvore.
 - `atrasado` nunca colapsa e sempre aparece primeiro no seu nivel.
 - O contador de conferencia e **quantidade de pedidos**, que e a unidade que o
   painel do marketplace exibe. Todo numero comparavel com a origem usa essa

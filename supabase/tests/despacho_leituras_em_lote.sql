@@ -21,6 +21,8 @@ INSERT INTO pedidos(id,numero_pedido,marketplace_module_id,marketplace_integrati
  situacao_pedido_id,compromisso_logistico_em)
 VALUES(301,'301','shopee',6,3,2,'2026-10-02T10:00:00-03:00'),(302,'302','shopee',6,NULL,2,NULL),
  (303,'303','shopee',6,1,4,NULL),(304,'304','shopee',6,1,3,NULL);
+UPDATE pedidos SET situacao_pedido_id=4,marketplace_shipping_substatus='ready_to_print'
+ WHERE id=2;
 
 DO $$
 DECLARE instante timestamptz; falhas integer; ctx jsonb;
@@ -40,10 +42,35 @@ BEGIN
     OR jsonb_array_length(ctx->'pedidos')<>jsonb_array_length(ctx->'pedido_ids') THEN
    RAISE EXCEPTION 'Card, escopo e pedidos divergem';
  END IF;
- IF EXISTS(SELECT 1 FROM vw_pedidos_pendentes_despacho WHERE id IN (303,304)) THEN
-   RAISE EXCEPTION 'Torre incluiu situacoes que nao sao Em Andamento';
+ IF (SELECT count(*) FROM vw_pedidos_pendentes_despacho WHERE id IN (303,304))<>2 THEN
+   RAISE EXCEPTION 'Torre omitiu pedidos ainda elegiveis nas situacoes 3/4';
  END IF;
- IF (SELECT sum(qtd_pedidos) FROM despacho_arvore('2026-10-02') WHERE nivel=0)<>302 THEN
+ IF EXISTS(SELECT 1 FROM vw_pedidos_pendentes_despacho WHERE id=2) THEN
+   RAISE EXCEPTION 'Pedido ML com etiqueta pronta permaneceu na torre';
+ END IF;
+ UPDATE pedidos SET marketplace_shipping_substatus='printed' WHERE id=2;
+ IF EXISTS(SELECT 1 FROM vw_pedidos_pendentes_despacho WHERE id=2) THEN
+   RAISE EXCEPTION 'Pedido ML com etiqueta impressa permaneceu na torre';
+ END IF;
+ UPDATE pedidos SET marketplace_shipping_substatus='invoice_pending' WHERE id=2;
+ IF EXISTS(SELECT 1 FROM vw_pedidos_pendentes_despacho WHERE id=2) THEN
+   RAISE EXCEPTION 'Regressao do substatus fiscal devolveu pedido 4 para a torre';
+ END IF;
+ IF EXISTS(
+   SELECT 1 FROM integration_status_mappings
+    WHERE module_id='mercadolivre' AND integration_id IS NULL
+      AND status_domain='shipping_substatus'
+      AND external_status_id IN ('ready_to_print','printed')
+      AND lifecycle_stage <> 'fulfillment_ready'
+ ) OR (
+   SELECT count(*) FROM integration_status_mappings
+    WHERE module_id='mercadolivre' AND integration_id IS NULL
+      AND status_domain='shipping_substatus'
+      AND external_status_id IN ('ready_to_print','printed')
+ ) <> 2 THEN
+   RAISE EXCEPTION 'Mapeamento de etiqueta Mercado Livre ausente ou incorreto';
+ END IF;
+ IF (SELECT sum(qtd_pedidos) FROM despacho_arvore('2026-10-02') WHERE nivel=0)<>303 THEN
    RAISE EXCEPTION 'Arvore omitiu ou duplicou pedidos';
  END IF;
  IF jsonb_array_length(despacho_arvore_contexto('2026-10-02')->'rows')=0 THEN

@@ -201,6 +201,7 @@ def reconcile_marketplace_lifecycle(
     limit: int = 100,
     offset: int = 0,
     projection_enabled: bool | None = None,
+    marketplace_module_id: str | None = None,
 ) -> dict:
     """Backfill de ciclo de vida a partir do estado atual no marketplace.
 
@@ -220,6 +221,10 @@ def reconcile_marketplace_lifecycle(
         .in_("marketplace_module_id", ["shopee", "mercadolivre"])
         .in_("situacao_pedido_id", list(BACKFILL_ACTIVE_STATUS_IDS))
     )
+    if marketplace_module_id:
+        if marketplace_module_id not in {"shopee", "mercadolivre"}:
+            raise ValueError("marketplace_module_id invalido para backfill")
+        query = query.eq("marketplace_module_id", marketplace_module_id)
     if days and int(days) > 0:
         desde = datetime.now(timezone.utc) - timedelta(days=int(days))
         query = query.gte("data_venda", desde.isoformat())
@@ -326,6 +331,7 @@ def reconcile_marketplace_lifecycle_task(
     limit: int = 100,
     offset: int = 0,
     projection_enabled: bool | None = None,
+    marketplace_module_id: str | None = None,
     continue_batches: bool = True,
     chain_token: str | None = None,
 ):
@@ -352,6 +358,7 @@ def reconcile_marketplace_lifecycle_task(
             limit=limit,
             offset=offset,
             projection_enabled=projection_enabled,
+            marketplace_module_id=marketplace_module_id,
         )
     except Exception:
         _liberar_trava_da_cadeia(chain_token)
@@ -366,6 +373,7 @@ def reconcile_marketplace_lifecycle_task(
                 "limit": limit,
                 "offset": result["next_offset"],
                 "projection_enabled": projection_enabled,
+                "marketplace_module_id": marketplace_module_id,
                 "continue_batches": True,
                 "chain_token": chain_token,
             },

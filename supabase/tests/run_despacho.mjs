@@ -12,6 +12,8 @@ try {
     'supabase/migrations/20260916165919_despacho_abas_por_limite_envio.sql',
     'supabase/migrations/20261002122000_despacho_ml_agrupado_por_prazo.sql',
     'supabase/migrations/20261005190000_despacho_leituras_em_lote.sql',
+    'supabase/tests/fixtures/mercadolivre_invoice_lifecycle_schema.sql',
+    'supabase/migrations/20261013223000_meli_invoice_label_dispatch.sql',
     'supabase/tests/despacho_leituras_em_lote.sql',
     'supabase/migrations/20261005191000_shopee_prazos_confirmados.sql',
     'supabase/migrations/20261005200000_despacho_sem_prazo_proxima_coleta.sql',

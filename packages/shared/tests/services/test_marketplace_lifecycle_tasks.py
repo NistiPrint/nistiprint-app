@@ -36,7 +36,7 @@ class TestReconcileMarketplaceLifecycleQuery(unittest.TestCase):
 
     def _query_mock(self, rows):
         query = MagicMock()
-        for metodo in ('select', 'in_', 'gte', 'gt', 'order', 'limit'):
+        for metodo in ('select', 'in_', 'eq', 'gte', 'gt', 'order', 'limit'):
             getattr(query, metodo).return_value = query
         query.execute.return_value.data = rows
         return query
@@ -55,6 +55,23 @@ class TestReconcileMarketplaceLifecycleQuery(unittest.TestCase):
             tasks.reconcile_marketplace_lifecycle(days=0, limit=100)
 
         query.gte.assert_not_called()
+
+    def test_backfill_pode_ser_limitado_a_uma_origem(self):
+        query = self._query_mock([])
+        with patch.object(tasks.supabase_db, 'table', return_value=query):
+            tasks.reconcile_marketplace_lifecycle(
+                days=0, marketplace_module_id='mercadolivre'
+            )
+
+        query.eq.assert_called_once_with('marketplace_module_id', 'mercadolivre')
+
+    def test_backfill_rejeita_origem_desconhecida(self):
+        query = self._query_mock([])
+        with patch.object(tasks.supabase_db, 'table', return_value=query):
+            with self.assertRaises(ValueError):
+                tasks.reconcile_marketplace_lifecycle(
+                    marketplace_module_id='bling'
+                )
 
     def test_offset_e_keyset_por_id_nao_deslocamento(self):
         query = self._query_mock([])

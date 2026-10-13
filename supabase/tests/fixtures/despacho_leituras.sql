@@ -10,9 +10,10 @@ CREATE TABLE pedidos_shopee(codigo_pedido text PRIMARY KEY, ship_by_date timesta
 CREATE TABLE itens_pedido(id serial PRIMARY KEY, pedido_id integer, quantidade numeric);
 CREATE INDEX ON itens_pedido(pedido_id);
 CREATE VIEW vw_pedidos_pendentes_despacho WITH (security_invoker=true) AS
- SELECT p.*, m.codigo AS modalidade_codigo, m.nome AS modalidade_nome,
+ SELECT p.*, m.codigo::varchar(50) AS modalidade_codigo, m.nome AS modalidade_nome,
         m.tipo_prazo AS modalidade_tipo_prazo, m.ordem_exibicao AS modalidade_ordem,
-        i.instance_name AS marketplace_nome
+        i.instance_name AS marketplace_nome,
+        COALESCE(m.entrega_rapida, false) AS modalidade_entrega_rapida
  FROM pedidos p LEFT JOIN modalidades_logisticas m ON m.id=p.modalidade_logistica_id
  LEFT JOIN installed_integrations i ON i.id=p.marketplace_integration_id
  WHERE p.situacao_pedido_id=2 AND p.despachado_em IS NULL

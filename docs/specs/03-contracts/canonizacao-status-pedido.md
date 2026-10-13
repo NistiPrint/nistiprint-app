@@ -279,9 +279,17 @@ Domínio `shipping_substatus` — observação independente, não combinação:
 | `external_status_id` | Estágio | Situação |
 |---|---|---|
 | `authorized_by_carrier`, `dropped_off`, `in_hub`, `in_transit`, `picked_up` | `shipped` | 5 |
+| `ready_to_print`, `printed` | `fulfillment_ready` | 4 |
 | `picked_up_for_return`, `returning_to_sender`, `returning_to_hub`, `returned_to_agency`, `returned_to_hub`, `returning_to_warehouse`, `soon_to_be_returned` | `return_in_progress` | ⇣ subjacente |
 | `returned`, `returned_to_warehouse` | `returned` | 8 |
 | qualquer outro | (sem entrada) | — |
+
+`shipping.ready_to_ship` sozinho permanece em 2 (aguardando envio). Os
+substatus `ready_to_print` e `printed` confirmam que a nota/documentacao de
+envio foi gerada; ambos projetam 4 (Pronto para Envio), sem afirmar despacho
+fisico. Ao avancar para 4, o pedido deixa a torre de entrada de despacho. A
+projecao 4 permanece fora da torre mesmo se o substatus fiscal mudar depois; a
+coleta e o envio continuam acompanhados pelas observacoes logisticas.
 
 ### 6.5 Mercado Livre — domínio `order`
 

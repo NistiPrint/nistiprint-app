@@ -115,6 +115,25 @@ class MercadoLivreCases(unittest.TestCase):
         self.assertEqual(result.lifecycle_stage, "paid_preparation")
         self.assertEqual(result.target_situacao_pedido_id, PAID)
 
+    def test_meli_invoice_and_printed_label_advance_without_claiming_shipment(self):
+        before_invoice = self._meli({
+            "order": {"status": "paid", "payments": [{"status": "approved"}]},
+            "shipment": {"status": "ready_to_ship", "substatus": "invoice_pending"},
+        })
+        invoice_ready_to_print = self._meli({
+            "order": {"status": "paid", "payments": [{"status": "approved"}]},
+            "shipment": {"status": "ready_to_ship", "substatus": "ready_to_print"},
+        })
+        label_printed = self._meli({
+            "order": {"status": "paid", "payments": [{"status": "approved"}]},
+            "shipment": {"status": "ready_to_ship", "substatus": "printed"},
+        })
+
+        self.assertEqual(before_invoice.target_situacao_pedido_id, PAID)
+        self.assertEqual(invoice_ready_to_print.lifecycle_stage, "fulfillment_ready")
+        self.assertEqual(invoice_ready_to_print.target_situacao_pedido_id, READY)
+        self.assertEqual(label_printed.target_situacao_pedido_id, READY)
+
     def test_case_05_rejected_attempt_beside_approved(self):
         result = self._meli({
             "order": {

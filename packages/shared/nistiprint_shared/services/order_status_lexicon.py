@@ -252,6 +252,11 @@ _MELI_SHIPPING = _entries("mercadolivre", "shipping", {
 #: observacao no mesmo dominio e disputa por rank. Assim `delivered` + substatus
 #: `in_transit` continua entregue, e `returned_to_warehouse` vence qualquer coisa.
 _MELI_SHIPPING_SUBSTATUS = _entries("mercadolivre", "shipping_substatus", {
+    # A documentacao fiscal foi gerada e a etiqueta pode ser impressa, mas o
+    # envio ainda nao foi entregue a transportadora. Isso equivale a PROCESSED
+    # da Shopee e deve sair da torre de entrada de producao.
+    "ready_to_print": "fulfillment_ready",
+    "printed": "fulfillment_ready",
     "authorized_by_carrier": "shipped",
     "dropped_off": "shipped",
     "in_hub": "shipped",
