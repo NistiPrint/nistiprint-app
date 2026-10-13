@@ -39,7 +39,7 @@ class OrdersQueryService:
         try:
             from nistiprint_shared.services.ai_personalization_service import get_orders_with_chats
 
-            rows = get_orders_with_chats()
+            rows = get_orders_with_chats(situacao_ids=[2, 3, 4])
 
             processed_orders = []
             for row in rows:
@@ -99,8 +99,14 @@ class OrdersQueryService:
         page_size = min(100, max(1, int(page_size)))
         summary_table = "view_shopee_personalization_order_summary"
 
-        def scoped(query):
-            if integration_id is None:
+        search_value = search.strip()
+        search_by_order_number = search_value.isdigit()
+
+        def scoped(query, *, global_order_search=False):
+            # A numeric order lookup must find the order regardless of the
+            # currently selected marketplace account. Keep account scoping for
+            # normal browsing and for the sidebar counters.
+            if integration_id is None or global_order_search:
                 return query
             if include_unassigned:
                 return query.or_(
@@ -121,7 +127,10 @@ class OrdersQueryService:
             "nome_identificado": count_for(has_identified_name=True),
             "sem_nome": count_for(has_no_name=True),
         }
-        query = scoped(supabase_db.table(summary_table).select("id", count="exact"))
+        query = scoped(
+            supabase_db.table(summary_table).select("id", count="exact"),
+            global_order_search=search_by_order_number,
+        )
         filters = {
             "pendente_ia": ("needs_ai_processing", True),
             "nome_identificado": ("has_identified_name", True),
@@ -133,8 +142,8 @@ class OrdersQueryService:
             if selected_filter in filters:
                 column, value = filters[selected_filter]
                 query = query.eq(column, value)
-        if search.strip():
-            value = search.strip().replace("%", "\\%").replace(",", "\\,")
+        if search_value:
+            value = search_value.replace("%", "\\%").replace(",", "\\,")
             query = query.or_(
                 f"numero_pedido.ilike.%{value}%,numero_loja.ilike.%{value}%,"
                 f"nome_cliente.ilike.%{value}%,buyer_username.ilike.%{value}%"

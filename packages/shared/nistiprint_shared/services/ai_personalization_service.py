@@ -332,6 +332,7 @@ def _fetch_recent_personalized_orders(
     pedido_ids=None,
     limit=None,
     recent_days: Optional[int] = None,
+    situacao_ids=None,
 ):
     query = (
         supabase_db.table("pedidos")
@@ -342,7 +343,7 @@ def _fetch_recent_personalized_orders(
             "shipping_carrier,contact_marketplace_id,buyer_user_id,marketplace_integration_id"
         )
         .in_("canal_venda_id", _get_shopee_channel_ids())
-        .in_("situacao_pedido_id", STATUS_PERSONALIZACAO)
+        .in_("situacao_pedido_id", situacao_ids or STATUS_PERSONALIZACAO)
         .order("data_venda", desc=True)
     )
 
@@ -540,12 +541,14 @@ def _assemble_orders(
     pedido_ids=None,
     limit=None,
     recent_days: Optional[int] = None,
+    situacao_ids=None,
 ):
     base_orders = _fetch_recent_personalized_orders(
         order_sn=order_sn,
         pedido_ids=pedido_ids,
         limit=limit,
         recent_days=recent_days,
+        situacao_ids=situacao_ids,
     )
     if not base_orders:
         return []
@@ -2188,11 +2191,12 @@ def get_chat_messages(username, limit=None, integration_id=None, buyer_id=None):
     return compact_chat_messages(messages, username or "", buyer_id=buyer_id)
 
 
-def get_orders_with_chats(order_sn=None, limit=None):
+def get_orders_with_chats(order_sn=None, limit=None, situacao_ids=None):
     rows = _assemble_orders(
         order_sn=order_sn,
         limit=limit,
         recent_days=None,
+        situacao_ids=situacao_ids,
     )
     normalized_orders = [_normalize_order_row(row) for row in rows]
     if limit:

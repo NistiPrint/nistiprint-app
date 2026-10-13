@@ -386,17 +386,23 @@ class TestStatusPersonalizados(unittest.TestCase):
         self.assertEqual({row["id"] for row in rows}, {2, 4})
         self.assertTrue(all(row["needs_ai_processing"] for row in rows))
 
+    def test_lista_de_vendas_personalizadas_inclui_produzido(self):
+        rows = service.get_orders_with_chats(situacao_ids=[2, 3, 4])
+
+        self.assertEqual({row["id"] for row in rows}, {2, 3, 4})
+        self.assertTrue(all(row["needs_ai_processing"] for row in rows))
+
     def test_lista_da_pagina_preserva_os_dois_status_e_o_contrato(self):
         from nistiprint_shared.services.orders_query_service import OrdersQueryService
 
         rows = OrdersQueryService().get_personalized_orders_v2()
 
-        self.assertEqual({row["id"] for row in rows}, {2, 4})
-        ready = next(row for row in rows if row["id"] == 4)
-        self.assertEqual(ready["numero"], "4")
-        self.assertEqual(ready["numeroLoja"], "PEDIDO-4")
-        self.assertEqual(ready["itens"][0]["descricao"], "Planner personalizado")
-        self.assertTrue(ready["needs_ai_processing"])
+        self.assertEqual({row["id"] for row in rows}, {2, 3, 4})
+        produced = next(row for row in rows if row["id"] == 3)
+        self.assertEqual(produced["numero"], "3")
+        self.assertEqual(produced["numeroLoja"], "PEDIDO-3")
+        self.assertEqual(produced["itens"][0]["descricao"], "Planner personalizado")
+        self.assertTrue(produced["needs_ai_processing"])
 
     def test_processamento_inclui_pronto_envio(self):
         to_process, skipped = service.select_orders_for_processing(order_sn="PEDIDO-4")
