@@ -26,7 +26,8 @@ class MercadoLivreBatchPostgresTests(unittest.TestCase):
             for name in ['supabase/tests/fixtures/mercadolivre_ai_batch_schema.sql',
                          'supabase/migrations/20261009100000_preserve_ml_personalization_during_reprocessing.sql',
                          'supabase/migrations/20261013150000_mercadolivre_deferred_ai_retry.sql',
-                         'supabase/migrations/20261013200000_ai_execution_source_and_item_force.sql']:
+                         'supabase/migrations/20261013200000_ai_execution_source_and_item_force.sql',
+                         'supabase/migrations/20261013230000_ml_manual_batch_pack_ids_deduplicate.sql']:
                 cursor.execute((ROOT/name).read_text(encoding='utf-8'))
 
     def sql(self,text,params=()):
