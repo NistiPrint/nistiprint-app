@@ -9,7 +9,7 @@ import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 
 function DemandaPrioridadePage() {
-  const { prioritizedItems, loading, error } = useRealtimePrioritizedDemandas();
+  const { prioritizedItems, loading, error, realtimeConnected, lastUpdatedAt, refresh } = useRealtimePrioritizedDemandas();
   const orderedItems = [...prioritizedItems].sort((a, b) => {
     const am = a?.demanda_info?.coleta_contexto?.minutos_ate_proxima_coleta;
     const bm = b?.demanda_info?.coleta_contexto?.minutos_ate_proxima_coleta;
@@ -35,8 +35,8 @@ function DemandaPrioridadePage() {
     return <Badge variant="secondary" className="ml-2">Baixa</Badge>;
   };
 
-  if (loading) return <div className="text-center py-4">Carregando Fila de Prioridades...</div>;
-  if (error) return <div className="text-center py-4 text-red-500">Erro: {error}</div>;
+  if (loading && prioritizedItems.length === 0) return <div className="text-center py-4">Carregando Fila de Prioridades...</div>;
+  if (error && prioritizedItems.length === 0) return <div className="text-center py-4 text-red-500">Erro: {error}</div>;
 
   return (
     <div className="container mx-auto py-8">
@@ -44,6 +44,12 @@ function DemandaPrioridadePage() {
         <h1 className="text-3xl font-bold flex items-center gap-2">
           <Flame className="h-8 w-8 text-orange-500" /> Fila de Prioridades
         </h1>
+      </div>
+      <div className="mb-4 text-xs text-muted-foreground" role={error ? 'status' : undefined}>
+        {error ? `Dados possivelmente desatualizados: ${error} ` : ''}
+        {error ? <Button variant="link" size="sm" onClick={refresh}>Tentar novamente</Button> : null}
+        {!error ? (realtimeConnected ? 'Tempo real conectado' : 'Tempo real desconectado; recuperação automática ativa') : null}
+        {lastUpdatedAt ? ` · Atualizado ${new Date(lastUpdatedAt).toLocaleTimeString()}` : ''}
       </div>
 
       <Card>

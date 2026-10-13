@@ -12,7 +12,7 @@ Rotas:
 """
 
 from flask import request, Blueprint, jsonify
-from routes.auth import login_required
+from routes.auth import check_permission, login_required
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from utils.order_filters_adapter import build_origin_options
 from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
@@ -32,7 +32,7 @@ pedidos_gestao_bp = Blueprint('pedidos_gestao', __name__, url_prefix='/api/v2/pe
 
 
 @pedidos_gestao_bp.route('/estatisticas', methods=['GET'])
-@login_required
+@check_permission('vendas', 'ler')
 def get_pedidos_estatisticas():
     """
     Retorna estatísticas de pedidos para dashboard.
@@ -647,7 +647,7 @@ def gerar_demanda_pedidos():
 
 
 @pedidos_gestao_bp.route('/canais-proximos-coleta', methods=['GET'])
-@login_required
+@check_permission('vendas', 'ler')
 def get_canais_proximos_coleta():
     """
     Retorna os 2 canais com horário de coleta mais próximo do horário atual.

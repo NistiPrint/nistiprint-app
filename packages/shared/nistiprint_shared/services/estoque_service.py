@@ -53,6 +53,64 @@ class EstoqueService:
 
         raise ValueError("Depósito não informado e nenhum depósito padrão configurado.")
 
+    @staticmethod
+    def _execute_reservation_command(
+        *, action: str, operation_id: str, source_type: str, source_id: str,
+        product_id: Any, deposit_id: Any, quantity: Optional[float],
+        motivo: str = "", usuario_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        import hashlib
+        import json
+        import uuid
+        from decimal import Decimal, InvalidOperation
+        amount = None
+        if quantity is not None:
+            try:
+                amount = Decimal(str(quantity))
+            except (InvalidOperation, ValueError, TypeError) as exc:
+                raise ValueError('A quantidade da reserva é inválida.') from exc
+            if not amount.is_finite() or amount <= 0 or amount.normalize().as_tuple().exponent < -4:
+                raise ValueError('A quantidade da reserva deve ser positiva e ter até 4 casas decimais.')
+        semantic = {
+            'action': action,
+            'source_type': str(source_type).strip().upper(),
+            'source_id': str(source_id).strip(),
+            'produto_id': int(product_id),
+            'deposito_id': int(deposit_id),
+            'quantidade': None if amount is None else format(amount.normalize(), 'f'),
+            'motivo': str(motivo or ''),
+            'actor_id': int(usuario_id) if usuario_id is not None else None,
+        }
+        if not semantic['source_type'] or not semantic['source_id']:
+            raise ValueError('A origem da reserva é obrigatória.')
+        try:
+            normalized_operation_id = str(uuid.UUID(str(operation_id)))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError('operation_id deve ser um UUID estável.') from exc
+        content_hash = hashlib.sha256(json.dumps(
+            semantic, sort_keys=True, separators=(',', ':'), ensure_ascii=False
+        ).encode('utf-8')).hexdigest()
+        response = supabase_db.rpc('executar_comando_reserva_estoque', {
+            'p_operation_id': normalized_operation_id,
+            'p_content_hash': content_hash,
+            'p_action': action,
+            'p_source': {
+                'source_type': semantic['source_type'],
+                'source_id': semantic['source_id'],
+                'produto_id': semantic['produto_id'],
+                'deposito_id': semantic['deposito_id'],
+            },
+            'p_actor_id': semantic['actor_id'],
+            'p_produto_id': semantic['produto_id'],
+            'p_deposito_id': semantic['deposito_id'],
+            'p_quantidade': semantic['quantidade'],
+            'p_motivo': semantic['motivo'],
+        }).execute()
+        result = response.data[0] if isinstance(response.data, list) and response.data else response.data
+        if not isinstance(result, dict) or result.get('status') != 'CONFIRMADO':
+            raise RuntimeError(f'Falha ao executar comando de reserva {normalized_operation_id}: {result!r}')
+        return result
+
     def _validate_stock_eligibility(self, produto_id: Any):
         """
         Validates if the product can hold stock (is not a Parent Product).
@@ -63,14 +121,12 @@ class EstoqueService:
             # Ensure ID is string for the service check
             if not product_service.can_hold_stock(str(produto_id)):
                 raise ValueError("Este produto possui variações. Selecione a cor/tamanho específico (Variação) para movimentar o estoque.")
-        except ImportError:
-            # Fallback if circular import or service not ready (unlikely in prod)
-            pass
         except ValueError as ve:
             raise ve
         except Exception as e:
-            # Log warning but don't block if check fails for other reasons
-            print(f"Warning: Could not validate stock eligibility for product {produto_id}: {e}")
+            raise RuntimeError(
+                f"Não foi possível confirmar se o produto {produto_id} aceita movimentação de estoque."
+            ) from e
 
     def _validate_sector_permission(self, produto_id: Any, user_context: Dict[str, Any]):
         """
@@ -110,7 +166,8 @@ class EstoqueService:
                          observacao: str = "", ordem_compra_id: Optional[str] = None,
                          usuario_id: Optional[int] = None, unit_name: Optional[str] = None,
                          user_context: dict = None, correlation_id: Optional[str] = None,
-                         origem_tipo: Optional[int] = None, data_movimento: Optional[str] = None) -> str:
+                         origem_tipo: Optional[int] = None, data_movimento: Optional[str] = None,
+                         operation_id: Optional[str] = None, idempotency_key: Optional[str] = None) -> str:
         """Registra entrada de mercadoria no estoque."""
         self._validate_stock_eligibility(produto_id)
         self._validate_sector_permission(produto_id, user_context)
@@ -140,14 +197,17 @@ class EstoqueService:
             usuario_id=usuario_id,
             correlation_id=correlation_id,
             origem_tipo=origem_tipo,
-            data_movimento=data_movimento
+            data_movimento=data_movimento,
+            operation_id=operation_id,
+            idempotency_key=idempotency_key
         )
 
     def registrar_saida(self, produto_id: Any, deposito_id: Any, quantidade: float,
                        motivo: str = "", usuario_id: Optional[int] = None,
                        user_context: dict = None, documento_referencia: Optional[str] = None,
                        correlation_id: Optional[str] = None, origem_tipo: Optional[int] = None,
-                       data_movimento: Optional[str] = None) -> str:
+                       data_movimento: Optional[str] = None, operation_id: Optional[str] = None,
+                       idempotency_key: Optional[str] = None) -> str:
         """Registra saída de mercadoria do estoque."""
         self._validate_stock_eligibility(produto_id)
         self._validate_sector_permission(produto_id, user_context)
@@ -162,7 +222,9 @@ class EstoqueService:
             documento_referencia=documento_referencia,
             correlation_id=correlation_id,
             origem_tipo=origem_tipo,
-            data_movimento=data_movimento
+            data_movimento=data_movimento,
+            operation_id=operation_id,
+            idempotency_key=idempotency_key
         )
 
     def registrar_movimento_hibrido(self, produto_id: Any, deposito_id: Any, tipo_movimentacao: str,
@@ -171,60 +233,53 @@ class EstoqueService:
                                   usuario_id: Optional[int] = None,
                                   correlation_id: Optional[str] = None,
                                   origem_tipo: Optional[int] = None,
-                                  data_movimento: Optional[str] = None) -> str:
+                                  data_movimento: Optional[str] = None,
+                                  operation_id: Optional[str] = None,
+                                  idempotency_key: Optional[str] = None,
+                                  expected_saldo: Optional[float] = None) -> str:
         """
-        Registra o primeiro nível da movimentação atomicamente via RPC.
-        Retorna o correlation_id gerado ou fornecido.
+        Registra o primeiro nível em uma RPC sem fallback de escrita.
+        Com o núcleo v2 habilitado, retorna o operation_id persistido.
         """
-        try:
-            # Chama a RPC no Postgres
-            params = {
-                'p_produto_id': int(produto_id),
-                'p_deposito_id': int(deposito_id),
-                'p_tipo_movimentacao': tipo_movimentacao,
-                'p_quantidade': float(quantidade),
-                'p_motivo': motivo,
-                'p_origem_tipo': origem_tipo,
-                'p_usuario_id': usuario_id,
-                'p_documento_referencia': str(documento_referencia) if documento_referencia else None
-            }
+        from nistiprint_shared.services.estoque_command_service import (
+            estoque_command_service,
+            new_operation_id,
+        )
 
-            if correlation_id:
-                params['p_correlation_id'] = correlation_id
-
-            response = supabase_db.rpc('registrar_movimentacao_primaria', params).execute()
-            
-            if response.data:
-                print(f"DEBUG: RPC registrar_movimentacao_primaria executada com sucesso. CorrelationID: {response.data}")
-                return str(response.data)
-            else:
-                # Fallback para o método antigo se a RPC não estiver disponível (transição)
-                print("DEBUG: RPC registrar_movimentacao_primaria retornou vazio. Usando fallback síncrono.")
-                return self._registrar_movimento(
-                    produto_id=produto_id,
-                    deposito_id=deposito_id,
-                    tipo_movimentacao=tipo_movimentacao,
-                    quantidade=quantidade,
-                    motivo=motivo,
-                    documento_referencia=documento_referencia,
-                    usuario_id=usuario_id
-                )
-        except Exception as e:
-            print(f"DEBUG: Falha ao chamar RPC registrar_movimentacao_primaria: {e}. Usando fallback síncrono.")
-            # Fallback em caso de erro na RPC
-            return self._registrar_movimento(
-                produto_id=produto_id,
-                deposito_id=deposito_id,
-                tipo_movimentacao=tipo_movimentacao,
-                quantidade=quantidade,
-                motivo=motivo,
-                documento_referencia=documento_referencia,
-                usuario_id=usuario_id
-            )
+        if operation_id is None and idempotency_key:
+            import uuid
+            operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"nistiprint:estoque:{idempotency_key}"))
+        operation_id = operation_id or new_operation_id()
+        result = estoque_command_service.execute_command(
+            {
+                'operation_id': operation_id,
+                'command_type': tipo_movimentacao,
+                'source': {
+                    'documento_referencia': str(documento_referencia) if documento_referencia else None,
+                    'origem_tipo': origem_tipo,
+                },
+                'movimentos': [{
+                    'produto_id': produto_id,
+                    'deposito_id': deposito_id,
+                    'tipo_movimentacao': tipo_movimentacao,
+                    'quantidade': quantidade,
+                    'motivo': motivo,
+                    'documento_referencia': str(documento_referencia) if documento_referencia else None,
+                    'origem_tipo': origem_tipo,
+                    'correlation_id': correlation_id,
+                    'expected_saldo': expected_saldo,
+                }],
+            },
+            actor_context={'id': usuario_id} if usuario_id is not None else None,
+            allow_when_disabled=True,
+        )
+        return str(result.get('operation_id') or operation_id)
 
     def registrar_balanco(self, produto_id: Any, deposito_id: Any, quantidade_ajuste: float,
                          motivo: str = "", observacao: str = "", usuario_id: Optional[int] = None, 
-                         unit_name: Optional[str] = None, user_context: dict = None) -> str:
+                         unit_name: Optional[str] = None, user_context: dict = None,
+                         operation_id: Optional[str] = None, idempotency_key: Optional[str] = None,
+                         expected_saldo: Optional[float] = None) -> str:
         """Registra ajuste/balanço de inventário."""
         self._validate_stock_eligibility(produto_id)
         self._validate_sector_permission(produto_id, user_context)  # Nova validação
@@ -244,47 +299,71 @@ class EstoqueService:
             else:
                 raise ValueError(f"A proporção '{unit_name}' não foi encontrada para o produto ID {produto_id}.")
 
-        return self._registrar_movimento(
+        if expected_saldo is None:
+            # Usa a leitura feita no servidor como compare-and-swap; a RPC
+            # verifica o valor novamente depois de bloquear o saldo.
+            current = self.get_saldo_atual(produto_id, deposito_id)
+            expected_saldo = current['quantidade']
+
+        return self.registrar_movimento_hibrido(
             produto_id=produto_id,
             deposito_id=deposito_id,
             tipo_movimentacao='BALANCO',
             quantidade=final_quantity_ajuste,
             motivo=motivo,
-            observacao=observacao,
+            documento_referencia=observacao or None,
             usuario_id=usuario_id,
-            user_context=user_context
+            operation_id=operation_id,
+            idempotency_key=idempotency_key,
+            expected_saldo=expected_saldo,
         )
 
     def registrar_transferencia(self, produto_id: Any, deposito_origem_id: Any, deposito_destino_id: Any,
                                quantidade: float, observacao: str = "", usuario_id: Optional[int] = None,
-                               user_context: dict = None) -> str:
+                               user_context: dict = None, operation_id: Optional[str] = None,
+                               idempotency_key: Optional[str] = None) -> str:
         """Registra transferência de estoque entre depósitos."""
         self._validate_stock_eligibility(produto_id)
         self._validate_sector_permission(produto_id, user_context)  # Nova validação
         if deposito_origem_id == deposito_destino_id:
             raise ValueError("Depósito de origem e destino devem ser diferentes.")
 
-        # 1. Registrar Saída do Origem
-        self._registrar_movimento(
-            produto_id=produto_id,
-            deposito_id=deposito_origem_id,
-            tipo_movimentacao='TRANSFERENCIA_SAIDA',
-            quantidade=-abs(quantidade),
-            motivo=f"Transferência para depósito {deposito_destino_id}. {observacao}",
-            usuario_id=usuario_id,
-            user_context=user_context
+        from nistiprint_shared.services.estoque_command_service import (
+            estoque_command_service,
+            new_operation_id,
         )
-
-        # 2. Registrar Entrada no Destino
-        return self._registrar_movimento(
-            produto_id=produto_id,
-            deposito_id=deposito_destino_id,
-            tipo_movimentacao='TRANSFERENCIA_ENTRADA',
-            quantidade=abs(quantidade),
-            motivo=f"Transferência do depósito {deposito_origem_id}. {observacao}",
-            usuario_id=usuario_id,
-            user_context=user_context
+        deposito_origem_id = self._resolve_deposito(deposito_origem_id)
+        deposito_destino_id = self._resolve_deposito(deposito_destino_id)
+        if operation_id is None and idempotency_key:
+            import uuid
+            operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"nistiprint:estoque:{idempotency_key}"))
+        operation_id = operation_id or new_operation_id()
+        result = estoque_command_service.execute_command(
+            {
+                'operation_id': operation_id,
+                'command_type': 'TRANSFERENCIA',
+                'source': {'produto_id': int(produto_id)},
+                'movimentos': [
+                    {
+                        'produto_id': produto_id,
+                        'deposito_id': deposito_origem_id,
+                        'tipo_movimentacao': 'TRANSFERENCIA_SAIDA',
+                        'quantidade': -abs(quantidade),
+                        'motivo': f"Transferência para depósito {deposito_destino_id}. {observacao}",
+                    },
+                    {
+                        'produto_id': produto_id,
+                        'deposito_id': deposito_destino_id,
+                        'tipo_movimentacao': 'TRANSFERENCIA_ENTRADA',
+                        'quantidade': abs(quantidade),
+                        'motivo': f"Transferência do depósito {deposito_origem_id}. {observacao}",
+                    },
+                ],
+            },
+            actor_context={'id': usuario_id} if usuario_id is not None else None,
+            allow_when_disabled=True,
         )
+        return str(result.get('operation_id') or operation_id)
 
     def movimentar_por_delta(self, produto_id: Any, delta: float, motivo: str = "", 
                            usuario_id: Optional[int] = None, user_context: dict = None,
@@ -294,10 +373,13 @@ class EstoqueService:
                            idempotency_key: Optional[str] = None) -> None:
         """
         Processa uma movimentação de estoque baseada em um 'Delta' (mudança manual no dashboard).
-        Se delta > 0 (aumentou o progresso), registra SAÍDA (consumo).
-        Se delta < 0 (reduziu o progresso), registra ENTRADA (estorno).
+        Aumentos de progresso registram SAÍDA (consumo). Reduções falham até existir
+        uma compensação física explícita e auditável.
         """
-        if delta == 0: return
+        if delta < 0:
+            raise ValueError('REQUER_COMPENSACAO: redução de progresso não pode gerar entrada física automaticamente.')
+        if delta == 0:
+            return
 
         from nistiprint_shared.services.app_config_service import app_config_service
         deposito_id = app_config_service.get_config('default_production_deposit_id') or 'principal'
@@ -308,161 +390,134 @@ class EstoqueService:
         # IDempotency key gerada se não fornecida
         idemp = idempotency_key or (f"delta:{demanda_id}:{item_id}:{delta}" if demanda_id and item_id else None)
 
-        if delta > 0:
-            # Aumentou progresso -> CONSUMO (SAÍDA)
-            self.registrar_saida(
-                produto_id=produto_id,
-                deposito_id=deposito_id,
-                quantidade=abs(delta),
-                motivo=f"{motivo} (Consumo via Dashboard)",
-                usuario_id=usuario_id,
-                user_context=user_context,
-                documento_referencia=doc_ref,
-                idempotency_key=idemp
-            )
-        else:
-            # Reduziu progresso -> ESTORNO (ENTRADA)
-            self.registrar_entrada(
-                produto_id=produto_id,
-                deposito_id=deposito_id,
-                quantidade=abs(delta),
-                observacao=f"{motivo} (Estorno via Dashboard)",
-                usuario_id=usuario_id,
-                user_context=user_context,
-                ordem_compra_id=doc_ref,
-                idempotency_key=idemp
-            )
-
-    def registrar_producao_com_insumos(self, produto_id: Any, quantidade: float, deposito_id: Any = None, 
-                                     motivo: str = "", usuario_id: Optional[int] = None, user_context: dict = None) -> str:
-        """
-        Registra a entrada de um produto produzido e baixa automaticamente seus componentes via BOM.
-        NÃO trava o processo se faltar insumo (permite estoque negativo).
-        """
-        from nistiprint_shared.services.bom_service import bom_service
-        
-        deposito_id = self._resolve_deposito(deposito_id)
-        
-        # 1. Registrar entrada do produto produzido
-        mov_id = self.registrar_entrada(
+        self.registrar_saida(
             produto_id=produto_id,
             deposito_id=deposito_id,
-            quantidade=quantidade,
-            observacao=motivo,
+            quantidade=abs(delta),
+            motivo=f"{motivo} (Consumo via Dashboard)",
             usuario_id=usuario_id,
-            user_context=user_context
+            user_context=user_context,
+            documento_referencia=doc_ref,
+            idempotency_key=idemp
         )
-        
-        # 2. Buscar componentes na BOM e baixar
-        try:
-            componentes = bom_service.get_bom_for_produto(int(produto_id))
-            for comp in componentes:
-                qtd_consumo = comp.quantidade * quantidade
-                # Registra saída do insumo (permite negativo por padrão em registrar_saida se não validarmos)
-                # O método registrar_saida atual lança ValueError se saldo insuficiente.
-                # Para atender ao requisito "Não Travamento", precisamos ignorar essa validação específica aqui.
-                try:
-                    self._registrar_movimento(
-                        produto_id=comp.componente_id,
-                        deposito_id=deposito_id,
-                        tipo_movimentacao='SAIDA_INSUMO_PRODUCAO',
-                        quantidade=-abs(qtd_consumo),
-                        motivo=f"Consumo automático para produção de {quantidade} un de ID {produto_id}",
-                        usuario_id=usuario_id,
-                        user_context=user_context
-                    )
-                except Exception as e:
-                    print(f"ERRO ao baixar insumo {comp.componente_id} para produto {produto_id}: {e}")
-                    # Loga mas continua (Resiliência)
-        except Exception as e:
-            print(f"Aviso: Produto {produto_id} sem BOM ou erro ao processar insumos: {e}")
 
-        return mov_id
+    def registrar_producao_com_insumos(
+        self,
+        produto_id: Any,
+        quantidade: float,
+        deposito_id: Any = None,
+        motivo: str = "",
+        usuario_id: Optional[int] = None,
+        user_context: dict = None,
+        operation_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> str:
+        """Confirma produção e consumo da BOM efetiva em uma única operação."""
+        import uuid
+        from decimal import Decimal, InvalidOperation
+        from nistiprint_shared.services.bom_service import bom_service
+        from nistiprint_shared.services.estoque_command_service import (
+            estoque_command_service,
+            new_operation_id,
+        )
+
+        self._validate_stock_eligibility(produto_id)
+        self._validate_sector_permission(produto_id, user_context)
+        try:
+            produced = Decimal(str(quantidade))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("A quantidade produzida deve ser numérica.") from exc
+        if not produced.is_finite() or produced <= 0 or produced.normalize().as_tuple().exponent < -4:
+            raise ValueError("A quantidade produzida deve ser positiva e ter até 4 casas decimais.")
+
+        deposito_id = self._resolve_deposito(deposito_id)
+        version = bom_service.publish_effective_version(int(produto_id), actor_id=usuario_id)
+        root_node = (version.get('graph') or {}).get('nodes', {}).get(str(int(produto_id)))
+        if root_node is None:
+            raise ValueError(f"BOM_GRAPH_INCOMPLETE:{produto_id}")
+        component_totals = {}
+        for line in root_node.get('componentes') or []:
+            component_id = int(line['componente_id'])
+            amount = produced * Decimal(str(line['quantidade_necessaria']))
+            unit = line.get('unidade_medida') or 'un'
+            entry = component_totals.setdefault(component_id, {'quantidade_total': Decimal('0'), 'unidade': unit})
+            if entry['unidade'] != unit:
+                raise ValueError(f'BOM_UNIT_CONFLICT:{component_id}')
+            entry['quantidade_total'] += amount
+        components = [
+            {'componente_id': component_id, 'quantidade_total': format(entry['quantidade_total'].normalize(), 'f')}
+            for component_id, entry in sorted(component_totals.items())
+        ]
+        movements = [{
+            "produto_id": int(produto_id),
+            "deposito_id": int(deposito_id),
+            "tipo_movimentacao": "ENTRADA",
+            "quantidade": str(produced),
+            "motivo": motivo or "Produção avulsa",
+            "documento_referencia": f"BOM_VERSION:{version['id']}",
+            "estagio": "PRODUCAO_IMEDIATA",
+        }]
+        for component in components:
+            amount = Decimal(str(component["quantidade_total"]))
+            if not amount.is_finite() or amount <= 0 or amount.normalize().as_tuple().exponent < -4:
+                raise ValueError(
+                    f"A quantidade calculada para o componente {component['componente_id']} "
+                    "excede a precisão suportada de 4 casas decimais."
+                )
+            self._validate_stock_eligibility(component["componente_id"])
+            self._validate_sector_permission(component["componente_id"], user_context)
+            movements.append({
+                "produto_id": int(component["componente_id"]),
+                "deposito_id": int(deposito_id),
+                "tipo_movimentacao": "SAIDA_INSUMO_PRODUCAO",
+                "quantidade": str(-amount),
+                "motivo": f"Consumo para produção de {produced} un do produto {produto_id}",
+                "documento_referencia": f"BOM_VERSION:{version['id']}",
+                "estagio": "PRODUCAO_IMEDIATA",
+            })
+
+        if operation_id is None and idempotency_key:
+            operation_id = str(uuid.uuid5(
+                uuid.NAMESPACE_URL, f"nistiprint:producao-imediata:{idempotency_key}"
+            ))
+        operation_id = operation_id or new_operation_id()
+        result = estoque_command_service.execute_command(
+            {
+                "operation_id": operation_id,
+                "command_type": "PRODUCAO_IMEDIATA",
+                "source": {
+                    "produto_id": int(produto_id),
+                    "deposito_id": int(deposito_id),
+                    "quantidade": str(produced),
+                    "bom_version_id": str(version["id"]),
+                    "bom_content_hash": version["content_hash"],
+                },
+                "movimentos": movements,
+            },
+            actor_context={"id": usuario_id} if usuario_id is not None else None,
+            allow_when_disabled=True,
+        )
+        output_movement = next(
+            (m for m in result.get("movimentos", [])
+             if int(m.get("produto_id", -1)) == int(produto_id)
+             and m.get("tipo_movimentacao") == "ENTRADA"),
+            None,
+        )
+        if output_movement is None:
+            raise RuntimeError(f"A operação {operation_id} foi confirmada sem movimento de produção.")
+        return str(output_movement["movimento_id"])
 
     def _update_saldo(self, produto_id: Any, deposito_id: Any, quantidade_movimento: float, tipo_movimentacao: str) -> Tuple[float, float]:
-        """Atualiza o saldo atual na tabela estoque_atual."""
-        # Busca registro existente
-        response = self.saldos_table.select("*").eq('produto_id', produto_id).eq('deposito_id', deposito_id).execute()
-        
-        saldo_anterior = 0
-        reservado = 0
-        
-        if response.data:
-            record = response.data[0]
-            saldo_anterior = float(record.get('saldo_atual', 0))
-            reservado = float(record.get('reservado', 0))
-            
-            if tipo_movimentacao == 'BALANCO':
-                saldo_posterior = quantidade_movimento
-            else:
-                saldo_posterior = saldo_anterior + quantidade_movimento
-                
-            # Log de alerta para saldo negativo (Resiliência: Não trava, apenas permite e segue)
-            if saldo_posterior < 0:
-                 print(f"AVISO: Saldo negativo gerado para o produto {produto_id}. Saldo atual: {saldo_posterior}")
-
-            update_data = {
-                'saldo_atual': saldo_posterior,
-                'ultima_atualizacao': get_now_iso(),
-                'updated_at': get_now_iso()
-            }
-            self.saldos_table.update(update_data).eq('id', record['id']).execute()
-        else:
-            # Criar novo registro de saldo
-            saldo_anterior = 0
-            saldo_posterior = quantidade_movimento if tipo_movimentacao != 'BALANCO' else quantidade_movimento
-            
-            # O sistema permite saldo negativo para não travar a operação.
-            # O aviso é logado acima para fins de auditoria.
-
-            insert_data = {
-                'produto_id': produto_id,
-                'deposito_id': deposito_id,
-                'saldo_atual': saldo_posterior,
-                'reservado': 0,
-                'nivel_minimo': 0,
-                'ultima_atualizacao': get_now_iso(),
-                'created_at': get_now_iso(),
-                'updated_at': get_now_iso()
-            }
-            self.saldos_table.insert(insert_data).execute()
-            
-        return saldo_anterior, saldo_posterior
+        """Desativado: saldo e movimento devem ser atualizados pela mesma RPC."""
+        raise RuntimeError('Gravação direta de estoque desativada; use um comando transacional.')
 
     def _registrar_movimento(self, produto_id: Any, deposito_id: Any, tipo_movimentacao: str,
                            quantidade: float, motivo: str = "", observacao: str = "",
                            documento_referencia: Optional[str] = None,
                            usuario_id: Optional[int] = None,
                            user_context: dict = None) -> str:
-        """Interno: registra movimentação e atualiza saldo."""
-        try:
-            # 1. Atualizar Saldo
-            saldo_antes, saldo_depois = self._update_saldo(produto_id, deposito_id, quantidade, tipo_movimentacao)
-
-            # 2. Inserir Movimentação
-            mov_data = {
-                'produto_id': produto_id,
-                'deposito_id': deposito_id,
-                'tipo_movimentacao': tipo_movimentacao,
-                'quantidade': float(saldo_depois - saldo_antes), # CORREÇÃO: Salvar variação com sinal
-                'saldo_antes': float(saldo_antes),
-                'saldo_depois': float(saldo_depois),
-                'documento_referencia': str(documento_referencia) if documento_referencia else None,
-                'motivo': motivo,
-                'observacao': observacao,
-                'usuario_id': usuario_id,
-                'data_movimentacao': get_now_iso(),
-                'created_at': get_now_iso()
-            }
-
-            response = self.movimentacoes_table.insert(mov_data).execute()
-            if response.data:
-                return str(response.data[0]['id'])
-            else:
-                raise Exception("Falha ao inserir o registro de movimentação")
-        except Exception as e:
-            print(f"Erro no registro de movimento de estoque: {e}")
-            raise
+        """Desativado: saldo e movimento devem ser atualizados pela mesma RPC."""
+        raise RuntimeError('Gravação direta de estoque desativada; use um comando transacional.')
 
     def get_saldo_atual(self, produto_id: Any, deposito_id: Any = None) -> Dict[str, Any]:
         deposito_id = self._resolve_deposito(deposito_id)
@@ -491,6 +546,8 @@ class EstoqueService:
             deposito_id = self._resolve_deposito(deposito_id)
             query = self.saldos_table.select("*").eq('deposito_id', deposito_id).in_('produto_id', clean_ids)
             response = supabase_db.execute_with_retry(query)
+            if response is None or getattr(response, 'data', None) is None:
+                raise RuntimeError("A consulta de saldos não retornou uma resposta confirmada.")
 
             saldos = {}
             if response and response.data:
@@ -526,11 +583,7 @@ class EstoqueService:
                 }
             )
 
-            # Em caso de erro (ex: deposito não encontrado), retorna zerado para não travar a UI
-            fallback = {}
-            for pid in clean_ids:
-                fallback[pid] = {'quantidade': 0, 'quantidade_reservada': 0, 'quantidade_disponivel': 0}
-            return fallback
+            raise RuntimeError(f"Não foi possível confirmar os saldos do depósito {deposito_id}.") from e
 
     def get_posicao_estoque(self, filtro_produtos: Optional[List[str]] = None, filter_by_sector_id: str = None) -> List[Dict[str, Any]]:
         """Busca a posição atual de todos os estoques."""
@@ -699,35 +752,23 @@ class EstoqueService:
         return alertas
 
     def get_abc_analysis(self, days: int = 30) -> Dict[str, Any]:
-        """Realiza análise Curva ABC baseada no volume de saídas e custo dos produtos."""
-        start_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
-        
-        # 1. Buscar saídas no período
-        response = self.movimentacoes_table.select("produto_id, quantidade")\
-            .eq('tipo_movimentacao', 'saida')\
-            .gte('data_movimentacao', start_date)\
-            .execute()
-        
-        movs = response.data
-        if not movs:
+        """ABC sobre consumo líquido confirmado, valorizado pelo custo atual."""
+        from nistiprint_shared.services.consumption_service import consumption_service
+
+        consumo = consumption_service.get_daily_consumption(days=days)
+        consumo = {int(pid): row for pid, row in consumo.items() if float(row['total_periodo']) > 0}
+        if not consumo:
             return {'A': [], 'B': [], 'C': []}
 
-        # 2. Agrupar quantidades por produto
-        consumo_por_produto = {}
-        for m in movs:
-            pid = m['produto_id']
-            consumo_por_produto[pid] = consumo_por_produto.get(pid, 0) + abs(m['quantidade'])
-
-        # 3. Buscar custos dos produtos envolvidos
-        p_ids = list(consumo_por_produto.keys())
+        p_ids = sorted(consumo)
         from nistiprint_shared.services.product_service import product_service
         products = product_service.get_by_ids(p_ids)
 
-        # 4. Calcular Valor de Consumo (Quantidade * Custo)
         ranking = []
-        total_valor_geral = 0
-        for pid, qtd in consumo_por_produto.items():
-            product = products.get(pid, {})
+        total_valor_geral = 0.0
+        for pid, consumption in consumo.items():
+            product = products.get(pid) or products.get(str(pid)) or {}
+            qtd = float(consumption['total_periodo'])
             custo = float(product.get('preco_custo') or 0)
             valor_total = qtd * custo
             total_valor_geral += valor_total
@@ -739,27 +780,24 @@ class EstoqueService:
                 'valor_total': valor_total
             })
 
-        # 5. Ordenar por valor total decrescente
-        ranking.sort(key=lambda x: x['valor_total'], reverse=True)
+        ranking.sort(key=lambda x: (-x['valor_total'], int(x['produto_id'])))
 
-        # 6. Categorizar
         abc = {'A': [], 'B': [], 'C': []}
         acumulado = 0
         for item in ranking:
-            acumulado += item['valor_total']
-            percentual = (acumulado / total_valor_geral * 100) if total_valor_geral > 0 else 100
-            
-            if percentual <= 70:
+            percentual_anterior = acumulado / total_valor_geral if total_valor_geral > 0 else 1
+            if percentual_anterior < 0.70:
                 abc['A'].append(item)
-            elif percentual <= 90:
+            elif percentual_anterior < 0.90:
                 abc['B'].append(item)
             else:
                 abc['C'].append(item)
+            acumulado += item['valor_total']
         
         return abc
 
     def get_inventory_valuation(self) -> List[Dict[str, Any]]:
-        """Calcula o valor total do estoque (Saldo * Preço de Custo) de forma otimizada."""
+        """Return cost valuation with physical, reserved, available and planned quantities."""
         saldos = self.get_posicao_estoque()
         if not saldos:
             return []
@@ -771,16 +809,32 @@ class EstoqueService:
         # Assume product_service.get_by_ids existe ou usamos client direto
         response = supabase_db.table('produtos').select("id, preco_custo, nome, sku").in_('id', produto_ids).execute()
         custos_map = {str(p['id']): float(p.get('preco_custo') or 0) for p in response.data}
+        previsoes = (
+            supabase_db.table('previsao_consumo_demanda')
+            .select('produto_id, quantidade_prevista')
+            .in_('produto_id', produto_ids)
+            .eq('status', 'PLANEJADO')
+            .execute()
+        )
+        previsto_por_produto: Dict[str, float] = {}
+        for row in previsoes.data or []:
+            key = str(row['produto_id'])
+            previsto_por_produto[key] = previsto_por_produto.get(key, 0.0) + float(row.get('quantidade_prevista') or 0)
 
         valuation = []
         for s in saldos:
             pid = str(s['produto_id'])
             custo = custos_map.get(pid, 0)
             quantidade = float(s.get('saldo_atual', 0))
+            reservado = float(s.get('reservado') or 0)
             valor_total = quantidade * custo
             
             valuation.append({
                 **s,
+                'fisico': quantidade,
+                'reservado': reservado,
+                'disponivel': float(s.get('disponivel') if s.get('disponivel') is not None else quantidade - reservado),
+                'previsto': previsto_por_produto.get(pid, 0.0),
                 'preco_custo': custo,
                 'valor_total': valor_total
             })
@@ -788,99 +842,161 @@ class EstoqueService:
         return valuation
 
     def reservar_estoque_em_lote(self, itens_reserva: List[Dict[str, Any]], deposito_id: Any = None, allow_backorder: bool = False) -> None:
-        """Reserva múltiplas quantidades em lote para otimizar performance."""
-        if not itens_reserva: return
-        deposito_id = self._resolve_deposito(deposito_id)
-        
-        produto_ids = [str(i['produto_id']) for i in itens_reserva]
-        # Busca todos os saldos de uma vez
-        response = self.saldos_table.select("*").eq('deposito_id', deposito_id).in_('produto_id', produto_ids).execute()
-        saldos_map = {str(r['produto_id']): r for r in response.data}
-
-        for item in itens_reserva:
-            pid = str(item['produto_id'])
-            qtd = float(item['quantidade'])
-            
-            if pid not in saldos_map:
-                # Inicializa se não existir
-                self._update_saldo(item['produto_id'], deposito_id, 0, 'inicializacao_reserva')
-                # Recarrega (simplificado, idealmente faríamos uma única busca após inicializar faltantes)
-                res = self.saldos_table.select("*").eq('produto_id', item['produto_id']).eq('deposito_id', deposito_id).execute()
-                record = res.data[0]
-            else:
-                record = saldos_map[pid]
-
-            disponivel = float(record.get('disponivel', record['saldo_atual'] - record.get('reservado', 0)))
-            # O sistema agora permite reserva mesmo sem saldo (backorder automático)
-            # if not allow_backorder and qtd > disponivel:
-            #     raise ValueError(f"Estoque insuficiente para {pid}. Disponível: {disponivel}")
-            
-            if qtd > disponivel:
-                import logging
-                logging.warning(f"AVISO: Reserva de {qtd} para o produto {pid} excede o disponível ({disponivel}).")
-            
-            novo_reservado = float(record.get('reservado', 0)) + qtd
-            self.saldos_table.update({'reservado': novo_reservado, 'updated_at': get_now_iso()}).eq('id', record['id']).execute()
+        """A reserva sem uma origem explícita não é aceita."""
+        if itens_reserva:
+            raise ValueError('Informe a origem por item e use reservar_estoque para registrar a reserva transacional.')
 
     def liberar_reserva_em_lote(self, itens_liberacao: List[Dict[str, Any]], deposito_id: Any = None) -> None:
-        """Libera múltiplas reservas em lote."""
-        if not itens_liberacao: return
-        deposito_id = self._resolve_deposito(deposito_id)
-        
-        produto_ids = [str(i['produto_id']) for i in itens_liberacao]
-        response = self.saldos_table.select("*").eq('deposito_id', deposito_id).in_('produto_id', produto_ids).execute()
-        saldos_map = {str(r['produto_id']): r for r in response.data}
+        """Liberação em lote exige operações idempotentes independentes por origem."""
+        if itens_liberacao:
+            raise ValueError('Liberação em lote sem chaves idempotentes por origem não é permitida.')
 
-        for item in itens_liberacao:
-            pid = str(item['produto_id'])
-            qtd = item.get('quantidade')
-            
-            if pid in saldos_map:
-                record = saldos_map[pid]
-                if qtd is None:
-                    novo_reservado = 0
-                else:
-                    novo_reservado = max(0, float(record.get('reservado', 0)) - float(qtd))
-                
-                self.saldos_table.update({'reservado': novo_reservado, 'updated_at': get_now_iso()}).eq('id', record['id']).execute()
+    def reservar_estoque(
+        self, produto_id: Any, quantidade: float, deposito_id: Any = None,
+        allow_backorder: bool = False, ordem_id: str = None, tipo_ordem: str = None,
+        operation_id: str = None, idempotency_key: str = None,
+    ) -> None:
+        """Reserva por origem usando o RPC transacional e idempotente."""
+        import uuid
+        if not ordem_id:
+            raise ValueError('ordem_id é obrigatório para vincular a reserva à origem.')
+        source_type = tipo_ordem or 'ORDEM'
+        if operation_id is None and idempotency_key:
+            operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'nistiprint:reserva:{idempotency_key}'))
+        operation_id = operation_id or str(uuid.uuid5(
+            uuid.NAMESPACE_URL, f'nistiprint:reserva:{source_type}:{ordem_id}:{produto_id}'
+        ))
+        self._execute_reservation_command(
+            action='RESERVAR', operation_id=operation_id, source_type=source_type,
+            source_id=str(ordem_id), product_id=produto_id, deposit_id=self._resolve_deposito(deposito_id),
+            quantity=quantidade,
+        )
 
-    def reservar_estoque(self, produto_id: Any, quantidade: float, deposito_id: Any = None, allow_backorder: bool = False, ordem_id: str = None, tipo_ordem: str = None) -> None:
-        """Reserva uma quantidade (Wrapper para o novo método de lote)."""
-        self.reservar_estoque_em_lote([{'produto_id': produto_id, 'quantidade': quantidade}], deposito_id, allow_backorder)
+    def liberar_reserva(
+        self, produto_id: Any, quantidade: float = None, deposito_id: Any = None,
+        ordem_id: str = None, tipo_ordem: str = None,
+        operation_id: str = None, idempotency_key: str = None,
+        usuario_id: Optional[int] = None, user_context: dict = None,
+    ) -> bool:
+        """Libera somente a quantidade ainda reservada para a origem indicada."""
+        import uuid
+        if not ordem_id:
+            raise ValueError('ordem_id é obrigatório para liberar uma reserva vinculada.')
+        self._validate_stock_eligibility(produto_id)
+        self._validate_sector_permission(produto_id, user_context)
+        source_type = tipo_ordem or 'ORDEM'
+        if operation_id is None and idempotency_key:
+            operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'nistiprint:reserva:{idempotency_key}'))
+        if operation_id is None:
+            operation_id = str(uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f'nistiprint:liberacao:{source_type}:{ordem_id}:{produto_id}:{quantidade}',
+            ))
+        result = self._execute_reservation_command(
+            action='LIBERAR', operation_id=operation_id, source_type=source_type,
+            source_id=str(ordem_id), product_id=produto_id, deposit_id=self._resolve_deposito(deposito_id),
+            quantity=quantidade, usuario_id=usuario_id,
+        )
+        return float(result.get('quantidade') or 0) > 0
 
-    def liberar_reserva(self, produto_id: Any, quantidade: float = None, deposito_id: Any = None, ordem_id: str = None) -> bool:
-        """Libera uma reserva, decrementando o campo reservado."""
-        deposito_id = self._resolve_deposito(deposito_id)
-        response = self.saldos_table.select("*").eq('produto_id', produto_id).eq('deposito_id', deposito_id).execute()
-        if response.data:
-            record = response.data[0]
-            
-            # Se a quantidade não for informada, mas o ordem_id for sintético (SALDO_...), liberamos tudo
-            if quantidade is None or (ordem_id and str(ordem_id).startswith('SALDO_')):
-                novo_reservado = 0
-            else:
-                novo_reservado = max(0, float(record.get('reservado', 0)) - quantidade)
-                
-            self.saldos_table.update({'reservado': novo_reservado, 'updated_at': get_now_iso()}).eq('id', record['id']).execute()
-            return True
-        return False
-
-    def confirmar_saida_reservada(self, produto_id: Any, quantidade: float, deposito_id: Any = None, motivo: str = "", usuario_id: Optional[int] = None, user_context: dict = None) -> str:
-        """
-        Confirma a saída de um item que estava reservado.
-        Isso reduz o saldo físico e também a reserva.
-        """
-        deposito_id = self._resolve_deposito(deposito_id)
-        # 1. Registrar a saída física
-        mov_id = self.registrar_saida(produto_id, deposito_id, quantidade, motivo, usuario_id, user_context)
-        # 2. Liberar a reserva correspondente
-        self.liberar_reserva(produto_id, quantidade, deposito_id)
-        return mov_id
+    def confirmar_saida_reservada(
+        self, produto_id: Any, quantidade: float, deposito_id: Any = None, motivo: str = "",
+        usuario_id: Optional[int] = None, user_context: dict = None,
+        ordem_id: str = None, tipo_ordem: str = None,
+        operation_id: str = None, idempotency_key: str = None,
+    ) -> str:
+        """Consome a reserva e baixa o saldo físico em uma única transação."""
+        import uuid
+        self._validate_stock_eligibility(produto_id)
+        self._validate_sector_permission(produto_id, user_context)
+        if not ordem_id:
+            raise ValueError('ordem_id é obrigatório para confirmar a saída reservada.')
+        source_type = tipo_ordem or 'ORDEM'
+        if operation_id is None and idempotency_key:
+            operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'nistiprint:reserva:{idempotency_key}'))
+        operation_id = operation_id or str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f'nistiprint:consumo-reserva:{source_type}:{ordem_id}:{produto_id}:{quantidade}',
+        ))
+        result = self._execute_reservation_command(
+            action='CONSUMIR', operation_id=operation_id, source_type=source_type,
+            source_id=str(ordem_id), product_id=produto_id, deposit_id=self._resolve_deposito(deposito_id),
+            quantity=quantidade, motivo=motivo, usuario_id=usuario_id,
+        )
+        if not result.get('movimento_id'):
+            raise RuntimeError(f'A operação {operation_id} confirmou o consumo sem movimento de estoque.')
+        return str(result['movimento_id'])
 
     def get_all_with_reservations(self) -> List[Dict[str, Any]]:
-        """Busca todos os registros de estoque que possuem reserva ativa (>0)."""
-        response = self.saldos_table.select("*").gt('reservado', 0).execute()
-        return [dict(row) for row in response.data]
+        """Lista reservas vinculadas e expõe qualquer saldo legado sem origem."""
+        grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        source_rows: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+        offset = 0
+        page_size = 1000
+        while True:
+            response = (supabase_db.table('estoque_reservas_operacionais')
+                        .select('*').order('created_at').range(offset, offset + page_size - 1).execute())
+            rows = response.data or []
+            for row in rows:
+                remaining = (
+                    float(row.get('quantidade') or 0)
+                    - float(row.get('quantidade_consumida') or 0)
+                    - float(row.get('quantidade_liberada') or 0)
+                )
+                if remaining <= 0:
+                    continue
+                key = (str(row['produto_id']), str(row['deposito_id']))
+                bucket = grouped.setdefault(key, {
+                    'produto_id': row['produto_id'], 'deposito_id': row['deposito_id'],
+                    'reservado': 0.0, 'reservas': [],
+                })
+                source_type = str(row.get('origem_tipo') or 'ORDEM')
+                source_id = str(row.get('origem_id') or '')
+                source_key = (key[0], key[1], source_type, source_id)
+                reservation = source_rows.get(source_key)
+                if reservation is None:
+                    reservation = {
+                        'quantidade': 0.0,
+                        'quantidade_original': 0.0,
+                        'quantidade_disponivel': 0.0,
+                        'tipo_ordem': source_type,
+                        'ordem_id': source_id,
+                        'operation_ids': [],
+                        'data_reserva': row.get('created_at'),
+                    }
+                    source_rows[source_key] = reservation
+                    bucket['reservas'].append(reservation)
+                reservation['quantidade'] += remaining
+                reservation['quantidade_original'] += remaining
+                reservation['quantidade_disponivel'] += remaining
+                if row.get('operation_id'):
+                    reservation['operation_ids'].append(str(row['operation_id']))
+                bucket['reservado'] += remaining
+            if len(rows) < page_size:
+                break
+            offset += page_size
+
+        legacy_response = self.saldos_table.select(
+            'id,produto_id,deposito_id,reservado,updated_at,ultima_atualizacao'
+        ).gt('reservado', 0).execute()
+        for row in legacy_response.data or []:
+            key = (str(row['produto_id']), str(row['deposito_id']))
+            bucket = grouped.setdefault(key, {
+                'produto_id': row['produto_id'], 'deposito_id': row['deposito_id'],
+                'reservado': 0.0, 'reservas': [],
+            })
+            residual = float(row.get('reservado') or 0) - bucket['reservado']
+            if residual > 0:
+                bucket['reservas'].append({
+                    'quantidade': residual,
+                    'quantidade_original': residual,
+                    'quantidade_disponivel': residual,
+                    'tipo_ordem': 'SEM_ORIGEM',
+                    'ordem_id': None,
+                    'data_reserva': row.get('updated_at') or row.get('ultima_atualizacao'),
+                })
+                bucket['reservado'] += residual
+        return [row for row in grouped.values() if row['reservado'] > 0]
 
     def get_virtual_stock_for_kit(self, produto_id: Any) -> float:
         """
@@ -927,75 +1043,77 @@ class EstoqueService:
         else:
             return 0.0
 
-    def registrar_movimentacao_lote(self, movimentacoes: List[Dict[str, Any]], usuario_id: int, user_context: Dict[str, Any]) -> Dict[str, Any]:
+    def registrar_movimentacao_lote(
+        self,
+        movimentacoes: List[Dict[str, Any]],
+        usuario_id: int,
+        user_context: Dict[str, Any],
+        *,
+        operation_id: Optional[str] = None,
+        source: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """
-        Registra múltiplas movimentações de estoque em lote.
+        Registra todas as movimentações em uma única operação idempotente.
 
-        Args:
-            movimentacoes: Lista de dicionários contendo 'produto_id', 'quantidade' e 'tipo_movimento'
-            usuario_id: ID do usuário realizando a operação
-            user_context: Contexto do usuário para validação de permissões
-
-        Returns:
-            Dicionário com resumo da operação (quantas movimentações foram bem-sucedidas e quais falharam)
+        Lotes sem identidade e origem explícitas falham antes de qualquer efeito.
         """
-        sucesso = []
-        falhas = []
+        if not operation_id:
+            raise ValueError('operation_id é obrigatório para movimentação em lote.')
+        if not isinstance(source, dict) or not source.get('source_type') or not source.get('source_id'):
+            raise ValueError('source_type e source_id são obrigatórios para movimentação em lote.')
+        if not isinstance(movimentacoes, list) or not movimentacoes:
+            raise ValueError('O lote deve conter ao menos uma movimentação.')
 
+        from decimal import Decimal, InvalidOperation
+        from nistiprint_shared.services.estoque_command_service import (
+            estoque_command_service,
+        )
+
+        command_movements = []
         for movimentacao in movimentacoes:
+            if not isinstance(movimentacao, dict):
+                raise ValueError('Cada movimentação do lote deve ser um objeto.')
+            produto_id = movimentacao.get('produto_id')
+            tipo_movimento = str(movimentacao.get('tipo_movimento') or '').strip().upper()
+            if tipo_movimento not in {'ENTRADA', 'SAIDA'}:
+                raise ValueError(f'Tipo de movimento inválido: {tipo_movimento or "ausente"}.')
             try:
-                produto_id = movimentacao.get('produto_id')
-                quantidade = movimentacao.get('quantidade')
-                tipo_movimento = movimentacao.get('tipo_movimento')
+                produto_id = int(produto_id)
+                quantidade = Decimal(str(movimentacao.get('quantidade')))
+            except (TypeError, ValueError, InvalidOperation) as exc:
+                raise ValueError('produto_id e quantidade devem ser válidos.') from exc
+            if produto_id <= 0 or not quantidade.is_finite() or quantidade <= 0:
+                raise ValueError('produto_id deve ser positivo e quantidade deve ser finita e maior que zero.')
 
-                if not all([produto_id, quantidade, tipo_movimento]):
-                    falhas.append({
-                        'produto_id': produto_id,
-                        'erro': 'Dados incompletos para a movimentação'
-                    })
-                    continue
+            self._validate_stock_eligibility(produto_id)
+            self._validate_sector_permission(produto_id, user_context)
+            deposito_id = self._resolve_deposito(movimentacao.get('deposito_id'))
+            try:
+                deposito_id = int(deposito_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError('O depósito padrão precisa resolver para um ID inteiro válido.') from exc
+            signed_quantity = quantidade if tipo_movimento == 'ENTRADA' else -quantidade
+            command_movements.append({
+                'produto_id': produto_id,
+                'deposito_id': deposito_id,
+                'tipo_movimentacao': tipo_movimento,
+                'quantidade': format(signed_quantity.normalize(), 'f'),
+                'motivo': str(movimentacao.get('motivo') or ''),
+                'documento_referencia': movimentacao.get('documento_referencia'),
+                'origem_tipo': movimentacao.get('origem_tipo'),
+                'correlation_id': movimentacao.get('correlation_id'),
+            })
 
-                if tipo_movimento == 'ENTRADA':
-                    self.registrar_entrada(
-                        produto_id=produto_id,
-                        deposito_id=None,  # Usa depósito padrão
-                        quantidade=quantidade,
-                        usuario_id=usuario_id,
-                        user_context=user_context
-                    )
-                elif tipo_movimento == 'SAIDA':
-                    self.registrar_saida(
-                        produto_id=produto_id,
-                        deposito_id=None,  # Usa depósito padrão
-                        quantidade=quantidade,
-                        usuario_id=usuario_id,
-                        user_context=user_context
-                    )
-                else:
-                    falhas.append({
-                        'produto_id': produto_id,
-                        'erro': f'Tipo de movimento inválido: {tipo_movimento}'
-                    })
-                    continue
-
-                sucesso.append({
-                    'produto_id': produto_id,
-                    'tipo_movimento': tipo_movimento,
-                    'quantidade': quantidade
-                })
-
-            except Exception as e:
-                falhas.append({
-                    'produto_id': movimentacao.get('produto_id'),
-                    'erro': str(e)
-                })
-
-        return {
-            'sucesso': len(sucesso),
-            'falhas': len(falhas),
-            'detalhes_sucesso': sucesso,
-            'detalhes_falhas': falhas
-        }
+        return estoque_command_service.execute_command(
+            {
+                'operation_id': operation_id,
+                'command_type': 'MOVIMENTACAO_LOTE',
+                'source': source,
+                'movimentos': command_movements,
+            },
+            actor_context={'id': usuario_id},
+            allow_when_disabled=True,
+        )
 
 estoque_service = EstoqueService()
 

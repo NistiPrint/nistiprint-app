@@ -9,9 +9,40 @@ from nistiprint_shared.services.marketplace_webhook_ingest_service import (
 )
 from nistiprint_shared.services.platform_drivers import mercadolivre as meli_driver
 from nistiprint_shared.services.platform_drivers import shopee as shopee_driver
+from nistiprint_shared.services.bling_order_processing_service import _upsert_pedido_meli
 
 
 class TestMarketplaceWebhookIngestService(unittest.TestCase):
+    def setUp(self):
+        patcher = patch(
+            "nistiprint_shared.services.mercadolivre_rate_limit.mercadolivre_rate_limit_coordinator.acquire"
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_meli_mirror_converts_empty_timestamps_to_null(self):
+        response = SimpleNamespace(data=[{"id": 42}])
+        with patch(
+            "nistiprint_shared.services.bling_order_processing_service.supabase_db.table"
+        ) as table:
+            query = table.return_value
+            query.upsert.return_value.execute.return_value = response
+
+            result = _upsert_pedido_meli(
+                {
+                    "external_id": "123",
+                    "order": {"status": "paid", "payments": [{"date_approved": ""}]},
+                    "shipment": {},
+                    "sla": {"expected_date": ""},
+                },
+                marketplace_integration_id=7,
+            )
+
+        self.assertEqual(result, 42)
+        row = query.upsert.call_args.args[0]
+        self.assertIsNone(row["expected_date"])
+        self.assertIsNone(row["date_approved"])
+
     def test_meli_messages_notification_is_enqueued_for_private_chat(self):
         service = MarketplaceWebhookIngestService()
         resource = SimpleNamespace(topic='messages', resource_path='/messages/msg-1',
@@ -21,10 +52,33 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
                     "provider_topic": "messages", "provider_resource": "/messages/msg-1",
                     "provider_resource_type": "message", "provider_resource_id": "msg-1"}
         with patch('nistiprint_shared.services.marketplace_webhook_ingest_service.mercadolivre_adapter.parse_webhook', return_value=parsed), \
+             patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 1}, None)), \
+             patch.object(service, '_meli_integration', return_value={}), \
+             patch.object(service, '_confirm_meli_webhook_account', return_value=None), \
              patch('nistiprint_shared.services.mercadolivre_personalization_service.enqueue_notification', return_value=expected) as enqueue:
             result = service._process_mercadolivre({"topic": "messages"}, correlation_id="test", webhook_event_id=987)
         self.assertEqual(result, expected)
         enqueue.assert_called_once_with({"topic": "messages"}, webhook_event_id=987)
+
+    def test_meli_webhook_account_must_match_authenticated_token(self):
+        service = MarketplaceWebhookIngestService()
+        resource = SimpleNamespace(topic='orders', resource_path='/orders/123',
+            resource_type='order', resource_id='123', account_id='1234')
+        parsed = SimpleNamespace(primary_resource=resource, primary_order_id='123', classification='order_event')
+        with patch('nistiprint_shared.services.marketplace_webhook_ingest_service.mercadolivre_adapter.parse_webhook', return_value=parsed), \
+             patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 1}, None)), \
+             patch.object(service, '_meli_integration', return_value={'access_token': 'token'}), \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.meli_driver.get_shipping_user', return_value={'id': 9999}), \
+             patch('nistiprint_shared.services.marketplace_webhook_ingest_service.mercadolivre_adapter.resolve_order_ids') as resolve:
+            result = service._process_mercadolivre({'topic': 'orders'}, correlation_id='test')
+        self.assertEqual(result['error_type'], 'marketplace_account_mismatch')
+        resolve.assert_not_called()
+
+    def test_meli_webhook_without_account_id_is_rejected(self):
+        resource = SimpleNamespace(topic='orders', resource_path='/orders/123',
+            resource_type='order', resource_id='123', account_id=None)
+        result = MarketplaceWebhookIngestService._confirm_meli_webhook_account(resource, {})
+        self.assertEqual(result['error_type'], 'missing_marketplace_account_id')
 
     def test_shipment_rate_limit_stops_remaining_pack_orders(self):
         service = MarketplaceWebhookIngestService()
@@ -37,6 +91,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
              patch('nistiprint_shared.services.marketplace_webhook_ingest_service.mercadolivre_adapter.resolve_order_ids', return_value=resolved), \
              patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 1}, None)), \
              patch.object(service, '_meli_integration', return_value={}), \
+             patch.object(service, '_confirm_meli_webhook_account', return_value=None), \
              patch.object(service, '_process_meli_order', return_value=error) as process:
             result = service._process_mercadolivre({'topic': 'shipments'}, correlation_id='test')
         self.assertEqual(result['retry_after'], 120)
@@ -99,7 +154,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
         mock_get.return_value.json.return_value = {'id': 47344057080}
 
         result = meli_driver.get_shipment(
-            {'access_token': 'token'},
+            {'id': 27, 'access_token': 'token'},
             '47344057080/assignment/v1',
         )
 
@@ -116,7 +171,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
         mock_get.return_value.text = '{}'
         mock_get.return_value.json.return_value = {'order': {'id': 12345}}
 
-        result = meli_driver.get_collection({'access_token': 'token'}, '162789221162')
+        result = meli_driver.get_collection({'id': 27, 'access_token': 'token'}, '162789221162')
 
         self.assertEqual(result['order']['id'], 12345)
         self.assertEqual(
@@ -129,6 +184,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
 
         with patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 12}, None)), \
              patch.object(service, '_meli_integration', return_value={'access_token': 'token'}), \
+             patch.object(service, '_confirm_meli_webhook_account', return_value=None), \
              patch.object(service, '_lookup_meli_order_by_payment_id', return_value={'codigo_pedido': '98765', 'payment_status': 'approved'}) as lookup, \
              patch.object(service, '_find_direct_ingest_link', return_value={'channel_id': 22, 'process_webhooks': True, 'ingest_origin_mode': 'marketplace_direct'}), \
              patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_order_detail', return_value={'id': 98765, 'status': 'paid', 'payments': [{'status': 'approved'}]}), \
@@ -150,6 +206,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
 
         with patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 12}, None)), \
              patch.object(service, '_meli_integration', return_value={'access_token': 'token'}), \
+             patch.object(service, '_confirm_meli_webhook_account', return_value=None), \
              patch.object(service, '_lookup_meli_order_by_payment_id', return_value=None), \
              patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_collection', return_value={'external_reference': 'cashback_2963193951'}):
             result = service._process_mercadolivre({
@@ -180,6 +237,7 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
         service = MarketplaceWebhookIngestService()
         with patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 12}, None)), \
              patch.object(service, '_meli_integration', return_value={'access_token': 'token'}), \
+             patch.object(service, '_confirm_meli_webhook_account', return_value=None), \
              patch.object(service, '_find_direct_ingest_link', return_value={'channel_id': 22, 'process_webhooks': True, 'ingest_origin_mode': 'marketplace_direct'}), \
              patch('nistiprint_shared.services.marketplace_adapters.meli_driver.get_order_detail', return_value={'id': 98765, 'status': 'paid'}), \
              patch.object(service, '_upsert_meli_mirror', return_value=44), \

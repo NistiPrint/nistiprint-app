@@ -155,6 +155,67 @@ class WebhookMonitoringService:
             },
         }
 
+    def list_unmapped_listing_exceptions(self, page: int = 1, per_page: int = 50) -> Dict[str, Any]:
+        """List marketplace listings that have no internal product mapping."""
+        page = max(1, _safe_int(page, 1))
+        per_page = max(1, min(_safe_int(per_page, 50), 100))
+        offset = (page - 1) * per_page
+        rows = (
+            supabase_db.table('produto_anuncios')
+            .select('id,integration_id,item_externo_id,variacao_externa_id,sku_anuncio,titulo,status,ultimo_erro,updated_at')
+            .is_('produto_id', 'null')
+            .order('integration_id')
+            .order('id')
+            .range(offset, offset + per_page)
+            .execute()
+            .data
+            or []
+        )
+        page_rows = rows[:per_page]
+        integration_ids = list(dict.fromkeys(
+            row.get('integration_id') for row in page_rows if row.get('integration_id') is not None
+        ))
+        integrations = {}
+        if integration_ids:
+            integration_rows = (
+                supabase_db.table('installed_integrations')
+                .select('id,module_id,instance_name,description,platform_slug')
+                .in_('id', integration_ids)
+                .execute()
+                .data
+                or []
+            )
+            integrations = {row['id']: row for row in integration_rows}
+
+        skus = list(dict.fromkeys(
+            row.get('sku_anuncio') for row in page_rows if row.get('sku_anuncio')
+        ))
+        products_by_sku: Dict[str, List[Dict[str, Any]]] = {}
+        if skus:
+            product_rows = (
+                supabase_db.table('produtos')
+                .select('id,sku,nome')
+                .in_('sku', skus)
+                .execute()
+                .data
+                or []
+            )
+            for product in product_rows:
+                products_by_sku.setdefault(str(product.get('sku') or ''), []).append(product)
+
+        for row in page_rows:
+            row['integration'] = integrations.get(row.get('integration_id'))
+            candidates = products_by_sku.get(str(row.get('sku_anuncio') or ''), [])
+            row['sku_candidates'] = candidates
+            row['sku_candidate_status'] = (
+                'UNICO' if len(candidates) == 1 else 'AMBIGUO' if candidates else 'SEM_CORRESPONDENCIA_EXATA'
+            )
+
+        return {
+            'exceptions': page_rows,
+            'pagination': {'page': page, 'per_page': per_page, 'has_more': len(rows) > per_page},
+        }
+
     def get_event(self, event_id: int) -> Optional[Dict[str, Any]]:
         rows = supabase_db.table('webhook_events').select('*').eq('id', event_id).limit(1).execute().data or []
         if not rows:

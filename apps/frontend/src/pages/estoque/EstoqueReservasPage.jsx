@@ -29,13 +29,24 @@ function EstoqueReservasPage() {
     fetchReservas();
   }, []);
 
-  const handleLiberarReserva = async (produto_id, deposito_id, ordem_id) => {
+  const handleLiberarReserva = async (reserva) => {
     if (!window.confirm('Tem certeza que deseja liberar esta reserva? Esta ação não pode ser desfeita.')) {
       return;
     }
 
     try {
-      const result = await estoqueService.liberarReserva({ produto_id, deposito_id, ordem_id });
+      const idempotency_key = [
+        'liberar-reserva', reserva.produto_id, reserva.deposito_id, reserva.ordem_id,
+        ...(reserva.operation_ids || []).slice().sort(),
+      ].join(':');
+      const result = await estoqueService.liberarReserva({
+        produto_id: reserva.produto_id,
+        deposito_id: reserva.deposito_id,
+        ordem_id: reserva.ordem_id,
+        tipo_ordem: reserva.tipo_ordem,
+        quantidade: reserva.quantidade_disponivel,
+        idempotency_key,
+      });
       if (result.success !== false) {
         toast.success(result.message || 'Reserva liberada com sucesso!');
         fetchReservas(); // Re-fetch reservations to update the list
@@ -141,7 +152,10 @@ function EstoqueReservasPage() {
                         <Button
                           variant="destructive"
                           size="sm"
-                          onClick={() => handleLiberarReserva(reserva.produto_id, reserva.deposito_id, reserva.ordem_id)}
+                          disabled={!reserva.ordem_id || reserva.tipo_ordem === 'SEM_ORIGEM'}
+                          title={reserva.tipo_ordem === 'SEM_ORIGEM' ? 'Reserva sem origem identificada; exige reconciliação.' : undefined}
+                          onClick={() => handleLiberarReserva({ ...reserva, produto_id: reserva.produto_id,
+                            deposito_id: reserva.deposito_id })}
                         >
                           Liberar Reserva
                         </Button>

@@ -5,23 +5,29 @@ Status: adotada em 01/08/2026.
 ## A regra
 
 > **O n8n decide se um webhook é autêntico. O app registra a decisão e não a
-> recalcula.**
+> recalcula. Para Shopee, o worker só encaminha o evento após receber o
+> veredito positivo; ausência de veredito ou falta de material vai para
+> quarentena, sem efeitos de domínio.**
 
-Nenhum evento inválido deve entrar na fila. A consequência é que a inbox
-(`np:ingest:inbox:ready:v1`) passa a ser um canal confiável por construção: tudo
-que está lá já foi aceito na borda.
+Os fluxos Bling e Mercado Livre validam antes de enfileirar. Shopee precisa
+persistir o envelope e responder ao provider antes de consultar o veredito
+HMAC, então eventos Shopee ainda não verificados podem entrar na inbox de
+transporte. A inbox não é prova de autenticidade: o worker só encaminha um
+evento Shopee para a fila de pedidos/chat depois de `signature_valid`; caso
+contrário, ele registra a razão e o mantém em quarentena.
 
 ## Por que na borda
 
-O ganho não é só de CPU. Rejeitar antes do envelope evita:
+Quando o contrato permite decidir antes do ACK, rejeitar antes do envelope evita:
 
 - espaço em Redis e no spool durável para tráfego que seria descartado;
 - linhas em `webhook_events` que só existem para registrar uma rejeição;
 - ciclos de worker fazendo HMAC de payload que já se sabia inválido;
 - ruído de log que compete com sinal real.
 
-Em 30/07 o Bling gerou 2.829 linhas de descarte em três dias. Com a validação na
-borda, esse volume nem teria entrado.
+Em 30/07 o Bling gerou 2.829 linhas de descarte em três dias. Com enforcement
+válido na borda, esse volume não teria entrado. Para Shopee, a decisão fica
+registrada no worker porque a verificação acontece após a persistência/ACK.
 
 ## Mecanismo por origem
 
@@ -31,30 +37,35 @@ decisão acontece, não sobre *qual* mecanismo é usado.
 | Origem | Mecanismo | Segredo / fonte | Onde |
 |---|---|---|---|
 | Bling | HMAC-SHA256 do corpo cru | `BLING_CLIENT_SECRETS` (array JSON, um por conta) | nós `Verify Bling Signature` / `Assinatura aceita?` |
-| Shopee | HMAC-SHA256, veredito pós-ACK | `partner_key` do perfil parceiro | workflow Shopee, veredito em `np:ingest:signature:{event_id}` |
-| Mercado Livre | allowlist de IP — **não há assinatura** | faixa publicada pelo ML | nós `Resolve Client IP` / `IP autorizado?` |
+| Shopee | HMAC-SHA256 sobre URL de callback + corpo cru, veredito pós-ACK | Partner Key configurada no n8n | workflow Shopee, veredito em `np:ingest:signature:{event_id}`; worker exige `signature_valid` |
+| Mercado Livre | HTTPS, allowlist de IP e consulta autenticada do recurso | faixa oficial de IPs + token OAuth da conta | nós `Resolve Client IP` / `IP autorizado?`; validação do recurso no worker |
 
-O Mercado Livre não assina nada: verificado nos cabeçalhos de tráfego real, não
-existe `x-signature`. A garantia de origem é o IP de quem conecta.
+O contrato de notificações do marketplace Mercado Livre não usa o manifesto
+`X-Signature` do Mercado Pago. A documentação oficial recomenda HTTPS, validar
+IP de origem e tratar o webhook como aviso, consultando o recurso com o token da
+conta. A lista de IPs pode mudar e precisa ser conferida periodicamente na
+[documentação de segurança do Mercado Livre](https://developers.mercadolivre.com.br/pt_br/automovel-gerenciamento-de-contatos/seguranca-de-aplicacoes).
 
 ## Regras que a convenção não dispensa
 
-**1. Falta de material nunca vira "inválido".** Sem segredo configurado, ou sem
-header de assinatura, o veredito é `signature_unverified` e o evento segue.
-Só um HMAC calculado que *não bate* é rejeição. Confundir os dois foi a causa do
-incidente de 30/07: um placeholder (`...`) em `INGEST_WEBHOOK_SECRETS_BLING`
-produziu uma lista não-vazia sem segredo real, e todo evento virou descarte
-terminal.
+**1. Distinguir assinatura inválida de assinatura não verificável.** Falta de
+segredo ou de header não deve ser rotulada como HMAC inválido. Para Bling, a
+política de observação pode deixar o evento seguir durante o rollout. Para
+Shopee, porém, somente `signature_valid` segue ao processamento de domínio;
+`signature_unverified`, veredito ausente ou chave indisponível são registrados
+como `discarded_signature_unverifiable` e ficam em quarentena. Um HMAC
+calculado que não bate é `discarded_invalid_signature`. Isso evita tanto falsos
+diagnósticos quanto alterações de pedido/estoque sem autenticidade confirmada.
 
 **2. Placeholder não é segredo.** Toda leitura de segredo descarta `...`,
 `changeme`, `secret` e valores com menos de 8 caracteres, com log. Vale no n8n e
 no app.
 
-**3. Estreia em modo observação.** Ao ligar ou trocar a fonte de um segredo, o
-veredito é calculado e registrado mas nada é bloqueado, até confirmação em
-tráfego real. No n8n isso é `BLING_SIGNATURE_ENFORCE`; no app é
-`INGEST_SIGNATURE_POLICY_<ORIGEM>=observe`. Promover só depois de ver
-`signature_valid` numa execução.
+**3. Estreia em modo observação.** Bling pode estrear/trocar segredo com
+`BLING_SIGNATURE_ENFORCE=false`, sem bloquear tráfego. Shopee não permite
+processamento em modo observação: a fila continua durável, mas o worker deixa
+eventos sem veredito positivo em quarentena até a Partner Key e o contrato da
+assinatura serem confirmados em execução real.
 
 **4. Aceitar hex e base64.** O formato do digest no header não é verificável sem
 tráfego. Comparar contra as duas representações remove a dependência de acertar

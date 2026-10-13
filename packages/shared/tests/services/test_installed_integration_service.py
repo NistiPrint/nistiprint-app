@@ -6,6 +6,14 @@ from nistiprint_shared.services.installed_integration_service import InstalledIn
 
 
 class InstalledIntegrationServiceTest(unittest.TestCase):
+    def setUp(self):
+        self.refresh_lease = patch(
+            "nistiprint_shared.services.installed_integration_service.supabase_db.rpc",
+            return_value=MagicMock(execute=MagicMock(return_value=MagicMock(data=True))),
+        )
+        self.refresh_lease.start()
+        self.addCleanup(self.refresh_lease.stop)
+
     def test_update_refresh_error_does_not_clear_config_or_credentials(self):
         service = InstalledIntegrationService()
         service.table = MagicMock()
@@ -103,8 +111,16 @@ class InstalledIntegrationServiceTest(unittest.TestCase):
             app_profile={"id": "11"},
             app_secrets={"partner_id": "123", "partner_key": "secret"},
             installation_secrets={"refresh_token": "refresh-123"},
-            config={"shop_id": "456"},
-            credentials={"shop_id": "456"},
+            config={
+                "shop_id": "456",
+                "access_token": "stale-config-access",
+                "refresh_token": "stale-config-refresh",
+            },
+            credentials={
+                "shop_id": "456",
+                "access_token": "stale-credentials-access",
+                "refresh_token": "stale-credentials-refresh",
+            },
         )
 
         with patch.object(service, "get_installed_by_id", return_value=current), \
@@ -112,7 +128,7 @@ class InstalledIntegrationServiceTest(unittest.TestCase):
              patch("nistiprint_shared.services.installed_integration_service.credential_resolver_service.resolve_for_installation", return_value=context) as resolve_context, \
              patch("nistiprint_shared.services.installed_integration_service.platform_auth_service.refresh_access_token", return_value={"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}) as refresh_access_token, \
              patch("nistiprint_shared.services.installed_integration_service.credential_resolver_service.persist_installation_tokens") as persist_tokens, \
-             patch.object(service, "update_installed", return_value=True) as update_installed, \
+             patch("nistiprint_shared.services.installed_integration_service.integration_resolution_service.invalidate") as invalidate_resolution, \
              patch("nistiprint_shared.services.installed_integration_service.bling_firebase_projection_service.publish_installation_by_id") as publish_firebase, \
              patch("nistiprint_shared.services.installed_integration_service.file_archive_service.append"):
             result = service.renew_integration_token("9")
@@ -120,12 +136,19 @@ class InstalledIntegrationServiceTest(unittest.TestCase):
         resolve_context.assert_called_once()
         refresh_access_token.assert_called_once_with("shopee", context)
         persist_tokens.assert_called_once()
-        update_payload = update_installed.call_args.args[1]
+        self.assertEqual(persist_tokens.call_args.args[0], "9")
+        self.assertTrue(persist_tokens.call_args.kwargs["refresh_lease_token"])
+        update_payload = persist_tokens.call_args.kwargs["installation_patch"]
         self.assertEqual(update_payload["config"]["shop_id"], "456")
         self.assertEqual(update_payload["config"]["account_identifiers"]["primary"], "456")
         self.assertEqual(update_payload["credentials"]["shop_id"], "456")
+        self.assertNotIn("access_token", update_payload["config"])
+        self.assertNotIn("refresh_token", update_payload["config"])
+        self.assertNotIn("access_token", update_payload["credentials"])
+        self.assertNotIn("refresh_token", update_payload["credentials"])
         self.assertTrue(update_payload["last_refresh_attempt"].endswith("+00:00"))
         self.assertTrue(update_payload["expires_at"].endswith("+00:00"))
+        invalidate_resolution.assert_called_once()
         publish_firebase.assert_not_called()
         self.assertEqual(result["access_token"], "new-access")
         self.assertEqual(result["refresh_token"], "new-refresh")
@@ -159,7 +182,7 @@ class InstalledIntegrationServiceTest(unittest.TestCase):
              patch("nistiprint_shared.services.installed_integration_service.credential_resolver_service.resolve_for_installation", return_value=context), \
              patch("nistiprint_shared.services.installed_integration_service.platform_auth_service.refresh_access_token", return_value={"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}), \
              patch("nistiprint_shared.services.installed_integration_service.credential_resolver_service.persist_installation_tokens"), \
-             patch.object(service, "update_installed", return_value=True), \
+             patch("nistiprint_shared.services.installed_integration_service.integration_resolution_service.invalidate"), \
              patch("nistiprint_shared.services.installed_integration_service.bling_firebase_projection_service.publish_installation_by_id", return_value={"doc_id": "12345678000199"}) as publish_firebase, \
              patch("nistiprint_shared.services.installed_integration_service.file_archive_service.append"):
             result = service.renew_integration_token("11")

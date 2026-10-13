@@ -88,6 +88,11 @@ const LocalAgentService = {
   getPrintJob: async (jobId) => {
     const response = await axios.get(`${LOCAL_AGENT_BASE_URL}/jobs/${encodeURIComponent(jobId)}`);
     return response.data;
+  },
+
+  getPrintRequest: async (requestId) => {
+    const response = await axios.get(`${LOCAL_AGENT_BASE_URL}/requests/${encodeURIComponent(requestId)}`);
+    return response.data;
   }
 };
 

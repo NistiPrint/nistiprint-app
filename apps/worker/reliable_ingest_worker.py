@@ -5,8 +5,10 @@ import argparse
 import json
 import logging
 import os
+import signal
 import smtplib
 import socket
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -25,6 +27,7 @@ from nistiprint_shared.services.reliable_ingest_service import (
 
 logger = logging.getLogger(__name__)
 WORKER = f"{socket.gethostname()}:{os.getpid()}"
+SHUTDOWN_REQUESTED = threading.Event()
 MAX_ATTEMPTS = int(os.getenv("INGEST_MAX_ATTEMPTS", "7"))
 SIGNATURE_VERDICT_GRACE_SECONDS = max(
     1.0, float(os.getenv("INGEST_SIGNATURE_VERDICT_GRACE_SECONDS", "30"))
@@ -90,6 +93,14 @@ def _is_within_signature_grace(item):
 def _signature_result(item, client):
     if item.get("source") != "shopee":
         return validate_signature(item), None
+
+    def quarantine_unverified(reason):
+        """Shopee must not reach domain workers without n8n's positive HMAC verdict."""
+        return SignatureResult(
+            "discarded_signature_unverifiable", False, True,
+            reason or "shopee_hmac_verdict_missing",
+        )
+
     verdict_key = f"np:ingest:signature:{item['event_id']}"
     raw = client.get(verdict_key)
     if raw:
@@ -98,18 +109,16 @@ def _signature_result(item, client):
         if status == "signature_valid":
             return SignatureResult(status, True, True, "n8n_post_ack_hmac_sha256"), verdict_key
         if status == "discarded_invalid_signature":
-            enforce = os.getenv("INGEST_SIGNATURE_POLICY_SHOPEE", "optional").strip().lower() == "required"
-            effective_status = status if enforce else "signature_unverified"
             return SignatureResult(
-                effective_status,
-                not enforce,
-                enforce,
+                status,
+                False,
+                True,
                 "n8n_post_ack_hmac_sha256_mismatch",
             ), verdict_key
-        return validate_signature(item), verdict_key
+        return quarantine_unverified("n8n_signature_verdict_unverified"), verdict_key
     if int(item.get("attempt") or 0) < 3 and _is_within_signature_grace(item):
         raise SignatureVerdictPending("Shopee signature verdict is not available yet")
-    return validate_signature(item), None
+    return quarantine_unverified("n8n_signature_verdict_missing"), None
 
 
 def route_once(client=None):
@@ -332,31 +341,40 @@ def monitor_once(client=None):
     return problems
 
 
+def _request_shutdown(_signum, _frame):
+    """Stop claiming after the current synchronous operation has finished."""
+    logger.info("shutdown requested; finishing the current ingest operation")
+    SHUTDOWN_REQUESTED.set()
+
+
 def run(role):
     r = redis_client()
-    while True:
+    while not SHUTDOWN_REQUESTED.is_set():
         try:
             _heartbeat(role, r)
             if role == "router": route_once(r)
             elif role == "orders": _consume_once(ORDERS_READY, ORDERS_PROCESSING, _process_order, r)
             elif role == "chat": _consume_once(CHAT_READY, CHAT_PROCESSING, _process_chat, r)
-            elif role == "chatsync": _sync_chat_once(); time.sleep(CHATSYNC_INTERVAL_SECONDS)
-            elif role == "retry": requeue_due_retries(r); time.sleep(1)
-            elif role == "lease": reap_expired_leases(r); reap_orphaned_processing(r); time.sleep(5)
-            elif role == "spool": replay_spool_once(r); time.sleep(2)
+            elif role == "chatsync": _sync_chat_once(); SHUTDOWN_REQUESTED.wait(CHATSYNC_INTERVAL_SECONDS)
+            elif role == "retry": requeue_due_retries(r); SHUTDOWN_REQUESTED.wait(1)
+            elif role == "lease": reap_expired_leases(r); reap_orphaned_processing(r); SHUTDOWN_REQUESTED.wait(5)
+            elif role == "spool": replay_spool_once(r); SHUTDOWN_REQUESTED.wait(2)
             elif role == "archive":
                 if os.getenv("INGEST_ARCHIVE_ENABLED", "0") == "1":
                     from nistiprint_shared.services.ingest_archive_service import archive_all_once
                     archive_all_once()
-                time.sleep(int(os.getenv("INGEST_ARCHIVE_INTERVAL_SECONDS", "300")))
-            elif role == "monitor": monitor_once(r); time.sleep(60)
+                SHUTDOWN_REQUESTED.wait(int(os.getenv("INGEST_ARCHIVE_INTERVAL_SECONDS", "300")))
+            elif role == "monitor": monitor_once(r); SHUTDOWN_REQUESTED.wait(60)
         except Exception:
             logger.exception("service role=%s failed", role)
-            time.sleep(2)
+            SHUTDOWN_REQUESTED.wait(2)
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=os.getenv("WORKER_LOG_LEVEL", "INFO"))
+    SHUTDOWN_REQUESTED.clear()
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
     parser = argparse.ArgumentParser()
     parser.add_argument("role", choices=("router", "orders", "chat", "chatsync", "retry",
                                         "lease", "spool", "archive", "monitor"))

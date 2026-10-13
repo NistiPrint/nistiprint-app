@@ -1,69 +1,50 @@
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict
+
 from nistiprint_shared.database.supabase_db_service import supabase_db
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+
 
 class ConsumptionService:
-    """
-    Serviço especializado em calcular o consumo real de insumos
-    com base na produção executada e nas Fichas Técnicas (BOM).
-    """
+    """Consumption metrics derived from confirmed stock ledger movements."""
+
+    CONSUMPTION_TYPES = {
+        "CONS_MP", "CONS_INT", "SAIDA_INSUMO_PRODUCAO", "SAIDA_RESERVADA",
+    }
+    COMPENSATION_TYPES = {
+        "COMPENSACAO_CONSUMO", "COMPENSACAO_CONS_MP", "COMPENSACAO_CONS_INT",
+        "ESTORNO_CONS_MP", "ESTORNO_CONS_INT",
+    }
 
     def __init__(self):
-        self.demandas_table = supabase_db.table('demandas_producao')
-        self.itens_demanda_table = supabase_db.table('itens_demanda')
-        self.bom_table = supabase_db.table('ficha_tecnica')
+        self.movements_table = supabase_db.table("movimentacoes_estoque")
+
+    @classmethod
+    def _signed_consumption(cls, movement: dict[str, Any]) -> Decimal:
+        movement_type = str(movement.get("tipo_movimentacao") or "").upper()
+        if movement_type not in cls.CONSUMPTION_TYPES | cls.COMPENSATION_TYPES:
+            return Decimal("0")
+        try:
+            quantity = abs(Decimal(str(movement.get("quantidade") or 0)))
+        except (InvalidOperation, TypeError, ValueError):
+            return Decimal("0")
+        return -quantity if movement_type in cls.COMPENSATION_TYPES else quantity
 
     def get_daily_consumption(self, days: int = 30) -> Dict[int, Dict[str, Any]]:
-        """
-        Calcula o consumo médio diário de cada insumo nos últimos 'days' dias.
-        Retorna um dicionário mapeando produto_id -> {media_diaria, total_periodo, nome_insumo}
-        """
-        start_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
-        
-        # 1. Buscar demandas concluídas no período
-        # Nota: Idealmente filtraríamos por data_conclusao, mas usaremos created_at se necessário
-        response = self.demandas_table.select("id, quantidade")\
-            .eq('status', 'CONCLUIDO')\
-            .gte('updated_at', start_date).execute()
-        
-        demanda_ids = [d['id'] for d in response.data]
-        if not demanda_ids:
-            return {}
-
-        # 2. Buscar itens dessas demandas
-        itens_response = self.itens_demanda_table.select("produto_id, quantidade")\
-            .in_('demanda_id', demanda_ids).execute()
-        
-        # 3. "Explodir" a BOM para cada item produzido
-        consumo_total = {} # component_id -> total_quantity
-        
-        for item in itens_response.data:
-            product_id = item['produto_id']
-            qtd_produzida = item['quantidade']
-            
-            if not product_id: continue
-            
-            # Buscar componentes da BOM para este produto
-            bom_response = self.bom_table.select("componente_id, quantidade_necessaria")\
-                .eq('produto_pai_id', product_id).execute()
-            
-            for bom_item in bom_response.data:
-                comp_id = bom_item['componente_id']
-                qtd_necessaria = bom_item['quantidade_necessaria']
-                
-                consumo_item = qtd_produzida * qtd_necessaria
-                consumo_total[comp_id] = consumo_total.get(comp_id, 0) + consumo_item
-
-        # 4. Calcular médias
-        resultado = {}
-        for comp_id, total in consumo_total.items():
-            resultado[comp_id] = {
-                'total_periodo': total,
-                'media_diaria': total / days,
-                'periodo_dias': days
+        """Return average daily net material consumption from physical movements."""
+        days = int(days)
+        if days <= 0:
+            raise ValueError("days deve ser maior que zero")
+        response = supabase_db.rpc("consumo_medio_diario", {"p_dias": days}).execute()
+        result = {}
+        for row in response.data or []:
+            product_id = int(row["produto_id"])
+            result[product_id] = {
+                "total_periodo": float(row["total_periodo"]),
+                "media_diaria": float(row["media_diaria"]),
+                "periodo_dias": int(row["periodo_dias"]),
+                "nome_insumo": row.get("nome_insumo"),
             }
-            
-        return resultado
+        return result
+
 
 consumption_service = ConsumptionService()
-

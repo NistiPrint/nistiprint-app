@@ -1,0 +1,1127 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-10",
+  "source": "n8n MCP get_workflow_details activeVersion",
+  "notice": "Active graph snapshot. n8n-managed credentials and webhook IDs were removed; opaque secret-like values were redacted. Rebind credentials and restore webhook registrations during recovery.",
+  "workflows": [
+    {
+      "id": "kv1UX41hXqZjqlDz",
+      "name": "Bling Webhook Handler",
+      "active": true,
+      "description": "Webhook Bling com inbox confiável e shadow temporário na fila legada até os consumidores contínuos serem implantados.",
+      "updated_at": "2026-08-02T00:30:32.371Z",
+      "saved_version_id": "46b53fae-d7e0-47e0-8d4d-855112512f3b",
+      "active_version_id": "46b53fae-d7e0-47e0-8d4d-855112512f3b",
+      "saved_matches_active": true,
+      "graph": {
+        "nodes": [
+          {
+            "parameters": {
+              "httpMethod": "POST",
+              "path": "bling",
+              "responseMode": "responseNode",
+              "options": {
+                "rawBody": true
+              }
+            },
+            "id": "0d7b802a-d539-49b9-96bb-70556e9c4ecd",
+            "name": "Bling Webhook",
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 1,
+            "position": [
+              -832,
+              384
+            ]
+          },
+          {
+            "parameters": {
+              "operation": "push",
+              "list": "np:ingest:inbox:ready:v1",
+              "messageData": "={{ JSON.stringify($json) }}",
+              "tail": true
+            },
+            "id": "38a6831c-7462-42bb-a188-544b2c613396",
+            "name": "Enqueue Inbox",
+            "type": "n8n-nodes-base.redis",
+            "typeVersion": 1,
+            "position": [
+              288,
+              192
+            ],
+            "onError": "continueErrorOutput"
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": "={\"accepted\":true}",
+              "options": {
+                "responseCode": 200
+              }
+            },
+            "id": "7a14a8e1-eccc-4636-9be2-1eea3acdff49",
+            "name": "ACK 200",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1,
+            "position": [
+              960,
+              96
+            ],
+            "retryOnFail": true
+          },
+          {
+            "parameters": {
+              "jsCode": "const crypto = require('crypto');\nconst item = $input.first();\nlet raw;\nif (item.binary?.data) raw = await this.helpers.getBinaryDataBuffer(0, 'data');\nelse if (typeof item.json.rawBody === 'string') raw = Buffer.from(item.json.rawBody, 'utf8');\nelse if (typeof item.json.body === 'string') raw = Buffer.from(item.json.body, 'utf8');\nelse raw = Buffer.from(JSON.stringify(item.json.body ?? {}), 'utf8');\nconst rawBody = raw.toString('utf8');\nlet parsedPayload = null;\ntry { parsedPayload = JSON.parse(rawBody); } catch {}\nconst headers = item.json.headers ?? {};\nconst allow = ['content-type','user-agent','x-bling-signature-256','x-signature','x-shopee-signature','x-request-id','x-signature-version','x-signature-ts'];\nconst safeHeaders = {};\nfor (const key of allow) if (headers[key] !== undefined) safeHeaders[key] = String(headers[key]).slice(0, 2048);\nconst payload = parsedPayload ?? (typeof item.json.body === 'object' ? item.json.body : null);\nreturn [{ json: { schema_version: 1, event_id: crypto.randomUUID(), source: 'bling', received_at: new Date().toISOString(), headers: safeHeaders, raw_body: rawBody, parsed_payload: payload, body_sha256: crypto.createHash('sha256').update(raw).digest('hex'), provider_delivery_id: payload?.eventId ?? payload?.id ?? headers['x-request-id'] ?? null, payload_size: raw.length, oversized: raw.length > 1048576 } }];"
+            },
+            "id": "80813a8a-ae53-4684-87fc-52ad7fa388ba",
+            "name": "Build Durable Envelope",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+              -160,
+              288
+            ]
+          },
+          {
+            "parameters": {
+              "conditions": {
+                "combinator": "and",
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.oversized }}",
+                    "rightValue": false,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "options": {}
+            },
+            "id": "1cdb5604-10f5-40ef-8bd0-8a18b7ebd6e4",
+            "name": "Payload within 1 MB?",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2.3,
+            "position": [
+              64,
+              288
+            ]
+          },
+          {
+            "parameters": {
+              "jsCode": "const envelope = $('Build Durable Envelope').first().json;\nconst data = Buffer.from(JSON.stringify(envelope), 'utf8');\nreturn [{ json: envelope, binary: { data: { data: data.toString('base64'), mimeType: 'application/json', fileName: envelope.event_id + '.json' } } }];"
+            },
+            "id": "fa6c6550-c366-4ba3-a112-ab004cb6fe59",
+            "name": "Prepare Spool File",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+              512,
+              288
+            ]
+          },
+          {
+            "parameters": {
+              "operation": "write",
+              "fileName": "=/data/webhook-spool/ready/{{$json.event_id}}.json",
+              "options": {}
+            },
+            "id": "bf176843-c7da-48f9-8dea-d21a5d16d180",
+            "name": "Write Durable Spool",
+            "type": "n8n-nodes-base.readWriteFile",
+            "typeVersion": 1.1,
+            "position": [
+              736,
+              288
+            ],
+            "onError": "continueErrorOutput"
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": "={\"accepted\":false,\"error\":\"payload_too_large\"}",
+              "options": {
+                "responseCode": 413
+              }
+            },
+            "id": "8866a277-c47c-4c90-aa87-1b8bc7e71f8e",
+            "name": "Payload Too Large",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1.5,
+            "position": [
+              288,
+              384
+            ]
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": "={\"accepted\":false,\"error\":\"durability_unavailable\"}",
+              "options": {
+                "responseCode": 503
+              }
+            },
+            "id": "e5d3fcc5-a13e-46a7-90c4-d0ff820a4c0b",
+            "name": "Durability Unavailable",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1.5,
+            "position": [
+              960,
+              336
+            ]
+          },
+          {
+            "parameters": {
+              "operation": "push",
+              "list": "bling:webhooks:pendentes",
+              "messageData": "={{ JSON.stringify($('Bling Webhook').item.json.body) }}",
+              "tail": true
+            },
+            "id": "9e9a3b5b-f611-4057-8f75-57bc13d7c8eb",
+            "name": "Legacy Queue Shadow",
+            "type": "n8n-nodes-base.redis",
+            "typeVersion": 1,
+            "position": [
+              736,
+              48
+            ],
+            "onError": "continueRegularOutput"
+          },
+          {
+            "parameters": {
+              "jsCode": "const crypto = require('crypto');\n\n// O Bling assina o corpo cru com o client_secret do APLICATIVO, e temos um\n// aplicativo por conta. Nao da para saber a conta antes de validar, entao\n// testamos todos os segredos.\nlet SECRETS = [];\ntry {\n  const parsed = JSON.parse($env.BLING_CLIENT_SECRETS || '[]');\n  if (Array.isArray(parsed)) {\n    // Descarta placeholder e valor curto: uma lista nao-vazia sem segredo real\n    // e pior que lista vazia, porque transforma erro de configuracao em\n    // \"assinatura invalida\" e derruba todo o ingest.\n    SECRETS = parsed.map((s) => String(s ?? '').trim()).filter((s) => s.length >= 8 && s !== '...');\n  }\n} catch (e) {\n  SECRETS = [];\n}\n\n// Enquanto false, o veredito e apenas calculado e anexado; nada e bloqueado.\n// Promova para 'true' apos confirmar signature_valid numa execucao real.\nconst ENFORCE = String($env.BLING_SIGNATURE_ENFORCE ?? 'false').trim().toLowerCase() === 'true';\n\nconst item = $input.first();\nlet raw;\nif (item.binary?.data) raw = await this.helpers.getBinaryDataBuffer(0, 'data');\nelse if (typeof item.json.rawBody === 'string') raw = Buffer.from(item.json.rawBody, 'utf8');\nelse if (typeof item.json.body === 'string') raw = Buffer.from(item.json.body, 'utf8');\nelse raw = Buffer.from(JSON.stringify(item.json.body ?? {}), 'utf8');\n\nconst headers = item.json.headers ?? {};\nconst provided = String(headers['x-bling-signature-256'] ?? headers['x-hub-signature-256'] ?? '')\n  .trim()\n  .replace(/^sha256=/i, '');\n\nconst safeEqual = (a, b) => {\n  const ba = Buffer.from(a, 'utf8');\n  const bb = Buffer.from(b, 'utf8');\n  return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);\n};\n\nlet status;\nif (!provided) {\n  status = 'signature_unverified';        // o provider nao mandou assinatura\n} else if (SECRETS.length === 0) {\n  status = 'signature_unverified';        // nao ha segredo utilizavel configurado\n} else {\n  // O Bling documenta hex; aceitamos base64 tambem para nao depender do\n  // formato exato do header, que e o unico elo que nao pudemos verificar.\n  const ok = SECRETS.some((secret) => {\n    const digest = crypto.createHmac('sha256', secret).update(raw).digest();\n    return safeEqual(digest.toString('hex'), provided)\n      || safeEqual(digest.toString('base64'), provided);\n  });\n  status = ok ? 'signature_valid' : 'discarded_invalid_signature';\n}\n\nconst blocked = ENFORCE && status === 'discarded_invalid_signature';\n\nreturn [{\n  json: {\n    ...item.json,\n    signature_status: status,\n    signature_enforced: ENFORCE,\n    signature_secret_count: SECRETS.length,\n    signature_blocked: blocked,\n  },\n  binary: item.binary,\n}];"
+            },
+            "id": "14a1574f-c06e-497d-9e00-e8e3014f0f97",
+            "name": "Verify Bling Signature",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+              -608,
+              384
+            ]
+          },
+          {
+            "parameters": {
+              "conditions": {
+                "combinator": "and",
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.signature_blocked }}",
+                    "rightValue": false,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "options": {}
+            },
+            "id": "15be3987-8e1a-412a-a485-43c94610a214",
+            "name": "Assinatura aceita?",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2.3,
+            "position": [
+              -384,
+              384
+            ]
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": "={\"accepted\":false,\"error\":\"invalid_signature\"}",
+              "options": {
+                "responseCode": 401
+              }
+            },
+            "id": "76b56dd7-334a-4e07-8b43-40e21804c64f",
+            "name": "Invalid Signature",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1.5,
+            "position": [
+              -160,
+              480
+            ]
+          }
+        ],
+        "connections": {
+          "Build Durable Envelope": {
+            "main": [
+              [
+                {
+                  "node": "Payload within 1 MB?",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Payload within 1 MB?": {
+            "main": [
+              [
+                {
+                  "node": "Enqueue Inbox",
+                  "type": "main",
+                  "index": 0
+                }
+              ],
+              [
+                {
+                  "node": "Payload Too Large",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Enqueue Inbox": {
+            "main": [
+              [
+                {
+                  "node": "Legacy Queue Shadow",
+                  "type": "main",
+                  "index": 0
+                }
+              ],
+              [
+                {
+                  "node": "Prepare Spool File",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Prepare Spool File": {
+            "main": [
+              [
+                {
+                  "node": "Write Durable Spool",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Write Durable Spool": {
+            "main": [
+              [
+                {
+                  "node": "ACK 200",
+                  "type": "main",
+                  "index": 0
+                }
+              ],
+              [
+                {
+                  "node": "Durability Unavailable",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Legacy Queue Shadow": {
+            "main": [
+              [
+                {
+                  "node": "ACK 200",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Bling Webhook": {
+            "main": [
+              [
+                {
+                  "node": "Verify Bling Signature",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Verify Bling Signature": {
+            "main": [
+              [
+                {
+                  "node": "Assinatura aceita?",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Assinatura aceita?": {
+            "main": [
+              [
+                {
+                  "node": "Build Durable Envelope",
+                  "type": "main",
+                  "index": 0
+                }
+              ],
+              [
+                {
+                  "node": "Invalid Signature",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          }
+        },
+        "nodeGroups": []
+      }
+    },
+    {
+      "id": "59304gjx9U4d1bIo",
+      "name": "MercadoLivre Webhook Handler",
+      "active": true,
+      "description": "Webhook Mercado Livre com inbox confiável. Uma rota para todas as contas: o envelope carrega account_id (user_id) e application_id, e a resolução da conta acontece no worker, contra os account_identifiers da integração.",
+      "updated_at": "2026-09-05T20:16:54.753Z",
+      "saved_version_id": "ad73acd0-d0e8-4ae5-acad-737cc26e1312",
+      "active_version_id": "ad73acd0-d0e8-4ae5-acad-737cc26e1312",
+      "saved_matches_active": true,
+      "graph": {
+        "nodes": [
+          {
+            "parameters": {
+              "operation": "push",
+              "list": "np:ingest:inbox:ready:v1",
+              "messageData": "={{ JSON.stringify($json) }}",
+              "tail": true
+            },
+            "id": "0022703e-0797-437e-aee5-75835d3e0062",
+            "name": "Enqueue Inbox",
+            "type": "n8n-nodes-base.redis",
+            "typeVersion": 1,
+            "position": [
+              480,
+              160
+            ],
+            "onError": "continueErrorOutput"
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": "={\"accepted\":true}",
+              "options": {
+                "responseCode": 200
+              }
+            },
+            "id": "a36cf311-f929-48b3-b66c-28b47c580a04",
+            "name": "ACK 200",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1,
+            "position": [
+              1152,
+              64
+            ],
+            "retryOnFail": true
+          },
+          {
+            "parameters": {
+              "httpMethod": "POST",
+              "path": "mercadolivre",
+              "responseMode": "responseNode",
+              "options": {
+                "rawBody": true
+              }
+            },
+            "id": "b5a7916c-f3a4-417e-a8d3-e13a2aa4aa89",
+            "name": "MercadoLivre Webhook",
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 1,
+            "position": [
+              -640,
+              352
+            ]
+          },
+          {
+            "parameters": {
+              "jsCode": "const crypto = require('crypto');\nconst item = $input.first();\n\nlet raw;\nif (item.binary?.data) raw = await this.helpers.getBinaryDataBuffer(0, 'data');\nelse if (typeof item.json.rawBody === 'string') raw = Buffer.from(item.json.rawBody, 'utf8');\nelse if (typeof item.json.body === 'string') raw = Buffer.from(item.json.body, 'utf8');\nelse raw = Buffer.from(JSON.stringify(item.json.body ?? {}), 'utf8');\n\nconst rawBody = raw.toString('utf8');\nlet parsedPayload = null;\ntry { parsedPayload = JSON.parse(rawBody); } catch {}\n\nconst headers = item.json.headers ?? {};\nconst allow = ['content-type','user-agent','x-bling-signature-256','x-signature','x-shopee-signature','x-request-id','x-signature-version','x-signature-ts'];\nconst safeHeaders = {};\nfor (const key of allow) if (headers[key] !== undefined) safeHeaders[key] = String(headers[key]).slice(0, 2048);\n\nconst payload = parsedPayload ?? (typeof item.json.body === 'object' ? item.json.body : null);\nconst body = (payload && typeof payload.data === 'object' && payload.data !== null) ? payload.data : (payload ?? {});\n\n// Identidade da ENTREGA, nao do recurso.\n//\n// `_id` identifica a notificacao; `resource` identifica o pedido e se repete a\n// cada mudanca de estado dele. Usar `resource` aqui — como se fazia, porque o\n// Mercado Livre nao manda `x-request-id` nem `id` e a cadeia caia no ultimo\n// degrau — fazia toda notificacao seguinte sobre o mesmo pedido colidir na\n// unique (source, dedupe_scope, dedupe_key). O RPC de aceite responde\n// `should_process = false` nessa colisao: o evento e contado e descartado. Em\n// 30 dias isso suprimiu 4.123 notificacoes do ML, contra 5 da Shopee e 0 do\n// Bling, que mandam identificador proprio.\n//\n// Sem `_id`, o envelope fica sem id de entrega e o worker deduplica pelo hash\n// do corpo — que difere entre notificacoes, porque `sent` difere. Falhar assim\n// processa a mais, nunca a menos.\nconst deliveryId = headers['x-request-id'] ?? body._id ?? body.id ?? null;\n\n// Identidade da CONTA. Esta e a unica que roteia.\n//\n// O `user_id` do corpo diz de quem e o evento, qualquer que tenha sido a porta\n// de entrada. `application_id` diz por qual aplicativo a conta autorizou — a\n// checagem cruzada de que a credencial que vamos usar e a certa.\nconst accountId = body.user_id ?? body.seller_id ?? null;\n\n// Porta de entrada usada, e SO diagnostico.\n//\n// O Mercado Livre recusa a mesma URL de notificacao em dois aplicativos, entao\n// cada conta entra por `/mercadolivre/<apelido>`. O apelido NAO decide nada:\n// se algum dia ele nao bater com a conta que o `user_id` indica, isso aparece\n// aqui como divergencia — sem desviar o evento para a conta errada.\nconst routeHint = item.json.params?.conta ?? item.json.query?.conta ?? null;\n\nreturn [{ json: {\n  schema_version: 1,\n  event_id: crypto.randomUUID(),\n  source: 'mercadolivre',\n  received_at: new Date().toISOString(),\n  headers: safeHeaders,\n  raw_body: rawBody,\n  parsed_payload: payload,\n  body_sha256: crypto.createHash('sha256').update(raw).digest('hex'),\n  provider_delivery_id: deliveryId === null || deliveryId === undefined ? null : String(deliveryId),\n  account_id: accountId === null || accountId === undefined ? null : String(accountId),\n  application_id: body.application_id === null || body.application_id === undefined ? null : String(body.application_id),\n  provider_topic: body.topic ? String(body.topic).toLowerCase() : null,\n  route_hint: routeHint === null || routeHint === undefined ? null : String(routeHint),\n  payload_size: raw.length,\n  oversized: raw.length > 1048576,\n} }];"
+            },
+            "id": "3f4e584f-b54b-4e15-a2a5-2de7918f73a0",
+            "name": "Build Durable Envelope",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+              32,
+              256
+            ]
+          },
+          {
+            "parameters": {
+              "conditions": {
+                "combinator": "and",
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.oversized }}",
+                    "rightValue": false,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "options": {}
+            },
+            "id": "21093c91-5d29-45a3-a1fc-7715ada020a9",
+            "name": "Payload within 1 MB?",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2.3,
+            "position": [
+              256,
+              256
+            ]
+          },
+          {
+            "parameters": {
+              "jsCode": "const envelope = $('Build Durable Envelope').first().json;\nconst data = Buffer.from(JSON.stringify(envelope), 'utf8');\nreturn [{ json: envelope, binary: { data: { data: data.toString('base64'), mimeType: 'application/json', fileName: envelope.event_id + '.json' } } }];"
+            },
+            "id": "1e723963-68cc-46d0-b46a-f7064925b5d6",
+            "name": "Prepare Spool File",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+              704,
+              256
+            ]
+          },
+          {
+            "parameters": {
+              "operation": "write",
+              "fileName": "=/data/webhook-spool/ready/{{$json.event_id}}.json",
+              "options": {}
+            },
+            "id": "e7273c0c-b4b8-4a96-b589-462cf18360fd",
+            "name": "Write Durable Spool",
+            "type": "n8n-nodes-base.readWriteFile",
+            "typeVersion": 1.1,
+            "position": [
+              928,
+              256
+            ],
+            "onError": "continueErrorOutput"
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": "={\"accepted\":false,\"error\":\"payload_too_large\"}",
+              "options": {
+                "responseCode": 413
+              }
+            },
+            "id": "3c67db61-1a95-4ef2-b929-f9389fc24d23",
+            "name": "Payload Too Large",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1.5,
+            "position": [
+              480,
+              352
+            ]
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": "={\"accepted\":false,\"error\":\"durability_unavailable\"}",
+              "options": {
+                "responseCode": 503
+              }
+            },
+            "id": "734b0cd3-5132-47df-bbbf-b7a868894cac",
+            "name": "Durability Unavailable",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1.5,
+            "position": [
+              1152,
+              304
+            ]
+          },
+          {
+            "parameters": {
+              "jsCode": "// O Mercado Livre nao assina os webhooks. A unica garantia de origem e a\n// faixa de IPs que eles publicam, entao a checagem acontece na borda, antes\n// de qualquer persistencia.\n//\n// Qual IP e confiavel: o proxy reverso na frente do n8n ACRESCENTA o peer\n// real ao final de X-Forwarded-For. O primeiro item da lista e o que o\n// cliente enviou e portanto pode ser forjado. Usamos X-Real-IP quando\n// existir (o proxy o define com $remote_addr) e, na falta dele, o ULTIMO\n// item de X-Forwarded-For. Se houver mais de um proxy na cadeia, este\n// calculo precisa ser revisto.\nconst ALLOWED = new Set([\n  '54.88.218.97',\n  '18.215.140.160',\n  '18.213.114.129',\n  '18.206.34.84',\n  '35.236.253.169',\n  '35.245.91.34',\n  '35.245.20.104',\n  '35.186.182.146',\n]);\n\nconst item = $input.first();\nconst headers = item.json.headers ?? {};\nconst norm = (value) => String(value ?? '').trim().replace(/^::ffff:/i, '');\n\nconst forwarded = norm(headers['x-forwarded-for']).split(',').map(norm).filter(Boolean);\nconst realIp = norm(headers['x-real-ip']);\nconst peerIp = realIp || (forwarded.length ? forwarded[forwarded.length - 1] : '');\nconst allowed = Boolean(peerIp) && ALLOWED.has(peerIp);\n\nreturn [{\n  json: { ...item.json, client_ip: peerIp || null, ip_allowed: allowed },\n  binary: item.binary,\n}];"
+            },
+            "id": "4bd5fcef-ad0f-4afc-a74b-97dedcd0e712",
+            "name": "Resolve Client IP",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+              -416,
+              352
+            ]
+          },
+          {
+            "parameters": {
+              "conditions": {
+                "combinator": "and",
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ip_allowed }}",
+                    "rightValue": true,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "options": {}
+            },
+            "id": "48d48ea2-61a3-46f0-8ad8-adceb183c5fc",
+            "name": "IP autorizado?",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2.3,
+            "position": [
+              -192,
+              352
+            ]
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": "={\"accepted\":false,\"error\":\"forbidden_source_ip\"}",
+              "options": {
+                "responseCode": 403
+              }
+            },
+            "id": "4cfba9f6-479a-4131-a16c-37994a094372",
+            "name": "Forbidden Source IP",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1.5,
+            "position": [
+              32,
+              448
+            ]
+          },
+          {
+            "id": "cb101351-8a7a-4f4d-9ecb-3ab7af50ee52",
+            "name": "MercadoLivre Webhook por Conta",
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 2.1,
+            "position": [
+              -640,
+              160
+            ],
+            "parameters": {
+              "httpMethod": "POST",
+              "options": {
+                "rawBody": true
+              },
+              "path": "mercadolivre/:conta",
+              "responseMode": "responseNode"
+            },
+            "notes": "Porta por conta. O ML exige URL de notificacao distinta por aplicativo, entao cada conta usa /mercadolivre/<apelido>. O apelido nao roteia nada: serve so para a URL ser diferente e para diagnostico."
+          }
+        ],
+        "connections": {
+          "Build Durable Envelope": {
+            "main": [
+              [
+                {
+                  "node": "Payload within 1 MB?",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Payload within 1 MB?": {
+            "main": [
+              [
+                {
+                  "node": "Enqueue Inbox",
+                  "type": "main",
+                  "index": 0
+                }
+              ],
+              [
+                {
+                  "node": "Payload Too Large",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Enqueue Inbox": {
+            "main": [
+              [
+                {
+                  "node": "ACK 200",
+                  "type": "main",
+                  "index": 0
+                }
+              ],
+              [
+                {
+                  "node": "Prepare Spool File",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Prepare Spool File": {
+            "main": [
+              [
+                {
+                  "node": "Write Durable Spool",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Write Durable Spool": {
+            "main": [
+              [
+                {
+                  "node": "ACK 200",
+                  "type": "main",
+                  "index": 0
+                }
+              ],
+              [
+                {
+                  "node": "Durability Unavailable",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "MercadoLivre Webhook": {
+            "main": [
+              [
+                {
+                  "node": "Resolve Client IP",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Resolve Client IP": {
+            "main": [
+              [
+                {
+                  "node": "IP autorizado?",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "IP autorizado?": {
+            "main": [
+              [
+                {
+                  "node": "Build Durable Envelope",
+                  "type": "main",
+                  "index": 0
+                }
+              ],
+              [
+                {
+                  "node": "Forbidden Source IP",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "MercadoLivre Webhook por Conta": {
+            "main": [
+              [
+                {
+                  "node": "Resolve Client IP",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          }
+        },
+        "nodeGroups": []
+      }
+    },
+    {
+      "id": "ZZMMRtxAXM339y6m",
+      "name": "Shopee Webhook Handler",
+      "active": true,
+      "description": "Webhook Shopee com inbox confiável, shadow legado temporário e validação HMAC pós-ACK sem persistir Authorization.",
+      "updated_at": "2026-08-01T18:48:54.464Z",
+      "saved_version_id": "937ad1df-7723-4135-b543-1b7ca948c175",
+      "active_version_id": "a87143bc-feea-4e83-b82e-fbfe308975ee",
+      "saved_matches_active": false,
+      "graph": {
+        "nodes": [
+          {
+            "parameters": {
+              "operation": "push",
+              "list": "np:ingest:inbox:ready:v1",
+              "messageData": "={{ JSON.stringify($json) }}",
+              "tail": true
+            },
+            "id": "3556c4f4-40e8-444c-ba4f-9eb1d5cde7d4",
+            "name": "Enqueue Inbox",
+            "type": "n8n-nodes-base.redis",
+            "typeVersion": 1,
+            "position": [
+              352,
+              64
+            ],
+            "onError": "continueErrorOutput"
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": "={\"accepted\":true}",
+              "options": {
+                "responseCode": 200
+              }
+            },
+            "id": "83a59db7-f86f-4564-91ea-d5d85cafd7d4",
+            "name": "ACK 200",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1,
+            "position": [
+              1120,
+              64
+            ],
+            "alwaysOutputData": true,
+            "retryOnFail": true
+          },
+          {
+            "parameters": {
+              "httpMethod": "POST",
+              "path": "shopee",
+              "responseMode": "responseNode",
+              "options": {
+                "rawBody": true
+              }
+            },
+            "id": "f43c3529-5945-4c08-bbf8-b3d660c530e4",
+            "name": "Shopee Webhook",
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 1,
+            "position": [
+              -720,
+              64
+            ],
+            "alwaysOutputData": true
+          },
+          {
+            "parameters": {
+              "jsCode": "const crypto = require('crypto');\nconst item = $input.first();\nlet raw;\nif (item.binary?.data) raw = await this.helpers.getBinaryDataBuffer(0, 'data');\nelse if (typeof item.json.rawBody === 'string') raw = Buffer.from(item.json.rawBody, 'utf8');\nelse if (typeof item.json.body === 'string') raw = Buffer.from(item.json.body, 'utf8');\nelse raw = Buffer.from(JSON.stringify(item.json.body ?? {}), 'utf8');\nconst rawBody = raw.toString('utf8');\nlet parsedPayload = null;\ntry { parsedPayload = JSON.parse(rawBody); } catch {}\nconst headers = item.json.headers ?? {};\nconst allow = ['content-type','user-agent','x-bling-signature-256','x-signature','x-shopee-signature','x-request-id','x-signature-version','x-signature-ts'];\nconst safeHeaders = {};\nfor (const key of allow) if (headers[key] !== undefined) safeHeaders[key] = String(headers[key]).slice(0, 2048);\nconst payload = parsedPayload ?? (typeof item.json.body === 'object' ? item.json.body : null);\nreturn [{ json: { schema_version: 1, event_id: crypto.randomUUID(), source: 'shopee', received_at: new Date().toISOString(), headers: safeHeaders, raw_body: rawBody, parsed_payload: payload, body_sha256: crypto.createHash('sha256').update(raw).digest('hex'), provider_delivery_id: payload?.msg_id ?? payload?.data?.content?.message_id ?? headers['x-request-id'] ?? null, payload_size: raw.length, oversized: raw.length > 1048576 } }];"
+            },
+            "id": "fdc71f6a-082b-44af-af5a-d5431e97166d",
+            "name": "Build Durable Envelope",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+              -288,
+              64
+            ]
+          },
+          {
+            "parameters": {
+              "conditions": {
+                "combinator": "and",
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.oversized }}",
+                    "rightValue": false,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "options": {}
+            },
+            "id": "d4410ecf-2294-419c-8d4b-5cf0d8338eca",
+            "name": "Payload within 1 MB?",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2.3,
+            "position": [
+              32,
+              80
+            ]
+          },
+          {
+            "parameters": {
+              "jsCode": "const envelope = $('Build Durable Envelope').first().json;\nconst data = Buffer.from(JSON.stringify(envelope), 'utf8');\nreturn [{ json: envelope, binary: { data: { data: data.toString('base64'), mimeType: 'application/json', fileName: envelope.event_id + '.json' } } }];"
+            },
+            "id": "04b65592-c927-440c-813d-001d0d807cfa",
+            "name": "Prepare Spool File",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+              576,
+              288
+            ]
+          },
+          {
+            "parameters": {
+              "operation": "write",
+              "fileName": "=/data/webhook-spool/ready/{{$json.event_id}}.json",
+              "options": {}
+            },
+            "id": "81428d7f-4c9a-4c11-a64e-08ab1219b1e4",
+            "name": "Write Durable Spool",
+            "type": "n8n-nodes-base.readWriteFile",
+            "typeVersion": 1.1,
+            "position": [
+              848,
+              288
+            ],
+            "onError": "continueErrorOutput"
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": "={\"accepted\":false,\"error\":\"payload_too_large\"}",
+              "options": {
+                "responseCode": 413
+              }
+            },
+            "id": "f90b1c3f-adc0-41ad-986b-68b84d212371",
+            "name": "Payload Too Large",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1.5,
+            "position": [
+              240,
+              336
+            ]
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": "={\"accepted\":false,\"error\":\"durability_unavailable\"}",
+              "options": {
+                "responseCode": 503
+              }
+            },
+            "id": "ad32709a-af05-4349-92e6-f7af672d7da1",
+            "name": "Durability Unavailable",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1.5,
+            "position": [
+              1136,
+              416
+            ]
+          },
+          {
+            "id": "9d5824a3-583d-4f28-818d-79d7c6936142",
+            "name": "Validate Shopee Signature Post-ACK",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+              1320,
+              180
+            ],
+            "parameters": {
+              "mode": "runOnceForAllItems",
+              "language": "javaScript",
+              "jsCode": "const crypto = require('crypto');\nconst webhook = $('Shopee Webhook').first().json;\nconst envelope = $('Build Durable Envelope').first().json;\nconst provided = String(webhook.headers?.authorization ?? '').trim();\nconst partnerKey = String($env.SHOPEE_PUSH_PARTNER_KEY ?? $env.SHOPEE_PARTNER_KEY ?? '').trim();\nconst configuredCallback = String($env.SHOPEE_CALLBACK_URL ?? '').trim();\nconst observedCallback = String(webhook.webhookUrl ?? '').trim();\nconst enforceInvalid = String($env.SHOPEE_SIGNATURE_ENFORCEMENT ?? 'audit').trim().toLowerCase() === 'required';\nconst candidates = [];\nif (configuredCallback) candidates.push({ strategy: 'configured_callback', url: configuredCallback });\nif (observedCallback && observedCallback !== configuredCallback) candidates.push({ strategy: 'observed_callback', url: observedCallback });\nlet status = 'signature_unverified';\nlet strategy = null;\nlet reason = 'missing_signature_material';\nconst validShape = /^[a-f0-9]{64}$/i.test(provided);\nif (validShape && partnerKey && candidates.length && envelope.raw_body) {\n  reason = 'hmac_mismatch';\n  for (const candidate of candidates) {\n    const calculated = crypto.createHmac('sha256', partnerKey).update(candidate.url + '|' + envelope.raw_body, 'utf8').digest('hex');\n    if (crypto.timingSafeEqual(Buffer.from(calculated, 'hex'), Buffer.from(provided, 'hex'))) {\n      status = 'signature_valid';\n      strategy = candidate.strategy;\n      reason = 'matched';\n      break;\n    }\n  }\n  if (status !== 'signature_valid' && enforceInvalid) status = 'discarded_invalid_signature';\n}\nreturn [{ json: { event_id: envelope.event_id, signature_status: status, signature_strategy: strategy, signature_reason: reason, signature_enforcement: enforceInvalid ? 'required' : 'audit', checked_at: new Date().toISOString() } }];"
+            }
+          },
+          {
+            "id": "8436d186-a91d-4e80-83e8-d8b18e7e4e51",
+            "name": "Store Signature Verdict",
+            "type": "n8n-nodes-base.redis",
+            "typeVersion": 1,
+            "position": [
+              1580,
+              180
+            ],
+            "parameters": {
+              "operation": "set",
+              "key": "=np:ingest:signature:{{$json.event_id}}",
+              "value": "={{ JSON.stringify($json) }}",
+              "keyType": "string"
+            },
+            "onError": "continueRegularOutput"
+          },
+          {
+            "id": "0bc8c545-e940-4120-827f-5c5546446c8a",
+            "name": "Legacy Queue Shadow",
+            "type": "n8n-nodes-base.redis",
+            "typeVersion": 1,
+            "position": [
+              940,
+              180
+            ],
+            "parameters": {
+              "operation": "push",
+              "list": "shopee:webhooks:pendentes",
+              "messageData": "={{ JSON.stringify($('Shopee Webhook').item.json.body) }}",
+              "tail": true
+            },
+            "onError": "continueRegularOutput"
+          }
+        ],
+        "connections": {
+          "Shopee Webhook": {
+            "main": [
+              [
+                {
+                  "node": "Build Durable Envelope",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Build Durable Envelope": {
+            "main": [
+              [
+                {
+                  "node": "Payload within 1 MB?",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Payload within 1 MB?": {
+            "main": [
+              [
+                {
+                  "node": "Enqueue Inbox",
+                  "type": "main",
+                  "index": 0
+                }
+              ],
+              [
+                {
+                  "node": "Payload Too Large",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Enqueue Inbox": {
+            "main": [
+              [
+                {
+                  "node": "Legacy Queue Shadow",
+                  "type": "main",
+                  "index": 0
+                }
+              ],
+              [
+                {
+                  "node": "Prepare Spool File",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Prepare Spool File": {
+            "main": [
+              [
+                {
+                  "node": "Write Durable Spool",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Write Durable Spool": {
+            "main": [
+              [
+                {
+                  "node": "ACK 200",
+                  "type": "main",
+                  "index": 0
+                }
+              ],
+              [
+                {
+                  "node": "Durability Unavailable",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "ACK 200": {
+            "main": [
+              [
+                {
+                  "node": "Validate Shopee Signature Post-ACK",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Validate Shopee Signature Post-ACK": {
+            "main": [
+              [
+                {
+                  "node": "Store Signature Verdict",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Legacy Queue Shadow": {
+            "main": [
+              [
+                {
+                  "node": "ACK 200",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          }
+        },
+        "nodeGroups": []
+      }
+    }
+  ]
+}

@@ -1,11 +1,15 @@
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+import hashlib
+import json
 import uuid
+from decimal import Decimal, InvalidOperation
 from nistiprint_shared.database.supabase_db_service import supabase_db
 
 from nistiprint_shared.services.product_service import product_service
 from nistiprint_shared.services.estoque_service import estoque_service
 from nistiprint_shared.services.app_config_service import app_config_service
+from nistiprint_shared.services.bom_service import bom_service
 
 
 class OrdemProducaoService:
@@ -81,190 +85,108 @@ class OrdemProducaoService:
         product_id = op_data['produto_id']
         quantity_to_produce = float(op_data['quantidade'])
 
-        # 1. Buscar BOM do produto com dados de estoque já enriquecidos e em tempo real
-        bom_components = product_service.get_bom_components(product_id)
+        # Fixar a composição efetiva herdada antes de iniciar a execução.
+        bom_version = bom_service.publish_effective_version(int(product_id))
+        graph = bom_version['graph']['nodes'].get(str(int(product_id)), {}).get('componentes', [])
+        bom_components = []
+        for line in graph:
+            component = product_service.get_by_id(str(line['componente_id'])) or {}
+            bom_components.append({
+                'component_id': int(line['componente_id']),
+                'quantity': float(line['quantidade_necessaria']),
+                'name': component.get('nome') or component.get('name') or str(line['componente_id']),
+                'sku': component.get('sku', ''),
+            })
 
-        # 2. Calcular necessidades e verificar estoque disponível
+        # Montar as necessidades a partir da versão efetiva fixada acima.
         needs = []
-        insufficient = []
 
         # Obter o depósito de produção a partir das configurações
         deposito_id = app_config_service.get_config('default_production_deposit_id')
         if not deposito_id:
             raise ValueError("O depósito de produção padrão não está configurado. Por favor, configure-o na tela de Configurações -> Produção.")
+        deposito_id = estoque_service._resolve_deposito(deposito_id)
 
         for comp in bom_components:
             required = float(comp['quantity']) * quantity_to_produce
-            # A verificação de 'available_stock' já foi feita na camada da rota,
-            # mas refazemos aqui para garantir a integridade da transação.
-            saldo_componente = estoque_service.get_saldo_atual(comp['component_id'], deposito_id)
-            available = float(saldo_componente.get('quantidade_disponivel', 0))
+            needs.append({
+                'componente_id': int(comp['component_id']),
+                'sku': comp.get('sku', ''),
+                'descricao': comp.get('name', ''),
+                'quantidade_necessaria': required,
+            })
 
-            if required > available:
-                insufficient.append(f"{comp['name']}: necessita {required}, disponível {available} no depósito configurado")
-            else:
-                needs.append({
-                    'componente_id': comp['component_id'],
-                    'sku': comp.get('sku', ''),
-                    'descricao': comp.get('name', ''),
-                    'quantidade_necessaria': required,
-                    'quantidade_utilizada': 0.0
-                })
-
-        # if insufficient:
-        #     raise ValueError(f"Estoque insuficiente para: {', '.join(insufficient)}")
-        
-        if insufficient:
-            print(f"AVISO: Iniciando OP {po_id} com estoque insuficiente para os componentes: {', '.join(insufficient)}")
-
-        # 3. Reservar componentes usando o EstoqueService EM LOTE
-        try:
-            estoque_service.reservar_estoque_em_lote(
-                itens_reserva=[{'produto_id': n['componente_id'], 'quantidade': n['quantidade_necessaria']} for n in needs],
-                deposito_id=deposito_id
-            )
-        except Exception as e:
-            # Rollback das reservas em caso de erro
-            estoque_service.liberar_reserva_em_lote(
-                itens_liberacao=[{'produto_id': n['componente_id'], 'quantidade': n['quantidade_necessaria']} for n in needs],
-                deposito_id=deposito_id
-            )
-            raise 
-
-        # 4. Atualizar OP e criar registros de componentes EM LOTE
-        updates = {
-            'status': 'PENDING',
-            'data_inicio': datetime.utcnow().date().isoformat()
+        # Backorder permanece permitido como no fluxo anterior, mas reserva,
+        # componentes e status agora confirmam no mesmo commit.
+        command = {
+            'ordem_producao_id': int(po_id), 'deposito_id': int(deposito_id),
+            'bom_version_id': bom_version['id'], 'quantidade': quantity_to_produce,
+            'needs': sorted(needs, key=lambda row: (row['componente_id'], row['quantidade_necessaria'])),
         }
-        supabase_db.execute_with_retry(self.table.update(updates).eq('id', po_id))
+        content_hash = hashlib.sha256(json.dumps(
+            command, sort_keys=True, separators=(',', ':'), ensure_ascii=False
+        ).encode('utf-8')).hexdigest()
+        operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"nistiprint:op-start:{po_id}"))
+        result = supabase_db.rpc('iniciar_ordem_producao_transacional', {
+            'p_operation_id': operation_id, 'p_content_hash': content_hash,
+            'p_ordem_id': int(po_id), 'p_deposito_id': int(deposito_id),
+            'p_bom_version_id': bom_version['id'],
+            'p_actor_id': op_data.get('responsavel_id'), 'p_needs': needs,
+        }).execute().data
+        result = result[0] if isinstance(result, list) and result else result
+        row = result.get('ordem_producao') if isinstance(result, dict) else None
+        if not row:
+            raise RuntimeError('O início transacional da OP não retornou o estado confirmado')
+        row['id'] = str(row.get('id'))
+        return row
 
-        # Criar registros dos componentes necessários em uma única chamada
-        if needs:
-            components_to_insert = [{
-                'ordem_producao_id': po_id,
-                'componente_id': need['componente_id'],
-                'sku': need['sku'],
-                'descricao': need['descricao'],
-                'quantidade_necessaria': float(need['quantidade_necessaria']),
-                'quantidade_utilizada': float(need['quantidade_utilizada']),
-                'status': 'PENDENTE'
-            } for need in needs]
-            supabase_db.execute_with_retry(self.components_table.insert(components_to_insert))
-
-        op_data.update(updates)
-        op_data['id'] = po_id
-        return op_data
-
-    def deliver_production(self, po_id: str, quantity_delivered: float, user_id: Optional[int] = None) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
-        """Entrega produção, consumindo reservas, registrando entrada do produto final e retornando um snapshot do estoque dos componentes."""
-        if float(quantity_delivered) <= 0:
-            raise ValueError("Quantidade entregue deve ser positiva.")
-
-        op_data = self.get_by_id(po_id)
-        if not op_data:
-            raise ValueError(f"OP '{po_id}' não encontrada.")
-
-        if op_data['status'] not in ['PENDING', 'IN_PROGRESS', 'PARTIALLY_DELIVERED']:
-            raise ValueError("Apenas OPs ativas podem receber entregas.")
-
-        total_to_produce = float(op_data['quantidade'])
-        # Usamos dados_adicionais para rastrear progresso se a coluna não existir
-        dados_adicionais = op_data.get('dados_adicionais') or {}
-        qty_already_produced = float(dados_adicionais.get('quantidade_produzida', 0))
-        
-        total_produced = qty_already_produced + float(quantity_delivered)
-
-        if total_produced > total_to_produce + 0.001: # Tolerância para float
-            raise ValueError(f"Quantidade total produzida ultrapassaria o planejado: {total_produced} > {total_to_produce}")
-
-        # Lista para armazenar o snapshot do estoque dos componentes
-        component_stock_snapshot = []
-
-        # Consumir componentes proporcionalmente
-        components = self.get_components(po_id)
-        consumption_proportion = float(quantity_delivered) / total_to_produce
-
-        deposito_id = app_config_service.get_config('default_production_deposit_id')
-        if not deposito_id:
-            raise ValueError("O depósito de produção padrão não está configurado.")
-
+    def deliver_production(self, po_id: str, quantity_delivered: float, user_id: Optional[int] = None,
+                           operation_id: Optional[str] = None) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        """Confirma consumo, saldo acabado, alocações e checkpoint em um RPC idempotente."""
+        from uuid import UUID
         try:
-            for comp_data in components:
-                qty_to_consume = float(comp_data['quantidade_necessaria']) * consumption_proportion
-
-                if qty_to_consume > 0:
-                    # --- Início da Lógica de Snapshot ---
-                    saldo_componente_antes = estoque_service.get_saldo_atual(comp_data['componente_id'], deposito_id)
-                    stock_before = float(saldo_componente_antes.get('quantidade', 0))
-
-                    estoque_service.consumir_reserva(
-                        produto_id=comp_data['componente_id'],
-                        deposito_id=deposito_id,
-                        ordem_id=po_id,
-                        quantidade=qty_to_consume,
-                        observacao=f"Consumo para OP {po_id}",
-                        usuario_id=user_id
-                    )
-
-                    stock_after = stock_before - qty_to_consume
-
-                    snapshot_item = {
-                        "component_id": comp_data['componente_id'],
-                        "component_name": comp_data.get('descricao', ''),
-                        "quantity_used": qty_to_consume,
-                        "stock_before_production": stock_before,
-                        "stock_after_production": stock_after
-                    }
-                    component_stock_snapshot.append(snapshot_item)
-                    # --- Fim da Lógica de Snapshot ---
-
-                    # Atualizar o consumo na tabela de componentes da OP
-                    new_used = float(comp_data.get('quantidade_utilizada', 0)) + qty_to_consume
-                    self.components_table.update({'quantidade_utilizada': new_used}).eq('id', comp_data['id']).execute()
-
-            # Registrar entrada do produto acabado
-            estoque_service.registrar_entrada(
-                produto_id=op_data['produto_id'],
-                deposito_id=deposito_id,
-                quantidade=float(quantity_delivered),
-                observacao=f"Entrada de produção da OP {po_id}",
-                usuario_id=user_id,
-                user_context=None  # Não temos contexto de usuário aqui
-            )
-
-            # Atualizar status da OP
-            new_status = 'COMPLETED' if total_produced >= total_to_produce else 'PARTIALLY_DELIVERED'
-            
-            dados_adicionais['quantidade_produzida'] = total_produced
-            
-            updates = {
-                'status': new_status,
-                'dados_adicionais': dados_adicionais,
-                'updated_at': datetime.utcnow().isoformat()
-            }
-            if new_status == 'COMPLETED':
-                updates['data_fim'] = datetime.utcnow().date().isoformat()
-
-            self.table.update(updates).eq('id', po_id).execute()
-
-            # --- INTEGRAÇÃO COM DASHBOARD DE DEMANDA ---
-            # Ao entregar uma produção, tentamos alocar essa quantidade para as demandas abertas
+            quantity_decimal = Decimal(str(quantity_delivered))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("Quantidade entregue inválida.") from exc
+        if not quantity_decimal.is_finite() or quantity_decimal <= 0:
+            raise ValueError("Quantidade entregue deve ser positiva.")
+        if quantity_decimal != quantity_decimal.quantize(Decimal('0.0001')):
+            raise ValueError("Quantidade entregue aceita no máximo quatro casas decimais.")
+        quantity = float(quantity_decimal)
+        if not operation_id:
+            raise ValueError("A entrega exige uma chave Idempotency-Key estável.")
+        try:
+            operation_id = str(UUID(str(operation_id)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Idempotency-Key deve ser um UUID válido.") from exc
+        deposit_id = estoque_service._resolve_deposito(None)
+        content = {'ordem_producao_id': int(po_id), 'quantidade': format(quantity_decimal, '.4f')}
+        content_hash = hashlib.sha256(json.dumps(
+            content, sort_keys=True, separators=(',', ':')
+        ).encode('utf-8')).hexdigest()
+        result = supabase_db.rpc('entregar_ordem_producao_transacional', {
+            'p_operation_id': operation_id, 'p_content_hash': content_hash,
+            'p_ordem_id': int(po_id), 'p_deposito_id': int(deposit_id),
+            'p_quantidade': format(quantity_decimal, '.4f'), 'p_actor_id': user_id,
+        }).execute().data
+        result = result[0] if isinstance(result, list) and result else result
+        row = result.get('ordem_producao') if isinstance(result, dict) else None
+        if not row:
+            raise RuntimeError('A entrega transacional não retornou o estado confirmado')
+        row['id'] = str(row.get('id'))
+        if not result.get('replayed'):
             try:
                 from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
                 demanda_producao_service.alocar_producao_automatica(
-                    produto_id=op_data['produto_id'],
-                    quantidade=float(quantity_delivered),
+                    produto_id=row['produto_id'], quantidade=quantity,
                     user_id=str(user_id) if user_id else 'System'
                 )
-            except Exception as e:
-                print(f"Erro ao alocar produção da OP {po_id} para demandas: {e}")
-            # --------------------------------------------
-
-            return self.get_by_id(po_id), component_stock_snapshot
-
-        except Exception as e:
-            # Idealmente, aqui deveria haver uma lógica de compensação para reverter as ações bem-sucedidas
-            raise ValueError(f"Erro ao entregar produção: {str(e)}. O estado do estoque pode estar inconsistente.")
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    'Produção OP %s confirmada; distribuição automática para demanda ficou pendente', po_id
+                )
+        return row, result.get('snapshot_componentes') or []
 
     def pause_production(self, po_id: str) -> Dict[str, Any]:
         """Pausa a produção."""
@@ -296,39 +218,21 @@ class OrdemProducaoService:
         if not op_data:
             raise ValueError(f"OP '{po_id}' não encontrada.")
 
-        if op_data['status'] in ['COMPLETED', 'CANCELED']:
-            raise ValueError("OP já finalizada ou cancelada não pode ser cancelada novamente.")
-
-        # Obter componentes da OP
-        components = self.get_components(po_id)
-
-        deposito_id = app_config_service.get_config('default_production_deposit_id')
-        if not deposito_id:
-            raise ValueError("O depósito de produção padrão não está configurado.")
-
-        # Apenas libera reservas se a OP chegou a ser iniciada (tendo componentes)
-        if op_data['status'] != 'DRAFT':
-            try:
-                for comp_data in components:
-                    # A função liberar_reserva do service já é inteligente para lidar
-                    # com o que já foi consumido ou não.
-                    estoque_service.liberar_reserva(
-                        produto_id=comp_data['componente_id'],
-                        deposito_id=deposito_id,
-                        ordem_id=po_id
-                    )
-            except Exception as e:
-                # Log a critical error but continue to cancel the OP itself
-                print(f"CRITICAL: Failed to release all stock reservations for OP {po_id}. Manual check required. Error: {str(e)}")
-
-        # Atualizar status da OP
-        updates = {
-            'status': 'CANCELED',
-            'updated_at': datetime.utcnow().isoformat()
-        }
-        self.table.update(updates).eq('id', po_id).execute()
-
-        return self.get_by_id(po_id)
+        operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"nistiprint:op-cancel:{po_id}"))
+        command = {'ordem_producao_id': int(po_id), 'comando': 'CANCELAR'}
+        content_hash = hashlib.sha256(json.dumps(
+            command, sort_keys=True, separators=(',', ':')
+        ).encode('utf-8')).hexdigest()
+        result = supabase_db.rpc('cancelar_ordem_producao_transacional', {
+            'p_operation_id': operation_id, 'p_content_hash': content_hash,
+            'p_ordem_id': int(po_id), 'p_actor_id': op_data.get('responsavel_id'),
+        }).execute().data
+        result = result[0] if isinstance(result, list) and result else result
+        row = result.get('ordem_producao') if isinstance(result, dict) else None
+        if not row:
+            raise RuntimeError('O cancelamento transacional da OP não retornou o estado confirmado')
+        row['id'] = str(row.get('id'))
+        return row
 
     def get_by_id(self, po_id: str) -> Optional[Dict[str, Any]]:
         """Busca OP por ID."""

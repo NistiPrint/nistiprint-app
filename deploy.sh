@@ -4,7 +4,13 @@ cd /opt/nistiprint
 
 echo "→ git fetch + reset"
 git fetch --prune origin
-git reset --hard origin/main          # descarta qualquer mudança local
+TARGET_REF="${DEPLOY_REF:-origin/main}"
+if ! TARGET_SHA="$(git rev-parse --verify --quiet "${TARGET_REF}^{commit}")"; then
+    echo "ERRO: DEPLOY_REF não identifica um commit disponível: $TARGET_REF" >&2
+    exit 1
+fi
+echo "  promovendo $TARGET_REF ($TARGET_SHA)"
+git reset --hard "$TARGET_SHA"       # o servidor é runtime; descarta alterações locais
 git clean -fd apps/frontend/node_modules/.cache 2>/dev/null || true
 
 echo "→ limpando residuos de instalacoes interrompidas do pip"
@@ -68,37 +74,6 @@ if missing:
 PY
 fi
 
-# O backend sobe ANTES do frontend de proposito. O build do frontend e a etapa
-# mais fragil do deploy (memoria, rede, lockfile) e ja impediu correcao de
-# backend de chegar em producao por dias. Se ele falhar agora, o backend ja
-# esta atualizado e o frontend continua servindo o build anterior.
-echo "→ restart services (backend)"
-# Descoberto dinamicamente, e nao por lista fixa: o worker de ingest confiavel
-# ficou de fora da lista antiga e seguiu servindo codigo velho da memoria por
-# dias, enquanto api/worker/beat reiniciavam e o deploy parecia bem-sucedido.
-# Qualquer nistiprint-*.service novo entra aqui sozinho.
-mapfile -t SERVICOS < <(
-    {
-        # list-units traz as INSTANCIAS de template (nistiprint-ingest@orders),
-        # que sao o que de fato roda. --all para incluir as paradas no momento.
-        systemctl list-units --type=service --all --plain --no-legend 'nistiprint-*' 2>/dev/null \
-            | awk '{ print $1 }'
-        # list-unit-files pega as habilitadas que nem foram carregadas ainda.
-        systemctl list-unit-files --type=service --plain --no-legend 'nistiprint-*' 2>/dev/null \
-            | awk '$2 == "enabled" { print $1 }'
-    } | awk '!/@\.service$/ && NF' | sort -u
-    # O template puro (`nistiprint-ingest@.service`) e descartado de proposito:
-    # nao e uma unidade executavel, so o molde das instancias.
-)
-if [ "${#SERVICOS[@]}" -eq 0 ]; then
-    echo "  AVISO: nenhum nistiprint-*.service encontrado; usando lista fixa" >&2
-    SERVICOS=(nistiprint-api.service nistiprint-worker.service nistiprint-beat.service)
-fi
-for svc in "${SERVICOS[@]}"; do
-    echo "  reiniciando $svc"
-    sudo /bin/systemctl restart "$svc"
-done
-
 if [ "${SKIP_FRONTEND:-0}" = "1" ]; then
     echo "→ frontend build IGNORADO (SKIP_FRONTEND=1)"
 else
@@ -158,6 +133,28 @@ print('  frontend build validated and published')
 PY
     )
 fi
+
+# Só reinicia os serviços depois de dependências e build do frontend estarem
+# prontos. Assim, falhas de instalação ou compilação não promovem o backend.
+echo "→ restart services (backend)"
+# Descoberto dinamicamente, e não por lista fixa: todos os papéis de ingest
+# também precisam carregar o código candidato. O template puro não é executável.
+mapfile -t SERVICOS < <(
+    {
+        systemctl list-units --type=service --all --plain --no-legend 'nistiprint-*' 2>/dev/null \
+            | awk '{ print $1 }'
+        systemctl list-unit-files --type=service --plain --no-legend 'nistiprint-*' 2>/dev/null \
+            | awk '$2 == "enabled" { print $1 }'
+    } | awk '!/@\.service$/ && NF' | sort -u
+)
+if [ "${#SERVICOS[@]}" -eq 0 ]; then
+    echo "  AVISO: nenhum nistiprint-*.service encontrado; usando lista fixa" >&2
+    SERVICOS=(nistiprint-api.service nistiprint-worker.service nistiprint-beat.service)
+fi
+for svc in "${SERVICOS[@]}"; do
+    echo "  reiniciando $svc"
+    sudo /bin/systemctl restart "$svc"
+done
 
 echo "✓ deploy $(git rev-parse --short HEAD) ok"
 echo "  shared: $(git log -1 --format=%h -- packages/shared)"

@@ -237,6 +237,36 @@ class ShopeeChatIngestService:
             logger.exception("falha ao solicitar sincronizacao conversation_id=%s", cid)
             return False
 
+    def _reconciliar_primeiro_webhook(self, integration_id: Any,
+                                      conversation_id: Any) -> dict:
+        """Faz o claim duravel uma vez por conversa e tenta a busca imediatamente."""
+        cid, iid = _inteiro(conversation_id), _inteiro(integration_id)
+        if cid is None or iid is None:
+            return {}
+        claimed = supabase_db.rpc("solicitar_primeira_sincronizacao_chat_shopee", {
+            "p_conversation_id": cid, "p_integration_id": iid,
+        }).execute().data
+        if claimed is not True:
+            return {}
+
+        integration = self._integracao_hidratada(iid)
+        if not integration:
+            self._adiar_solicitacao(cid, 0)
+            return {"primeira_sincronizacao": "pendente",
+                    "primeira_sincronizacao_erro": "integracao_indisponivel"}
+        try:
+            resultado = self.reconcile_conversation(integration, str(cid))
+        except Exception as exc:
+            logger.exception("falha na primeira sincronizacao conversa=%s", cid)
+            resultado = {"status": "error", "error_type": type(exc).__name__}
+        if resultado.get("status") != "success":
+            self._adiar_solicitacao(cid, 0)
+            return {"primeira_sincronizacao": "pendente",
+                    "primeira_sincronizacao_erro": resultado.get("error_type")}
+        self._limpar_solicitacao(cid)
+        return {"primeira_sincronizacao": "concluida",
+                "primeira_sincronizacao_mensagens": resultado.get("messages_upserted", 0)}
+
     def _limpar_solicitacao(self, conversation_id: int) -> None:
         try:
             (supabase_db.table("conversas_chat_shopee")
@@ -345,6 +375,14 @@ class ShopeeChatIngestService:
         if linhas:
             (supabase_db.table("mensagem_chat_shopee")
              .upsert(linhas, on_conflict=CONFLITO_MENSAGEM).execute())
+            for linha in linhas:
+                buyer_id, buyer_username = identidade_do_comprador(linha, shop_id)
+                if buyer_id not in (None, "", 0):
+                    self._registrar_identidade(
+                        linha.get("conversation_id") or conversation_id,
+                        integration_id, buyer_id, buyer_username,
+                    )
+                    break
         return linhas
 
     def _nome_da_loja(self, shop_id: Any) -> str | None:
@@ -623,19 +661,24 @@ class ShopeeChatIngestService:
         # faz push da mensagem enviada pelo vendedor. Descartar esse aviso, como
         # se fazia antes, e o motivo de nao haver uma unica mensagem da loja
         # espelhada. Ele nao traz IDs, entao pede varredura completa.
-        if tipo != "mark_as_replied" or cid is None:
+        if cid is None or int(content.get("business_type") or 0) != 0:
             return {"status": "skipped", "event_status": "skipped_chat_notification",
                     "provider_topic": content.get("type"), "conversation_id": conversation_id}
 
         integration = self._resolver_integracao(payload, content, integration_id)
-        solicitou = self.solicitar_sincronizacao(
-            cid, integration_id=(integration or {}).get("id")
-        )
-        return {"status": "success",
+        solicitou = (tipo == "mark_as_replied" and self.solicitar_sincronizacao(
+            cid, integration_id=(integration or {}).get("id")))
+        resultado = {"status": "success",
                 "event_status": "chat_sincronizacao_solicitada" if solicitou
                                 else "skipped_chat_notification",
                 "provider_topic": tipo, "conversation_id": str(cid),
                 "marketplace_integration_id": (integration or {}).get("id")}
+        resultado.update(self._reconciliar_primeiro_webhook((integration or {}).get("id"), cid))
+        if resultado.get("primeira_sincronizacao") and not solicitou:
+            resultado["event_status"] = "chat_primeira_sincronizacao"
+        elif not solicitou:
+            resultado["status"] = "skipped"
+        return resultado
 
     def process(self, payload: dict, *, integration_id: int | None = None,
                 webhook_event_id: int | None = None) -> dict:
@@ -686,6 +729,7 @@ class ShopeeChatIngestService:
         else:
             estado = self._atualizar_completude(cid)
             resultado["status_completude"] = estado.get("status_completude")
+        resultado.update(self._reconciliar_primeiro_webhook(integration.get("id"), cid))
         return resultado
 
     def _resolver_bundle_do_push(self, integration: dict, cid: int | None, content: dict,

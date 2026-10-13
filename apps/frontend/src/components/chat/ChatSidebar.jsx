@@ -14,10 +14,11 @@ const EMPTY_HIGHLIGHTED_MESSAGE_IDS = [];
  *  - open: boolean
  *  - onOpenChange: (open: boolean) => void
  *  - username: string (comprador Shopee)
+ *  - buyerId: number (identidade Shopee para unir sessoes)
  *  - orderId: string (número do pedido para exibição)
  *  - highlightedMessageIds: string[] (mensagens que originaram personalizações)
  */
-export function ChatSidebar({ open, onOpenChange, username, orderId, highlightedMessageIds = EMPTY_HIGHLIGHTED_MESSAGE_IDS, marketplace = 'shopee', integrationId, pedidoId }) {
+export function ChatSidebar({ open, onOpenChange, username, orderId, highlightedMessageIds = EMPTY_HIGHLIGHTED_MESSAGE_IDS, marketplace = 'shopee', integrationId, buyerId, pedidoId }) {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -32,9 +33,12 @@ export function ChatSidebar({ open, onOpenChange, username, orderId, highlighted
     setLoading(true);
     setError(null);
     try {
+      const params = new URLSearchParams();
+      if (integrationId) params.set('integration_id', String(integrationId));
+      if (buyerId) params.set('buyer_id', String(buyerId));
       const path = marketplace === 'mercadolivre'
         ? `/api/v2/mercadolivre/integracoes/${integrationId}/personalizados/pedidos/${pedidoId}/chat`
-        : `/api/v2/personalizados/chat/${encodeURIComponent(user)}${integrationId ? `?integration_id=${encodeURIComponent(integrationId)}` : ''}`;
+        : `/api/v2/personalizados/chat/${encodeURIComponent(user || '__buyer_id__')}${params.size ? `?${params}` : ''}`;
       const res = await fetch(path, {
         headers: { Accept: 'application/json' },
         signal: controller.signal,
@@ -66,10 +70,10 @@ export function ChatSidebar({ open, onOpenChange, username, orderId, highlighted
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, [integrationId, marketplace, pedidoId]);
+  }, [integrationId, buyerId, marketplace, pedidoId]);
 
   useEffect(() => {
-    if (open && (username || (marketplace === 'mercadolivre' && integrationId && pedidoId))) {
+    if (open && (username || (marketplace === 'shopee' && buyerId) || (marketplace === 'mercadolivre' && integrationId && pedidoId))) {
       highlightSet.current = new Set(highlightedMessageIds);
       setMessages([]);
       loadMessages(username);
@@ -80,7 +84,7 @@ export function ChatSidebar({ open, onOpenChange, username, orderId, highlighted
       setError(null);
     }
     return () => requestRef.current?.abort();
-  }, [open, username, marketplace, integrationId, pedidoId, highlightedMessageIds, loadMessages]);
+  }, [open, username, marketplace, integrationId, buyerId, pedidoId, highlightedMessageIds, loadMessages]);
 
   // Scroll para o fim após carregar
   useEffect(() => {
@@ -166,7 +170,7 @@ function renderMessages(messages, username, highlightSet) {
 }
 
 function renderMessage(msg, username, highlightSet) {
-  const isCustomer = msg.from_user_name === username;
+  const isCustomer = msg.sender_role === 'Comprador' || Boolean(username && msg.from_user_name === username);
   const isNotification = msg.type === 'notification';
   const isBundle = msg.type === 'bundle_message';
   const isHighlighted = highlightSet.has(String(msg.id));

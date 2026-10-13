@@ -1209,123 +1209,21 @@ class DemandaCoreService:
 
             except Exception as e:
                 print(f"Erro ao agendar reserva inteligente para demanda {new_demanda_id}: {e}")
-                # Fallback: Se falhar o agendamento, tenta reserva simples síncrona para não deixar sem nada
-                try:
-                    itens_reserva = [{'produto_id': i['produto_id'], 'quantidade': i['quantidade']} for i in itens_payload if i.get('produto_id')]
-                    estoque_service.reservar_estoque_em_lote(itens_reserva, allow_backorder=True)
-                except: pass
+                # Não reservar saldo sem criar as alocações que dão origem à reserva.
+                # Registrar o estado pendente mantém a falha visível e recuperável.
+                self.update_demanda_details(new_demanda_id, {
+                    'dados_adicionais': {
+                        'reserva_inteligente_agendada': False,
+                        'reserva_inteligente_status': 'PENDENTE_REPROCESSAMENTO',
+                        'reserva_inteligente_ultimo_erro': str(e)[:1000],
+                        'reserva_inteligente_falha_em': get_now_iso(),
+                    }
+                }, user_id)
             # --------------------------------------------------
         auditoria_service.log_event('DEMANDA_CRIADA', {'demanda_id': new_demanda_id}, user_id)
         return self.get_demanda_with_itens(new_demanda_id)
 
-    def _processar_reserva_inteligente_demanda(self, demanda_id, itens_payload, user_id):
-        """
-        Calcula e executa a reserva de estoque seguindo lógica Waterfall:
-        1. Tenta reservar produto acabado.
-        2. Se faltar, explode BOM e reserva componentes.
-        3. Retorna um snapshot detalhado do que foi planejado.
-        """
-        from nistiprint_shared.services.app_config_service import app_config_service
-        deposito_id = app_config_service.get_config('default_production_deposit_id')
-
-        snapshot = {
-            'calculado_em': get_now_iso(),
-            'demanda_id': demanda_id,
-            'itens': []
-        }
-
-        # Cache local para evitar múltiplas chamadas de saldo/BOM no loop
-        # (Otimização para demandas grandes)
-        # Nota: Idealmente seria passado como argumento para a recursão
-
-        for item in itens_payload:
-            produto_id = item.get('produto_id')
-            if not produto_id: continue
-
-            qtd_necessaria = float(item.get('quantidade', 0))
-
-            # Estrutura do item no snapshot
-            item_report = {
-                'item_id': item.get('id'), # Pode ser None se ainda não commitou, mas itens_payload veio do insert
-                'produto_id': produto_id,
-                'sku': item.get('sku'),
-                'qtd_necessaria': qtd_necessaria,
-                'reservas_realizadas': [] # Lista de {produto_id, qtd, tipo: 'PAI'|'COMPONENTE'}
-            }
-
-            # Inicia recursão
-            self._reservar_recursivo(
-                produto_id=int(produto_id),
-                quantidade=qtd_necessaria,
-                deposito_id=deposito_id,
-                report_list=item_report['reservas_realizadas'],
-                nivel=0
-            )
-
-            snapshot['itens'].append(item_report)
-
-        return snapshot
-
-    def _reservar_recursivo(self, produto_id, quantidade, deposito_id, report_list, nivel=0):
-        """
-        Motor recursivo de reserva.
-        """
-        # 1. Verificar Saldo Disponível do Produto Atual
-        # TODO: Otimizar get_saldo_atual para cache se necessário
-        saldo_info = estoque_service.get_saldo_atual(produto_id, deposito_id)
-        disponivel = float(saldo_info.get('quantidade_disponivel', 0))
-
-        # 2. Tentar reservar do próprio produto (Estoque Acabado ou Componente Puro)
-        # Se for nível 0 (Produto Final), queremos consumir o que tiver pronto.
-        # Se for nível > 0 (Componente), queremos consumir o que tiver.
-        qtd_reservar = min(max(0, disponivel), quantidade)
-
-        if qtd_reservar > 0:
-            estoque_service.reservar_estoque(produto_id, qtd_reservar, deposito_id)
-            report_list.append({
-                'produto_id': produto_id,
-                'quantidade': qtd_reservar,
-                'tipo': 'ESTOQUE_EXISTENTE',
-                'nivel': nivel
-            })
-
-        # 3. Calcular Falta
-        falta = quantidade - qtd_reservar
-
-        if falta > 0:
-            # Precisa produzir ou comprar. Verifica BOM.
-            bom = bom_service.get_bom_for_produto(produto_id)
-
-            if not bom:
-                # Não tem BOM (é matéria prima ou produto sem ficha).
-                # Reserva a falta gerando Backorder (Risco de Ruptura)
-                estoque_service.reservar_estoque(produto_id, falta, deposito_id, allow_backorder=True)
-                report_list.append({
-                    'produto_id': produto_id,
-                    'quantidade': falta,
-                    'tipo': 'BACKORDER' if nivel > 0 else 'A_PRODUZIR_SEM_BOM', # Se for pai, é "A Produzir", se for filho, é falta de insumo
-                    'nivel': nivel
-                })
-            else:
-                # Tem BOM (é produzível). Explode e desce o nível.
-                # Não reservamos o pai "em backorder" aqui, pois a reserva será feita nos filhos.
-                # Apenas registramos no report que será produzido.
-                report_list.append({
-                    'produto_id': produto_id,
-                    'quantidade': falta,
-                    'tipo': 'A_PRODUZIR', # Indica que esta qtd será gerada por produção
-                    'nivel': nivel
-                })
-
-                for comp in bom:
-                    qtd_comp_necessaria = falta * float(comp.quantidade)
-                    self._reservar_recursivo(
-                        produto_id=comp.componente_id,
-                        quantidade=qtd_comp_necessaria,
-                        deposito_id=deposito_id,
-                        report_list=report_list,
-                        nivel=nivel + 1
-                    )
+    # O motor síncrono antigo foi removido; a fila grava reservas e alocações juntas.
 
     def criar_demanda_empresas(self, nome_demanda, canal_venda_id, data_entrega_str, lista_de_itens,
                              horario_coleta_especifico=None, data_finalizacao_prevista=None,

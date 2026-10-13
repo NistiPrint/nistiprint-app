@@ -35,7 +35,10 @@ class EstoqueService {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Erro HTTP: ${response.status}`);
+        const failed = errorData.failed_adjustments?.length
+          ? ` Produtos com falha: ${errorData.failed_adjustments.map((item) => `${item.produto_id}: ${item.error}`).join('; ')}`
+          : '';
+        throw new Error(`${errorData.error || errorData.message || `Erro HTTP: ${response.status}`}${failed}`);
       }
 
       return await response.json();

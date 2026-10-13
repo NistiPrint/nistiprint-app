@@ -243,6 +243,44 @@ class IntegrationSecretService:
             rotated=True,
         )
 
+    def persist_tokens_with_refresh_lease(
+        self,
+        installation_id: Any,
+        tokens: dict[str, Any],
+        lease_token: str,
+        *,
+        installation_patch: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist both rotated credentials only while this refresh still owns its lease."""
+        encrypted = {}
+        for secret_kind in ("access_token", "refresh_token"):
+            value = tokens.get(secret_kind)
+            if value in (None, ""):
+                continue
+            ciphertext, nonce, key_version = self.encrypt_secret(str(value))
+            encrypted[secret_kind] = {
+                "encrypted_value": ciphertext,
+                "nonce": nonce,
+                "key_version": key_version,
+            }
+
+        result = supabase_db.rpc("persistir_tokens_integracao_sob_lease", {
+            "p_integration_id": str(installation_id),
+            "p_lease_token": str(lease_token),
+            "p_access_token": encrypted.get("access_token"),
+            "p_refresh_token": encrypted.get("refresh_token"),
+            "p_schema_name": self.schema_name,
+            "p_installation_patch": installation_patch,
+        }).execute().data
+        if isinstance(result, list):
+            result = result[0] if result else False
+        if isinstance(result, dict):
+            result = next(iter(result.values()), False)
+        if result is not True:
+            raise SecretStorageError(
+                "Lease de refresh perdida; credenciais retornadas não foram persistidas."
+            )
+
     def delete_secret(self, owner_type: str, owner_id: Any, secret_kind: str) -> None:
         (
             self._table()

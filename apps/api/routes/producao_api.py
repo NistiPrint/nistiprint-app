@@ -194,56 +194,19 @@ def registrar_saida_estoque():
 
 @producao_api_bp.route('/registrar-sinal', methods=['POST'])
 def registrar_sinal_producao():
-    data = request.get_json()
-    if not all([data.get('item_id'), data.get('demanda_id'), data.get('campo'), data.get('quantidade')]): 
-        return jsonify({'success': False, 'error': 'Incompleto'}), 400
-    try:
-        user = get_current_user()
-        # Atualiza apenas a intenção no banco (visível no dashboard)
-        supabase_db.table('itens_demanda').update({data['campo']: float(data['quantidade'])}).eq('id', data['item_id']).execute()
-        
-        # Loga evento imutável para o novo motor (Event Sourcing)
-        supabase_db.table('eventos_producao_v2').insert({
-            'item_demanda_id': data['item_id'], 
-            'demanda_id': data['demanda_id'], 
-            'estagio': data['campo'],
-            'quantidade_reportada': float(data['quantidade']), 
-            'tipo_evento': 'SINAL', 
-            'processado': False,
-            'usuario_id': user.get('id') if user else None
-        }).execute()
-        
-        return jsonify({'success': True, 'message': 'Sinal registrado e aguardando processamento assíncrono'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    return jsonify({
+        'success': False,
+        'code': 'legacy_production_writer_retired',
+        'error': 'Use /api/v2/demanda_producao/<id>/item/<id>/registrar-producao; este endpoint não gravava intenção e evento atomicamente.',
+    }), 409
 
 @producao_api_bp.route('/finalizar-item', methods=['POST'])
 def finalizar_item_demanda():
-    data = request.get_json()
-    if not all([data.get('item_id'), data.get('demanda_id'), data.get('quantidade_finalizada')]): 
-        return jsonify({'success': False, 'error': 'Incompleto'}), 400
-    try:
-        user = get_current_user()
-        # Atualiza status e intenção final
-        supabase_db.table('itens_demanda').update({
-            'finalizados_qtd': float(data['quantidade_finalizada']), 
-            'status_item': 'FINALIZADO'
-        }).eq('id', data['item_id']).execute()
-        
-        # Loga evento de liquidação para o novo motor (Event Sourcing)
-        supabase_db.table('eventos_producao_v2').insert({
-            'item_demanda_id': data['item_id'], 
-            'demanda_id': data['demanda_id'], 
-            'estagio': 'finalizados_qtd',
-            'quantidade_reportada': float(data['quantidade_finalizada']), 
-            'tipo_evento': 'LIQUIDACAO', 
-            'processado': False,
-            'usuario_id': user.get('id') if user else None
-        }).execute()
-        
-        return jsonify({'success': True, 'message': 'Finalização registrada e aguardando processamento assíncrono'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+    return jsonify({
+        'success': False,
+        'code': 'legacy_production_writer_retired',
+        'error': 'Use os endpoints transacionais de produção e finalização de item.',
+    }), 409
 
 @producao_api_bp.route('/components/<product_id>', methods=['GET'])
 def get_product_components(product_id):

@@ -28,7 +28,7 @@ class TokenRenewalTasksTest(TestCase):
 
     def test_unified_task_delegates_to_token_renewal_service(self):
         with patch(
-            "task_logger.supabase_db.table",
+            "nistiprint_shared.utils.task_logging.supabase_db.table",
             return_value=self._mock_task_logger_table(),
         ), patch.object(
             token_renewal_tasks.token_renewal_service,
@@ -42,7 +42,7 @@ class TokenRenewalTasksTest(TestCase):
 
     def test_legacy_shopee_wrapper_delegates_with_module_filter(self):
         with patch(
-            "task_logger.supabase_db.table",
+            "nistiprint_shared.utils.task_logging.supabase_db.table",
             return_value=self._mock_task_logger_table(),
         ), patch.object(
             token_renewal_tasks.token_renewal_service,
@@ -56,7 +56,7 @@ class TokenRenewalTasksTest(TestCase):
 
     def test_legacy_mercadolivre_wrapper_delegates_with_module_filter(self):
         with patch(
-            "task_logger.supabase_db.table",
+            "nistiprint_shared.utils.task_logging.supabase_db.table",
             return_value=self._mock_task_logger_table(),
         ), patch.object(
             token_renewal_tasks.token_renewal_service,

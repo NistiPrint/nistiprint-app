@@ -2,8 +2,120 @@ from flask import request, jsonify
 from nistiprint_shared.services.estoque_service import estoque_service
 from nistiprint_shared.services.product_service import product_service
 from nistiprint_shared.services.deposito_service import deposito_service
-from routes.auth import login_required, get_current_user
+from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.estoque_command_service import (
+    EstoqueCommandConflict,
+    EstoqueCommandOutcomeUnknown,
+    estoque_command_service,
+)
+from routes.auth import check_permission, login_required, get_current_user
 from .estoque_base import estoque_api_bp
+
+
+@estoque_api_bp.get('/divergencias-ledger')
+@check_permission('estoque', 'ler')
+def api_listar_divergencias_ledger():
+    """List current balances that differ from their latest recorded movement."""
+    limit = max(1, min(100, request.args.get('limit', 50, type=int)))
+    offset = max(0, min(1_000_000, request.args.get('offset', 0, type=int)))
+    try:
+        response = (
+            supabase_db.table('v_estoque_saldo_ledger_divergencias')
+            .select('produto_id,produto_sku,produto_nome,deposito_id,deposito_nome,saldo_atual,saldo_ultimo_movimento,diferenca,movimento_id,movimento_registrado_em', count='exact')
+            .order('movimento_registrado_em', desc=True, nullsfirst=False)
+            .order('produto_id')
+            .order('deposito_id')
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+        return jsonify({
+            'success': True,
+            'data': response.data or [],
+            'limit': limit,
+            'offset': offset,
+            'count': int(getattr(response, 'count', 0) or 0),
+        }), 200
+    except Exception:
+        return jsonify({
+            'success': False,
+            'error': 'Não foi possível consultar divergências de saldo.',
+        }), 503
+
+
+@estoque_api_bp.route('/comandos', methods=['POST'])
+@login_required
+def api_executar_comando_estoque():
+    data = request.get_json(silent=True) or {}
+    usuario = get_current_user()
+    actor_context = {
+        'id': usuario['id'],
+        'is_admin': usuario.get('is_admin', False),
+        'setor_id': usuario.get('setor_id'),
+    }
+    try:
+        if not estoque_command_service.is_enabled():
+            return jsonify({
+                'error': 'Comandos de estoque v2 ainda não estão habilitados para este ambiente.',
+                'code': 'feature_disabled',
+            }), 503
+        movements = data.get('movimentos') or []
+        if not isinstance(movements, list):
+            return jsonify({'error': 'movimentos deve ser uma lista.'}), 400
+        for movement in movements:
+            if not isinstance(movement, dict):
+                return jsonify({'error': 'Cada movimento deve ser um objeto.'}), 400
+            try:
+                product_id = int(movement.get('produto_id'))
+                deposit_id = int(movement.get('deposito_id'))
+            except (TypeError, ValueError):
+                return jsonify({'error': 'produto_id e deposito_id devem ser inteiros.'}), 400
+            try:
+                estoque_service._validate_stock_eligibility(product_id)
+            except ValueError as exc:
+                return jsonify({'error': str(exc), 'code': 'stock_ineligible'}), 422
+            try:
+                estoque_service._validate_sector_permission(product_id, actor_context)
+            except PermissionError as exc:
+                return jsonify({'error': str(exc)}), 403
+            if not deposito_service.get_by_id(deposit_id):
+                return jsonify({'error': f"Depósito inválido: {deposit_id}", 'code': 'invalid_deposit'}), 422
+        result = estoque_command_service.execute_command(data, actor_context)
+        return jsonify(result), 200
+    except EstoqueCommandConflict as exc:
+        return jsonify({'error': str(exc), 'code': 'operation_conflict'}), 409
+    except EstoqueCommandOutcomeUnknown as exc:
+        return jsonify({
+            'error': 'Resultado ainda não confirmado; consulte ou repita usando o mesmo operation_id.',
+            'code': 'outcome_unknown',
+            'operation_id': exc.operation_id,
+        }), 503
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+    except (TypeError, ValueError) as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 503
+
+
+@estoque_api_bp.route('/operacoes/<operation_id>', methods=['GET'])
+@login_required
+def api_obter_operacao_estoque(operation_id):
+    usuario = get_current_user()
+    actor_context = {
+        'id': usuario['id'],
+        'is_admin': usuario.get('is_admin', False),
+    }
+    try:
+        operation = estoque_command_service.get_operation(operation_id, actor_context)
+        if operation is None:
+            return jsonify({'error': 'Operação não encontrada.'}), 404
+        return jsonify(operation), 200
+    except PermissionError as exc:
+        return jsonify({'error': str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 503
 
 @estoque_api_bp.route('/', methods=['GET'])
 def api_dashboard():
@@ -222,7 +334,7 @@ def api_movimentar():
                 from nistiprint_shared.services.app_config_service import app_config_service
                 deposito_id = app_config_service.get_config('default_production_deposit_id')
 
-            if not all([tipo_movimento, produto_id, quantidade]):
+            if not tipo_movimento or not produto_id or quantidade is None or (quantidade == 0 and tipo_movimento != 'BALANCO'):
                 return jsonify({'error': 'Dados incompletos.'}), 400
 
             if deposito_id and not deposito_service.get_by_id(deposito_id):
@@ -233,20 +345,23 @@ def api_movimentar():
                 estoque_service.registrar_entrada(
                     produto_id=produto_id, deposito_id=deposito_id, quantidade=quantidade,
                     observacao=observacao, usuario_id=usuario['id'], unit_name=unit_name,
-                    user_context=user_context
+                    user_context=user_context, operation_id=data.get('operation_id'),
+                    idempotency_key=data.get('idempotency_key')
                 )
             elif tipo_movimento == 'SAIDA':
                 estoque_service.registrar_saida(
                     produto_id=produto_id, deposito_id=deposito_id, quantidade=quantidade,
-                    observacao=observacao, usuario_id=usuario['id'],
-                    user_context=user_context
+                    motivo=observacao, usuario_id=usuario['id'],
+                    user_context=user_context, operation_id=data.get('operation_id'),
+                    idempotency_key=data.get('idempotency_key')
                 )
             elif tipo_movimento == 'BALANCO':
                 unit_name = data.get('unit_name')
                 estoque_service.registrar_balanco(
                     produto_id=produto_id, deposito_id=deposito_id, quantidade_ajuste=quantidade,
                     observacao=observacao, usuario_id=usuario['id'], unit_name=unit_name,
-                    user_context=user_context
+                    user_context=user_context, operation_id=data.get('operation_id'),
+                    idempotency_key=data.get('idempotency_key')
                 )
             elif tipo_movimento == 'TRANSFERENCIA':
                 deposito_destino_id = data.get('deposito_destino_id')
@@ -262,7 +377,9 @@ def api_movimentar():
                     quantidade=quantidade,
                     observacao=observacao,
                     usuario_id=usuario['id'],
-                    user_context=user_context
+                    user_context=user_context,
+                    operation_id=data.get('operation_id'),
+                    idempotency_key=data.get('idempotency_key')
                 )
             else:
                 return jsonify({'error': 'Tipo de movimento inválido.'}), 400
@@ -273,6 +390,13 @@ def api_movimentar():
             depositos = deposito_service.get_all()
             return jsonify({'depositos': depositos})
 
+    except EstoqueCommandConflict as e:
+        return jsonify({'error': str(e), 'code': 'operation_conflict'}), 409
+    except EstoqueCommandOutcomeUnknown as e:
+        return jsonify({
+            'error': 'Resultado ainda não confirmado; repita com o mesmo identificador de operação.',
+            'operation_id': e.operation_id,
+        }), 503
     except Exception as e:
         print(f"Erro na API ao registrar movimentação: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -304,6 +428,7 @@ def api_posicao():
         return jsonify({'error': str(e)}), 500
 
 @estoque_api_bp.route('/reservas', methods=['GET'])
+@login_required
 def api_reservas():
     """API para listar todas as reservas de estoque ativas."""
     try:
@@ -378,6 +503,7 @@ def api_ajuste():
 
             success_count = 0
             error_count = 0
+            failed_adjustments = []
 
             for adj in adjustments:
                 variance = adj.get('variance')
@@ -389,12 +515,18 @@ def api_ajuste():
                             quantidade_ajuste=adj['counted'],
                             observacao=f"Ajuste de inventário via contagem. Contado: {adj['counted']}, Sistema: {adj['system']}",
                             usuario_id=usuario['id'],
-                            user_context=user_context
+                            user_context=user_context,
+                            expected_saldo=adj.get('system'),
+                            operation_id=adj.get('operation_id'),
                         )
                         success_count += 1
                     except Exception as e:
                         print(f"Erro ao ajustar produto {adj['id']}: {str(e)}")
                         error_count += 1
+                        failed_adjustments.append({
+                            'produto_id': adj.get('id'),
+                            'error': str(e),
+                        })
 
             response_message = []
             if success_count > 0:
@@ -402,7 +534,11 @@ def api_ajuste():
             if error_count > 0:
                 response_message.append(f'{error_count} ajustes falharam ao serem aplicados.')
 
-            return jsonify({'success': True, 'message': ' '.join(response_message)})
+            return jsonify({
+                'success': error_count == 0,
+                'message': ' '.join(response_message),
+                'failed_adjustments': failed_adjustments,
+            }), (409 if error_count else 200)
         except Exception as e:
             print(f'Erro na API ao processar os ajustes: {str(e)}')
             return jsonify({'error': str(e)}), 500
@@ -445,13 +581,13 @@ def api_produtos_busca():
         resultados = []
         if produtos and deposito_id:
             produto_ids = [p['id'] for p in produtos]
-            saldos_map = estoque_service.get_saldos_for_products_in_deposit(produto_ids, deposito_id)
+            saldos_map = estoque_service.get_saldos_em_lote(produto_ids, deposito_id)
 
             for produto in produtos:
                 item = {
                     'id': produto['id'],
                     'text': f"{produto.get('sku', '')} - {produto.get('nome', '')}",
-                    'saldo': saldos_map.get(produto['id'], 0)
+                    'saldo': (saldos_map.get(str(produto['id'])) or {}).get('quantidade', 0)
                 }
                 resultados.append(item)
         elif produtos:
@@ -468,6 +604,7 @@ def api_produtos_busca():
         return jsonify({'error': str(e)}), 500
 
 @estoque_api_bp.route('/liberar-reserva', methods=['POST'])
+@login_required
 def api_liberar_reserva():
     """API para liberar (cancelar) uma reserva de estoque."""
     try:
@@ -475,6 +612,8 @@ def api_liberar_reserva():
         produto_id = data.get('produto_id')
         deposito_id = data.get('deposito_id')
         ordem_id = data.get('ordem_id')
+        operation_id = data.get('operation_id')
+        idempotency_key = data.get('idempotency_key')
 
         if not deposito_id:
             from nistiprint_shared.services.app_config_service import app_config_service
@@ -483,10 +622,23 @@ def api_liberar_reserva():
         if not all([produto_id, deposito_id, ordem_id]):
             return jsonify({'success': False, 'error': 'Dados incompletos fornecidos.'}), 400
 
+        usuario = get_current_user()
+        user_context = {
+            'id': usuario['id'],
+            'setor_id': usuario.get('setor_id'),
+            'setor_nome': usuario.get('setor_nome'),
+            'is_admin': usuario.get('is_admin', False),
+        }
+
         result = estoque_service.liberar_reserva(
             produto_id=produto_id,
             deposito_id=deposito_id,
-            ordem_id=ordem_id
+            ordem_id=ordem_id,
+            tipo_ordem=data.get('tipo_ordem') or 'ORDEM',
+            operation_id=operation_id,
+            idempotency_key=idempotency_key,
+            usuario_id=usuario['id'],
+            user_context=user_context,
         )
         
         if result:
@@ -504,7 +656,7 @@ def api_liberar_reserva():
 def api_saldos_batch():
     """API para buscar saldos de múltiplos produtos em um depósito."""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         product_ids = data.get('product_ids')
         deposito_id = data.get('deposito_id')
 
@@ -512,45 +664,47 @@ def api_saldos_batch():
             from nistiprint_shared.services.app_config_service import app_config_service
             deposito_id = app_config_service.get_config('default_production_deposit_id')
 
-        if not all([product_ids, deposito_id]):
+        if not isinstance(product_ids, list) or not product_ids or not deposito_id:
             return jsonify({'error': 'IDs de produto e depósito são obrigatórios.'}), 400
 
-        saldos = estoque_service.get_saldos_for_products_in_deposit(product_ids, deposito_id)
+        saldos = estoque_service.get_saldos_em_lote(product_ids, deposito_id)
         return jsonify(saldos)
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @estoque_api_bp.route('/reverter-movimentacao', methods=['POST'])
+@login_required
 def api_reverter_movimentacao():
-    """API para reverter uma movimentação de estoque."""
+    """Block reversals until a traceable compensating command is available."""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         lancamento_id = data.get('lancamento_id')
 
         if not lancamento_id:
             return jsonify({'success': False, 'error': 'ID do lançamento é obrigatório.'}), 400
 
-        reversao_id = estoque_service.reverter_movimentacao(lancamento_id=lancamento_id, usuario_id=None)
-
-        return jsonify({'success': True, 'message': f'Lançamento {lancamento_id} revertido com sucesso pelo novo lançamento {reversao_id}.'})
-
-    except ValueError as ve:
-        return jsonify({'success': False, 'error': str(ve)}), 400
-    except Exception as e:
-        print(f"Erro na API ao reverter lançamento: {str(e)}")
-        return jsonify({'success': False, 'error': 'Ocorreu um erro interno ao tentar reverter o lançamento.'}), 500
+        return jsonify({
+            'success': False,
+            'code': 'compensation_unavailable',
+            'error': 'Reversão bloqueada até existir um comando de compensação física rastreável.',
+        }), 422
+    except Exception:
+        return jsonify({'success': False, 'error': 'Não foi possível avaliar a solicitação de reversão.'}), 503
 
 @estoque_api_bp.route('/movimentar-lote', methods=['POST'])
 @login_required
 def api_movimentar_lote():
     """API para registrar múltiplas movimentações de estoque em lote."""
     try:
-        data = request.get_json()
-        movimentacoes = data.get('movimentacoes', [])
+        data = request.get_json(silent=True) or {}
+        movimentacoes = data.get('movimentacoes')
+        operation_id = data.get('operation_id')
 
         if not movimentacoes:
             return jsonify({'error': 'Nenhuma movimentação fornecida.'}), 400
+        if not operation_id:
+            return jsonify({'error': 'operation_id é obrigatório para repetir o lote com segurança.'}), 400
 
         usuario = get_current_user()
         user_context = {
@@ -563,11 +717,34 @@ def api_movimentar_lote():
         resultado = estoque_service.registrar_movimentacao_lote(
             movimentacoes=movimentacoes,
             usuario_id=usuario['id'],
-            user_context=user_context
+            user_context=user_context,
+            operation_id=operation_id,
+            source={'source_type': 'MOVIMENTACAO_LOTE_MANUAL', 'source_id': operation_id},
         )
 
-        return jsonify(resultado)
-
+        movimentos_confirmados = resultado.get('movimentos') or []
+        return jsonify({
+            'success': True,
+            'operation_id': resultado.get('operation_id', operation_id),
+            'status': resultado.get('status', 'CONFIRMADO'),
+            'sucesso': len(movimentos_confirmados),
+            'falhas': 0,
+            'detalhes_sucesso': movimentos_confirmados,
+            'detalhes_falhas': [],
+            'resultado': resultado,
+        }), 200
+    except EstoqueCommandConflict:
+        return jsonify({'error': 'operation_id já foi usado com conteúdo diferente.', 'code': 'idempotency_conflict'}), 409
+    except EstoqueCommandOutcomeUnknown as e:
+        return jsonify({
+            'error': 'O resultado do lote ainda não foi confirmado; repita com o mesmo operation_id.',
+            'code': 'outcome_unknown',
+            'operation_id': e.operation_id,
+        }), 503
+    except PermissionError as e:
+        return jsonify({'error': str(e)}), 403
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         print(f"Erro na API ao registrar movimentação em lote: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Não foi possível confirmar o lote de movimentações.'}), 503

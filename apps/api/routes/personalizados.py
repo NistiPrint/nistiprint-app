@@ -272,8 +272,13 @@ def chat(username):
     try:
         limit = request.args.get("limit", type=int)
         integration_id = request.args.get("integration_id", type=int)
-        messages = get_chat_messages(username, limit=limit, integration_id=integration_id)
+        buyer_id = request.args.get("buyer_id", type=int)
+        messages = get_chat_messages("" if username == "__buyer_id__" and buyer_id is not None else username,
+                                     limit=limit, integration_id=integration_id,
+                                     buyer_id=buyer_id)
         return ApiResponse.success({"messages": messages, "total": len(messages)})
+    except ValueError as exc:
+        return ApiResponse.error(str(exc), 400)
     except Exception as exc:
         logger.error("Erro ao carregar chat %s: %s", username, exc, exc_info=True)
         return ApiResponse.error(str(exc), 500)

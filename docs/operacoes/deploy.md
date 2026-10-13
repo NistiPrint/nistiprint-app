@@ -1,6 +1,6 @@
 # Guia de Deploy — Nistiprint
 
-**Última atualização:** 2026-08-11
+**Última atualização:** 2026-10-12
 
 ---
 
@@ -59,9 +59,9 @@ uma unidade independente (`nistiprint-ingest@orders.service`) — ver
 ### Por que sem containers para a aplicação?
 
 - Build/push de imagem eliminado → deploy de ~30s em vez de ~5min
-- `packages/shared` é compartilhado entre API e Worker via uma única **venv** com `pip install -e packages/shared` — qualquer alteração é refletida nos dois com um único `git pull`
+- `packages/shared` é compartilhado entre API e Worker via uma única **venv** com `pip install -e packages/shared`.
 - Logs centralizados via `journalctl`
-- Rollback é `git checkout <sha> && ./deploy.sh`
+- Rollback usa `DEPLOY_REF=<sha> /opt/nistiprint/deploy.sh`.
 
 ---
 
@@ -77,7 +77,7 @@ GitHub Actions (.github/workflows/deploy.yml)
     ↓
 SSH no servidor → /opt/nistiprint/deploy.sh
     ↓
-git pull + pip install + npm build + systemctl restart
+fetch/reset para DEPLOY_REF + pip install + npm build + systemctl restart
     ↓
 Aplicação atualizada (~30-60s)
 ```
@@ -95,6 +95,13 @@ Aplicação atualizada (~30-60s)
 ssh nistiprint@<servidor> /opt/nistiprint/deploy.sh
 ```
 
+Sem `DEPLOY_REF`, o script promove `origin/main`. Para promover ou reverter para
+um commit já disponível no clone do servidor, informe `DEPLOY_REF`:
+
+```bash
+ssh nistiprint@<servidor> 'DEPLOY_REF=<sha> /opt/nistiprint/deploy.sh'
+```
+
 O script vive no repositório (`deploy.sh` na raiz) e é o mesmo arquivo em
 `/opt/nistiprint/deploy.sh`. **Não reproduza o conteúdo dele aqui**: uma cópia
 nesta página ficou desatualizada por meses, ainda descrevendo o deploy como o
@@ -102,17 +109,17 @@ restart de três serviços, enquanto o servidor já rodava doze.
 
 Etapas, em ordem:
 
-1. `git fetch` + `git reset --hard origin/main`
+1. `git fetch` + resolução de `DEPLOY_REF` (padrão `origin/main`) + reset para o commit selecionado
 2. Limpeza de resíduos de `pip` interrompido e checagem de dono do venv
 3. `pip install` das três requirements + `-e packages/shared`
 4. Verificação de que `nistiprint_shared` carrega de `/opt/nistiprint/packages/shared/`
-5. **Restart dos serviços de backend**
-6. Build do frontend
+5. Build e validação do frontend em diretório temporário
+6. Publicação do frontend validado e restart dos serviços de backend
 
-O backend reinicia **antes** do frontend de propósito: o build do frontend é a
-etapa mais frágil (memória, rede, lockfile) e já impediu correção de backend de
-chegar em produção por dias. Falhando agora, o backend já está atualizado e o
-frontend continua servindo o build anterior.
+O backend só reinicia depois que dependências e build do frontend passam. Se a
+instalação ou compilação falhar, o script termina antes de reiniciar os serviços.
+O build também verifica que o bundle contém a URL e a chave pública do Supabase.
+O workflow executa testes, compilação Python e build antes de chamar o deploy.
 
 > O `git reset --hard` é seguro porque o servidor é apenas runtime — qualquer alteração local é acidental.
 
@@ -129,6 +136,11 @@ api/worker/beat reiniciavam e o deploy se declarava bem-sucedido.
 
 O restart é **um serviço por vez**, em laço — e não `systemctl restart a b c`.
 Isso não é estilo: o sudoers casa comando por comando (ver seção 4).
+
+As instâncias de ingest tratam `SIGTERM` como pedido de drenagem: terminam a
+operação síncrona atual e saem sem iniciar outra. O unit aguarda até 300 segundos
+antes de encerrar à força; se uma operação ultrapassar esse limite, o lease
+expira e o consumidor de leases a recupera com a mesma identidade.
 
 ---
 
@@ -220,19 +232,27 @@ velho da memória.
 ## 5. Rollback
 
 ```bash
-ssh nistiprint@<servidor>
-cd /opt/nistiprint
-git log --oneline -10                  # localizar o commit alvo
-git checkout <sha>
-./deploy.sh                            # reaplica build e reinicia
+ssh nistiprint@<servidor> 'DEPLOY_REF=<sha> /opt/nistiprint/deploy.sh'
 ```
 
-Para voltar ao topo da `main`:
-```bash
-git checkout main && ./deploy.sh
-```
+`<sha>` deve identificar um commit presente no clone do servidor; sem a variável,
+o script sempre seleciona `origin/main`.
 
 ---
+
+### Promoção de mudanças de integridade de estoque e produção
+
+O workflow de CI valida a suíte operacional, a compilação Python, os testes unitários do frontend e o build antes de iniciar o job de deploy. Também provisiona PostgreSQL 17.6 descartável para os testes de concorrência e integração SQL; não usa Supabase de teste. Não promova manualmente uma revisão que não passou pelo job de validação.
+
+Para uma revisão que altera estoque, produção, integrações ou impressão, siga esta ordem:
+
+1. Confirme que as migrations aditivas da revisão estão aplicadas pelo MCP HTTP e aparecem no ledger remoto. O deploy não aplica migrations; não use `supabase db push` enquanto o drift histórico descrito no [diagnóstico de integridade](./integridade-estoque-diagnostico-20261009.md) não estiver reconciliado.
+2. Antes da troca, envie `SIGTERM` aos consumidores afetados. Os workers de ingest deixam de iniciar iterações novas e concluem a atual; o unit espera até 300 segundos. Se o limite expirar, os leases recuperam o trabalho. Registre a idade das filas e os itens ainda em execução.
+3. Promova a revisão validada pelo CI. O `deploy.sh` reinicia os serviços `nistiprint-*` descobertos no host; confira API, worker, beat e instâncias de ingest no status final.
+4. Faça smoke tests de comando idempotente, recuperação da fila, impressão e SSE. Para escrita de teste, use ambiente isolado; não crie movimentos artificiais no banco ativo.
+5. Compare saldos, movimentos, reservas e reconciliação antes/depois de um ciclo operacional completo; acompanhe erros, conflitos, leases e latências p50/p95.
+
+`ESTOQUE_COMANDOS_V2_ATIVO` continua `false` por padrão e libera somente o endpoint HTTP `/api/v2/estoque/comandos`; os adaptadores existentes já usam o núcleo transacional. Mantenha a flag desligada até os gates de concorrência e operação acima passarem. Rollback usa uma revisão compatível com os comandos transacionais; não restaure escritores diretos antigos sobre os mesmos saldos. Corrija efeitos confirmados com compensação rastreável.
 
 ## 6. Verificação pós-deploy
 

@@ -357,6 +357,7 @@ celery_app = Celery(
     include=[
         'nistiprint_shared.services.redis_queue_tasks',
         'tasks.eventos_tasks',
+        'tasks.estoque_outbox_tasks',
         'tasks.consolidation_tasks',
         'tasks.pedidos_fetch_tasks',
         'tasks.token_renewal_tasks',

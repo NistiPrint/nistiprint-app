@@ -180,8 +180,12 @@ def deliver(po_id):
     """Entrega produção."""
     try:
         quantity_delivered = float(request.form.get('quantity_delivered', 0))
-        po = ordem_producao_service.deliver_production(po_id, quantity_delivered)
+        operation_id = request.headers.get('Idempotency-Key') or request.form.get('operation_id')
+        po = ordem_producao_service.deliver_production(
+            po_id, quantity_delivered, operation_id=operation_id
+        )
         flash('Produção entregue com sucesso!', 'success')
+        return redirect(url_for('ordem_producao.detail', po_id=po_id, delivery='confirmed'))
     except Exception as e:
         flash(f'Erro ao entregar produção: {str(e)}', 'error')
     return redirect(url_for('ordem_producao.detail', po_id=po_id))

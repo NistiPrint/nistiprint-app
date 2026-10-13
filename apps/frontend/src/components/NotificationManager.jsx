@@ -138,6 +138,7 @@ export function NotificationManager() {
     eventSourceRef.current = source;
 
     source.onopen = () => {
+      window.dispatchEvent(new CustomEvent('stock:stream-state', { detail: { connected: true } }));
       loadCenter();
     };
     source.onmessage = (event) => {
@@ -153,7 +154,9 @@ export function NotificationManager() {
           refreshCurrentUser().then(loadCenter).catch(() => window.location.assign('/login'));
           return;
         }
-        if (data.type === 'operation.updated' || data.type === 'operation.completed') {
+        if (data.type === 'stock.updated') {
+          window.dispatchEvent(new CustomEvent('stock:updated', { detail: data }));
+        } else if (data.type === 'operation.updated' || data.type === 'operation.completed') {
           const operation = data.operation;
           if (!operation) return;
           setOperations((current) => [operation, ...current.filter((item) => item.id !== operation.id)]);
@@ -205,10 +208,12 @@ export function NotificationManager() {
     };
     source.onerror = () => {
       // EventSource reconnects automatically; polling keeps the saved view current meanwhile.
+      window.dispatchEvent(new CustomEvent('stock:stream-state', { detail: { connected: false } }));
     };
 
     return () => {
       source.close();
+      window.dispatchEvent(new CustomEvent('stock:stream-state', { detail: { connected: false } }));
       eventSourceRef.current = null;
     };
   }, [user, browserEnabled, browserPermission, loadCenter]);

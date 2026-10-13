@@ -5,6 +5,13 @@ from nistiprint_shared.services.platform_drivers import mercadolivre as driver
 
 
 class LogisticsFactsTest(unittest.TestCase):
+    def setUp(self):
+        patcher = patch(
+            "nistiprint_shared.services.mercadolivre_rate_limit.mercadolivre_rate_limit_coordinator.acquire"
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_sla_object_list_empty_and_failure(self):
         value = {'expected_date': '2026-10-02T13:00:00-03:00'}
         self.assertEqual(normalize_sla(value), value)
@@ -33,7 +40,7 @@ class LogisticsFactsTest(unittest.TestCase):
         response = MagicMock(status_code=200, headers={})
         response.json.return_value = [{'expected_date': '2026-10-02T13:00:00-03:00'}]
         with patch.object(driver.requests, 'get', return_value=response):
-            result = driver.get_shipment_sla({'access_token': 'local'}, '123')
+            result = driver.get_shipment_sla({'id': 27, 'access_token': 'local'}, '123')
         self.assertEqual(result['expected_date'], '2026-10-02T13:00:00-03:00')
 
     def test_shipment_driver_gets_history_only_after_departure(self):
@@ -41,6 +48,6 @@ class LogisticsFactsTest(unittest.TestCase):
         response.json.return_value = {'id': 123, 'status': 'ready_to_ship', 'substatus': 'picked_up'}
         with patch.object(driver.requests, 'get', return_value=response), patch.object(driver, 'get_shipment_history',
              return_value={'history': [{'status': 'shipped', 'date': '2026-10-02T14:00:00-03:00'}]}) as history:
-            result = driver.get_shipment({'access_token': 'local'}, '123')
+            result = driver.get_shipment({'id': 27, 'access_token': 'local'}, '123')
         history.assert_called_once()
         self.assertEqual(meli_dispatch_timestamp({'shipment': result}), '2026-10-02T14:00:00-03:00')

@@ -32,6 +32,7 @@ import useLocalAgent from '@/hooks/useLocalAgent'
 import usePermissionsHook from '@/hooks/usePermissions'
 import useDebounce from '@/lib/hooks/useDebounce'
 import { supabase } from '@/lib/supabase'
+import { createOperationId } from '@/lib/operationId'
 import {
     ArrowLeft,
     Calendar,
@@ -56,6 +57,17 @@ import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { imprimirPapeisDePedido } from '@/lib/papeisDePedido'
 import CapaPrintPlanner from '@/components/producao/CapaPrintPlanner'
+
+const collectionRequestId = (demandId, quantity) => {
+  const key = `demand-collection:${demandId}`
+  let saved = null
+  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null') } catch (_) {}
+  const quantityKey = String(quantity)
+  if (saved?.quantity === quantityKey && saved?.id) return { key, id: saved.id }
+  const id = createOperationId()
+  sessionStorage.setItem(key, JSON.stringify({ quantity: quantityKey, id }))
+  return { key, id }
+}
 
 function DemandaDashboardPage() {
   const { id } = useParams()
@@ -446,17 +458,19 @@ function DemandaDashboardPage() {
   }
 
   const handleConfirmCollection = async (demandaId, quantity) => {
+    const operation = collectionRequestId(demandaId, quantity)
     try {
       const response = await fetch(
         `/api/v2/demanda_producao/${demandaId}/coletar`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ quantidade_coletar: quantity }),
+          body: JSON.stringify({ quantidade_coletar: quantity, operation_id: operation.id }),
         },
       )
       const data = await response.json()
       if (data.success) {
+        sessionStorage.removeItem(operation.key)
         toast.success('Coleta registrada!')
         fetchDemanda()
       } else {

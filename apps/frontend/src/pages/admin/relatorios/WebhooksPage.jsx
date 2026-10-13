@@ -21,7 +21,7 @@ import { toast } from 'sonner';
 const PAGE_SIZE = 50;
 
 const emptyFilters = {
-  source: 'bling',
+  source: 'all',
   status: '',
   bling_id: '',
   numero_loja: '',
@@ -30,6 +30,16 @@ const emptyFilters = {
   since: '',
   until: ''
 };
+
+function nextActionForEvent(event) {
+  const diagnostic = `${event?.last_error_type || ''} ${event?.last_error_message || ''} ${event?.signature_status || ''}`.toLowerCase();
+  if (diagnostic.includes('signature') || diagnostic.includes('assinatura')) return 'Conferir a assinatura e o envelope recebido no n8n.';
+  if (diagnostic.includes('token') || diagnostic.includes('oauth') || diagnostic.includes('credential')) return 'Regularizar a credencial da conta e reprocessar o mesmo evento.';
+  if (diagnostic.includes('account') || diagnostic.includes('conta') || diagnostic.includes('integration')) return 'Resolver o vínculo da conta de integração antes de reprocessar.';
+  if (diagnostic.includes('sku') || diagnostic.includes('produto') || diagnostic.includes('mapping')) return 'Vincular o anúncio ao produto interno; não inferir baixa de estoque.';
+  if (event?.last_status === 'processing') return 'Aguardar o lease ou verificar se o worker deixou uma execução interrompida.';
+  return 'Corrigir a causa registrada e reprocessar preservando este evento.';
+}
 
 function statusBadge(status) {
   const value = status || 'unknown';
@@ -66,6 +76,11 @@ function WebhooksPage() {
   const [logs, setLogs] = useState([]);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [reprocessing, setReprocessing] = useState(false);
+  const [showUnmappedListings, setShowUnmappedListings] = useState(false);
+  const [unmappedListings, setUnmappedListings] = useState([]);
+  const [unmappedPage, setUnmappedPage] = useState(1);
+  const [unmappedHasMore, setUnmappedHasMore] = useState(false);
+  const [unmappedLoading, setUnmappedLoading] = useState(false);
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams({ page: String(page), per_page: String(PAGE_SIZE) });
@@ -89,6 +104,21 @@ function WebhooksPage() {
       toast.error(error.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchUnmappedListings = async () => {
+    setUnmappedLoading(true);
+    try {
+      const response = await fetch(`/api/v2/webhooks/exceptions/unmapped-listings?page=${unmappedPage}&per_page=${PAGE_SIZE}`);
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'Falha ao buscar anúncios sem vínculo');
+      setUnmappedListings(data.exceptions || []);
+      setUnmappedHasMore(Boolean(data.pagination?.has_more));
+    } catch (error) {
+      toast.error(error.message);
+    } finally {
+      setUnmappedLoading(false);
     }
   };
 
@@ -120,6 +150,10 @@ function WebhooksPage() {
   useEffect(() => {
     fetchEvents();
   }, [queryString]);
+
+  useEffect(() => {
+    if (showUnmappedListings) fetchUnmappedListings();
+  }, [showUnmappedListings, unmappedPage]);
 
   const applyFilters = () => {
     setPage(1);
@@ -167,7 +201,43 @@ function WebhooksPage() {
         <Button variant="outline" onClick={fetchEvents} disabled={loading}>
           <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} /> Atualizar
         </Button>
+        <Button variant="outline" onClick={() => setShowUnmappedListings((shown) => !shown)}>
+          {showUnmappedListings ? 'Ocultar exceções de SKU' : 'Ver anúncios sem vínculo'}
+        </Button>
       </div>
+
+      {showUnmappedListings && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Anúncios sem produto interno</CardTitle>
+            <CardDescription>Revisar cada vínculo por conta e variação antes de habilitar qualquer regra de estoque. Esta lista não altera mapeamentos.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-md border overflow-hidden">
+              <Table>
+                <TableHeader><TableRow><TableHead>Conta</TableHead><TableHead>Anúncio</TableHead><TableHead>Variação</TableHead><TableHead>SKU</TableHead><TableHead>Candidato interno</TableHead><TableHead>Último erro</TableHead></TableRow></TableHeader>
+                <TableBody>
+                  {unmappedLoading ? <TableRow><TableCell colSpan={6} className="text-center py-6">Carregando...</TableCell></TableRow> : unmappedListings.length === 0 ? <TableRow><TableCell colSpan={6} className="text-center py-6 text-muted-foreground">Nenhum anúncio sem vínculo nesta página.</TableCell></TableRow> : unmappedListings.map((listing) => (
+                    <TableRow key={listing.id}>
+                      <TableCell><div>{listing.integration?.instance_name || listing.integration?.description || 'Conta não vinculada'}</div><div className="text-xs text-muted-foreground">{listing.integration?.platform_slug || listing.integration?.module_id || '-'} · #{listing.integration_id ?? '?'}</div></TableCell>
+                      <TableCell><div className="font-mono text-xs">{listing.item_externo_id || '-'}</div><div className="text-xs text-muted-foreground">{listing.titulo || listing.status || '-'}</div></TableCell>
+                      <TableCell className="font-mono text-xs">{listing.variacao_externa_id || '-'}</TableCell>
+                      <TableCell>{listing.sku_anuncio || '-'}</TableCell>
+                      <TableCell className="text-xs">{listing.sku_candidate_status === 'UNICO' ? <><strong>Revisar:</strong> {listing.sku_candidates?.[0]?.nome} (#{listing.sku_candidates?.[0]?.id})</> : listing.sku_candidate_status === 'AMBIGUO' ? `${listing.sku_candidates?.length || 0} candidatos; revisar manualmente` : 'Sem SKU interno exato'}</TableCell>
+                      <TableCell className="text-xs text-destructive">{listing.ultimo_erro || 'Mapeamento interno ausente'}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <div className="flex justify-between items-center mt-4">
+              <Button variant="outline" disabled={unmappedPage === 1 || unmappedLoading} onClick={() => setUnmappedPage((value) => Math.max(1, value - 1))}>Anterior</Button>
+              <span className="text-sm text-muted-foreground">Página {unmappedPage}</span>
+              <Button variant="outline" disabled={!unmappedHasMore || unmappedLoading} onClick={() => setUnmappedPage((value) => value + 1)}>Próxima</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -227,7 +297,7 @@ function WebhooksPage() {
                   <TableRow>
                     <TableHead>Status</TableHead>
                     <TableHead>Pedido</TableHead>
-                    <TableHead>Bling</TableHead>
+                    <TableHead>Canal / conta</TableHead>
                     <TableHead>Tentativas</TableHead>
                     <TableHead>Recebido</TableHead>
                     <TableHead className="text-right">Acoes</TableHead>
@@ -246,8 +316,8 @@ function WebhooksPage() {
                         <div className="text-xs text-muted-foreground">{event.numero_loja || '-'}</div>
                       </TableCell>
                       <TableCell>
-                        <div className="font-mono text-xs">{event.bling_id || '-'}</div>
-                        <div className="text-xs text-muted-foreground">{event.source}</div>
+                        <div className="font-mono text-xs">{event.provider_topic || event.bling_id || '-'}</div>
+                        <div className="text-xs text-muted-foreground">{event.source} · conta #{event.marketplace_integration_id || event.company_id || '-'}</div>
                       </TableCell>
                       <TableCell>{event.attempt_count || 0}</TableCell>
                       <TableCell className="text-xs">{formatDate(event.received_at)}</TableCell>
@@ -352,6 +422,14 @@ function WebhooksPage() {
                   </div>
                 </TabsContent>
               </Tabs>
+            )}
+            {selectedEvent && !detailsLoading && (
+              <div className="mt-4 rounded-md border p-3 text-sm space-y-2">
+                <div><strong>Recurso:</strong> {selectedEvent.provider_resource || selectedEvent.provider_resource_id || selectedEvent.resolved_order_id || '-'}</div>
+                <div><strong>Causa:</strong> {selectedEvent.last_error_type || selectedEvent.signature_error || selectedEvent.resolution_status || 'Nenhuma causa registrada.'} {selectedEvent.last_error_message || ''}</div>
+                <div><strong>Próxima ação:</strong> {nextActionForEvent(selectedEvent)}</div>
+                <div><strong>Próxima tentativa:</strong> {formatDate(selectedEvent.next_attempt_after)}</div>
+              </div>
             )}
           </CardContent>
         </Card>

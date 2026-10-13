@@ -26,10 +26,15 @@ def relatorios_index():
     Retorna informações gerais sobre relatórios, incluindo o sulfite_report real.
     """
     try:
-        sulfite_report = get_sulfite_usage_report()
+        sulfite = get_sulfite_usage_report()
         return jsonify({
             'success': True,
-            'sulfite_report': sulfite_report
+            'sulfite_report': sulfite['monthly'],
+            'sulfite_report_details': sulfite['movements_by_month'],
+            'sulfite_report_metadata': {
+                key: sulfite.get(key)
+                for key in ('period_start', 'period_end', 'generated_at', 'source', 'product_id', 'error')
+            },
         }), 200
     except Exception as e:
         return jsonify({
@@ -73,8 +78,8 @@ def dados_gerenciais_demanda():
 def historico_producao():
     """Retorna o histórico detalhado de logs de produção (paginado)."""
     try:
-        page = int(request.args.get('page', 1))
-        per_page = int(request.args.get('per_page', 20))
+        page = max(1, request.args.get('page', 1, type=int))
+        per_page = max(1, min(100, request.args.get('per_page', 20, type=int)))
         result = get_producao_history(page, per_page)
         return jsonify(result), 200
     except Exception as e:
@@ -164,7 +169,6 @@ def purchase_suggestions_report():
         }), 200
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
-
 
 
 

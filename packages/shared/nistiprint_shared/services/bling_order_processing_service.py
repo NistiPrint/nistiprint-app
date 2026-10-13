@@ -1387,8 +1387,10 @@ def _upsert_pedido_meli(meli_data: dict, marketplace_integration_id: int) -> int
         'mode':              shipment.get('mode'),
         'shipping_type':     shipment.get('shipping_type'),
         'shipping_option_name': shipping_option.get('name'),
-        'expected_date':     sla.get('expected_date'),
-        'date_approved':     _extract_meli_date_approved(order),
+        # Provider payloads can contain empty strings for optional timestamps;
+        # Postgres timestamptz columns require NULL instead.
+        'expected_date':     normalize_to_iso(sla.get('expected_date')),
+        'date_approved':     normalize_to_iso(_extract_meli_date_approved(order)),
         'buyer_nickname':    (order.get('buyer') or {}).get('nickname'),
         'raw_order':         order,
         'raw_shipment':      shipment,

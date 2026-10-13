@@ -213,14 +213,22 @@ export default function CapaPrintPlanner({ pedidoIds = [], lines = [], previsaoV
   }
 
   const register = async (group, id, type, copies, result) => {
-    if (result.status === 'cancelled' || result.status === 'cancelled_size_warning') return
-    const updated = await capaPrintService.registerSend(plan.id, {
-      request_id: id, chave_grupo: group.key, sku_capa: group.sku || 'arte:' + group.artworkId,
-      arte_id: group.artworkId || null, tipo: type, quantidade: copies,
-      printer_name: result.printer_name || null, agent_job_id: result.job_id || null,
-      status: result.status || 'sem_rastreio', mensagem: result.message || null,
+    if (!result) {
+      const updated = await capaPrintService.registerSend(plan.id, {
+        request_id: id, chave_grupo: group.key, sku_capa: group.sku || 'arte:' + group.artworkId,
+        arte_id: group.artworkId || null, tipo: type, quantidade: copies,
+        printer_name: stateFor(group).mapping?.printer_name || null,
+      })
+      setPlan(updated)
+      return
+    }
+    const status = ['cancelled', 'cancelled_size_warning'].includes(result.status)
+      ? 'CANCELADO' : result.status || 'RESULTADO_DESCONHECIDO'
+    const transitioned = await capaPrintService.updateSend(plan.id, id, {
+      status, agent_job_id: result.job_id || null,
+      printer_name: result.printer_name || null, mensagem: result.message || null,
     })
-    setPlan(updated)
+    setPlan(transitioned)
   }
 
   const printGroup = async (group) => {
@@ -234,13 +242,23 @@ export default function CapaPrintPlanner({ pedidoIds = [], lines = [], previsaoV
     try {
       remaining = (await capaPrintService.prepareGroup(plan.id, group.key)).quantidade_pendente
       if (remaining <= 0) { toast.info('Não há cópias pendentes para este PDF.'); return }
+      await register(group, id, 'estatica', remaining, null)
       attempted = true
       result = await LocalAgentService.printWithDialog(group.sku, remaining, id, group.coverId, group.artworkId)
       await register(group, id, 'estatica', number(result.copies) || remaining, result)
-      if (result.status !== 'cancelled' && result.status !== 'cancelled_size_warning') toast.success(format(result.copies || remaining) + ' cópia(s) enviadas.')
+      if (!['CANCELADO', 'cancelled', 'cancelled_size_warning'].includes(result.status)) toast.success(format(result.copies || remaining) + ' cópia(s) enviadas.')
     } catch (error) {
       if (!result) {
-        if (attempted) await register(group, id, 'estatica', remaining, { status: 'erro', message: error.message }).catch(() => null)
+        if (attempted) {
+          let local = null
+          try { local = await LocalAgentService.getPrintRequest(id) } catch (_) { /* agent unreachable */ }
+          await capaPrintService.updateSend(plan.id, id, {
+            status: ['PREPARADO', 'ENVIANDO'].includes(local?.status)
+              ? 'RESULTADO_DESCONHECIDO' : (local?.status || 'RESULTADO_DESCONHECIDO'),
+            agent_job_id: local?.job_id || null, printer_name: local?.printer_name || null,
+            mensagem: local?.message || error.message,
+          }).catch(() => null)
+        }
         toast.error(error.response?.data?.error || error.message)
       } else {
         toast.error('A impressora recebeu o trabalho, mas o registro falhou. Confira a fila antes de reenviar. Solicitação: ' + id)
@@ -256,10 +274,14 @@ export default function CapaPrintPlanner({ pedidoIds = [], lines = [], previsaoV
     setBusy(group.key)
     const id = requestId()
     try {
+      await register(group, id, 'abrir_editor', 0, null)
       const result = await LocalAgentService.openMappedPdf(group.sku, id, group.coverId, group.artworkId)
       await register(group, id, 'abrir_editor', 0, result)
       toast.success('PDF base aberto no editor.')
     } catch (error) {
+      await capaPrintService.updateSend(plan.id, id, {
+        status: 'RESULTADO_DESCONHECIDO', mensagem: error.message,
+      }).catch(() => null)
       toast.error(error.response?.data?.error || error.message)
     } finally {
       setBusy('')

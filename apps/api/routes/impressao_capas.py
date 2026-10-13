@@ -748,8 +748,8 @@ def registrar_envio(plan_id):
             "quantidade": int(body.get("quantidade") or 0),
             "printer_name": body.get("printer_name"),
             "agent_job_id": body.get("agent_job_id"),
-            "status": body.get("status") or "sem_rastreio",
-            "mensagem": body.get("mensagem"),
+            "status": "PREPARADO",
+            "mensagem": None,
             "enviado_por": str(user.get("id") or user.get("email") or "System"),
         }
         if record["tipo"] not in ("estatica", "abrir_editor"):
@@ -765,10 +765,23 @@ def registrar_envio(plan_id):
                           .eq("plano_id", plan_id).eq("chave_grupo", record["chave_grupo"]).limit(1).execute().data or [])
                 if any(row.get("pendencia") for row in matching) or (review and review[0]["revisao_pendente"]):
                     return jsonify({"success": False, "error": "Revise as pendências antes de imprimir"}), 409
-        existing = (supabase_db.table("impressao_capas_envios").select("id")
-                    .eq("request_id", record["request_id"]).limit(1).execute().data or [])
-        if not existing:
-            supabase_db.table("impressao_capas_envios").insert(record).execute()
+        canonical = {key: record[key] for key in (
+            "plano_id", "request_id", "chave_grupo", "sku_capa", "arte_id", "tipo",
+            "quantidade", "printer_name",
+        )}
+        content_hash = hashlib.sha256(json.dumps(
+            canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")).hexdigest()
+        result = supabase_db.rpc("criar_intencao_impressao", {
+            "p_request_id": record["request_id"], "p_plano_id": plan_id,
+            "p_chave_grupo": record["chave_grupo"], "p_sku_capa": record["sku_capa"],
+            "p_arte_id": record["arte_id"], "p_tipo": record["tipo"],
+            "p_quantidade": record["quantidade"], "p_printer_name": record["printer_name"],
+            "p_content_hash": content_hash, "p_ator": record["enviado_por"],
+            "p_retry_of": body.get("retry_of"),
+        }).execute()
+        if not result.data:
+            raise RuntimeError("O servidor não confirmou a intenção de impressão")
         return jsonify({"success": True, "data": _serialize_plan(plan_id)})
     except Exception as exc:
         logger.error("Erro ao registrar envio de capa: %s", exc, exc_info=True)
@@ -822,16 +835,34 @@ def preparar_grupo(plan_id, group_key):
         return jsonify({"success": False, "error": "Não foi possível conferir o arquivo"}), 500
 
 
-@impressao_capas_bp.route("/planos/<plan_id>/envios/<request_id>", methods=["PATCH"])
+@impressao_capas_bp.route("/planos/<plan_id>/envios/<request_id>", methods=["GET", "PATCH"])
 def atualizar_estado_envio(plan_id, request_id):
-    if not get_current_user():
+    user = get_current_user()
+    if not user:
         return jsonify({"success": False, "error": "Não autorizado"}), 401
+    if request.method == "GET":
+        rows = (supabase_db.table("impressao_capas_envios").select("*")
+                .eq("plano_id", plan_id).eq("request_id", request_id).limit(1).execute().data or [])
+        if not rows:
+            return jsonify({"success": False, "error": "Intenção não encontrada"}), 404
+        events = (supabase_db.table("impressao_capas_envios_eventos").select("estado_anterior,estado_novo,mensagem,ator,criado_em")
+                  .eq("request_id", request_id).order("criado_em").execute().data or [])
+        return jsonify({"success": True, "data": {"envio": rows[0], "eventos": events}})
     body = request.get_json(silent=True) or {}
     try:
-        supabase_db.table("impressao_capas_envios").update({
-            "status": str(body.get("status") or "sem_rastreio"),
-            "mensagem": body.get("mensagem"),
-        }).eq("plano_id", plan_id).eq("request_id", request_id).execute()
+        rows = (supabase_db.table("impressao_capas_envios").select("request_id")
+                .eq("plano_id", plan_id).eq("request_id", request_id).limit(1).execute().data or [])
+        if not rows:
+            return jsonify({"success": False, "error": "Intenção não encontrada"}), 404
+        result = supabase_db.rpc("transicionar_intencao_impressao", {
+            "p_request_id": request_id,
+            "p_estado": str(body.get("status") or "RESULTADO_DESCONHECIDO"),
+            "p_mensagem": body.get("mensagem"), "p_agent_job_id": body.get("agent_job_id"),
+            "p_printer_name": body.get("printer_name"), "p_agent_id": body.get("agent_id"),
+            "p_ator": str(user.get("id") or user.get("email") or "System"),
+        }).execute()
+        if not result.data:
+            raise RuntimeError("O servidor não confirmou a transição de impressão")
         return jsonify({"success": True, "data": _serialize_plan(plan_id)})
     except Exception as exc:
         logger.error("Erro ao atualizar estado de envio: %s", exc, exc_info=True)

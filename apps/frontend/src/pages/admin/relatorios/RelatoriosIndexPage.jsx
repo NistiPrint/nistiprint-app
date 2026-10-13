@@ -4,9 +4,13 @@ import { Database, History, LineChart, Package, Settings, Truck, Webhook } from 
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
+import { useAuth } from '@/contexts/AuthContext';
 
 function RelatoriosIndexPage() {
+  const { isAdmin } = useAuth();
   const [sulfiteReport, setSulfiteReport] = useState(null);
+  const [sulfiteReportDetails, setSulfiteReportDetails] = useState({});
+  const [sulfiteReportMetadata, setSulfiteReportMetadata] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -26,6 +30,8 @@ function RelatoriosIndexPage() {
         }
         const data = await response.json();
         setSulfiteReport(data.sulfite_report);
+        setSulfiteReportDetails(data.sulfite_report_details || {});
+        setSulfiteReportMetadata(data.sulfite_report_metadata || null);
       } catch (e) {
         setError(e.message);
         toast.error(`Erro ao carregar relatório de sulfite: ${e.message}`);
@@ -84,13 +90,15 @@ function RelatoriosIndexPage() {
               </div>
               <span className="text-xs text-muted-foreground">Eventos e Fila</span>
             </Link>
-            <Link to="/relatorios/webhooks" className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors">
-              <div className="flex items-center gap-3">
-                <Webhook className="h-5 w-5 text-blue-500" />
-                <span className="font-medium">Webhooks Bling</span>
-              </div>
-              <span className="text-xs text-muted-foreground">Payloads e Logs</span>
-            </Link>
+            {isAdmin() && (
+              <Link to="/relatorios/webhooks" className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors">
+                <div className="flex items-center gap-3">
+                  <Webhook className="h-5 w-5 text-blue-500" />
+                  <span className="font-medium">Webhooks e exceções</span>
+                </div>
+                <span className="text-xs text-muted-foreground">Payloads, contas e SKUs</span>
+              </Link>
+            )}
           </CardContent>
         </Card>
 
@@ -101,12 +109,23 @@ function RelatoriosIndexPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {sulfiteReport ? (
+            {sulfiteReportMetadata && (
+              <p className="mb-3 text-xs text-muted-foreground">
+                Fonte: ledger de movimentos confirmados
+                {sulfiteReportMetadata.period_start && ` · Período: ${sulfiteReportMetadata.period_start} a ${sulfiteReportMetadata.period_end}`}
+                {sulfiteReportMetadata.generated_at && ` · Gerado em ${new Date(sulfiteReportMetadata.generated_at).toLocaleString('pt-BR')}`}
+              </p>
+            )}
+            {sulfiteReportMetadata?.error && (
+              <p className="mb-3 text-sm text-destructive" role="status">{sulfiteReportMetadata.error}</p>
+            )}
+            {sulfiteReport && Object.keys(sulfiteReport).length > 0 ? (
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Mês/Ano</TableHead>
                     <TableHead className="text-right">A4</TableHead>
+                    <TableHead>Movimentos de origem</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -114,13 +133,26 @@ function RelatoriosIndexPage() {
                     <TableRow key={period}>
                       <TableCell>{period}</TableCell>
                       <TableCell className="text-right">{consumption}</TableCell>
+                      <TableCell>
+                        <details>
+                          <summary className="cursor-pointer">{sulfiteReportDetails[period]?.length || 0} movimentos</summary>
+                          <ul className="mt-2 space-y-1 text-xs">
+                            {(sulfiteReportDetails[period] || []).map((movement) => (
+                              <li key={movement.movimento_id}>
+                                #{movement.movimento_id} · {movement.tipo} · {movement.quantidade_liquida}
+                                {movement.operation_id ? ` · operação ${movement.operation_id}` : ' · legado sem operation_id'}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             ) : (
               <div className="text-center py-8 text-muted-foreground">
-                Nenhum dado disponível.
+                {sulfiteReportMetadata?.error || 'Nenhum movimento de consumo confirmado no ledger para o produto configurado.'}
               </div>
             )}
           </CardContent>

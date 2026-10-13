@@ -331,7 +331,7 @@ function VendasPersonalizadasPage() {
   };
 
   const handleOpenChat = async (username, orderId, orderData) => {
-    if (!username) {
+    if (!username && !orderData?.buyer_id) {
         toast.error("Usuário não identificado para este pedido.");
         return;
     }
@@ -349,7 +349,12 @@ function VendasPersonalizadasPage() {
       });
     }
     setHighlightedMessages(personalizationMessageIds);
-    setSelectedChatUser({ username, orderId });
+    const chatIntegrationId = orderData?.marketplace_integration_id || integrationId;
+    setSelectedChatUser({
+      username, orderId,
+      buyerId: chatIntegrationId ? orderData?.buyer_id : null,
+      integrationId: chatIntegrationId,
+    });
     setIsChatOpen(true);
   };
 
@@ -545,7 +550,8 @@ function VendasPersonalizadasPage() {
         onOpenChange={setIsChatOpen}
         username={selectedChatUser?.username}
         orderId={selectedChatUser?.orderId}
-        integrationId={integrationId}
+        integrationId={selectedChatUser?.integrationId}
+        buyerId={selectedChatUser?.buyerId}
         highlightedMessageIds={highlightedMessages}
       />
 

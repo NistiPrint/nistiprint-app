@@ -13,7 +13,7 @@ def enforce_stock_permissions():
     path = request.path.rstrip('/')
     if request.method in {'GET', 'HEAD'} or path.endswith('/saldos-batch'):
         action = 'ler'
-    elif request.method == 'POST' and path.endswith(('/movimentar', '/movimentar-lote')):
+    elif request.method == 'POST' and path.endswith(('/movimentar', '/movimentar-lote', '/comandos')):
         action = 'criar'
     elif request.method in {'POST', 'PUT', 'PATCH'}:
         action = 'editar'

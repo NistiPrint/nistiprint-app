@@ -86,13 +86,9 @@ class DemandaStatusService:
                     tipo_operacao='CONSUMO_BOM'
                 )
 
-                # Liberar a reserva do produto final (que foi feita na criação da demanda)
-                try:
-                    estoque_service.liberar_reserva(
-                        produto_id=produto_id_demanda,
-                        quantidade=quantidade_a_baixar
-                    )
-                except: pass
+                # A reserva vinculada ao item é consumida pela mesma transação
+                # que confirma os movimentos da reconciliação. Não alterar o
+                # agregado genérico de reservas em uma segunda chamada.
 
             auditoria_service.log_event('ESTOQUE_BAIXADO_DEMANDA', {
                 'demanda_id': demanda_id,

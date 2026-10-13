@@ -821,7 +821,10 @@ def marcar_coletado_api(demanda_id):
             return jsonify({'success': False, 'message': 'Quantidade para coletar não fornecida.'}), 400
 
         user_id = session.get('user_email', 'System')
-        demanda = demanda_producao_service.registrar_coleta_parcial(demanda_id, int(quantidade_coletar), user_id)
+        operation_id = data.get('operation_id')
+        demanda = demanda_producao_service.registrar_coleta_parcial(
+            demanda_id, int(quantidade_coletar), user_id, operation_id
+        )
         
         return jsonify({'success': True, 'message': 'Coleta registrada com sucesso!', 'demanda': demanda})
     except ValueError as ve:
@@ -1126,24 +1129,23 @@ def registrar_saida_distribuida():
             # a explosão de BOM da finalização consumia o mesmo componente de
             # novo — o ledger não registrava a baixa feita aqui, então nada
             # impedia a repetição.
-            uow.execute_in_transaction(
+            reservation_result = uow.execute_in_transaction(
                 demanda_producao_service.reservar_alocacao_para_demanda,
-                product_id, distributions, demanda_id, deposito_id, user_id
+                product_id, distributions, demanda_id, deposito_id, user_id,
+                data.get('operation_id')
             )
             if update_demand:
-                uow.execute_in_transaction(demanda_producao_service.registrar_saida_item_distribuida, distributions, product_id, user_id)
-                if not sincrono:
-                    for dist in distributions:
-                        item_id = dist.get('item_id')
-                        qty = dist.get('quantidade')
-                        if item_id and qty:
-                             uow.execute_in_transaction(demanda_producao_service.agendar_processamento_estoque, demanda_id, item_id, 'miolos_prontos_retirada_qtd', float(qty), user_id)
+                uow.execute_in_transaction(
+                    demanda_producao_service.registrar_saida_item_distribuida,
+                    distributions, product_id, user_id,
+                    correlation_id=data.get('operation_id'),
+                )
             # Contador operacional da tela ("retirado hoje"). Continua negativo:
             # do ponto de vista do operador o item saiu da bancada para a demanda.
             uow.execute_in_transaction(daily_production_log_service.create_log, production_date, product_id, f"Produto {product_id}", -abs(total_quantity), None, [], user_id, metadata={'demanda_id': demanda_id, 'sincrono': sincrono, 'tipo': 'ALOCACAO_RESERVA'})
             uow.log_audit_event('ALOCACAO_RESERVA_DEMANDA', {'product_id': product_id, 'total_quantity': total_quantity, 'production_date': production_date_str, 'distributions': distributions})
         new_daily_removed = daily_production_log_service.get_total_removed_for_product_on_date(product_id, production_date)
-        return jsonify({'success': True, 'message': 'Alocação registrada — o item foi reservado para a demanda. A saída física acontece na finalização.', 'new_daily_removed': new_daily_removed}), 200
+        return jsonify({'success': True, 'message': 'Alocação registrada — o item foi reservado para a demanda. A saída física acontece na finalização.', 'new_daily_removed': new_daily_removed, 'operation_id': (reservation_result or {}).get('operation_id')}), 200
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1400,77 +1402,11 @@ def registrar_producao_sincrona(demanda_id, item_id):
         }
     }
     """
-    if not request.is_json:
-        return jsonify({'success': False, 'message': 'Requisição deve ser JSON.'}), 400
-
-    data = request.get_json()
-    producao_incremental = data.get('producao_incremental', {})
-
-    if not producao_incremental:
-        return jsonify({'success': False, 'message': 'Dados de produção incremental não fornecidos.'}), 400
-
-    user_id = session.get('user_email', 'System')
-    user_setor = session.get('user_setor')
-    denied = _deny_unauthorized_demand_fields(producao_incremental.keys())
-    if denied:
-        return denied
-
-    try:
-        from nistiprint_shared.database.supabase_db_service import supabase_db
-        from nistiprint_shared.utils.date_utils import get_now_iso
-        from datetime import datetime
-
-        # 1. Buscar item atual
-        item_res = supabase_db.table('itens_demanda').select('*').eq('id', item_id).single().execute()
-        if not item_res.data:
-            return jsonify({'success': False, 'message': 'Item não encontrado'}), 404
-
-        item = item_res.data
-
-        # 2. Atualizar campos de progresso diretamente (síncrono)
-        updates = {'updated_at': get_now_iso()}
-        for campo, valor in producao_incremental.items():
-            if campo in ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
-                        'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd',
-                        'finalizados_qtd']:
-                current = float(item.get(campo, 0) or 0)
-                updates[campo] = max(0, current + valor)
-
-        # 3. Executar atualização direta
-        supabase_db.table('itens_demanda').update(updates).eq('id', item_id).execute()
-
-        # 4. Registrar log simplificado (apenas para auditoria básica)
-        try:
-            supabase_db.table('daily_production_log').insert({
-                'demanda_id': int(demanda_id) if demanda_id.isdigit() else None,
-                'item_id': int(item_id) if item_id.isdigit() else None,
-                'produto_id': item.get('produto_id'),
-                'quantidade': sum(producao_incremental.values()),
-                'tipo_operacao': 'PRODUCAO_SINCRONA',
-                'usuario': user_id,
-                'setor': user_setor,
-                'metadata': {'campos': producao_incremental, 'sincrono': True},
-                'created_at': datetime.utcnow().isoformat()
-            }).execute()
-        except Exception as log_err:
-            # Log de auditoria é opcional, não falha a operação
-            print(f"Aviso: Não foi possível registrar log de auditoria: {log_err}")
-
-        # 5. Buscar item atualizado para retornar
-        updated_item_res = supabase_db.table('itens_demanda').select('*').eq('id', item_id).single().execute()
-        updated_item = updated_item_res.data if updated_item_res.data else item
-
-        return jsonify({
-            'success': True,
-            'message': 'Produção registrada com sucesso (modo síncrono)!',
-            'item': updated_item,
-            'modo': 'sincrono'
-        }), 200
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'message': f'Erro ao registrar produção síncrona: {str(e)}'}), 500
+    return jsonify({
+        'success': False,
+        'code': 'synchronous_production_retired',
+        'message': 'Este caminho foi desativado porque gravava progresso sem a intenção recuperável de estoque. Use registrar-producao, que registra o progresso e o evento na mesma transação.',
+    }), 409
 
 
 @demanda_producao_api_bp.route('/<string:demanda_id>/producao-sincrona-lote', methods=['POST'])
@@ -1499,86 +1435,11 @@ def registrar_producao_sincrona_lote(demanda_id):
     
     Retorna resultado de cada item processado.
     """
-    if not request.is_json:
-        return jsonify({'success': False, 'message': 'Requisição deve ser JSON.'}), 400
-
-    data = request.get_json()
-    updates = data.get('updates', [])
-
-    if not updates:
-        return jsonify({'success': False, 'message': 'Nenhuma atualização fornecida.'}), 400
-
-    requested_fields = {
-        field
-        for update in updates
-        for field in (update.get('producao_incremental') or {}).keys()
-    }
-    denied = _deny_unauthorized_demand_fields(requested_fields)
-    if denied:
-        return denied
-
-    user_id = session.get('user_email', 'System')
-    results = []
-    errors = []
-
-    for update in updates:
-        item_id = update.get('item_id')
-        producao_incremental = update.get('producao_incremental', {})
-
-        if not item_id or not producao_incremental:
-            continue
-
-        # Chamar endpoint síncrono individual internamente
-        try:
-            from nistiprint_shared.database.supabase_db_service import supabase_db
-            from nistiprint_shared.utils.date_utils import get_now_iso
-            from datetime import datetime
-
-            # Atualização direta
-            item_res = supabase_db.table('itens_demanda').select('*').eq('id', item_id).single().execute()
-            if not item_res.data:
-                errors.append({'item_id': item_id, 'error': 'Item não encontrado'})
-                continue
-
-            item = item_res.data
-            updates_dict = {'updated_at': get_now_iso()}
-            
-            for campo, valor in producao_incremental.items():
-                if campo in ['capas_impressas_qtd', 'capas_produzidas_qtd', 'capas_prontas_retirada_qtd',
-                            'miolos_prontos_retirada_qtd', 'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd',
-                            'finalizados_qtd']:
-                    current = float(item.get(campo, 0) or 0)
-                    updates_dict[campo] = max(0, current + valor)
-
-            supabase_db.table('itens_demanda').update(updates_dict).eq('id', item_id).execute()
-
-            # Log simplificado
-            try:
-                supabase_db.table('daily_production_log').insert({
-                    'demanda_id': int(demanda_id) if demanda_id.isdigit() else None,
-                    'item_id': int(item_id) if item_id.isdigit() else None,
-                    'produto_id': item.get('produto_id'),
-                    'quantidade': sum(producao_incremental.values()),
-                    'tipo_operacao': 'PRODUCAO_SINCRONA_LOTE',
-                    'usuario': user_id,
-                    'metadata': {'campos': producao_incremental, 'sincrono': True, 'lote': True},
-                    'created_at': datetime.utcnow().isoformat()
-                }).execute()
-            except:
-                pass  # Log opcional
-
-            results.append({'item_id': item_id, 'success': True})
-
-        except Exception as e:
-            errors.append({'item_id': item_id, 'error': str(e)})
-
     return jsonify({
-        'success': True,
-        'message': f'{len(results)} itens processados, {len(errors)} erros',
-        'results': results,
-        'errors': errors,
-        'modo': 'sincrono_lote'
-    }), 200
+        'success': False,
+        'code': 'synchronous_production_retired',
+        'message': 'Este caminho foi desativado porque gravava progresso sem a intenção recuperável de estoque. Use registrar-producao-lote, que registra cada progresso com seu evento transacional.',
+    }), 409
 
 
 # ============================================================================

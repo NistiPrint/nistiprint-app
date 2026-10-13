@@ -3,6 +3,7 @@ Service for managing installed integration instances
 """
 from typing import List, Dict, Optional
 from datetime import datetime, timezone, timedelta
+import uuid
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.file_archive_service import file_archive_service
 from nistiprint_shared.services.credential_resolver_service import (
@@ -357,6 +358,39 @@ class InstalledIntegrationService:
             return False
 
     def renew_integration_token(self, instance_id: str, execution_mode: str = 'manual') -> Dict:
+        """Serialize rotating OAuth refreshes across API, worker and scheduled callers."""
+        lease_token = str(uuid.uuid4())
+        response = supabase_db.rpc("claim_integration_token_refresh", {
+            "p_integration_id": str(instance_id),
+            "p_lease_token": lease_token,
+            "p_lease_seconds": 900,
+        }).execute()
+        claimed = response.data
+        if isinstance(claimed, list):
+            claimed = claimed[0] if claimed else False
+        if isinstance(claimed, dict):
+            claimed = next(iter(claimed.values()), False)
+        if not claimed:
+            raise RuntimeError(f"Renovação da integração {instance_id} já está em andamento")
+        try:
+            return self._renew_integration_token_with_lease(
+                instance_id, execution_mode, lease_token
+            )
+        finally:
+            try:
+                supabase_db.rpc("release_integration_token_refresh", {
+                    "p_integration_id": str(instance_id), "p_lease_token": lease_token,
+                }).execute()
+            except Exception:
+                # O lease expira sozinho; não esconda o resultado do refresh confirmado.
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Falha ao liberar lease de refresh da integração %s", instance_id
+                )
+
+    def _renew_integration_token_with_lease(
+        self, instance_id: str, execution_mode: str = 'manual', lease_token: str | None = None
+    ) -> Dict:
         """
         Renova o token de uma integração instalada usando o mesmo fluxo da UI.
         """
@@ -374,11 +408,13 @@ class InstalledIntegrationService:
             inst.module_id, credential_context
         )
         expires_in = tokens.get('expires_in')
-        credential_resolver_service.persist_installation_tokens(instance_id, tokens)
 
         merged_credentials = dict(credential_context.credentials or {})
         merged_credentials.pop('access_token', None)
         merged_credentials.pop('refresh_token', None)
+        merged_config = dict(credential_context.config or {})
+        merged_config.pop('access_token', None)
+        merged_config.pop('refresh_token', None)
         if expires_in is not None:
             merged_credentials['expires_in'] = expires_in
 
@@ -388,15 +424,21 @@ class InstalledIntegrationService:
         )
         merged_config, merged_credentials = self._apply_account_identity(
             inst.module_id,
-            credential_context.config or {},
+            merged_config,
             merged_credentials,
             identifier,
             source='token_refresh',
         )
 
-        update_data = {
+        normalized_refresh = self._normalized_payload({
+            **normalized_inst,
             'config': merged_config,
             'credentials': merged_credentials,
+        })
+
+        update_data = {
+            'config': normalized_refresh['config'],
+            'credentials': normalized_refresh['credentials'],
             'access_token': None,
             'refresh_token': None,
             'last_refresh_attempt': now.isoformat(),
@@ -405,8 +447,17 @@ class InstalledIntegrationService:
         if expires_in is not None:
             update_data['expires_at'] = (now + timedelta(seconds=expires_in)).isoformat()
 
-        if not self.update_installed(instance_id, update_data):
-            raise RuntimeError(f"Falha ao atualizar integração {instance_id} após renovar token")
+        installation_patch = {
+            key: update_data[key]
+            for key in ('config', 'credentials', 'expires_at', 'last_refresh_attempt', 'refresh_error')
+        }
+        credential_resolver_service.persist_installation_tokens(
+            instance_id,
+            tokens,
+            refresh_lease_token=lease_token,
+            installation_patch=installation_patch,
+        )
+        integration_resolution_service.invalidate()
 
         firebase_projection = None
         if str(inst.module_id or '').lower() == 'bling':
@@ -566,4 +617,3 @@ class InstalledIntegrationService:
 
 # Global instance for use throughout the application
 installed_integration_service = InstalledIntegrationService()
-

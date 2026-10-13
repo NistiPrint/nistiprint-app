@@ -6,20 +6,34 @@ import unittest
 from unittest.mock import patch
 
 from nistiprint_shared.services.reliable_ingest_queue import build_envelope
-from nistiprint_shared.services.reliable_ingest_service import extract_identity, validate_signature
+from nistiprint_shared.services.reliable_ingest_service import (
+    extract_identity, record_authenticated_resource_confirmation, validate_signature,
+)
 
 
 class ReliableIngestSignatureTest(unittest.TestCase):
-    def test_shipments_signature_uses_existing_manifest_verification(self):
-        secret = 'segredo-de-teste-suficientemente-longo'
-        manifest = 'id:123;request-id:req-1;ts:1790950000;'
-        signature = hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest()
-        envelope = build_envelope('mercadolivre', {'id': 123, 'topic': 'shipments', 'resource': '/shipments/123'},
-            headers={'x-request-id': 'req-1', 'x-signature': f'ts=1790950000,v1={signature}'})
-        with patch.dict(os.environ, {'INGEST_SIGNATURE_POLICY_MERCADOLIVRE': 'required', 'INGEST_WEBHOOK_SECRETS_MERCADOLIVRE': secret}):
-            self.assertEqual(validate_signature(envelope).status, 'signature_valid')
-            envelope['headers']['x-signature'] = 'ts=1790950000,v1=invalid'
-            self.assertFalse(validate_signature(envelope).valid)
+    @patch("nistiprint_shared.services.reliable_ingest_service.supabase_db")
+    def test_records_authenticated_resource_confirmation(self, db):
+        record_authenticated_resource_confirmation(17, "mercadolivre", "order", "123")
+        db.table.assert_called_once_with("webhook_events")
+        update = db.table.return_value.update
+        self.assertEqual(update.call_args.args[0]["signature_status"], "authenticated_resource_confirmed")
+        self.assertEqual(update.return_value.eq.call_args.args, ("id", 17))
+
+    def test_mercadolivre_requires_authenticated_resource_confirmation(self):
+        envelope = build_envelope('mercadolivre', {
+            'id': 123, 'topic': 'orders', 'resource': '/orders/123', 'user_id': 456,
+        }, headers={'x-request-id': 'req-1', 'x-signature': 'ts=1790950000,v1=not-marketplace-contract'})
+        with patch.dict(os.environ, {
+            'INGEST_SIGNATURE_POLICY_MERCADOLIVRE': 'required',
+            'INGEST_WEBHOOK_SECRETS_MERCADOLIVRE': 'segredo-de-teste-suficientemente-longo',
+        }):
+            result = validate_signature(envelope)
+
+        self.assertEqual(result.status, 'resource_confirmation_required')
+        self.assertIsNone(result.valid)
+        self.assertFalse(result.terminal)
+        self.assertEqual(result.reason, 'mercadolivre_authenticated_resource_required')
 
     # "secret" era o valor destas fixtures ate 08/2026. Ele passou a ser
     # rejeitado por `is_usable_secret` — e placeholder e curto demais —, que e

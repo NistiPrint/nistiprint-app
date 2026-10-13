@@ -237,10 +237,10 @@ function OrderCard({ order, onOpenChat, onOpenAiLogs, onProcessAI, onReportProbl
               className='h-9 gap-1.5 px-2.5'
               disabled={isMercadoLivre
                 ? !order.chat_available && !order.has_chat_messages && !order.buyer_username
-                : !order.shopee?.username}
+                : !order.shopee?.username && !order.buyer_id}
               onClick={() => onOpenChat(order.shopee?.username, order.numero, order)}
               title={
-                (order.shopee?.username || order.chat_available || order.has_chat_messages || (isMercadoLivre && order.buyer_username))
+                (order.shopee?.username || order.buyer_id || order.chat_available || order.has_chat_messages || (isMercadoLivre && order.buyer_username))
                   ? order.has_chat_messages
                     ? 'Abrir chat do comprador'
                     : order.chat_available

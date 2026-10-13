@@ -29,12 +29,14 @@ _WARNED_ENV_PLACEHOLDER: set[str] = set()
 @dataclass(frozen=True)
 class SignatureResult:
     status: str
-    valid: bool
+    valid: bool | None
     enforce: bool
     reason: str | None = None
 
     @property
     def terminal(self) -> bool:
+        if self.status == "resource_confirmation_required":
+            return False
         return self.enforce and not self.valid
 
 
@@ -120,26 +122,22 @@ def _compare_hmac(raw: str, signature: str, secrets: list[str]) -> bool:
                for secret in secrets)
 
 
-def _validate_meli(envelope: dict[str, Any], secrets: list[str]) -> tuple[bool | None, str]:
-    headers, payload = envelope.get("headers") or {}, _payload(envelope)
-    signature, request_id = headers.get("x-signature", ""), headers.get("x-request-id", "")
-    parts = dict(re.findall(r"([a-z0-9]+)=([^,]+)", signature.lower()))
-    ts, provided = parts.get("ts"), parts.get("v1")
-    data_id = (_body(payload).get("id") or payload.get("id"))
-    if not (ts and provided and request_id and data_id is not None and secrets):
-        return None, "missing_signature_material"
-    manifest = f"id:{str(data_id).lower()};request-id:{request_id};ts:{ts};"
-    valid = any(hmac.compare_digest(hmac.new(secret.encode(), manifest.encode(), hashlib.sha256).hexdigest(), provided)
-                for secret in secrets)
-    return valid, "mercadolivre_manifest_hmac_sha256"
-
-
 def validate_signature(envelope: dict[str, Any]) -> SignatureResult:
     source = str(envelope.get("source") or "").lower()
     policy = _policy(source)
     enforce = policy == "required"
     if policy == "disabled":
         return SignatureResult("signature_disabled", True, False)
+
+    if source == "mercadolivre":
+        # Marketplace notifications use the authenticated-resource pattern:
+        # the webhook is only a hint, and the worker fetches the resource with
+        # the resolved seller token before applying domain changes. The
+        # x-signature manifest belongs to a different Mercado Pago contract.
+        return SignatureResult(
+            "resource_confirmation_required", None, False,
+            "mercadolivre_authenticated_resource_required",
+        )
 
     candidates, account_id = _secret_candidates(source, envelope)
     secrets = [candidate.secret for candidate in candidates]
@@ -158,8 +156,6 @@ def validate_signature(envelope: dict[str, Any]) -> SignatureResult:
         else:
             result = None
         strategy = "raw_body_hmac_sha256"
-    elif source == "mercadolivre":
-        result, strategy = _validate_meli(envelope, secrets)
     else:
         result, strategy = None, "unsupported_source"
 
@@ -201,7 +197,13 @@ def extract_identity(envelope: dict[str, Any]) -> dict[str, str | None]:
     if source == "shopee":
         provider_id = provider_id or extract_chat_provider_event_id(payload) or payload.get("msg_id") or body.get("event_id")
         scope = content.get("shop_id") or payload.get("shop_id") or body.get("shop_id")
-        order_id = content.get("order_sn") or body.get("order_sn")
+        # O webhook real da Shopee entrega `ordersn` em `data`; alguns
+        # adaptadores internos normalizam o mesmo identificador para `order_sn`.
+        order_id = (
+            content.get("order_sn") or content.get("ordersn")
+            or body.get("order_sn") or body.get("ordersn")
+            or payload.get("order_sn") or payload.get("ordersn")
+        )
     elif source == "mercadolivre":
         provider_id = provider_id or body.get("_id") or body.get("id")
         # `account_id` no envelope e o que a borda resolve quando o n8n ja o
@@ -245,6 +247,21 @@ def record_signature_result(event_id: int, signature: SignatureResult) -> None:
         "signature_checked_at": datetime.now(timezone.utc).isoformat(),
         "signature_error": signature.reason if not signature.valid else None,
     }).eq("id", event_id).execute()
+
+
+def record_authenticated_resource_confirmation(
+    event_id: int, source: str, resource_type: str, resource_id: str
+) -> None:
+    """Record provider-authenticated resource retrieval for unsigned marketplace hooks."""
+    if str(source).lower() != "mercadolivre":
+        raise ValueError("Confirmação por recurso autenticado só se aplica ao Mercado Livre")
+    supabase_db.table("webhook_events").update({
+        "signature_status": "authenticated_resource_confirmed",
+        "signature_checked_at": datetime.now(timezone.utc).isoformat(),
+        "signature_error": None,
+        "provider_resource_type": str(resource_type),
+        "provider_resource_id": str(resource_id),
+    }).eq("id", int(event_id)).execute()
 
 
 def finalize_event(event_id: int, status: str, *, result: dict[str, Any] | None = None,

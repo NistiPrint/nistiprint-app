@@ -111,6 +111,21 @@ def list_webhook_events():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@webhooks_bp.route('/exceptions/unmapped-listings', methods=['GET'])
+@admin_required
+def list_unmapped_listing_exceptions():
+    """List external listings that must be mapped before inventory sync."""
+    try:
+        result = webhook_monitoring_service.list_unmapped_listing_exceptions(
+            page=request.args.get('page', 1),
+            per_page=request.args.get('per_page', 50),
+        )
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        logger.error("Erro ao listar anúncios sem vínculo interno: %s", e, exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @webhooks_bp.route('/events/<int:event_id>', methods=['GET'])
 @admin_required
 def get_webhook_event(event_id):

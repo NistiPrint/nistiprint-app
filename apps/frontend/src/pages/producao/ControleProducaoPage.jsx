@@ -13,7 +13,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import ProductionService from '@/services/ProductionService';
 import { format } from 'date-fns';
 import { ChevronDown, ChevronRight, Eye, History, LayoutGrid, LayoutList, Loader2, Minus, Package, PackageMinus, Plus, Search, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -52,6 +52,7 @@ const ControleProducaoPage = ({tipo}) => {
   const [distributionQuantities, setDistributionQuantities] = useState({});
   const [isDistributing, setIsDistributing] = useState(false);
   const [distributionLoading, setDistributionLoading] = useState(false);
+  const pendingReservationOperation = useRef(null);
 
   const [selectedDemandaId, setSelectedDemandaId] = useState(null);
 
@@ -230,6 +231,23 @@ const ControleProducaoPage = ({tipo}) => {
 
     setIsDistributing(true);
     try {
+      const reservationKey = `production-reservation:${selectedProductForDistribution.id}:${selectedDemandaId || 'mixed'}`;
+      const requestContent = JSON.stringify({
+        product_id: selectedProductForDistribution.id,
+        demanda_id: selectedDemandaId,
+        distributions,
+        date: selectedDate,
+      });
+      let pending = pendingReservationOperation.current;
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(reservationKey) || 'null');
+        if (!pending && saved?.content === requestContent) pending = saved;
+      } catch (_) { /* sessão sem estado recuperável */ }
+      if (!pending || pending.content !== requestContent) {
+        pending = { content: requestContent, operation_id: crypto.randomUUID() };
+        pendingReservationOperation.current = pending;
+        sessionStorage.setItem(reservationKey, JSON.stringify(pending));
+      }
       // Tela de Controle de Produção: processamento SÍNCRONO (tempo real)
       const result = await ProductionService.registerRemoval({
         product_id: selectedProductForDistribution.id,
@@ -237,10 +255,13 @@ const ControleProducaoPage = ({tipo}) => {
         date: selectedDate,
         distributions: distributions,
         demanda_id: manualDists ? selectedDemandaId : selectedDemandaId,
-        sincrono: true // Processamento imediato, sem fila
+        sincrono: true, // Processamento imediato, sem fila
+        operation_id: pending.operation_id,
       });
 
       if (result.success) {
+        pendingReservationOperation.current = null;
+        sessionStorage.removeItem(reservationKey);
         toast.success(result.message);
         setDistributionModalOpen(false);
         setInputs(prev => ({ ...prev, [selectedProductForDistribution.id]: '' }));

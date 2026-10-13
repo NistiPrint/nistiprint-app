@@ -138,57 +138,102 @@ def _reprocessar_shopee(integracao: dict, dias: int, limite: int | None) -> dict
     ).get("shop_id")
 
     agora = int(time.time())
-    # A Shopee limita a janela de get_order_list a 15 dias por chamada.
-    janela = min(int(dias or 7), 15)
+    # Janela fechada por dia UTC: execuções interrompidas retomam o mesmo
+    # intervalo, e a próxima varredura diária cobre novamente o período móvel.
+    janela_dias = max(1, min(int(dias or 7), 365))
+    dia_segundos = 24 * 3600
+    fim_alvo = (agora // dia_segundos) * dia_segundos
+    inicio_alvo = fim_alvo - janela_dias * dia_segundos
     encontrados: list[str] = []
+    vistos: set[str] = set()
+    paginas = 0
+    erros: list[dict] = []
+    processados = 0
+    limite_atingido = False
+    window_to = fim_alvo
+    while window_to > inicio_alvo and not limite_atingido and not erros:
+        window_from = max(inicio_alvo, window_to - 15 * dia_segundos)
+        for status in SHOPEE_STATUS_PENDENTES:
+            key = {"integration_id": integracao["id"], "window_from": window_from,
+                   "window_to": window_to, "order_status": status}
+            checkpoint_rows = (supabase_db.table("shopee_order_resync_checkpoints")
+                               .select("next_cursor,completed").match(key).limit(1).execute()).data or []
+            checkpoint = checkpoint_rows[0] if checkpoint_rows else None
+            if checkpoint and checkpoint.get("completed"):
+                continue
+            cursor = (checkpoint or {}).get("next_cursor")
+            cursores_vistos: set[str] = set()
+            while True:
+                filtros = {"time_from": window_from, "time_to": window_to,
+                           "order_status": status, "page_size": 100}
+                if cursor:
+                    filtros["cursor"] = cursor
+                try:
+                    pagina = shopee_driver.get_orders_list_page(integracao, filtros) or {}
+                except Exception as exc:
+                    logger.warning("[ressync] shopee list falhou shop_id=%s status=%s: %s", shop_id, status, exc)
+                    erros.append({"status": status, "erro": str(exc)})
+                    break
 
-    for status in SHOPEE_STATUS_PENDENTES:
-        cursor = ""
-        while True:
-            filtros = {
-                "time_from": agora - (janela * 24 * 3600),
-                "time_to": agora,
-                "order_status": status,
-                "page_size": 100,
-            }
-            if cursor:
-                filtros["cursor"] = cursor
+                pedidos = pagina.get("orders") or []
+                if pedidos and isinstance(pedidos[0], dict) and pedidos[0].get("error"):
+                    erros.append({"status": status, "erro": pedidos[0].get("error")})
+                    break
+                novos = [str(p["external_id"]) for p in pedidos
+                         if isinstance(p, dict) and p.get("external_id") and str(p["external_id"]) not in vistos]
+                vistos.update(novos)
+                encontrados.extend(novos)
+                paginas += 1
 
-            try:
-                pedidos = shopee_driver.get_orders_list(integracao, filtros) or []
-            except Exception as exc:
-                logger.warning("[ressync] shopee list falhou shop_id=%s status=%s: %s", shop_id, status, exc)
+                restante = max(0, limite - processados) if limite else None
+                lote = novos[:restante] if restante is not None else novos
+                if lote:
+                    resultado = _despachar_para_pipeline(
+                        source="shopee", externos=lote,
+                        payload_builder=lambda order_sn: {
+                            "code": _SHOPEE_ORDER_CODE, "shop_id": shop_id,
+                            "timestamp": agora, "data": {"ordersn": order_sn},
+                        },
+                    )
+                    processados += resultado["processados"]
+                    erros.extend(resultado["erros"])
+
+                next_cursor = pagina.get("next_cursor")
+                more = bool(pagina.get("more")) and bool(next_cursor)
+                next_cursor = str(next_cursor) if more else None
+                # Com limite ou erro de domínio, não confirmar a página inteira:
+                # a chamada seguinte repete a página pela mesma chave de evento.
+                if limite and len(lote) < len(novos):
+                    limite_atingido = True
+                    break
+                if erros:
+                    break
+                if more and (next_cursor in cursores_vistos or next_cursor == cursor):
+                    erros.append({"status": status, "erro": "cursor repetido; paginação interrompida"})
+                    break
+                if more:
+                    cursores_vistos.add(next_cursor)
+
+                record = {**key, "next_cursor": next_cursor, "completed": not more,
+                          "updated_at": datetime.now(timezone.utc).isoformat()}
+                supabase_db.table("shopee_order_resync_checkpoints").upsert(
+                    record, on_conflict="integration_id,window_from,window_to,order_status"
+                ).execute()
+                if not more:
+                    break
+                cursor = next_cursor
+                if limite and processados >= limite:
+                    limite_atingido = True
+                    break
+
+            if limite_atingido or erros:
                 break
+        window_to = window_from
 
-            if pedidos and isinstance(pedidos[0], dict) and pedidos[0].get("error"):
-                logger.warning("[ressync] shopee erro shop_id=%s status=%s: %s", shop_id, status, pedidos[0])
-                break
-
-            novos = [p.get("external_id") for p in pedidos if p.get("external_id")]
-            encontrados.extend(novos)
-
-            if limite and len(encontrados) >= limite:
-                break
-            # get_orders_list nao expoe o cursor de retorno hoje; sem paginacao
-            # confiavel, uma pagina por status evita loop infinito.
-            break
-
-        if limite and len(encontrados) >= limite:
-            break
-
-    if limite:
-        encontrados = encontrados[:limite]
-
-    return _despachar_para_pipeline(
-        source="shopee",
-        externos=encontrados,
-        payload_builder=lambda order_sn: {
-            "code": _SHOPEE_ORDER_CODE,
-            "shop_id": shop_id,
-            "timestamp": agora,
-            "data": {"ordersn": order_sn},
-        },
-    )
+    return {"listados": len(encontrados), "processados": processados,
+            "total_erros": len(erros), "erros": erros[:20], "paginas": paginas,
+            "checkpoint": {"inicio": inicio_alvo, "fim": fim_alvo,
+                           "limite_atingido": limite_atingido}}
 
 
 def _reprocessar_mercadolivre(integracao: dict, dias: int, limite: int | None) -> dict:

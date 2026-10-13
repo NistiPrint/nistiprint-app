@@ -312,8 +312,7 @@ def reprocess_events():
         import asyncio
         
         # Process a batch of unprocessed events
-        loop = asyncio.get_event_loop()
-        stats = loop.run_until_complete(consolidador_estoque.processar_lote(limit=50))
+        stats = asyncio.run(consolidador_estoque.processar_lote())
         
         return jsonify({
             'success': True,
@@ -333,15 +332,27 @@ def reconcile_item(item_id):
     Forces reconciliation of stock for a specific demand item.
     """
     try:
-        from nistiprint_shared.services.motor_reconciliacao_estoque import motor_reconciliacao_estoque
-        
-        # Trigger reconciliation for the specific item
-        result = motor_reconciliacao_estoque.reconciliar_item(item_id)
-        
+        import asyncio
+        from nistiprint_shared.services.consolidador_estoque import consolidador_estoque
+
+        item = consolidador_estoque.itens_table.select('id,demanda_id').eq('id', item_id).limit(1).execute()
+        if not item.data:
+            return jsonify({'success': False, 'error': f'Item {item_id} não encontrado'}), 404
+        # A reconciliação manual usa o mesmo claim/lease e confirma a mesma fila
+        # que o consumidor Celery. O evento precisa existir antes da execução.
+        pending = consolidador_estoque.eventos_table.select('id').eq(
+            'item_demanda_id', int(item_id)).eq('processado', False).limit(1).execute()
+        if not pending.data:
+            return jsonify({
+                'success': False,
+                'error': 'O item não possui evento pendente para reconciliação.',
+                'code': 'no_pending_event',
+            }), 409
+        result = asyncio.run(consolidador_estoque.processar_lote(item_id=int(item_id)))
         return jsonify({
-            'success': True,
-            'message': f'Item {item_id} reconciliado com sucesso',
-            'result': result
+            'success': result.get('eventos_falha', 0) == 0,
+            'message': f'Reconciliação recuperável do item {item_id} executada',
+            'result': result,
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

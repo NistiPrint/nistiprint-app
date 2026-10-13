@@ -139,16 +139,19 @@ class ShopeeChatServiceTest(unittest.TestCase):
         self.assertEqual(linha["conversation_id"], 4670954831706433)
         self.assertIsNotNone(linha["sincronizacao_solicitada_em"])
 
-    def test_outras_notificacoes_continuam_sendo_ignoradas(self):
+    def test_notificacao_repetida_sem_mensagem_e_ignorada(self):
         with patch(
             "nistiprint_shared.services.shopee_chat_service.integration_resolution_service"
         ) as resolver, patch(
             "nistiprint_shared.services.shopee_chat_service.supabase_db"
         ) as db:
+            resolver.resolve_marketplace_by_shop_id.return_value = {
+                "id": 7, "plataforma_slug": "shopee",
+            }
+            db.rpc.return_value.execute.return_value.data = False
             result = shopee_chat_ingest_service.process(notification_push(tipo="read"))
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["event_status"], "skipped_chat_notification")
-        resolver.resolve_marketplace_by_shop_id.assert_not_called()
         db.table.assert_not_called()
 
     def test_bundle_e_resolvido_por_id_no_proprio_push(self):
@@ -288,6 +291,100 @@ class ShopeeChatServiceTest(unittest.TestCase):
             db.table.return_value.upsert.call_args.kwargs["on_conflict"],
             "id",
         )
+
+    def test_first_webhook_reconciles_once_and_duplicate_does_not_fetch_again(self):
+        db = _db_mock()
+        db.rpc.return_value.execute.return_value.data = True
+        with patch("nistiprint_shared.services.shopee_chat_service.supabase_db", db), \
+             patch("nistiprint_shared.services.shopee_chat_service.integration_resolution_service") as resolver, \
+             patch.object(shopee_chat_ingest_service, "_integracao_hidratada",
+                          return_value={"id": 7, "config": {"shop_id": 165103149}}), \
+             patch.object(shopee_chat_ingest_service, "reconcile_conversation",
+                          return_value={"status": "success", "messages_upserted": 2}) as reconcile:
+            resolver.resolve_marketplace_by_shop_id.return_value = {
+                "id": 7, "plataforma_slug": "shopee",
+            }
+            first = shopee_chat_ingest_service.process(message_push(message_type="faq_liveagent"))
+            db.rpc.return_value.execute.return_value.data = False
+            duplicate = shopee_chat_ingest_service.process(message_push(message_type="faq_liveagent"))
+        self.assertEqual(first["primeira_sincronizacao"], "concluida")
+        self.assertNotIn("primeira_sincronizacao", duplicate)
+        reconcile.assert_called_once()
+        db.rpc.assert_any_call("solicitar_primeira_sincronizacao_chat_shopee", {
+            "p_conversation_id": int(MESSAGE_CONTENT["conversation_id"]),
+            "p_integration_id": 7,
+        })
+
+    def test_failed_first_fetch_remains_queued_for_chatsync(self):
+        db = _db_mock()
+        db.rpc.return_value.execute.return_value.data = True
+        with patch("nistiprint_shared.services.shopee_chat_service.supabase_db", db), \
+             patch("nistiprint_shared.services.shopee_chat_service.integration_resolution_service") as resolver, \
+             patch.object(shopee_chat_ingest_service, "_integracao_hidratada",
+                          return_value={"id": 7, "config": {}}), \
+             patch.object(shopee_chat_ingest_service, "reconcile_conversation",
+                          return_value={"status": "error", "error_type": "rate_limit"}), \
+             patch.object(shopee_chat_ingest_service, "_adiar_solicitacao") as adiar, \
+             patch.object(shopee_chat_ingest_service, "_limpar_solicitacao") as limpar:
+            resolver.resolve_marketplace_by_shop_id.return_value = {
+                "id": 7, "plataforma_slug": "shopee",
+            }
+            result = shopee_chat_ingest_service.process(message_push())
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["primeira_sincronizacao"], "pendente")
+        adiar.assert_called_once()
+        limpar.assert_not_called()
+
+    def test_first_mark_as_replied_reconciles_immediately(self):
+        db = _db_mock()
+        db.rpc.return_value.execute.return_value.data = True
+        with patch("nistiprint_shared.services.shopee_chat_service.supabase_db", db), \
+             patch("nistiprint_shared.services.shopee_chat_service.integration_resolution_service") as resolver, \
+             patch.object(shopee_chat_ingest_service, "_integracao_hidratada",
+                          return_value={"id": 7, "config": {}}), \
+             patch.object(shopee_chat_ingest_service, "reconcile_conversation",
+                          return_value={"status": "success", "messages_upserted": 1}) as reconcile:
+            resolver.resolve_marketplace_by_shop_id.return_value = {
+                "id": 7, "plataforma_slug": "shopee",
+            }
+            result = shopee_chat_ingest_service.process(notification_push())
+        self.assertEqual(result["primeira_sincronizacao"], "concluida")
+        reconcile.assert_called_once()
+
+    def test_first_notification_without_message_also_starts_reconciliation(self):
+        db = _db_mock()
+        db.rpc.return_value.execute.return_value.data = True
+        with patch("nistiprint_shared.services.shopee_chat_service.supabase_db", db), \
+             patch("nistiprint_shared.services.shopee_chat_service.integration_resolution_service") as resolver, \
+             patch.object(shopee_chat_ingest_service, "_integracao_hidratada",
+                          return_value={"id": 7, "config": {}}), \
+             patch.object(shopee_chat_ingest_service, "reconcile_conversation",
+                          return_value={"status": "success", "messages_upserted": 1}) as reconcile:
+            resolver.resolve_marketplace_by_shop_id.return_value = {
+                "id": 7, "plataforma_slug": "shopee",
+            }
+            result = shopee_chat_ingest_service.process(notification_push(tipo="read"))
+        self.assertEqual(result["event_status"], "chat_primeira_sincronizacao")
+        reconcile.assert_called_once()
+
+    def test_first_bundle_keeps_point_resolution_and_runs_full_fetch(self):
+        db = _db_mock()
+        db.rpc.return_value.execute.return_value.data = True
+        with patch("nistiprint_shared.services.shopee_chat_service.supabase_db", db), \
+             patch("nistiprint_shared.services.shopee_chat_service.integration_resolution_service") as resolver, \
+             patch.object(shopee_chat_ingest_service, "_integracao_hidratada",
+                          return_value={"id": 7, "config": {"shop_id": 165103149}}), \
+             patch.object(shopee_chat_ingest_service, "resolver_bundle",
+                          return_value={"status": "success", "messages_upserted": 2}), \
+             patch.object(shopee_chat_ingest_service, "reconcile_conversation",
+                          return_value={"status": "success", "messages_upserted": 2}) as reconcile:
+            resolver.resolve_marketplace_by_shop_id.return_value = {
+                "id": 7, "plataforma_slug": "shopee",
+            }
+            result = shopee_chat_ingest_service.process(bundle_push())
+        self.assertEqual(result["event_status"], "chat_persisted_bundle_resolvido")
+        self.assertEqual(result["primeira_sincronizacao"], "concluida")
+        reconcile.assert_called_once()
 
     def test_malformed_message_is_retryable_error(self):
         payload = message_push(message_id=None)

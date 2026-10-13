@@ -42,6 +42,7 @@ class ProductionPlanningService:
                     'corporate_demands': 0
                 }
             }
+            score_snapshots = []
             
             # Get demands for the period
             all_demandas = self.demanda_service.get_all_demandas()
@@ -58,7 +59,12 @@ class ProductionPlanningService:
                     
                     if start_dt <= data_entrega <= end_dt:
                         # Calculate priority for this demand
-                        priority_score = self.priority_service.calculate_priority_score(demanda)
+                        priority_explanation = self.priority_service.explain_priority_score(demanda)
+                        priority_score = priority_explanation["score"]
+                        if demanda.get("id") is not None:
+                            score_snapshots.append(self.priority_service.build_score_snapshot(
+                                demanda["id"], priority_explanation
+                            ))
                         
                         # Add to plan data
                         demand_data = {
@@ -74,6 +80,7 @@ class ProductionPlanningService:
                             'is_flex': demanda.get('is_flex', False),
                             'status': demanda.get('status', ''),
                             'prioridade': priority_score,
+                            'prioridade_reproducao': priority_explanation,
                             'capacidade_requerida': demanda.get('capacidade_requerida', {}),
                             'itens_count': len(demanda.get('itens', [])) if 'itens' in demanda else 0
                         }
@@ -113,7 +120,8 @@ class ProductionPlanningService:
             
             # Sort demands by priority
             plan_data['demands'].sort(key=lambda x: x['prioridade'], reverse=True)
-            
+            self.priority_service.persist_score_snapshots(score_snapshots)
+
             return plan_data
         except Exception as e:
             print(f"ERROR in get_production_plan: {e}")

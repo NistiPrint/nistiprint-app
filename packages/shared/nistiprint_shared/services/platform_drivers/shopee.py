@@ -442,7 +442,7 @@ def get_product_detail(integration: Dict, item_id_list: List[str]) -> Dict:
     return {"error": "Consulta de produtos Shopee ainda não implementada."}
 
 
-def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[Dict]:
+def get_orders_list_page(integration: Dict, filters: Optional[Dict] = None) -> Dict:
     """
     Fetches list of orders from Shopee V2 API for a given integration instance.
     """
@@ -524,14 +524,14 @@ def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[D
         params=params,
     )
     if not result.ok:
-        return [result.to_legacy()]
+        return {"orders": [result.to_legacy()], "next_cursor": None, "more": False}
     data = result.value or {}
     if data.get("error"):
-        return [_shopee_api_error(data, resource_type="orders_list")]
+        return {"orders": [_shopee_api_error(data, resource_type="orders_list")], "next_cursor": None, "more": False}
 
     # Normalizar os dados para o DTO padrão
     normalized_orders = []
-    raw_response = data.get("response", {})
+    raw_response = data.get("response", {}) or {}
     order_list = raw_response.get("order_list", [])
 
     for order in order_list:
@@ -555,5 +555,14 @@ def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[D
         }
         normalized_orders.append(normalized_order)
 
-    return normalized_orders
+    next_cursor = raw_response.get("next_cursor") or None
+    return {
+        "orders": normalized_orders,
+        "next_cursor": str(next_cursor) if next_cursor else None,
+        "more": bool(raw_response.get("more")),
+    }
 
+
+def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[Dict]:
+    """Compatibility wrapper for callers that only need a single page."""
+    return get_orders_list_page(integration, filters).get("orders", [])

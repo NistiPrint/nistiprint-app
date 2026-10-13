@@ -1,0 +1,193 @@
+[
+  {
+    "name": "bling_order",
+    "source": "bling",
+    "provider_delivery_id": "fixture-bling-event-1001",
+    "headers": {
+      "content-type": "application/json",
+      "user-agent": "fixture-n8n",
+      "x-bling-signature-256": "fixture-only-not-a-valid-signature"
+    },
+    "parsed_payload": {
+      "companyId": 12001,
+      "data": {
+        "id": 34001,
+        "numero": 1001,
+        "numeroLoja": "fixture-order-1001",
+        "situacao": 9,
+        "total": 1.0
+      },
+      "date": "2026-10-10T12:00:00Z",
+      "event": "order.created",
+      "eventId": "fixture-bling-event-1001",
+      "version": "3.0"
+    },
+    "expected_envelope_keys": [
+      "body_sha256", "event_id", "headers", "oversized", "parsed_payload",
+      "payload_size", "provider_delivery_id", "raw_body", "received_at",
+      "schema_version", "source"
+    ],
+    "expected_payload_keys": ["companyId", "data", "date", "event", "eventId", "version"],
+    "expected_scope": "12001",
+    "expected_order_id": "fixture-order-1001"
+  },
+  {
+    "name": "shopee_order",
+    "source": "shopee",
+    "provider_delivery_id": "fixture-shopee-event-2001",
+    "headers": {
+      "content-type": "application/json",
+      "user-agent": "fixture-n8n",
+      "x-request-id": "fixture-request-2001"
+    },
+    "parsed_payload": {
+      "code": 3,
+      "data": {
+        "ordersn": "fixture-order-2001",
+        "status": "READY_TO_SHIP",
+        "update_time": 1791633600
+      },
+      "msg_id": "fixture-shopee-event-2001",
+      "shop_id": 22001,
+      "timestamp": 1791633600
+    },
+    "expected_envelope_keys": [
+      "body_sha256", "event_id", "headers", "oversized", "parsed_payload",
+      "payload_size", "provider_delivery_id", "raw_body", "received_at",
+      "schema_version", "source"
+    ],
+    "expected_payload_keys": ["code", "data", "msg_id", "shop_id", "timestamp"],
+    "expected_scope": "22001",
+    "expected_order_id": "fixture-order-2001"
+  },
+  {
+    "name": "mercadolivre_orders_v2",
+    "source": "mercadolivre",
+    "provider_delivery_id": "/orders/fixture-3001",
+    "headers": {"content-type": "application/json", "user-agent": "fixture-n8n"},
+    "parsed_payload": {
+      "_id": "fixture-meli-event-3001",
+      "actions": ["fixture.order.updated"],
+      "application_id": 33001,
+      "attempts": 1,
+      "received": "2026-10-10T12:01:00Z",
+      "resource": "/orders/fixture-3001",
+      "sent": "2026-10-10T12:00:59Z",
+      "topic": "orders_v2",
+      "user_id": 32001
+    },
+    "expected_envelope_keys": [
+      "account_id", "application_id", "body_sha256", "event_id", "headers",
+      "oversized", "parsed_payload", "payload_size", "provider_delivery_id",
+      "provider_topic", "raw_body", "received_at", "route_hint", "schema_version", "source"
+    ],
+    "expected_payload_keys": ["_id", "actions", "application_id", "attempts", "received", "resource", "sent", "topic", "user_id"],
+    "expected_scope": "32001",
+    "expected_order_id": "fixture-3001",
+    "provider_topic": "orders_v2"
+  },
+  {
+    "name": "mercadolivre_items",
+    "source": "mercadolivre",
+    "provider_delivery_id": "/items/fixture-4001",
+    "headers": {"content-type": "application/json", "user-agent": "fixture-n8n"},
+    "parsed_payload": {
+      "_id": "fixture-meli-event-4001",
+      "actions": ["fixture.item.updated"],
+      "application_id": 33001,
+      "attempts": 1,
+      "received": "2026-10-10T12:02:00Z",
+      "resource": "/items/fixture-4001",
+      "sent": "2026-10-10T12:01:59Z",
+      "topic": "items",
+      "user_id": 32001
+    },
+    "expected_envelope_keys": [
+      "account_id", "application_id", "body_sha256", "event_id", "headers",
+      "oversized", "parsed_payload", "payload_size", "provider_delivery_id",
+      "provider_topic", "raw_body", "received_at", "route_hint", "schema_version", "source"
+    ],
+    "expected_payload_keys": ["_id", "actions", "application_id", "attempts", "received", "resource", "sent", "topic", "user_id"],
+    "expected_scope": "32001",
+    "expected_order_id": null,
+    "provider_topic": "items"
+  },
+  {
+    "name": "mercadolivre_shipments",
+    "source": "mercadolivre",
+    "provider_delivery_id": "/shipments/fixture-5001",
+    "headers": {"content-type": "application/json", "user-agent": "fixture-n8n"},
+    "parsed_payload": {
+      "_id": "fixture-meli-event-5001",
+      "actions": ["fixture.shipment.updated"],
+      "application_id": 33001,
+      "attempts": 1,
+      "received": "2026-10-10T12:03:00Z",
+      "resource": "/shipments/fixture-5001",
+      "sent": "2026-10-10T12:02:59Z",
+      "topic": "shipments",
+      "user_id": 32001
+    },
+    "expected_envelope_keys": [
+      "account_id", "application_id", "body_sha256", "event_id", "headers",
+      "oversized", "parsed_payload", "payload_size", "provider_delivery_id",
+      "provider_topic", "raw_body", "received_at", "route_hint", "schema_version", "source"
+    ],
+    "expected_payload_keys": ["_id", "actions", "application_id", "attempts", "received", "resource", "sent", "topic", "user_id"],
+    "expected_scope": "32001",
+    "expected_order_id": null,
+    "provider_topic": "shipments"
+  },
+  {
+    "name": "mercadolivre_payments",
+    "source": "mercadolivre",
+    "provider_delivery_id": "/collections/fixture-6001",
+    "headers": {"content-type": "application/json", "user-agent": "fixture-n8n"},
+    "parsed_payload": {
+      "_id": "fixture-meli-event-6001",
+      "actions": ["fixture.payment.updated"],
+      "application_id": 33001,
+      "attempts": 1,
+      "received": "2026-10-10T12:04:00Z",
+      "resource": "/collections/fixture-6001",
+      "sent": "2026-10-10T12:03:59Z",
+      "topic": "payments",
+      "user_id": 32001
+    },
+    "expected_envelope_keys": [
+      "account_id", "application_id", "body_sha256", "event_id", "headers",
+      "oversized", "parsed_payload", "payload_size", "provider_delivery_id",
+      "provider_topic", "raw_body", "received_at", "route_hint", "schema_version", "source"
+    ],
+    "expected_payload_keys": ["_id", "actions", "application_id", "attempts", "received", "resource", "sent", "topic", "user_id"],
+    "expected_scope": "32001",
+    "expected_order_id": null,
+    "provider_topic": "payments"
+  },
+  {
+    "name": "mercadolivre_messages",
+    "source": "mercadolivre",
+    "provider_delivery_id": "/messages/packs/fixture-7001",
+    "headers": {"content-type": "application/json", "user-agent": "fixture-n8n"},
+    "parsed_payload": {
+      "_id": "fixture-meli-event-7001",
+      "actions": ["fixture.message.created"],
+      "application_id": 33001,
+      "attempts": 1,
+      "received": "2026-10-10T12:05:00Z",
+      "resource": "/messages/packs/fixture-7001",
+      "sent": "2026-10-10T12:04:59Z",
+      "topic": "messages",
+      "user_id": 32001
+    },
+    "expected_envelope_keys": [
+      "account_id", "application_id", "body_sha256", "event_id", "headers",
+      "oversized", "parsed_payload", "payload_size", "provider_delivery_id",
+      "provider_topic", "raw_body", "received_at", "route_hint", "schema_version", "source"
+    ],
+    "expected_payload_keys": ["_id", "actions", "application_id", "attempts", "received", "resource", "sent", "topic", "user_id"],
+    "expected_scope": "32001",
+    "expected_order_id": null,
+    "provider_topic": "messages"
+  }
+]

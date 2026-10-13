@@ -40,7 +40,7 @@ class ConsolidadorDeEstoque:
         self.eventos_table = supabase_db.table('eventos_producao_v2')
         self.itens_table = supabase_db.table('itens_demanda')
 
-    async def processar_lote(self) -> Dict[str, int]:
+    async def processar_lote(self, item_id: int = None) -> Dict[str, int]:
         """
         Lê eventos não processados e executa reconciliação de estoque.
         
@@ -54,49 +54,78 @@ class ConsolidadorDeEstoque:
             'itens_reconciliados': 0
         }
 
-        # 1. Obter eventos pendentes
-        response = self.eventos_table.select('*').eq('processado', False).order('created_at').execute()
-        eventos = response.data
+        import os
+        import uuid
 
-        if not eventos:
-            return stats
+        worker_id = f"worker:{os.getpid()}:{uuid.uuid4()}"
+        response = supabase_db.rpc('claim_eventos_producao', {
+            'p_worker_id': worker_id,
+            'p_limit': 20,
+            'p_lease_seconds': 300,
+            'p_item_id': int(item_id) if item_id is not None else None,
+        }).execute()
+        claims = response.data or []
+        if isinstance(claims, dict):
+            claims = [claims]
 
-        stats['eventos_lidos'] = len(eventos)
-
-        # 2. Agrupar eventos por item_demanda_id
-        eventos_por_item: Dict[int, List[Dict]] = {}
-        for evento in eventos:
-            item_id = evento.get('item_demanda_id')
-            if item_id:
-                if item_id not in eventos_por_item:
-                    eventos_por_item[item_id] = []
-                eventos_por_item[item_id].append(evento)
-
-        # 3. Processar cada item
-        for item_id, eventos_item in eventos_por_item.items():
+        for claim in claims:
+            eventos = claim.get('eventos') or []
+            if not eventos:
+                continue
+            item_id = int(claim['item_id'])
+            event_ids = [str(event['id']) for event in eventos]
+            lease = {
+                'worker_id': worker_id,
+                'lease_token': claim['lease_token'],
+                'event_ids': event_ids,
+            }
+            stats['eventos_lidos'] += len(eventos)
             try:
-                # Verifica se há algum evento que dispara reconciliação completa.
-                # Aceita LIQUIDACAO, BOM_RECURSIVO_APOS_DIRETO e FINALIZACAO (ver
-                # LIQUIDATION_EVENT_TYPES para a lista canônica).
                 tem_liquidacao = any(
-                    e.get('tipo_evento') in self.LIQUIDATION_EVENT_TYPES
-                    for e in eventos_item
+                    e.get('tipo_evento') in self.LIQUIDATION_EVENT_TYPES for e in eventos
                 )
-
                 if tem_liquidacao:
-                    # Executa reconciliação completa do item
-                    await self._reconciliar_item(item_id, eventos_item)
+                    correlation_id = str(next((e.get('correlation_id') for e in eventos if e.get('correlation_id')), uuid.uuid4()))
+                    operation_id = str(uuid.uuid5(
+                        uuid.UUID('3eebcd51-74cf-4e30-aa6c-72cc3904149e'),
+                        f"{item_id}:{','.join(sorted(event_ids))}",
+                    ))
+                    result = await motor_reconciliacao_estoque.reconcile_item(
+                        item_id=item_id,
+                        demanda_id=int(claim['demanda_id']),
+                        user_id='System',
+                        acquire_lock=False,
+                        correlation_id=correlation_id,
+                        operation_id=operation_id,
+                        lease=lease,
+                    )
+                    if not result.sucesso:
+                        raise RuntimeError('; '.join(result.erros or ['reconciliação sem sucesso']))
                     stats['itens_reconciliados'] += 1
                 else:
-                    # Apenas eventos SINAL (etapas intermediárias)
-                    # Apenas marca como processado sem calcular estoque
-                    await self._processar_sinais(eventos_item)
-                
-                stats['eventos_processados'] += len(eventos_item)
-
-            except Exception as e:
-                print(f"ERRO ao processar item {item_id}: {e}")
-                stats['eventos_falha'] += len(eventos_item)
+                    complete = supabase_db.rpc('complete_eventos_producao', {
+                        'p_item_id': item_id,
+                        'p_worker_id': worker_id,
+                        'p_lease_token': claim['lease_token'],
+                        'p_event_ids': event_ids,
+                    }).execute()
+                    if complete.data is False:
+                        raise RuntimeError('RPC de conclusão de sinais retornou false')
+                stats['eventos_processados'] += len(eventos)
+            except Exception as exc:
+                print(f"ERRO ao processar item {item_id}: {exc}")
+                try:
+                    supabase_db.rpc('fail_eventos_producao', {
+                        'p_item_id': item_id,
+                        'p_worker_id': worker_id,
+                        'p_lease_token': claim['lease_token'],
+                        'p_event_ids': event_ids,
+                        'p_error': str(exc)[:4000],
+                        'p_retry_seconds': 30,
+                    }).execute()
+                except Exception as fail_exc:
+                    print(f"ERRO ao agendar retry do item {item_id}: {fail_exc}")
+                stats['eventos_falha'] += len(eventos)
 
         return stats
 

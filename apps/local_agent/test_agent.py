@@ -1,12 +1,15 @@
 import json
+import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
+import agent
 from agent import AgentHandler, MappingStore, print_direct
 
 
@@ -52,6 +55,35 @@ class FallbackTests(unittest.TestCase):
         opened.assert_not_called()
 
 
+class PrintJournalTests(unittest.TestCase):
+    def test_restart_recovers_interrupted_print_as_unknown_without_resending(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "print_requests.sqlite3"
+            with patch.object(agent, "PRINT_REQUESTS_DB", journal), \
+                 patch.object(agent, "PRINT_REQUESTS", {}):
+                agent._init_print_journal()
+                agent._save_print_request("request-1", "content-hash", {
+                    "success": False,
+                    "status": "ENVIANDO",
+                    "request_id": "request-1",
+                    "job_id": 74,
+                })
+                agent.PRINT_REQUESTS.clear()
+
+                agent._init_print_journal()
+
+                recovered = agent.PRINT_REQUESTS["request-1"]
+                self.assertEqual(recovered["status"], "RESULTADO_DESCONHECIDO")
+                self.assertEqual(recovered["job_id"], 74)
+                self.assertEqual(recovered["request_id"], "request-1")
+
+                with closing(sqlite3.connect(journal)) as db:
+                    status = db.execute(
+                        "SELECT status FROM print_requests WHERE request_id=?", ("request-1",)
+                    ).fetchone()[0]
+                self.assertEqual(status, "RESULTADO_DESCONHECIDO")
+
+
 class DashboardTests(unittest.TestCase):
     def setUp(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), AgentHandler)
@@ -72,12 +104,63 @@ class DashboardTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def post_json(self, path, body):
+        connection = HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
+        try:
+            connection.request("POST", path, body=json.dumps(body),
+                               headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            return response.status, response.read().decode("utf-8")
+        finally:
+            connection.close()
+
     def test_dashboard_is_served_locally(self):
         status, body = self.request("/dashboard")
         self.assertEqual(status, 200)
         self.assertIn("Agente local", body)
         self.assertIn("/logs", body)
         self.assertEqual(self.request("/dashboard", {"Host": "other.example"})[0], 403)
+
+    def test_print_request_state_is_retrievable_by_stable_identity(self):
+        state = {"request-1": {"status": "RESULTADO_DESCONHECIDO", "request_id": "request-1"}}
+        with patch("agent.PRINT_REQUESTS", state):
+            status, body = self.request("/requests/request-1")
+            missing_status, _ = self.request("/requests/missing")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), state["request-1"])
+        self.assertEqual(missing_status, 404)
+
+    def test_duplicate_print_request_is_not_resent_and_changed_content_conflicts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf = root / "cover.pdf"
+            pdf.write_bytes(b"test pdf")
+            store = MappingStore(root / "mappings.json")
+            store.save("SKU-1", {"file_path": str(pdf), "printer_name": "Printer-1"})
+            with patch("agent.STORE", store), \
+                 patch("agent.PRINT_REQUESTS_DB", root / "print_requests.sqlite3"), \
+                 patch("agent.PRINT_REQUESTS", {}), \
+                 patch("agent._print_pdf", return_value={
+                     "success": True, "status": "ENVIADO_SPOOLER", "job_id": 74,
+                     "printer_name": "Printer-1", "copies": 2,
+                 }) as print_pdf:
+                agent._init_print_journal()
+                first_status, first = self.post_json("/print-dialog", {
+                    "sku": "SKU-1", "copies": 2, "request_id": "request-2",
+                })
+                replay_status, replay = self.post_json("/print-dialog", {
+                    "sku": "SKU-1", "copies": 2, "request_id": "request-2",
+                })
+                conflict_status, _ = self.post_json("/print-dialog", {
+                    "sku": "SKU-1", "copies": 3, "request_id": "request-2",
+                })
+
+        self.assertEqual(first_status, 200)
+        self.assertEqual(replay_status, 200)
+        self.assertEqual(json.loads(replay)["job_id"], 74)
+        self.assertEqual(conflict_status, 409)
+        print_pdf.assert_called_once()
 
     def test_logs_are_bounded_and_reject_cross_origin_reads(self):
         with tempfile.TemporaryDirectory() as directory:

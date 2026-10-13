@@ -10,6 +10,66 @@ from nistiprint_shared.services.integration_secret_service import (
 
 
 class IntegrationSecretServiceTest(unittest.TestCase):
+    @patch("nistiprint_shared.services.integration_secret_service.supabase_db")
+    def test_refresh_tokens_are_persisted_together_through_lease_rpc(self, db):
+        service = IntegrationSecretService()
+        db.rpc.return_value.execute.return_value.data = True
+        with patch.object(service, "encrypt_secret", side_effect=[
+            ("cipher-access", "nonce-access", "V1"),
+            ("cipher-refresh", "nonce-refresh", "V1"),
+        ]):
+            service.persist_tokens_with_refresh_lease(
+                "integration-7",
+                {"access_token": "new-access", "refresh_token": "new-refresh"},
+                "22222222-2222-4222-8222-222222222222",
+            )
+
+        db.rpc.assert_called_once_with("persistir_tokens_integracao_sob_lease", {
+            "p_integration_id": "integration-7",
+            "p_lease_token": "22222222-2222-4222-8222-222222222222",
+            "p_access_token": {
+                "encrypted_value": "cipher-access", "nonce": "nonce-access", "key_version": "V1",
+            },
+            "p_refresh_token": {
+                "encrypted_value": "cipher-refresh", "nonce": "nonce-refresh", "key_version": "V1",
+            },
+            "p_schema_name": "public",
+            "p_installation_patch": None,
+        })
+
+    @patch("nistiprint_shared.services.integration_secret_service.supabase_db")
+    def test_refresh_rpc_receives_installation_patch_atomically(self, db):
+        service = IntegrationSecretService()
+        db.rpc.return_value.execute.return_value.data = True
+        patch_data = {
+            "config": {"shop_id": "456"},
+            "credentials": {"shop_id": "456"},
+            "expires_at": "2026-10-09T12:00:00+00:00",
+            "last_refresh_attempt": "2026-10-09T11:00:00+00:00",
+            "refresh_error": None,
+        }
+        with patch.object(service, "encrypt_secret", side_effect=[
+            ("cipher-access", "nonce-access", "V1"),
+            ("cipher-refresh", "nonce-refresh", "V1"),
+        ]):
+            service.persist_tokens_with_refresh_lease(
+                "7", {"access_token": "new-access", "refresh_token": "new-refresh"},
+                "22222222-2222-4222-8222-222222222222",
+                installation_patch=patch_data,
+            )
+
+        self.assertEqual(db.rpc.call_args.args[1]["p_installation_patch"], patch_data)
+    @patch("nistiprint_shared.services.integration_secret_service.supabase_db")
+    def test_lost_refresh_lease_does_not_persist_returned_tokens(self, db):
+        service = IntegrationSecretService()
+        db.rpc.return_value.execute.return_value.data = False
+        with patch.object(service, "encrypt_secret", return_value=("cipher", "nonce", "V1")):
+            with self.assertRaises(SecretStorageError):
+                service.persist_tokens_with_refresh_lease(
+                    "integration-7", {"refresh_token": "stale-token"},
+                    "22222222-2222-4222-8222-222222222222",
+                )
+
     def test_defaults_to_public_schema_for_postgrest_compatibility(self):
         service = IntegrationSecretService()
 

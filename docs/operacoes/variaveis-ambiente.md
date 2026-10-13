@@ -35,6 +35,9 @@ Na VPS, `SUPABASE_URL` aponta ao gateway HTTP; `SUPABASE_DB_URL` aponta ao Postg
 |----------|-----------|---------|
 | `SECRET_KEY` | Chave para sessões e tokens | `a1b2c3d4e5f6...` (32+ caracteres) |
 | `FLASK_ENV` | Ambiente | `development` ou `production` |
+| `ESTOQUE_COMANDOS_V2_ATIVO` | Habilita `POST /api/v2/estoque/comandos`; não troca os adaptadores existentes, que já usam o núcleo transacional. Valores verdadeiros: `1`, `true`, `yes`, `on`. Reinicie a API após alterar. | `false` |
+
+O padrão é `false`, portanto o endpoint v2 responde `503 feature_disabled` até a habilitação explícita. Não habilite em produção antes da promoção do backend compatível e da validação dos gates de implantação descritos em [deploy](./deploy.md).
 
 ### Frontend (Vite)
 
@@ -62,6 +65,11 @@ Na VPS, `SUPABASE_URL` aponta ao gateway HTTP; `SUPABASE_DB_URL` aponta ao Postg
 | `SHOPEE_APP_ID` | App ID da Shopee | `123456` |
 | `SHOPEE_APP_SECRET` | App Secret | `abcdef123456` |
 | `SHOPEE_SHOP_ID` | ID da loja | `987654` |
+| `SHOPEE_PUSH_PARTNER_KEY` | Partner Key usada pelo n8n para HMAC-SHA256 do callback; se omitida, o compose reutiliza `SHOPEE_PARTNER_KEY` | segredo do app, configurado apenas no ambiente |
+| `SHOPEE_CALLBACK_URL` | URL exata cadastrada no Push Mechanism da Shopee, sem normalizar barra final | `https://automacao.nistiprint.neolabs.com.br/webhook/shopee` |
+| `SHOPEE_SIGNATURE_ENFORCEMENT` | Política de validação no n8n. O compose usa `required` por padrão; `audit` não deve ser usado em produção | `required` |
+
+O compose do n8n falha na interpolação se não houver Partner Key ou callback. Não grave esses valores em arquivos versionados. O worker só encaminha eventos Shopee quando recebe o veredito `signature_valid`.
 
 ### Integrações - Bling
 

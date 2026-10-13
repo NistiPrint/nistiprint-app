@@ -14,7 +14,8 @@ Environment=PYTHONPATH=/opt/nistiprint/packages/shared:/opt/nistiprint/apps/work
 ExecStart=/opt/nistiprint/.venv/bin/python /opt/nistiprint/apps/worker/reliable_ingest_worker.py %i
 Restart=always
 RestartSec=2
-TimeoutStopSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=300
 
 [Install]
 WantedBy=multi-user.target

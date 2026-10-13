@@ -72,6 +72,13 @@ resolve os IDs referenciados numa única chamada a `get_message`
 (`message_id_list`), sem paginação. Falha ali não derruba o webhook — o push já
 está gravado e a conversa fica marcada como pendente.
 
+No primeiro webhook de cada `conversation_id`, o consumidor também marca a
+reconciliação completa na tabela e chama `get_message` com paginação
+imediatamente. O claim é atômico: webhooks repetidos não iniciam outra busca
+inicial. Se a chamada falhar, a solicitação persiste para o `chatsync` tentar
+novamente com backoff. Não há descoberta periódica de conversas: uma interação
+passiva de FAQ sem push não inicia a busca.
+
 O papel `chatsync` é a rede de segurança. Ele não consome fila do Redis: a fila
 é a tabela `conversas_chat_shopee`, que sobrevive a reinício e não depende de o
 evento original ainda existir. A cada ciclo ele pega as conversas com lacuna

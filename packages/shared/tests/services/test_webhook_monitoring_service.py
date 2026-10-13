@@ -7,6 +7,49 @@ from nistiprint_shared.services import webhook_monitoring_service as wms
 
 
 class TestWebhookMonitoringService(unittest.TestCase):
+    def test_unmapped_listing_exceptions_include_account_without_exposing_credentials(self):
+        listings = MagicMock()
+        listings.select.return_value.is_.return_value.order.return_value.order.return_value.range.return_value.execute.return_value.data = [
+            {
+                'id': 21,
+                'integration_id': 4,
+                'item_externo_id': 'ITEM-1',
+                'variacao_externa_id': 'MODEL-2',
+                'sku_anuncio': 'SKU-2',
+                'titulo': 'Anúncio sem vínculo',
+                'status': 'active',
+                'ultimo_erro': None,
+                'updated_at': '2026-10-09T12:00:00Z',
+            }
+        ]
+        integrations = MagicMock()
+        integrations.select.return_value.in_.return_value.execute.return_value.data = [
+            {
+                'id': 4,
+                'module_id': 'shopee',
+                'instance_name': 'Loja 1',
+                'description': 'Shopee principal',
+                'platform_slug': 'shopee',
+            }
+        ]
+        products = MagicMock()
+        products.select.return_value.in_.return_value.execute.return_value.data = [
+            {'id': 91, 'sku': 'SKU-2', 'nome': 'Produto interno'}
+        ]
+
+        with patch.object(wms.supabase_db, 'table', side_effect=[listings, integrations, products]):
+            result = wms.WebhookMonitoringService().list_unmapped_listing_exceptions(page=1, per_page=1)
+
+        self.assertEqual(result['exceptions'][0]['integration']['instance_name'], 'Loja 1')
+        self.assertEqual(result['exceptions'][0]['variacao_externa_id'], 'MODEL-2')
+        self.assertEqual(result['exceptions'][0]['sku_candidate_status'], 'UNICO')
+        self.assertEqual(result['exceptions'][0]['sku_candidates'][0]['id'], 91)
+        self.assertFalse(result['pagination']['has_more'])
+        listings.select.assert_called_once_with(
+            'id,integration_id,item_externo_id,variacao_externa_id,sku_anuncio,titulo,status,ultimo_erro,updated_at'
+        )
+        products.select.assert_called_once_with('id,sku,nome')
+
     def test_get_event_redacts_sensitive_payload_fields(self):
         table = MagicMock()
         table.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [

@@ -1,11 +1,13 @@
 from nistiprint_shared.database.database import db
 from datetime import datetime
+from sqlalchemy import Uuid
 
 class EntregaProducao(db.Model):
     __tablename__ = 'entrega_producao'
 
     id = db.Column(db.String(36), primary_key=True)
     item_demanda_id = db.Column(db.Integer, db.ForeignKey('itens_demanda.id'), nullable=True)  # Pode ser nulo para coletas consolidadas
+    operation_id = db.Column(Uuid(as_uuid=False), nullable=True)  # FK é criada pela migration no Supabase
     data_entrega = db.Column(db.Date, nullable=False)
     quantidade = db.Column(db.Integer, nullable=False)
     demanda_id = db.Column(db.Integer, db.ForeignKey('demandas_producao.id'), nullable=False)

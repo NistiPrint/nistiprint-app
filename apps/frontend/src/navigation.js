@@ -14,7 +14,7 @@
 //   - scripts/verificar-rotas.mjs -> coletarHrefs()
 
 import {
-  Activity, BarChart3, Boxes, Building, CalendarClock, ClipboardList, Cog, Database, Factory,
+  Activity, AlertCircle, BarChart3, Boxes, Building, CalendarClock, ClipboardList, Cog, Database, Factory,
   Download, HardDrive, Home, Layers, MapPin, Monitor, Package, Printer, Scale, ScrollText,
   Settings, Share2, ShieldCheck, ShoppingCart, Sparkles, Store, Tag, TowerControl,
   Trello, Truck, Users, Warehouse,
@@ -246,7 +246,7 @@ export const SECOES = [
           { name: 'Histórico Produção', href: '/relatorios/historico-producao', icon: Factory, description: 'Relatórios de histórico de produção', permission: { a: 'relatorios', I: 'ler' } },
           { name: 'Histórico Coletas', href: '/relatorios/historico-coletas', icon: Truck, description: 'Histórico de saídas e coletas', permission: { a: 'relatorios', I: 'ler' } },
           { name: 'Monitoramento de Estoque', href: '/relatorios/monitoramento-estoque', icon: Activity, description: 'Status de processos assíncronos', permission: { a: 'relatorios', I: 'ler' } },
-          { name: 'Webhooks', href: '/relatorios/webhooks', icon: Database, description: 'Entregas e reprocessamento de eventos' },
+          { name: 'Webhooks', href: '/relatorios/webhooks', icon: Database, description: 'Entregas e reprocessamento de eventos', adminOnly: true },
           { name: 'Histórico Gerencial', href: '/relatorios/gerencial-historico', icon: Factory, description: 'Consolidado gerencial por período' },
           { name: 'Logs de IA', href: '/ai/logs', icon: Database, description: 'Execuções e erros de IA', adminOnly: true, exato: true },
         ],
@@ -259,6 +259,7 @@ export const SECOES = [
     prefixos: ['/estoque'],
     grupos: [{ itens: [
       { name: 'Dashboard', href: '/estoque', icon: Activity, description: 'Resumo do estoque', exato: true, permission: { a: 'estoque', I: 'ler' } },
+      { name: 'Divergências', href: '/estoque/divergencias', icon: AlertCircle, description: 'Saldo atual comparado ao último movimento', permission: { a: 'estoque', I: 'ler' } },
       { name: 'Movimentar', href: '/estoque/movimentar', icon: Package, description: 'Registrar movimentações', permission: { a: 'estoque', I: 'ler' } },
       { name: 'Movimentação em Lote', href: '/estoque/movimentacao-lote', icon: Boxes, description: 'Movimentar vários itens', permission: { a: 'estoque', I: 'ler' } },
       { name: 'Posição', href: '/estoque/posicao', icon: Warehouse, description: 'Consultar saldo atual', permission: { a: 'estoque', I: 'ler' } },

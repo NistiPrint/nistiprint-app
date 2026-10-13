@@ -53,6 +53,7 @@ import PlanoImpressaoPage from './pages/despacho/PlanoImpressaoPage'
 import ArquivoDespachoPage from './pages/despacho/ArquivoDespachoPage'
 import EstoqueAjustePage from './pages/estoque/EstoqueAjustePage'
 import EstoqueDashboardPage from './pages/estoque/EstoqueDashboardPage'
+import EstoqueDivergenciasPage from './pages/estoque/EstoqueDivergenciasPage'
 import EstoqueHistoricoPage from './pages/estoque/EstoqueHistoricoPage'
 import EstoqueMovimentarPage from './pages/estoque/EstoqueMovimentarPage'
 import EstoquePosicaoPage from './pages/estoque/EstoquePosicaoPage'
@@ -194,6 +195,7 @@ function App() {
           <Route path='estoque' element={<ProtectedRoute permission={{ a: 'estoque', I: 'ler' }}><Outlet /></ProtectedRoute>}>
             <Route index element={<EstoqueDashboardPage />} />
             <Route path='dashboard' element={<EstoqueDashboardPage />} />
+            <Route path='divergencias' element={<EstoqueDivergenciasPage />} />
             <Route path='historico' element={<EstoqueHistoricoPage />} />
             <Route path='movimentar' element={<EstoqueMovimentarPage />} />
             <Route path='posicao' element={<EstoquePosicaoPage />} />
@@ -331,7 +333,7 @@ function App() {
             {/* Rota antiga da fila legada: mantida como redirecionamento p/ favoritos */}
             <Route path='fila-estoque' element={<Navigate to='/relatorios/monitoramento-estoque' replace />} />
             <Route path='monitoramento-estoque' element={<MonitoramentoEstoquePage />} />
-            <Route path='webhooks' element={<WebhooksPage />} />
+            <Route path='webhooks' element={<ProtectedRoute requireAdmin><WebhooksPage /></ProtectedRoute>} />
             <Route path='gerencial-historico' element={<GerencialHistorico />} />
           </Route>
 

@@ -8,6 +8,12 @@ export function useRealtimeDemandas(pendingChanges = {}) {
   const [error, setError] = useState(null);
   const isMounted = useRef(false);
   const pendingChangesRef = useRef(pendingChanges);
+  const requestVersion = useRef(0);
+  const invalidationTimer = useRef(null);
+  const realtimeRef = useRef(false);
+  const sseRef = useRef(false);
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
 
   // Manter ref atualizada para usar no fetch sem disparar o effect
   useEffect(() => {
@@ -36,6 +42,7 @@ export function useRealtimeDemandas(pendingChanges = {}) {
   };
 
   const fetchDemandas = useCallback(async (silent = false) => {
+    const version = ++requestVersion.current;
     if (!silent) setLoading(true);
     try {
       const response = await fetch('/api/v2/demanda_producao/', {
@@ -44,7 +51,7 @@ export function useRealtimeDemandas(pendingChanges = {}) {
       if (!response.ok) throw new Error('Falha ao carregar demandas');
       const data = await response.json();
       
-      if (isMounted.current) {
+      if (isMounted.current && version === requestVersion.current) {
         let newDemandas = data.demandas || [];
         
         // Mesclar mudanças pendentes locais
@@ -61,12 +68,13 @@ export function useRealtimeDemandas(pendingChanges = {}) {
         const sortedDemandas = sortDemandas(newDemandas);
         setDemandas(sortedDemandas);
         setError(null);
+        setLastUpdatedAt(new Date().toISOString());
       }
     } catch (e) {
-      if (isMounted.current) setError(e.message);
+      if (isMounted.current && version === requestVersion.current) setError(e.message);
       if (!silent) toast.error('Erro na sincronização: ' + e.message);
     } finally {
-      if (isMounted.current && !silent) setLoading(false);
+      if (isMounted.current && version === requestVersion.current) setLoading(false);
     }
   }, []);
 
@@ -74,30 +82,63 @@ export function useRealtimeDemandas(pendingChanges = {}) {
     isMounted.current = true;
     fetchDemandas();
 
-    // Supabase Realtime Listeners - Sempre ativos
+    const scheduleRefresh = () => {
+      if (invalidationTimer.current) clearTimeout(invalidationTimer.current);
+      invalidationTimer.current = setTimeout(() => fetchDemandas(true), 300);
+    };
+    const handleStockUpdate = () => scheduleRefresh();
+    const handleStreamState = (event) => {
+      sseRef.current = Boolean(event.detail?.connected);
+      if (isMounted.current) setRealtimeConnected(realtimeRef.current || sseRef.current);
+      if (sseRef.current) scheduleRefresh();
+    };
+    window.addEventListener('stock:updated', handleStockUpdate);
+    window.addEventListener('stock:stream-state', handleStreamState);
+
+    // Agrupa as invalidações geradas por várias linhas na mesma operação.
     const channel = supabase
       .channel('demandas-changes')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'demandas_producao' },
-        () => {
-          fetchDemandas(true);
-        }
+        scheduleRefresh
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'itens_demanda' },
-        () => {
-          fetchDemandas(true);
-        }
+        scheduleRefresh
       )
-      .subscribe();
+      .subscribe((status) => {
+        const connected = status === 'SUBSCRIBED';
+        realtimeRef.current = connected;
+        if (isMounted.current) setRealtimeConnected(connected || sseRef.current);
+        if (connected) fetchDemandas(true);
+      });
+
+    const recoveryPoll = setInterval(() => {
+      if (!realtimeRef.current && !sseRef.current) fetchDemandas(true);
+    }, 30000);
 
     return () => {
       isMounted.current = false;
+      if (invalidationTimer.current) clearTimeout(invalidationTimer.current);
+      clearInterval(recoveryPoll);
+      window.removeEventListener('stock:updated', handleStockUpdate);
+      window.removeEventListener('stock:stream-state', handleStreamState);
+      realtimeRef.current = false;
+      sseRef.current = false;
       supabase.removeChannel(channel);
     };
   }, [fetchDemandas]);
 
-  return { demandas, setDemandas, loading, error, refresh: () => fetchDemandas(true) };
+  return {
+    demandas,
+    setDemandas,
+    loading,
+    error,
+    realtimeConnected,
+    isStale: Boolean(error),
+    lastUpdatedAt,
+    refresh: () => fetchDemandas(true),
+  };
 }

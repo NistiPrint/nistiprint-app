@@ -1813,22 +1813,56 @@ def save_feedback(order_sn, avaliacao, texto_feedback=""):
     return payload
 
 
-def get_chat_messages(username, limit=None, integration_id=None):
-    if not username:
+def get_chat_messages(username, limit=None, integration_id=None, buyer_id=None):
+    if not username and buyer_id in (None, ""):
         return []
-    query = (
-        supabase_db.table("view_mensagens_chat_ai_v2")
-        .select("*")
-        .or_(f"from_user_name.eq.{username},to_user_name.eq.{username}")
-        .gte("created_at", (datetime.now(timezone.utc) - timedelta(days=CHAT_LOOKBACK_DAYS)).isoformat())
-        .order("created_at", desc=False)
-    )
-    if integration_id is not None:
-        query = query.eq("installed_integration_id", int(integration_id))
+    if buyer_id not in (None, "") and integration_id is None:
+        raise ValueError("integration_id obrigatorio para busca por buyer_id")
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=CHAT_LOOKBACK_DAYS)).isoformat()
+    conversation_ids = []
+    if buyer_id not in (None, ""):
+        conversations = (supabase_db.table("conversas_chat_shopee")
+                         .select("conversation_id")
+                         .eq("buyer_user_id", int(buyer_id))
+                         .eq("installed_integration_id", int(integration_id))
+                         .execute().data or [])
+        conversation_ids = [row["conversation_id"] for row in conversations]
+
+    def fetch(field, value):
+        rows = []
+        start = 0
+        while True:
+            query = (supabase_db.table("view_mensagens_chat_ai_v2").select("*")
+                     .eq(field, value).gte("created_at", cutoff)
+                     .order("created_at", desc=True).range(start, start + 499))
+            if integration_id is not None:
+                query = query.eq("installed_integration_id", int(integration_id))
+            page = query.execute().data or []
+            rows.extend(page)
+            if len(page) < 500:
+                return rows
+            start += 500
+
+    rows = []
+    for cid in conversation_ids:
+        rows.extend(fetch("conversation_id", cid))
+    if buyer_id not in (None, ""):
+        rows.extend(fetch("from_id", int(buyer_id)))
+        rows.extend(fetch("to_id", int(buyer_id)))
+    if username:
+        for field in ("from_user_name", "to_user_name"):
+            for row in fetch(field, username):
+                if buyer_id in (None, "") or (
+                    row.get("from_id") in (None, "") and row.get("to_id") in (None, "")
+                ):
+                    rows.append(row)
+    messages = list({str(row.get("id")): row for row in rows}.values())
+    messages.sort(key=lambda row: (_parse_datetime(row.get("created_at")) or
+                                   datetime.min.replace(tzinfo=timezone.utc), str(row.get("id"))))
     if limit:
-        query = query.limit(limit)
-    messages = query.execute().data or []
-    return compact_chat_messages(messages, username)
+        messages = messages[-int(limit):]
+    return compact_chat_messages(messages, username or "", buyer_id=buyer_id)
 
 
 def get_orders_with_chats(order_sn=None, limit=None):

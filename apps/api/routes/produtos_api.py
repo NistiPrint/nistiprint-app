@@ -12,8 +12,8 @@ import logging
 
 @produtos_api_bp.route('', methods=['GET'])
 def api_index():
-    page = int(request.args.get('page', 1))
-    per_page = int(request.args.get('per_page', 20))
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = max(1, min(100, request.args.get('per_page', 20, type=int)))
     q = request.args.get('q', '').strip()
     category_id = request.args.get('category_id', '').strip()
     status = request.args.get('status', '').strip()
@@ -31,7 +31,8 @@ def api_index():
         for p in produtos:
             basic_produtos.append({
                 'id': p.get('id'), 'sku': p.get('sku'), 'sku_mestre': p.get('sku'),
-                'name': p.get('nome') or p.get('name'), 'description': p.get('descricao') or p.get('description'),
+                'name': p.get('nome') or p.get('name'), 'nome': p.get('nome') or p.get('name'),
+                'description': p.get('descricao') or p.get('description'),
                 'categoria_id': p.get('categoria_id'), 'categoria_nome': categorias_map.get(p.get('categoria_id'), 'N/A'),
                 'status': p.get('status'), 'material_type': p.get('tipo_material') or p.get('material_type'),
                 'cost_price': p.get('preco_custo') or p.get('cost_price', 0), 'price': p.get('preco_venda') or p.get('price', 0),
@@ -51,7 +52,15 @@ def api_index():
 def api_produtos_por_setor():
     try:
         usuario = get_current_user()
-        produtos = product_service.get_products_by_sector(usuario['setor_id'])
+        setor_id = usuario.get('setor_id')
+        if not setor_id:
+            return jsonify({'error': 'Usuário sem setor associado.'}), 403
+        page = max(1, request.args.get('page', 1, type=int))
+        per_page = max(1, min(100, request.args.get('per_page', 100, type=int)))
+        categoria_id = request.args.get('category_id', type=int)
+        produtos, total = product_service.get_products_by_sector_paginated(
+            setor_id, page=page, per_page=per_page, categoria_id=categoria_id
+        )
         from nistiprint_shared.services.estoque_service import estoque_service
         saldos = estoque_service.get_saldos_em_lote([p['id'] for p in produtos])
         produtos_com_saldo = []
@@ -59,7 +68,14 @@ def api_produtos_por_setor():
             p_cs = p.copy()
             p_cs['saldo_atual'] = saldos.get(str(p['id']), {'quantidade': 0})['quantidade']
             produtos_com_saldo.append(p_cs)
-        return jsonify({'produtos': produtos_com_saldo, 'setor_usuario': usuario['setor_id']})
+        return jsonify({
+            'produtos': produtos_com_saldo,
+            'setor_usuario': setor_id,
+            'page': page,
+            'per_page': per_page,
+            'total': total,
+            'total_pages': max(1, (total + per_page - 1) // per_page),
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

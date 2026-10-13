@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -16,92 +16,132 @@ import {
   Filter
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { createOperationId } from '@/lib/operationId';
+
+const PENDING_BATCH_STORAGE_KEY = 'nistiprint:estoque:movimentacao-lote:pending:v1';
+
+const readPendingBatch = () => {
+  try {
+    const pending = JSON.parse(sessionStorage.getItem(PENDING_BATCH_STORAGE_KEY) || 'null');
+    if (
+      pending &&
+      typeof pending.operation_id === 'string' &&
+      Array.isArray(pending.movimentacoes) &&
+      pending.movimentacoes.length > 0
+    ) return pending;
+  } catch {
+    // A session storage ausente/corrompida não deve impedir o uso da página.
+  }
+  return null;
+};
 
 const MovimentacaoLotePage = () => {
   const [produtos, setProdutos] = useState([]);
-  const [movimentacoes, setMovimentacoes] = useState([]);
+  const [pendingCommand, setPendingCommand] = useState(readPendingBatch);
+  const [movimentacoes, setMovimentacoes] = useState(() => readPendingBatch()?.movimentacoes || []);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const [loadError, setLoadError] = useState('');
   const [categorias, setCategorias] = useState([]);
   const [categoriaSelecionada, setCategoriaSelecionada] = useState('');
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [identityReady, setIdentityReady] = useState(false);
+  const [produtoPage, setProdutoPage] = useState(1);
+  const [produtoTotalPages, setProdutoTotalPages] = useState(1);
 
   // Carregar informações do usuário e categorias
   useEffect(() => {
+    let active = true;
     const fetchUserInfoAndCategories = async () => {
       try {
+        setLoadError('');
         // Primeiro, obter informações do usuário para verificar se é admin
         const userInfoResponse = await fetch('/api/v2/current-user');
+        if (!userInfoResponse.ok) throw new Error('Não foi possível confirmar a sessão do usuário.');
         const userInfo = await userInfoResponse.json();
-
-        if (userInfoResponse.ok) {
-          setIsAdmin(userInfo.usuario?.is_admin || false);
-        }
+        const adminUser = userInfoResponse.ok && Boolean(userInfo.usuario?.is_admin);
+        if (!active) return;
+        setIsAdmin(adminUser);
 
         // Carregar categorias
         const categoriasResponse = await fetch('/api/v2/cadastros/categoria');
         const categoriasData = await categoriasResponse.json();
 
-        if (categoriasResponse.ok) {
+        if (active && categoriasResponse.ok) {
           setCategorias(categoriasData.categorias || []);
         }
-
-        // Carregar produtos com base nas permissões do usuário
-        let apiUrl = '/api/v2/produtos/por-setor';
-        if (isAdmin) {
-          apiUrl = '/api/v2/produtos?page=1&per_page=10000'; // Carregar todos os produtos para admin
-        }
-
-        const response = await fetch(apiUrl);
-        const data = await response.json();
-
-        if (response.ok) {
-          let produtosComSaldo = data.produtos || data.items || [];
-
-          // Para administradores, obter saldos de estoque para todos os produtos
-          if (isAdmin && produtosComSaldo.length > 0) {
-            const produtoIds = produtosComSaldo.map(p => p.id);
-            try {
-              const saldosResponse = await fetch('/api/v2/estoque/saldos-batch', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ produtos: produtoIds })
-              });
-
-              if (saldosResponse.ok) {
-                const saldosData = await saldosResponse.json();
-
-                // Associar saldos aos produtos
-                produtosComSaldo = produtosComSaldo.map(produto => ({
-                  ...produto,
-                  saldo_atual: saldosData.saldos?.[produto.id]?.quantidade || 0
-                }));
-              }
-            } catch (saldoError) {
-              console.error('Erro ao carregar saldos:', saldoError);
-              // Continuar sem saldos se houver erro
-              produtosComSaldo = produtosComSaldo.map(produto => ({
-                ...produto,
-                saldo_atual: 0
-              }));
-            }
-          }
-
-          setProdutos(produtosComSaldo);
-        } else {
-          toast.error('Erro ao carregar produtos: ' + (data.error || 'Ocorreu um erro desconhecido'));
-        }
+        if (active) setIdentityReady(true);
       } catch (error) {
-        toast.error('Não foi possível conectar ao servidor');
-      } finally {
-        setLoading(false);
+        const message = error.message || 'Não foi possível conectar ao servidor.';
+        if (active) {
+          setLoadError(message);
+          setLoading(false);
+          toast.error(message);
+        }
       }
     };
 
     fetchUserInfoAndCategories();
+    return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (!identityReady) return undefined;
+    let active = true;
+    const fetchProductPage = async () => {
+      setLoading(true);
+      setLoadError('');
+      try {
+        const params = new URLSearchParams({ page: String(produtoPage), per_page: '100' });
+        if (categoriaSelecionada) params.set('category_id', categoriaSelecionada);
+        const endpoint = isAdmin ? '/api/v2/produtos' : '/api/v2/produtos/por-setor';
+        const response = await fetch(`${endpoint}?${params.toString()}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Não foi possível carregar esta página de produtos.');
+
+        let pageProducts = data.produtos || data.items || [];
+        if (!Array.isArray(pageProducts)) throw new Error('A resposta de produtos está inválida.');
+        if (isAdmin && pageProducts.length > 0) {
+          const saldoResponse = await fetch('/api/v2/estoque/saldos-batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ product_ids: pageProducts.map((product) => product.id) }),
+          });
+          const saldoData = await saldoResponse.json();
+          if (!saldoResponse.ok) throw new Error(saldoData.error || 'Não foi possível confirmar os saldos do depósito.');
+          pageProducts = pageProducts.map((product) => {
+            const balance = saldoData[String(product.id)];
+            if (!balance || balance.quantidade === undefined || balance.quantidade === null) {
+              throw new Error(`Não foi possível confirmar o saldo do produto ${product.id}.`);
+            }
+            return { ...product, saldo_atual: balance.quantidade };
+          });
+        }
+        if (active) {
+          setProdutos(pageProducts);
+          setProdutoTotalPages(Math.max(1, Number(data.total_pages) || 1));
+        }
+      } catch (error) {
+        if (active) {
+          setProdutos([]);
+          setLoadError(error.message || 'Não foi possível carregar os produtos.');
+          toast.error(error.message || 'Não foi possível carregar os produtos.');
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    fetchProductPage();
+    return () => { active = false; };
+  }, [identityReady, isAdmin, produtoPage, categoriaSelecionada]);
 
   // Função para adicionar movimentação
   const adicionarMovimentacao = (produtoId, tipo) => {
+    if (pendingCommand) {
+      toast.warning('Este lote tem resultado pendente. Repita o envio com o mesmo identificador antes de alterá-lo.');
+      return;
+    }
     const produto = produtos.find(p => p.id === produtoId);
     if (!produto) return;
 
@@ -146,14 +186,41 @@ const MovimentacaoLotePage = () => {
 
   // Função para remover movimentação
   const removerMovimentacao = (produtoId) => {
+    if (pendingCommand) return;
     setMovimentacoes(movimentacoes.filter(m => m.produto_id !== produtoId));
   };
 
   // Função para salvar movimentações em lote
   const salvarMovimentacoes = async () => {
+    if (savingRef.current || saving) return;
     if (movimentacoes.length === 0) {
       toast.warning('Nenhuma movimentação: Adicione pelo menos uma movimentação para salvar');
       return;
+    }
+    savingRef.current = true;
+    setSaving(true);
+
+    const command = pendingCommand || {
+      operation_id: createOperationId(),
+      movimentacoes: movimentacoes.map(({ produto_id, quantidade, tipo_movimento, deposito_id, motivo, documento_referencia }) => ({
+        produto_id,
+        quantidade,
+        tipo_movimento,
+        ...(deposito_id ? { deposito_id } : {}),
+        ...(motivo ? { motivo } : {}),
+        ...(documento_referencia ? { documento_referencia } : {}),
+      })),
+    };
+    if (!pendingCommand) {
+      try {
+        sessionStorage.setItem(PENDING_BATCH_STORAGE_KEY, JSON.stringify(command));
+      } catch {
+        savingRef.current = false;
+        setSaving(false);
+        toast.error('Não foi possível salvar a identidade do lote nesta sessão; nenhuma movimentação foi enviada.');
+        return;
+      }
+      setPendingCommand(command);
     }
 
     try {
@@ -162,27 +229,35 @@ const MovimentacaoLotePage = () => {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ movimentacoes }),
+        body: JSON.stringify(command),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (response.ok) {
-        toast.success(`Movimentações salvas com sucesso: ${data.sucesso} movimentações realizadas com sucesso. ${data.falhas} falhas ocorreram.`);
-        // Limpar lista de movimentações após salvar
+        sessionStorage.removeItem(PENDING_BATCH_STORAGE_KEY);
+        setPendingCommand(null);
+        toast.success(`Lote ${data.operation_id || command.operation_id} confirmado: ${data.sucesso} movimentações aplicadas.`);
         setMovimentacoes([]);
+      } else if ([400, 403, 422].includes(response.status)) {
+        sessionStorage.removeItem(PENDING_BATCH_STORAGE_KEY);
+        setPendingCommand(null);
+        toast.error('Lote não aplicado: ' + (data.error || 'Revise os dados e tente novamente.'));
       } else {
-        toast.error('Erro ao salvar movimentações: ' + (data.error || 'Ocorreu um erro desconhecido'));
+        setPendingCommand(command);
+        toast.error(`${data.error || 'Resultado do lote ainda não confirmado.'} Repita o envio para consultar/aplicar o mesmo lote.`);
       }
     } catch (error) {
-      toast.error('Não foi possível conectar ao servidor');
+      setPendingCommand(command);
+      toast.error('Não foi possível confirmar o resultado. O lote foi preservado; repita o envio com a mesma identidade.');
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
-  // Função para filtrar produtos por categoria
-  const produtosFiltrados = categoriaSelecionada
-    ? produtos.filter(produto => produto.categoria_id === parseInt(categoriaSelecionada))
-    : produtos;
+  // A categoria já é aplicada na consulta paginada do servidor.
+  const produtosFiltrados = produtos;
 
   return (
     <div className="movimentacao-lote-page space-y-6">
@@ -192,6 +267,11 @@ const MovimentacaoLotePage = () => {
             <Package size={24} />
             Movimentação de Estoque em Lote
           </CardTitle>
+          {pendingCommand && (
+            <CardDescription role="status">
+              Resultado pendente para {pendingCommand.operation_id}. Repita o envio para recuperar a confirmação; os itens estão bloqueados para preservar o conteúdo original.
+            </CardDescription>
+          )}
           <CardDescription>
             {isAdmin
               ? 'Selecione produtos e registre entradas ou saídas em lote. Você pode filtrar por categoria.'
@@ -217,7 +297,10 @@ const MovimentacaoLotePage = () => {
                 <label htmlFor="categoria-select" className="block text-sm font-medium mb-2">
                   Categoria
                 </label>
-                <Select value={categoriaSelecionada} onValueChange={setCategoriaSelecionada}>
+                <Select value={categoriaSelecionada} onValueChange={(value) => {
+                  setCategoriaSelecionada(value);
+                  setProdutoPage(1);
+                }}>
                   <SelectTrigger id="categoria-select" className="w-full">
                     <SelectValue placeholder="Selecione uma categoria (opcional)" />
                   </SelectTrigger>
@@ -233,7 +316,10 @@ const MovimentacaoLotePage = () => {
               <div className="flex items-end">
                 <Button
                   variant="outline"
-                  onClick={() => setCategoriaSelecionada('')}
+                  onClick={() => {
+                    setCategoriaSelecionada('');
+                    setProdutoPage(1);
+                  }}
                   disabled={!categoriaSelecionada}
                 >
                   Limpar Filtro
@@ -271,6 +357,12 @@ const MovimentacaoLotePage = () => {
                       Carregando produtos...
                     </TableCell>
                   </TableRow>
+                ) : loadError ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center text-destructive" role="alert">
+                      {loadError}
+                    </TableCell>
+                  </TableRow>
                 ) : produtosFiltrados.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center">
@@ -295,6 +387,7 @@ const MovimentacaoLotePage = () => {
                           min="1"
                           placeholder="Quantidade"
                           className="w-32"
+                          disabled={Boolean(pendingCommand)}
                         />
                       </TableCell>
                       <TableCell>
@@ -304,6 +397,7 @@ const MovimentacaoLotePage = () => {
                             size="sm"
                             onClick={() => adicionarMovimentacao(produto.id, 'ENTRADA')}
                             title="Registrar Entrada"
+                            disabled={Boolean(pendingCommand) || saving}
                           >
                             <TrendingUp size={16} className="mr-1" />
                             Entrada
@@ -313,6 +407,7 @@ const MovimentacaoLotePage = () => {
                             size="sm"
                             onClick={() => adicionarMovimentacao(produto.id, 'SAIDA')}
                             title="Registrar Saída"
+                            disabled={Boolean(pendingCommand) || saving}
                           >
                             <TrendingDown size={16} className="mr-1" />
                             Saída
@@ -324,6 +419,23 @@ const MovimentacaoLotePage = () => {
                 )}
               </TableBody>
             </Table>
+          </div>
+          <div className="flex items-center justify-between mt-4">
+            <Button
+              variant="outline"
+              disabled={loading || produtoPage <= 1}
+              onClick={() => setProdutoPage((page) => Math.max(1, page - 1))}
+            >
+              Anterior
+            </Button>
+            <span className="text-sm text-muted-foreground">Página {produtoPage} de {produtoTotalPages}</span>
+            <Button
+              variant="outline"
+              disabled={loading || produtoPage >= produtoTotalPages}
+              onClick={() => setProdutoPage((page) => Math.min(produtoTotalPages, page + 1))}
+            >
+              Próxima
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -370,6 +482,7 @@ const MovimentacaoLotePage = () => {
                           variant="outline"
                           size="sm"
                           onClick={() => removerMovimentacao(mov.produto_id)}
+                          disabled={Boolean(pendingCommand) || saving}
                         >
                           <Trash2 size={16} className="mr-1" />
                           Remover
@@ -385,11 +498,11 @@ const MovimentacaoLotePage = () => {
           <div className="flex justify-end mt-6">
             <Button
               size="lg"
-              disabled={movimentacoes.length === 0}
+              disabled={movimentacoes.length === 0 || saving}
               onClick={salvarMovimentacoes}
             >
               <Save size={16} className="mr-2" />
-              Salvar Todas as Movimentações
+              {saving ? 'Enviando...' : pendingCommand ? 'Repetir Lote Pendente' : 'Salvar Todas as Movimentações'}
             </Button>
           </div>
         </CardContent>

@@ -1,18 +1,29 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any, List
+import hashlib
+import json
 from nistiprint_shared.services.demanda_producao_service import demanda_producao_service
 from nistiprint_shared.services.canal_venda_service import canal_venda_service
+from nistiprint_shared.database.supabase_db_service import supabase_db
 
 
 class PriorityCalculationService:
     """
     Service for calculating demand priorities based on multiple factors.
     """
+
+    RULES_REVISION = "priority-rules-v1"
     
     def __init__(self):
         self.demanda_service = demanda_producao_service
 
-    def calculate_priority_score(self, demanda_data: Dict[str, Any], item_data: Dict[str, Any] = None, canal_info: Dict[str, Any] = None) -> int:
+    def calculate_priority_score(
+        self,
+        demanda_data: Dict[str, Any],
+        item_data: Dict[str, Any] = None,
+        canal_info: Dict[str, Any] = None,
+        reference_date: date | None = None,
+    ) -> int:
         """
         Calculate priority score based on multiple factors.
         Higher score means higher priority.
@@ -78,7 +89,7 @@ class PriorityCalculationService:
         if data_entrega_str:
             try:
                 data_entrega = datetime.strptime(data_entrega_str, '%Y-%m-%d').date()
-                hoje = datetime.utcnow().date()
+                hoje = reference_date or datetime.now(timezone.utc).date()
                 dias_para_entrega = (data_entrega - hoje).days
 
                 if dias_para_entrega <= 0:
@@ -127,30 +138,83 @@ class PriorityCalculationService:
 
         return score
 
+    def explain_priority_score(
+        self,
+        demanda_data: Dict[str, Any],
+        item_data: Dict[str, Any] = None,
+        canal_info: Dict[str, Any] = None,
+        reference_date: date | None = None,
+    ) -> Dict[str, Any]:
+        """Return the exact calculation inputs needed to reproduce the score."""
+        reference_date = reference_date or datetime.now(timezone.utc).date()
+        demand_fields = (
+            "categoria_temporal", "modalidade_logistica", "data_entrega",
+            "manual_priority_score", "classificacao_cliente", "categoria_demanda",
+            "is_flex", "tipo_demanda",
+        )
+        item_fields = ("quantidade_total", "manual_priority_score")
+        demand_inputs = {key: demanda_data.get(key) for key in demand_fields}
+        item_inputs = {key: (item_data or {}).get(key) for key in item_fields}
+        channel_inputs = {
+            "regras_logisticas": (canal_info or {}).get("regras_logisticas")
+        }
+        score = self.calculate_priority_score(
+            demand_inputs, item_inputs, channel_inputs, reference_date=reference_date
+        )
+        if item_data is not None:
+            quantity = item_inputs["quantidade_total"] or 0
+            if quantity > 1000:
+                score += 50
+            elif quantity > 500:
+                score += 30
+            elif quantity > 100:
+                score += 10
+            score += item_inputs["manual_priority_score"] or 0
+        return {
+            "score": score,
+            "rules_revision": self.RULES_REVISION,
+            "reference_date": reference_date.isoformat(),
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "inputs": {
+                "demand": demand_inputs,
+                "item": item_inputs if item_data is not None else None,
+                "channel": channel_inputs,
+            },
+        }
+
     def calculate_item_priority_score(self, demanda_data: Dict[str, Any], item_data: Dict[str, Any], canal_info: Dict[str, Any] = None) -> int:
         """
         Calculate priority score for a specific item in a demand.
         """
-        # Start with the demand's priority score
-        score = self.calculate_priority_score(demanda_data, item_data, canal_info)
-        
-        # Adjust based on item-specific factors
-        quantidade_total = item_data.get('quantidade_total', 0)
-        
-        # Large orders might get priority
-        if quantidade_total > 1000:
-            score += 50
-        elif quantidade_total > 500:
-            score += 30
-        elif quantidade_total > 100:
-            score += 10
-            
-        # Manual priority for item
-        item_manual_priority = item_data.get('manual_priority_score', 0)
-        if item_manual_priority:
-            score += item_manual_priority
-            
-        return score
+        return self.explain_priority_score(demanda_data, item_data, canal_info)["score"]
+
+    def persist_score_snapshots(self, snapshots: List[Dict[str, Any]]) -> None:
+        """Persist reproducible decision inputs in one database request."""
+        if snapshots:
+            supabase_db.table("priority_score_snapshots").upsert(
+                snapshots, on_conflict="snapshot_key", ignore_duplicates=True
+            ).execute()
+
+    @staticmethod
+    def build_score_snapshot(demand_id: int, explanation: Dict[str, Any], item_id: int = None) -> Dict[str, Any]:
+        identity = {
+            "demand_id": int(demand_id),
+            "item_id": int(item_id) if item_id is not None else None,
+            "rules_revision": explanation["rules_revision"],
+            "reference_date": explanation["reference_date"],
+            "inputs": explanation["inputs"],
+        }
+        canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        return {
+            "snapshot_key": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "demand_id": identity["demand_id"],
+            "item_id": identity["item_id"],
+            "score": int(explanation["score"]),
+            "rules_revision": explanation["rules_revision"],
+            "reference_date": explanation["reference_date"],
+            "captured_at": explanation["captured_at"],
+            "inputs": json.loads(canonical)["inputs"],
+        }
 
     def get_prioritized_demandas(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
@@ -160,6 +224,7 @@ class PriorityCalculationService:
         active_demandas = self.demanda_service.get_demandas_by_status(['Pendente', 'Em Produção'])
 
         prioritized_items = []
+        score_snapshots = []
 
         # Pre-fetch channels for info enrichment
         try:
@@ -201,15 +266,22 @@ class PriorityCalculationService:
                         continue
 
                     # Calculate priority based on the new calculation method
-                    priority_score = self.calculate_item_priority_score(demanda, item, canal_info)
+                    explanation = self.explain_priority_score(demanda, item, canal_info)
+                    priority_score = explanation["score"]
 
                     item['prioridade_calculada'] = priority_score
+                    item['prioridade_reproducao'] = explanation
                     item['demanda_info'] = demanda_info
                     prioritized_items.append(item)
+                    if demanda.get("id") is not None and item.get("id") is not None:
+                        score_snapshots.append(self.build_score_snapshot(
+                            demanda["id"], explanation, item["id"]
+                        ))
 
         # Sort by calculated priority (higher first)
         prioritized_items.sort(key=lambda x: x['prioridade_calculada'], reverse=True)
 
+        self.persist_score_snapshots(score_snapshots)
         return prioritized_items[:limit]
 
     def is_capacity_tight(self, demanda_data: Dict[str, Any], start_date: str = None, end_date: str = None) -> bool:
@@ -236,4 +308,3 @@ class PriorityCalculationService:
 
 # Global instance for use throughout the application
 priority_calculation_service = PriorityCalculationService()
-

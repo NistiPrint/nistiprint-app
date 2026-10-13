@@ -27,7 +27,7 @@ class ProductService:
         """
         Get products with batching to avoid N+1 connection issues.
         """
-        query = self.table.select("*")
+        query = self.table.select("*", count="exact")
 
         if only_marketable:
             marketable_ids = category_service.get_marketable_ids()
@@ -56,8 +56,8 @@ class ProductService:
         query = query.order('id', desc=True)
 
         response = supabase_db.execute_with_retry(query)
-        if not response.data:
-            return [], 0
+        if response is None or getattr(response, 'data', None) is None:
+            raise RuntimeError("Não foi possível confirmar a consulta de produtos.")
 
         raw_products = response.data
         product_ids = [str(p['id']) for p in raw_products]
@@ -109,7 +109,13 @@ class ProductService:
 
             products.append(p_data)
 
-        total_count = len(products) if len(products) < per_page else (page * per_page) + 1
+        total_count = getattr(response, 'count', None)
+        if total_count is None:
+            # Compatibilidade com clientes/mocks sem contagem; a resposta exata
+            # é solicitada acima para o cliente Supabase normal.
+            total_count = (page - 1) * per_page + len(products)
+            if len(products) == per_page:
+                total_count += 1
         return products, math.ceil(total_count / per_page) if per_page > 0 else 1
 
     def _enrich_product_data_optimized(self, product, pre_fetched_cats, pre_fetched_uoms):
@@ -1601,8 +1607,32 @@ class ProductService:
             response = self.table.select("*").eq('setor_responsavel_id', setor_id).execute()
             return [dict(row) for row in response.data]
         except Exception as e:
-            print(f"Erro ao obter produtos por setor: {str(e)}")
-            return []
+            logging.exception("Erro ao obter produtos por setor %s", setor_id)
+            raise RuntimeError("Não foi possível confirmar os produtos do setor.") from e
+
+    def get_products_by_sector_paginated(
+        self,
+        setor_id: str,
+        *,
+        page: int = 1,
+        per_page: int = 100,
+        categoria_id: Optional[int] = None,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Return one bounded sector page and its exact row count."""
+        page = max(1, int(page))
+        per_page = max(1, min(100, int(per_page)))
+        query = self.table.select("*", count="exact").eq('setor_responsavel_id', setor_id)
+        if categoria_id is not None:
+            query = query.eq('categoria_id', categoria_id)
+        query = query.order('id').range((page - 1) * per_page, page * per_page - 1)
+        try:
+            response = supabase_db.execute_with_retry(query)
+            if response is None or getattr(response, 'data', None) is None:
+                raise RuntimeError("A consulta paginada de produtos não foi confirmada.")
+            return [dict(row) for row in response.data], int(getattr(response, 'count', 0) or 0)
+        except Exception as exc:
+            logging.exception("Erro ao obter produtos paginados do setor %s", setor_id)
+            raise RuntimeError("Não foi possível confirmar a página de produtos do setor.") from exc
 
 
 product_service = ProductService()

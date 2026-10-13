@@ -37,10 +37,12 @@ class NotificationService:
         """Fan out an event to the authenticated user's SSE connections."""
         try:
             self.redis.publish(self._user_channel(str(user_id)), json.dumps(event, default=str))
+            return True
         except Exception as exc:
             # The database remains the source of truth; the client refreshes its
             # snapshot after reconnecting if Redis is temporarily unavailable.
             print(f"Could not publish notification event for user {user_id}: {exc}")
+            return False
 
     def subscribe_user(self, user_id: str, sector: str | None = None):
         """Subscribe to personal events plus legacy sector and global notices."""
@@ -252,4 +254,3 @@ class NotificationService:
 
 # Global instance for use throughout the application
 notification_service = NotificationService()
-

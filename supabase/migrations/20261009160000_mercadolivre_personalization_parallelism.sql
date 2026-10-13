@@ -118,14 +118,26 @@ SELECT v.id, p.marketplace_integration_id, v.numero_pedido, v.numero_loja,
        v.nome_cliente, v.buyer_username, v.data_pedido, v.has_chat_messages,
        v.needs_ai_processing, v.ai_status,
        EXISTS (
-         SELECT 1 FROM jsonb_array_elements(COALESCE(v.itens, '[]'::jsonb)) AS item(value)
-         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(item.value->'personalizations', '[]'::jsonb)) AS personalization(value)
+         SELECT 1
+           FROM jsonb_array_elements(
+             CASE WHEN jsonb_typeof(v.itens) = 'array' THEN v.itens ELSE '[]'::jsonb END
+           ) AS item(value)
+         CROSS JOIN LATERAL jsonb_array_elements(
+             CASE WHEN jsonb_typeof(item.value->'personalizations') = 'array'
+                  THEN item.value->'personalizations' ELSE '[]'::jsonb END
+         ) AS personalization(value)
          WHERE NULLIF(trim(COALESCE(personalization.value->>'customization_name',
                                     personalization.value->>'customization_initial', '')), '') IS NOT NULL
        ) AS has_identified_name,
        (upper(COALESCE(v.ai_status, '')) = 'NO_PERSONALIZATION_FOUND' OR EXISTS (
-         SELECT 1 FROM jsonb_array_elements(COALESCE(v.itens, '[]'::jsonb)) AS item(value)
-         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(item.value->'personalizations', '[]'::jsonb)) AS personalization(value)
+         SELECT 1
+           FROM jsonb_array_elements(
+             CASE WHEN jsonb_typeof(v.itens) = 'array' THEN v.itens ELSE '[]'::jsonb END
+           ) AS item(value)
+         CROSS JOIN LATERAL jsonb_array_elements(
+             CASE WHEN jsonb_typeof(item.value->'personalizations') = 'array'
+                  THEN item.value->'personalizations' ELSE '[]'::jsonb END
+         ) AS personalization(value)
          WHERE upper(COALESCE(personalization.value->>'status', '')) = 'NO_PERSONALIZATION_FOUND'
             OR (upper(COALESCE(personalization.value->>'status', '')) = 'SUCCESS'
                 AND NULLIF(trim(COALESCE(personalization.value->>'customization_name',

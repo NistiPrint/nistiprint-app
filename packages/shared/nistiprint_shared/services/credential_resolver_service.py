@@ -231,7 +231,16 @@ class CredentialResolverService:
         self,
         installation_id: Any,
         tokens: dict[str, Any],
+        *,
+        refresh_lease_token: str | None = None,
+        installation_patch: dict[str, Any] | None = None,
     ) -> None:
+        if refresh_lease_token:
+            integration_secret_service.persist_tokens_with_refresh_lease(
+                installation_id, tokens, refresh_lease_token,
+                installation_patch=installation_patch,
+            )
+            return
         if tokens.get("access_token") not in (None, ""):
             integration_secret_service.put_secret(
                 "installed_integration",

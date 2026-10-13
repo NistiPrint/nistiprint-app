@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAuth } from '@/contexts/AuthContext'
+import { createOperationId } from '@/lib/operationId'
 import usePermissionsHook from '@/hooks/usePermissions'
 import { useRealtimeDemandas } from '@/lib/hooks/useRealtimeDemandas'
 import { deriveDemandFlow, DEMANDA_FLOW_OPTIONS } from '@/lib/demandaFlow'
@@ -33,6 +34,16 @@ const TERMINAL_DEMAND_STATUSES = ['FINALIZADO', 'CONCLUIDO', 'COLETADO', 'CANCEL
 // acao possivel em duas telas — e a segunda nao sabia dizer contra qual painel
 // de marketplace aquele total tinha sido conferido.
 const DRAFT_DEMAND_STATUSES = ['RASCUNHO']
+const collectionRequestId = (demandId, quantity) => {
+  const key = `demand-collection:${demandId}`
+  let saved = null
+  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null') } catch (_) {}
+  const quantityKey = String(quantity)
+  if (saved?.quantity === quantityKey && saved?.id) return { key, id: saved.id }
+  const id = createOperationId()
+  sessionStorage.setItem(key, JSON.stringify({ quantity: quantityKey, id }))
+  return { key, id }
+}
 
 function normalizeDemandStatus(status) {
   return String(status || '').trim().toUpperCase()
@@ -80,7 +91,7 @@ export default function DemandasPlanejamentoPage() {
   const [isPartialCollectionModalOpen, setIsPartialCollectionModalOpen] = useState(false)
   const [selectedDemandIdForCollection, setSelectedDemandIdForCollection] = useState(null)
 
-  const { demandas, setDemandas, loading, error, refresh } = useRealtimeDemandas(pendingChanges)
+  const { demandas, setDemandas, loading, error, refresh, realtimeConnected, lastUpdatedAt } = useRealtimeDemandas(pendingChanges)
 
   const fetchTotals = useCallback(async () => {
     try {
@@ -227,13 +238,15 @@ export default function DemandasPlanejamentoPage() {
   }, [canUseExpeditionDemandActions])
 
   const handleConfirmPartialCollection = async (demandaId, quantity) => {
+    const operation = collectionRequestId(demandaId, quantity)
     const response = await fetch(`/api/v2/demanda_producao/${demandaId}/coletar`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quantidade_coletar: quantity }),
+      body: JSON.stringify({ quantidade_coletar: quantity, operation_id: operation.id }),
     })
     const data = await response.json()
     if (response.ok) {
+      sessionStorage.removeItem(operation.key)
       toast.success(data.message || 'Coleta registrada.')
       refresh()
       return
@@ -345,18 +358,28 @@ export default function DemandasPlanejamentoPage() {
     return <div className='py-10 text-center text-slate-500'>Carregando demandas...</div>
   }
 
-  if (error) {
+  if (error && demandas.length === 0) {
     return <div className='py-10 text-center text-red-500'>Erro: {error}</div>
   }
 
   return (
     <TooltipProvider>
       <div className='container mx-auto py-8 pb-32'>
+        {error ? (
+          <div role='status' className='mb-4 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900'>
+            Exibindo dados possivelmente desatualizados. A sincronização falhou: {error}
+            <Button variant='link' onClick={refresh}>Tentar novamente</Button>
+          </div>
+        ) : null}
         <div className='mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between'>
           <div>
             <h1 className='text-3xl font-bold text-slate-900'>Demandas</h1>
             <p className='text-sm text-slate-500'>
               Acompanhe o que ja foi entregue ao galpao. Demanda nova nasce na Torre de Despacho.
+            </p>
+            <p className='text-xs text-slate-400'>
+              {realtimeConnected ? 'Atualização em tempo real conectada' : 'Tempo real desconectado; recuperação automática ativa'}
+              {lastUpdatedAt ? ` · Atualizado ${new Date(lastUpdatedAt).toLocaleTimeString()}` : ''}
             </p>
           </div>
 

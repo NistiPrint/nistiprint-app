@@ -44,7 +44,16 @@ def _auth_headers(integration: Dict) -> Dict:
     access_token = _resolve_access_token(integration)
     if not access_token:
         raise ValueError("Access token para Mercado Livre nao encontrado.")
-
+    integration_id = (integration.get("installed_integration_id") or
+                      integration.get("integration_id") or integration.get("id"))
+    try:
+        integration_id = int(integration_id)
+    except (TypeError, ValueError) as error:
+        raise ValueError("ID da integração Mercado Livre é obrigatório para aplicar rate limit") from error
+    from nistiprint_shared.services.mercadolivre_rate_limit import (
+        mercadolivre_rate_limit_coordinator,
+    )
+    mercadolivre_rate_limit_coordinator.acquire(integration_id, "marketplace_http")
     return {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json"

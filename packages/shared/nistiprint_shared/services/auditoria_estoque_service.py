@@ -1,32 +1,46 @@
 from datetime import datetime
 from typing import List, Optional, Dict, Any
+from decimal import Decimal, InvalidOperation
+import uuid
 from nistiprint_shared.database.database import db
 from nistiprint_shared.models.contagem_auditoria import ContagemAuditoria
 from nistiprint_shared.services.estoque_service import estoque_service
-from nistiprint_shared.services.product_service import product_service
 from nistiprint_shared.services.deposito_service import deposito_service
+from nistiprint_shared.services.estoque_command_service import EstoqueCommandConflict
 
 class AuditoriaEstoqueService:
     def registrar_contagem(self, produto_id: int, deposito_id: int, quantidade_contada: float, 
-                          usuario_id: int, observacao: str = None, sessao_id: str = None) -> Dict[str, Any]:
+                          usuario_id: int, observacao: str = None, sessao_id: str = None,
+                          user_context: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Registra uma nova contagem física para auditoria (registro paralelo).
         Captura o saldo do sistema no momento exato (snapshot).
         """
+        try:
+            quantidade = Decimal(str(quantidade_contada))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError('A quantidade contada deve ser numérica.') from exc
+        if not quantidade.is_finite() or quantidade < 0:
+            raise ValueError('A quantidade contada deve ser finita e não negativa.')
+        if not deposito_service.get_by_id(deposito_id):
+            raise ValueError(f'Depósito {deposito_id} não encontrado.')
+        estoque_service._validate_stock_eligibility(produto_id)
+        estoque_service._validate_sector_permission(produto_id, user_context)
+
         # 1. Capturar Snapshot do Sistema
         # get_saldo_atual retorna dict: {'quantidade': 10.0, ...}
         saldo_atual_info = estoque_service.get_saldo_atual(produto_id, deposito_id)
         saldo_sistema_snapshot = float(saldo_atual_info.get('quantidade', 0))
         
         # 2. Calcular Diferença
-        diferenca = quantidade_contada - saldo_sistema_snapshot
+        diferenca = float(quantidade) - saldo_sistema_snapshot
         
         # 3. Criar Registro
         nova_contagem = ContagemAuditoria(
             produto_id=produto_id,
             deposito_id=deposito_id,
             usuario_id=usuario_id,
-            quantidade_contada=quantidade_contada,
+            quantidade_contada=float(quantidade),
             saldo_sistema_snapshot=saldo_sistema_snapshot,
             diferenca=diferenca,
             data_contagem=datetime.utcnow(),
@@ -62,7 +76,8 @@ class AuditoriaEstoqueService:
     def obter_contagem(self, contagem_id: int) -> Optional[ContagemAuditoria]:
         return ContagemAuditoria.query.get(contagem_id)
 
-    def aprovar_contagem(self, contagem_id: int, usuario_aprovador_id: int) -> Dict[str, Any]:
+    def aprovar_contagem(self, contagem_id: int, usuario_aprovador_id: int,
+                         user_context: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Aprova a contagem e efetiva o ajuste de estoque.
         ATENÇÃO: O ajuste é feito para igualar o estoque à 'quantidade_contada'.
@@ -86,13 +101,20 @@ class AuditoriaEstoqueService:
             # Se quisermos considerar movimentações no intervalo, teríamos que recalcular.
             # Por simplicidade e definição de "Balanço", ajustamos para o valor contado.
             
+            operation_id = str(uuid.uuid5(
+                uuid.NAMESPACE_URL, f'nistiprint:auditoria-contagem:{contagem.id}'
+            ))
             estoque_service.registrar_balanco(
                 produto_id=contagem.produto_id,
                 deposito_id=contagem.deposito_id,
                 quantidade_ajuste=contagem.quantidade_contada,
-                motivo=f"Auditoria Aprovada (ID: {contagem.id}). Obs: {contagem.observacao or ''}",
+                motivo=f"Auditoria aprovada (ID: {contagem.id}). {contagem.observacao or ''}".strip(),
+                observacao=str(contagem.id),
                 usuario_id=usuario_aprovador_id,
-                user_context=None # Poderíamos passar contexto se disponível
+                user_context=user_context,
+                operation_id=operation_id,
+                idempotency_key=f'auditoria-contagem:{contagem.id}',
+                expected_saldo=contagem.saldo_sistema_snapshot,
             )
             
             # 2. Atualizar Registro de Auditoria
@@ -103,6 +125,15 @@ class AuditoriaEstoqueService:
             db.session.commit()
             return contagem.to_dict()
             
+        except PermissionError:
+            db.session.rollback()
+            raise
+        except EstoqueCommandConflict:
+            db.session.rollback()
+            raise
+        except ValueError:
+            db.session.rollback()
+            raise
         except Exception as e:
             db.session.rollback()
             raise Exception(f"Erro ao aprovar contagem: {str(e)}")

@@ -29,6 +29,8 @@ class TestReservarAlocacaoParaDemanda(unittest.TestCase):
     def test_reserva_soma_e_nao_da_saida(self, estoque_mock, db_mock):
         db_mock.execute_with_retry.return_value = _RespostaFake([])
         db_mock.table.return_value = MagicMock()
+        db_mock.rpc.return_value.execute.return_value = _RespostaFake({'status': 'CONFIRMADO'})
+        estoque_mock._resolve_deposito.return_value = 1
 
         resultado = self.service.reservar_alocacao_para_demanda(
             product_id=75,
@@ -45,8 +47,11 @@ class TestReservarAlocacaoParaDemanda(unittest.TestCase):
         self.assertEqual(resultado['quantidade_reservada'], 5.0)
         self.assertEqual(resultado['itens'], 2)
 
-        # Reserva o total de uma vez, e NUNCA registra saida.
-        estoque_mock.reservar_estoque.assert_called_once_with(75, 5.0, 1)
+        # Saldo e alocações são gravados por uma única RPC transacional.
+        db_mock.rpc.assert_called_once()
+        self.assertEqual(db_mock.rpc.call_args.args[0], 'reservar_alocacoes_estoque')
+        self.assertEqual(len(db_mock.rpc.call_args.args[1]['p_allocations']), 2)
+        estoque_mock.reservar_estoque.assert_not_called()
         estoque_mock.registrar_saida.assert_not_called()
 
     @patch('nistiprint_shared.services.demanda_alocacao.estoque.supabase_db')
@@ -65,6 +70,8 @@ class TestReservarAlocacaoParaDemanda(unittest.TestCase):
     def test_quantidade_zero_ou_negativa_e_descartada(self, estoque_mock, db_mock):
         db_mock.execute_with_retry.return_value = _RespostaFake([])
         db_mock.table.return_value = MagicMock()
+        db_mock.rpc.return_value.execute.return_value = _RespostaFake({'status': 'CONFIRMADO'})
+        estoque_mock._resolve_deposito.return_value = 1
 
         resultado = self.service.reservar_alocacao_para_demanda(
             product_id=75,
@@ -78,6 +85,7 @@ class TestReservarAlocacaoParaDemanda(unittest.TestCase):
 
         self.assertEqual(resultado['quantidade_reservada'], 2.0)
         self.assertEqual(resultado['itens'], 1)
+        estoque_mock.reservar_estoque.assert_not_called()
 
 
 class TestConsumirAlocacoesDoItem(unittest.TestCase):
@@ -86,52 +94,24 @@ class TestConsumirAlocacoesDoItem(unittest.TestCase):
 
     @patch('nistiprint_shared.services.demanda_alocacao.estoque.supabase_db')
     @patch('nistiprint_shared.services.demanda_alocacao.estoque.estoque_service')
-    def test_libera_reserva_e_marca_consumida(self, estoque_mock, db_mock):
-        db_mock.execute_with_retry.side_effect = [
-            _RespostaFake([
-                {'id': 'a1', 'produto_id': '75', 'quantidade_alocada': 3},
-                {'id': 'a2', 'produto_id': '75', 'quantidade_alocada': 2},
-            ]),
-            _RespostaFake([{'id': 'a1'}]),
-            _RespostaFake([{'id': 'a2'}]),
-        ]
-        db_mock.table.return_value = MagicMock()
-
-        total = self.service.consumir_alocacoes_do_item(2719)
-
-        self.assertEqual(total, 5.0)
-        self.assertEqual(estoque_mock.liberar_reserva.call_count, 2)
-        estoque_mock.liberar_reserva.assert_any_call(75, 3.0, None)
-        estoque_mock.liberar_reserva.assert_any_call(75, 2.0, None)
+    def test_nao_libera_reserva_antes_do_movimento_confirmado(self, estoque_mock, db_mock):
+        with self.assertRaisesRegex(RuntimeError, 'junto com o movimento CONS_INT'):
+            self.service.consumir_alocacoes_do_item(2719)
+        estoque_mock.liberar_reserva.assert_not_called()
 
     @patch('nistiprint_shared.services.demanda_alocacao.estoque.supabase_db')
     @patch('nistiprint_shared.services.demanda_alocacao.estoque.estoque_service')
     def test_item_sem_alocacao_e_no_op(self, estoque_mock, db_mock):
-        db_mock.execute_with_retry.return_value = _RespostaFake([])
-        db_mock.table.return_value = MagicMock()
-
-        total = self.service.consumir_alocacoes_do_item(999)
-
-        self.assertEqual(total, 0.0)
+        with self.assertRaisesRegex(RuntimeError, 'junto com o movimento CONS_INT'):
+            self.service.consumir_alocacoes_do_item(999)
         estoque_mock.liberar_reserva.assert_not_called()
 
     @patch('nistiprint_shared.services.demanda_alocacao.estoque.supabase_db')
     @patch('nistiprint_shared.services.demanda_alocacao.estoque.estoque_service')
     def test_falha_numa_alocacao_nao_derruba_as_outras(self, estoque_mock, db_mock):
-        db_mock.execute_with_retry.side_effect = [
-            _RespostaFake([
-                {'id': 'a1', 'produto_id': '75', 'quantidade_alocada': 3},
-                {'id': 'a2', 'produto_id': '76', 'quantidade_alocada': 2},
-            ]),
-            _RespostaFake([{'id': 'a2'}]),
-        ]
-        db_mock.table.return_value = MagicMock()
-        estoque_mock.liberar_reserva.side_effect = [RuntimeError('boom'), None]
-
-        total = self.service.consumir_alocacoes_do_item(2719)
-
-        # A primeira falhou; a segunda foi adiante.
-        self.assertEqual(total, 2.0)
+        with self.assertRaisesRegex(RuntimeError, 'junto com o movimento CONS_INT'):
+            self.service.consumir_alocacoes_do_item(2719)
+        estoque_mock.liberar_reserva.assert_not_called()
 
 
 if __name__ == '__main__':

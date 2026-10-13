@@ -2,16 +2,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, request
-from routes.auth import admin_required, check_permission
+from flask import Blueprint, jsonify, request
+from routes.auth import _active_session_user, admin_required, check_permission, user_has_permission
 from nistiprint_shared.database.supabase_db_service import supabase_db
 
 task_center_bp = Blueprint("task_center", __name__)
+logger = logging.getLogger(__name__)
 _SECRET_VALUE = re.compile(
     r"(?i)((?:access|refresh|id)?[_-]?(?:token|secret|password|senha)(?:[_-]?hash)?|"
     r"api[_-]?key|access[_-]?key|private[_-]?key|service[_-]?role[_-]?key|partner[_-]?key|authorization|credential)"
@@ -32,6 +34,95 @@ def _json(value):
         except (TypeError, ValueError):
             return {}
     return {}
+
+
+def _count_rows(query) -> int:
+    """Read an exact count without transferring the matching rows."""
+    result = query.select("id", count="exact", head=True).execute()
+    return int(getattr(result, "count", 0) or 0)
+
+
+def _summary_section(label: str, read_count):
+    try:
+        return {"status": "available", **read_count()}
+    except Exception:
+        logger.exception("Home operational summary section unavailable: %s", label)
+        return {"status": "unavailable", "error": "Não foi possível consultar esta seção."}
+
+
+@task_center_bp.get("/api/v2/home/operational-summary")
+def home_operational_summary():
+    """Return small permission-scoped counts for the authenticated user's home."""
+    user = _active_session_user()
+    if not user:
+        return jsonify({"success": False, "message": "Autenticação requerida."}), 401
+
+    summary = {"measured_at": _now().isoformat(), "sections": {}}
+    sections = summary["sections"]
+
+    if user_has_permission(user, "vendas", "ler"):
+        def order_counts():
+            webhook_attention = _count_rows(
+                supabase_db.table("webhook_events")
+                .in_("last_status", ["pending", "pending_retry", "manual_intervention"])
+            )
+            order_reconciliation = _count_rows(
+                supabase_db.table("pending_order_reconciliations")
+                .in_("status", ["pending", "failed"])
+            )
+            return {
+                "webhook_attention": webhook_attention,
+                "order_reconciliation_open": order_reconciliation,
+            }
+        sections["orders"] = _summary_section("orders", order_counts)
+
+    if user_has_permission(user, "demanda_producao", "ler"):
+        sections["production"] = _summary_section(
+            "production",
+            lambda: {
+                "items_with_processing_error": _count_rows(
+                    supabase_db.table("itens_demanda").eq("status_processamento", "ERRO")
+                )
+            },
+        )
+
+    if user_has_permission(user, "producao", "ler"):
+        def print_counts():
+            unresolved = _count_rows(
+                supabase_db.table("impressao_capas_envios")
+                .in_("status", ["PREPARADO", "ENVIANDO", "ENVIADO_SPOOLER", "RESULTADO_DESCONHECIDO"])
+            )
+            unknown = _count_rows(
+                supabase_db.table("impressao_capas_envios")
+                .eq("status", "RESULTADO_DESCONHECIDO")
+            )
+            return {"unresolved_sends": unresolved, "unknown_results": unknown}
+        sections["printing"] = _summary_section("printing", print_counts)
+
+    if user_has_permission(user, "estoque", "ler"):
+        def inventory_counts():
+            unconfirmed_operations = _count_rows(
+                supabase_db.table("estoque_operacoes").eq("status", "PROCESSANDO")
+            )
+            outbox_pending = _count_rows(
+                supabase_db.table("estoque_eventos_outbox").is_("delivered_at", "null")
+            )
+            outbox_failed = _count_rows(
+                supabase_db.table("estoque_eventos_outbox")
+                .is_("delivered_at", "null")
+                .not_.is_("last_error", "null")
+            )
+            return {
+                "unconfirmed_operations": unconfirmed_operations,
+                "outbox_pending": outbox_pending,
+                "outbox_failed": outbox_failed,
+                "balance_divergences": _count_rows(
+                    supabase_db.table("v_estoque_saldo_ledger_divergencias")
+                ),
+            }
+        sections["inventory"] = _summary_section("inventory", inventory_counts)
+
+    return jsonify({"success": True, **summary})
 
 
 def _sanitize(value):

@@ -1,6 +1,10 @@
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.product_service import product_service # Importar product_service
 from typing import List, Dict, Any
+import hashlib
+import json
+import uuid
+from decimal import Decimal, InvalidOperation
 from nistiprint_shared.models.bom import BOMItem # Assuming models/bom.py exists and defines BOMItem
 import logging
 
@@ -104,7 +108,7 @@ class BomService:
             return {}
         
         # SQL is the canonical source for inherited/group-overridden BOMs.
-        unique_ids = list(set([int(pid) for pid in product_ids if str(pid).isdigit()]))
+        unique_ids = sorted(set([int(pid) for pid in product_ids if str(pid).isdigit()]))
         
         if not unique_ids:
             return {}
@@ -129,6 +133,186 @@ class BomService:
                     produto_pai_id=row.get('produto_pai_id'),
                 ))
         return result
+
+    def load_effective_graph(self, product_ids: List[int], max_depth: int = 10) -> Dict[str, Any]:
+        """Carrega a BOM efetiva completa por nível, preservando linhas e herança."""
+        roots = sorted({int(pid) for pid in product_ids if str(pid).isdigit()})
+        if not roots:
+            return {'contract_version': 1, 'roots': [], 'nodes': {}}
+        graph: Dict[str, List[Dict[str, Any]]] = {}
+        frontier = roots
+        visited = set()
+        depth = 0
+        while frontier:
+            current = sorted(set(frontier) - visited)
+            if not current:
+                break
+            if depth > max_depth:
+                raise ValueError(f'BOM_DEPTH_LIMIT: profundidade excede {max_depth}')
+            visited.update(current)
+            batch = self.get_bom_for_multiple_products(current)
+            children = set()
+            for product_id in current:
+                lines = []
+                for row in batch.get(product_id, []):
+                    component_id = int(row.componente_id)
+                    quantity = float(row.quantidade)
+                    if quantity <= 0:
+                        raise ValueError(f'BOM_INVALID_QUANTITY:{product_id}:{component_id}:{quantity}')
+                    lines.append({
+                        'componente_id': component_id,
+                        'quantidade_necessaria': str(row.quantidade),
+                        'unidade_medida': row.unit or 'un',
+                        'is_inherited': bool(row.is_inherited),
+                        'grupo': row.group,
+                        'line_id': row.line_id,
+                        'produto_pai_id': row.produto_pai_id,
+                    })
+                    children.add(component_id)
+                graph[str(product_id)] = lines
+            frontier = sorted(children - visited)
+            depth += 1
+
+        # Include conversion factors in the immutable graph, including for leaves.
+        all_ids = sorted(int(value) for value in graph)
+        conversions = {}
+        if all_ids:
+            response = supabase_db.table('conversoes_uom_produto').select(
+                'produto_id,unidade_origem_id,unidade_destino_id,fator_conversao'
+            ).in_('produto_id', all_ids).execute()
+            for row in response.data or []:
+                conversions.setdefault(str(row['produto_id']), []).append({
+                    'unidade_origem_id': row['unidade_origem_id'],
+                    'unidade_destino_id': row['unidade_destino_id'],
+                    'fator_conversao': str(row['fator_conversao']),
+                })
+        nodes = {key: {'componentes': lines, 'conversoes': conversions.get(key, [])}
+                 for key, lines in sorted(graph.items(), key=lambda pair: int(pair[0]))}
+        result = {'contract_version': 1, 'roots': roots, 'nodes': nodes}
+        self.validate_effective_graph(result)
+        return result
+
+    def validate_effective_graph(self, graph: Dict[str, Any], max_depth: int = 10) -> None:
+        nodes = graph.get('nodes') or {}
+        state = {}
+
+        def visit(product_id, path):
+            mark = state.get(product_id)
+            if mark == 'visiting':
+                cycle_start = path.index(product_id) if product_id in path else 0
+                raise ValueError('BOM_CYCLE: ' + ' -> '.join(path[cycle_start:] + [product_id]))
+            if mark == 'done':
+                return
+            if len(path) >= max_depth:
+                raise ValueError(f"BOM_DEPTH_LIMIT: {' -> '.join(path + [product_id])}")
+            state[product_id] = 'visiting'
+            lines = (nodes.get(product_id) or {}).get('componentes') or []
+            for line in lines:
+                child = str(int(line['componente_id']))
+                if child not in nodes:
+                    raise ValueError(f'BOM_GRAPH_INCOMPLETE:{product_id}:{child}')
+                if float(line['quantidade_necessaria']) <= 0:
+                    raise ValueError(f'BOM_INVALID_QUANTITY:{product_id}:{child}')
+                visit(child, path + [product_id])
+            state[product_id] = 'done'
+
+        for root in graph.get('roots') or []:
+            visit(str(root), [])
+        for product_id, node in nodes.items():
+            for conversion in node.get('conversoes') or []:
+                try:
+                    factor = float(conversion['fator_conversao'])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError(f'BOM_CONVERSION_INVALID:{product_id}') from exc
+                if factor <= 0 or factor == float('inf') or factor != factor:
+                    raise ValueError(f'BOM_CONVERSION_INVALID:{product_id}:{factor}')
+
+    def publish_effective_version(self, product_id: int, actor_id=None) -> Dict[str, Any]:
+        """Publica ou reutiliza a versão imutável do grafo efetivo do produto."""
+        product_id = int(product_id)
+        graph = self.load_effective_graph([product_id])
+        canonical = json.dumps(graph, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+        content_hash = hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+        query = supabase_db.table('bom_efetiva_versoes').select('*').eq(
+            'produto_id', product_id).eq('content_hash', content_hash).limit(1)
+        existing = query.execute().data or []
+        if existing:
+            return dict(existing[0])
+        record = {
+            'produto_id': product_id,
+            'content_hash': content_hash,
+            'contract_version': 1,
+            'graph': graph,
+            'created_by': int(actor_id) if str(actor_id).isdigit() else None,
+        }
+        try:
+            inserted = supabase_db.table('bom_efetiva_versoes').insert(record).execute()
+            if inserted.data:
+                return dict(inserted.data[0])
+        except Exception:
+            # Concurrent publication of the same semantic version is a benign race.
+            raced = supabase_db.table('bom_efetiva_versoes').select('*').eq(
+                'produto_id', product_id).eq('content_hash', content_hash).limit(1).execute().data or []
+            if raced:
+                return dict(raced[0])
+            raise
+        raise RuntimeError(f'BOM_VERSION_PUBLISH_FAILED:{product_id}')
+
+    def get_version(self, version_id: str) -> Dict[str, Any]:
+        normalized = str(uuid.UUID(str(version_id)))
+        response = supabase_db.table('bom_efetiva_versoes').select('*').eq('id', normalized).limit(1).execute()
+        if not response.data:
+            raise ValueError(f'BOM_VERSION_NOT_FOUND:{normalized}')
+        version = dict(response.data[0])
+        self.validate_effective_graph(version['graph'])
+        return version
+
+    def explode_effective_version(
+        self, version: Dict[str, Any], quantity: float = 1.0, max_depth: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Explode a published immutable graph without rereading mutable BOM rows."""
+        try:
+            multiplier = Decimal(str(quantity))
+            product_id = int(version['produto_id'])
+            graph = version['graph']
+        except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
+            raise ValueError('BOM_VERSION_INVALID') from exc
+        if not multiplier.is_finite() or multiplier <= 0:
+            raise ValueError('BOM_EXPLOSION_QUANTITY_INVALID')
+        self.validate_effective_graph(graph, max_depth=max_depth)
+        nodes = graph.get('nodes') or {}
+        leaves: Dict[int, Dict[str, Any]] = {}
+
+        def visit(current_id: int, current_quantity: Decimal, path: List[int], depth: int) -> None:
+            if current_id in path:
+                raise ValueError('BOM_CYCLE: ' + ' -> '.join(map(str, path + [current_id])))
+            if depth >= max_depth:
+                raise ValueError(f'BOM_DEPTH_LIMIT: {" -> ".join(map(str, path + [current_id]))}')
+            node = nodes.get(str(current_id))
+            if node is None:
+                raise ValueError(f'BOM_GRAPH_INCOMPLETE:{current_id}')
+            lines = node.get('componentes') or []
+            for line in lines:
+                component_id = int(line['componente_id'])
+                required = current_quantity * Decimal(str(line['quantidade_necessaria']))
+                child_lines = (nodes.get(str(component_id)) or {}).get('componentes') or []
+                if child_lines:
+                    visit(component_id, required, path + [current_id], depth + 1)
+                    continue
+                entry = leaves.setdefault(component_id, {
+                    'componente_id': component_id,
+                    'quantidade_total': Decimal('0'),
+                    'unidade': line.get('unidade_medida') or 'un',
+                })
+                if entry['unidade'] != (line.get('unidade_medida') or 'un'):
+                    raise ValueError(f'BOM_UNIT_CONFLICT:{component_id}')
+                entry['quantidade_total'] += required
+
+        visit(product_id, multiplier, [], 0)
+        return [
+            {**entry, 'quantidade_total': format(entry['quantidade_total'].normalize(), 'f')}
+            for _, entry in sorted(leaves.items())
+        ]
 
     def bulk_add_component_to_products(self, component_id: int, associations: List[Dict[str, Any]]) -> bool:
         """

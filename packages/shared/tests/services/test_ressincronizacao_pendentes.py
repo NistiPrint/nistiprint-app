@@ -320,5 +320,47 @@ class TestReleituraNoBling(unittest.TestCase):
                 svc._reler_no_bling(PEDIDO_AMAZON, "corr-1")
 
 
+class TestPaginacaoHistoricaShopee(unittest.TestCase):
+    def test_processa_cursor_e_grava_checkpoint_depois_de_cada_pagina(self):
+        from types import SimpleNamespace
+
+        query = MagicMock()
+        query.select.return_value = query
+        query.match.return_value = query
+        query.limit.return_value = query
+        query.upsert.return_value = query
+        query.execute.return_value = SimpleNamespace(data=[])
+        paginas = []
+
+        def get_page(_integration, filters):
+            if filters["order_status"] != svc.SHOPEE_STATUS_PENDENTES[0]:
+                return {"orders": [], "next_cursor": None, "more": False}
+            paginas.append(dict(filters))
+            if filters.get("cursor") == "cursor-2":
+                return {"orders": [{"external_id": "250801ABCDEF"}],
+                        "next_cursor": None, "more": False}
+            return {"orders": [{"external_id": "250801ABCDE1"}],
+                    "next_cursor": "cursor-2", "more": True}
+
+        with (
+            patch.object(svc, "_integracao", return_value=INTEGRACOES[20]),
+            patch.object(svc.supabase_db, "table", return_value=query),
+            patch.object(svc.shopee_driver, "get_orders_list_page", side_effect=get_page),
+            patch.object(svc.marketplace_webhook_ingest_service, "process",
+                         return_value={"status": "success"}) as process,
+        ):
+            resultado = svc._reprocessar_shopee(INTEGRACOES[20], dias=1, limite=None)
+
+        self.assertEqual(len(paginas), 2)
+        self.assertEqual(paginas[1]["cursor"], "cursor-2")
+        self.assertEqual(process.call_count, 2)
+        self.assertEqual(resultado["processados"], 2)
+        writes = [call.args[0] for call in query.upsert.call_args_list]
+        self.assertEqual(len(writes), 7)  # duas páginas do primeiro status + cinco estados vazios
+        self.assertEqual(writes[0]["next_cursor"], "cursor-2")
+        self.assertFalse(writes[0]["completed"])
+        self.assertTrue(writes[1]["completed"])
+
+
 if __name__ == "__main__":
     unittest.main()

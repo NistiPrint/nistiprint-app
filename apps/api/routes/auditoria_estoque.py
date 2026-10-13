@@ -1,12 +1,13 @@
 from flask import Blueprint, request, jsonify
 from datetime import datetime
 from nistiprint_shared.services.auditoria_estoque_service import auditoria_estoque_service
-from routes.auth import login_required, get_current_user
+from nistiprint_shared.services.estoque_command_service import EstoqueCommandConflict
+from routes.auth import check_permission, get_current_user
 
 auditoria_estoque_bp = Blueprint('auditoria_estoque', __name__, url_prefix='/api/v2/auditoria')
 
 @auditoria_estoque_bp.route('/contar', methods=['POST'])
-@login_required
+@check_permission('estoque', 'criar')
 def registrar_contagem():
     """Registra uma nova contagem física de estoque."""
     try:
@@ -23,23 +24,33 @@ def registrar_contagem():
             
         usuario = get_current_user()
         usuario_id = usuario['id']
-        
+        user_context = {
+            'id': usuario_id,
+            'setor_id': usuario.get('setor_id'),
+            'setor_nome': usuario.get('setor_nome'),
+            'is_admin': usuario.get('is_admin', False),
+        }
         resultado = auditoria_estoque_service.registrar_contagem(
             produto_id=int(produto_id),
             deposito_id=int(deposito_id),
             quantidade_contada=float(quantidade_contada),
             usuario_id=usuario_id,
             observacao=observacao,
-            sessao_id=sessao_id
+            sessao_id=sessao_id,
+            user_context=user_context,
         )
         
         return jsonify({'success': True, 'data': resultado})
         
+    except PermissionError as e:
+        return jsonify({'error': str(e)}), 403
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @auditoria_estoque_bp.route('/pendencias', methods=['GET'])
-@login_required
+@check_permission('estoque', 'ler')
 def listar_pendencias():
     """Lista contagens pendentes de aprovação."""
     try:
@@ -56,7 +67,7 @@ def listar_pendencias():
         return jsonify({'error': str(e)}), 500
 
 @auditoria_estoque_bp.route('/historico', methods=['GET'])
-@login_required
+@check_permission('estoque', 'ler')
 def listar_historico():
     """Lista histórico de auditorias."""
     try:
@@ -84,23 +95,35 @@ def listar_historico():
         return jsonify({'error': str(e)}), 500
 
 @auditoria_estoque_bp.route('/<int:contagem_id>/aprovar', methods=['POST'])
-@login_required
+@check_permission('estoque', 'editar')
 def aprovar_contagem(contagem_id):
     """Aprova uma contagem pendente e ajusta o estoque."""
     try:
         usuario = get_current_user()
-        # Idealmente verificar permissão de gerente/admin aqui
+        user_context = {
+            'id': usuario['id'],
+            'setor_id': usuario.get('setor_id'),
+            'setor_nome': usuario.get('setor_nome'),
+            'is_admin': usuario.get('is_admin', False),
+        }
         
         resultado = auditoria_estoque_service.aprovar_contagem(
             contagem_id=contagem_id,
-            usuario_aprovador_id=usuario['id']
+            usuario_aprovador_id=usuario['id'],
+            user_context=user_context,
         )
         return jsonify({'success': True, 'data': resultado})
+    except PermissionError as e:
+        return jsonify({'error': str(e)}), 403
+    except EstoqueCommandConflict as e:
+        return jsonify({'error': str(e), 'code': 'stock_changed'}), 409
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 409
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @auditoria_estoque_bp.route('/<int:contagem_id>/rejeitar', methods=['POST'])
-@login_required
+@check_permission('estoque', 'editar')
 def rejeitar_contagem(contagem_id):
     """Rejeita uma contagem pendente."""
     try:

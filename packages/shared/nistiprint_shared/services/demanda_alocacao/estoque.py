@@ -439,14 +439,17 @@ class DemandaAlocacaoEstoqueService:
 
     def reservar_alocacao_para_demanda(self, product_id, distributions: List[Dict[str, Any]],
                                        demanda_id=None, deposito_id=None,
-                                       user_id: str = 'System') -> Dict[str, Any]:
+                                       user_id: str = 'System', operation_id=None) -> Dict[str, Any]:
         """Reserva o produto para os itens de demanda informados.
 
         Incrementa `estoque_atual.reservado` (o disponivel cai, o fisico nao) e
         grava uma linha PENDENTE em `demanda_alocacoes_estoque` por item, para
         que a reconciliacao saiba o que ja estava separado para aquele item.
         """
-        correlation_id = str(uuid.uuid4())
+        import hashlib
+        import json
+
+        correlation_id = str(uuid.UUID(str(operation_id))) if operation_id else str(uuid.uuid4())
         produto_id_norm = int(product_id) if str(product_id).isdigit() else product_id
         total = 0.0
         linhas = []
@@ -486,130 +489,90 @@ class DemandaAlocacaoEstoqueService:
             return {'success': False, 'message': 'Nenhuma distribuicao valida para reservar.',
                     'quantidade_reservada': 0.0}
 
-        estoque_service.reservar_estoque(produto_id_norm, total, deposito_id)
-        supabase_db.execute_with_retry(
-            supabase_db.table('demanda_alocacoes_estoque').insert(linhas)
-        )
+        deposito_int = int(estoque_service._resolve_deposito(deposito_id))
+        operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f'nistiprint:reserva:{correlation_id}'))
+        allocations = [{
+            'demanda_id': row['demanda_id'],
+            'item_id': row['item_id'],
+            'produto_id': int(row['produto_id']),
+            'quantidade': row['quantidade_alocada'],
+            'correlation_id': correlation_id,
+        } for row in linhas]
+        allocations.sort(key=lambda row: (row['produto_id'], row['item_id'], row['demanda_id']))
+        semantic = {'deposito_id': deposito_int, 'allocations': allocations}
+        content_hash = hashlib.sha256(json.dumps(
+            semantic, sort_keys=True, separators=(',', ':'), ensure_ascii=False
+        ).encode('utf-8')).hexdigest()
+        actor_id = int(user_id) if str(user_id).isdigit() else None
+        response = supabase_db.rpc('reservar_alocacoes_estoque', {
+            'p_operation_id': operation_id,
+            'p_content_hash': content_hash,
+            'p_source': {'correlation_id': correlation_id, 'processo': 'CONTROLE_PRODUCAO'},
+            'p_actor_id': actor_id,
+            'p_deposito_id': deposito_int,
+            'p_allocations': allocations,
+        }).execute()
+        result = response.data[0] if isinstance(response.data, list) and response.data else response.data
+        if not isinstance(result, dict) or result.get('status') != 'CONFIRMADO':
+            raise RuntimeError(f'Falha ao confirmar reserva de estoque: {result!r}')
 
         return {
             'success': True,
             'correlation_id': correlation_id,
+            'operation_id': operation_id,
             'quantidade_reservada': total,
             'itens': len(linhas),
         }
 
+    # A antiga implementação não transacional foi removida; as versões ativas abaixo usam RPCs.
+
+    def liberar_alocacao_item(self, item_id: int, quantidade: float, motivo: str = 'Liberação manual',
+                              operation_id: str = None, user_id=None) -> Dict[str, Any]:
+        """Libera somente o remanescente ainda reservado para um item."""
+        import hashlib
+        import json
+        operation_id = str(uuid.UUID(operation_id)) if operation_id else str(uuid.uuid4())
+        semantic = {'item_id': int(item_id), 'quantidade': str(float(quantidade)), 'motivo': motivo}
+        content_hash = hashlib.sha256(json.dumps(
+            semantic, sort_keys=True, separators=(',', ':'), ensure_ascii=False
+        ).encode('utf-8')).hexdigest()
+        actor_id = int(user_id) if str(user_id).isdigit() else None
+        response = supabase_db.rpc('liberar_reserva_item_estoque', {
+            'p_operation_id': operation_id,
+            'p_content_hash': content_hash,
+            'p_source': {'item_id': int(item_id), 'motivo': motivo},
+            'p_actor_id': actor_id,
+            'p_item_id': int(item_id),
+            'p_quantidade': float(quantidade),
+            'p_motivo': motivo,
+        }).execute()
+        result = response.data[0] if isinstance(response.data, list) and response.data else response.data
+        if not isinstance(result, dict) or result.get('status') != 'CONFIRMADO':
+            raise RuntimeError(f'Falha ao liberar alocação do item {item_id}: {result!r}')
+        return result
+
     def consumir_alocacoes_do_item(self, item_id, deposito_id=None) -> float:
-        """Converte as reservas PENDENTES de um item em estoque disponivel.
+        raise RuntimeError(
+            'Reservas são consumidas junto com o movimento CONS_INT na reconciliação; '
+            'não libere a reserva antes do commit.'
+        )
 
-        Chamado pela reconciliacao ANTES de calcular saldo. Sem isso o motor
-        veria `disponivel = 0` para um produto que esta reservado justamente
-        para este item, e produziria JIT em vez de consumir o que ja foi
-        separado. Depois desta liberacao, a explosao de BOM encontra o saldo e
-        gera o CONS_INT — a saida fisica acontece uma unica vez, aqui.
-        """
-        try:
-            res = supabase_db.execute_with_retry(
-                supabase_db.table('demanda_alocacoes_estoque')
-                .select('*')
-                .eq('item_id', str(item_id))
-                .eq('status', 'PENDENTE')
-            )
-        except Exception as e:
-            import logging
-            logging.warning(f"consumir_alocacoes_do_item({item_id}): falha ao ler alocacoes: {e}")
-            return 0.0
-
-        alocacoes = res.data or []
-        if not alocacoes:
-            return 0.0
-
-        total_liberado = 0.0
-        for alocacao in alocacoes:
-            try:
-                qtd = float(alocacao.get('quantidade_alocada') or 0)
-                if qtd <= 0:
-                    continue
-                produto = alocacao.get('produto_id')
-                produto_norm = int(produto) if str(produto).isdigit() else produto
-                estoque_service.liberar_reserva(produto_norm, qtd, deposito_id)
-                supabase_db.execute_with_retry(
-                    supabase_db.table('demanda_alocacoes_estoque')
-                    .update({'status': 'CONSUMIDA', 'processed_at': get_now_iso()})
-                    .eq('id', alocacao['id'])
+    def liberar_alocacao_por_demanda(self, demanda_id: int, quantidade: float,
+                                     motivo: str = 'Liberação Automática', item_id=None,
+                                     operation_id=None, user_id=None):
+        """Compatibilidade segura: exige resolver um único item da demanda."""
+        if item_id is None:
+            rows = supabase_db.table('demanda_alocacoes_estoque').select('item_id').eq(
+                'demanda_id', str(demanda_id)).eq('status', 'PENDENTE').execute().data or []
+            ids = {row.get('item_id') for row in rows if row.get('item_id')}
+            if len(ids) != 1:
+                raise ValueError(
+                    f'A demanda {demanda_id} possui {len(ids)} itens com reserva pendente; '
+                    'a liberação deve identificar item_id.'
                 )
-                total_liberado += qtd
-            except Exception as e:
-                import logging
-                logging.error(
-                    f"consumir_alocacoes_do_item({item_id}): falha na alocacao "
-                    f"{alocacao.get('id')}: {e}"
-                )
+            item_id = next(iter(ids))
+        return self.liberar_alocacao_item(item_id, quantidade, motivo, operation_id, user_id)
 
-        return total_liberado
-
-    def liberar_alocacao_por_demanda(self, demanda_id: int, quantidade: float, motivo: str = "Liberação Automática"):
-        """
-        Libera alocações de reserva de estoque para uma demanda específica.
-        
-        Args:
-            demanda_id: ID da demanda de produção
-            quantidade: Quantidade a liberar (proporcional ao consumido)
-            motivo: Motivo da liberação
-        """
-        try:
-            from nistiprint_shared.database.supabase_db_service import supabase_db
-            
-            # Busca alocações pendentes para esta demanda
-            response = supabase_db.table('demanda_alocacoes_estoque')\
-                .select('*')\
-                .eq('demanda_id', demanda_id)\
-                .eq('status', 'PENDENTE')\
-                .execute()
-            
-            if not response.data:
-                # Sem alocações pendentes - isso é OK, nem toda demanda tem reservas
-                return
-            
-            # Libera alocações proporcionalmente
-            for alocacao in response.data:
-                qtd_alocada = float(alocacao.get('quantidade_alocada', 0))
-                if qtd_alocada <= 0:
-                    continue
-                
-                # Calcula proporção a liberar
-                qtd_liberar = min(qtd_alocada, quantidade)
-                
-                # Atualiza status para cancelada (liberada)
-                supabase_db.table('demanda_alocacoes_estoque')\
-                    .update({
-                        'status': 'CANCELADA',
-                        'cancelled_at': get_now_iso(),
-                        'metadata': {
-                            **alocacao.get('metadata', {}),
-                            'liberacao_motivo': motivo,
-                            'quantidade_liberada': qtd_liberar
-                        }
-                    })\
-                    .eq('id', alocacao['id'])\
-                    .execute()
-                
-                # Libera o estoque fisicamente (reservado → disponível)
-                produto_id = alocacao.get('produto_id')
-                if produto_id:
-                    try:
-                        estoque_service.liberar_reserva(
-                            produto_id=produto_id,
-                            quantidade=qtd_liberar,
-                            deposito_id=None,  # Usa depósito padrão
-                            ordem_id=None
-                        )
-                    except Exception as e:
-                        print(f"AVISO: Erro ao liberar reserva do produto {produto_id}: {e}")
-                        
-        except Exception as e:
-            print(f"ERRO ao liberar alocação para demanda {demanda_id}: {e}")
-            # Não lança exceção - liberação de reserva é secundária
 
 # Instância singleton para manter a compatibilidade com importações existentes
 demanda_alocacao_estoque_service = DemandaAlocacaoEstoqueService()
-

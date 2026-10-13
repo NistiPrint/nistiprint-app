@@ -181,12 +181,15 @@ class DemandaProducaoService:
         """Reverte a finalização (total) de um item, voltando o status para 'Em Andamento'."""
         return self._items.reverter_finalizacao_item(demanda_id, item_id, user_id)
 
-    def registrar_saida_item_distribuida(self, distributions, product_id, user_id='System', transaction=None):
+    def registrar_saida_item_distribuida(self, distributions, product_id, user_id='System', transaction=None,
+                                          correlation_id=None):
         """
         Registra a saída distribuída de um produto entre múltiplos itens de demanda
         (usado pela ControleProducaoPage ao alocar estoque para várias demandas).
         """
-        return self._items.registrar_saida_item_distribuida(distributions, product_id, user_id, transaction)
+        return self._items.registrar_saida_item_distribuida(
+            distributions, product_id, user_id, transaction, correlation_id=correlation_id
+        )
 
     def registrar_retirada_expedicao(self, demanda_id: str, item_id: str, quantidade: int,
                                      user_id: str = 'System') -> Dict[str, Any]:
@@ -221,7 +224,8 @@ class DemandaProducaoService:
     # ========================================================================
 
     def registrar_coleta(self, demanda_id: str, quantidade: int, ponto_coleta_id: Optional[int] = None,
-                         observacoes: Optional[str] = None, user_id: str = 'System') -> Dict[str, Any]:
+                         observacoes: Optional[str] = None, user_id: str = 'System',
+                         operation_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Registra a coleta (física/saída) de uma quantidade da demanda.
         Atualmente delega para registrar_coleta_parcial; ponto_coleta_id e observacoes
@@ -232,7 +236,7 @@ class DemandaProducaoService:
                 f"registrar_coleta: ponto_coleta_id={ponto_coleta_id} e/ou observacoes ignorados "
                 "(não suportados em registrar_coleta_parcial)"
             )
-        return self._collections.registrar_coleta_parcial(demanda_id, quantidade, user_id)
+        return self._collections.registrar_coleta_parcial(demanda_id, quantidade, user_id, operation_id)
 
     def registrar_saida_item_producao(self, item_id: int, quantidade: int, user_id: str = 'System') -> Dict[str, Any]:
         """
@@ -260,9 +264,11 @@ class DemandaProducaoService:
         return self._collections.marcar_como_coletado(demanda_id, user_id)
 
     def registrar_coleta_parcial(self, demanda_id: str, quantidade_coletar: int,
-                                 user_id: str = 'System') -> Dict[str, Any]:
+                                 user_id: str = 'System', operation_id: Optional[str] = None) -> Dict[str, Any]:
         """Registra coleta parcial de uma demanda."""
-        return self._collections.registrar_coleta_parcial(demanda_id, quantidade_coletar, user_id)
+        return self._collections.registrar_coleta_parcial(
+            demanda_id, quantidade_coletar, user_id, operation_id
+        )
 
     def marcar_lote_como_coletado(self, demanda_ids, user_id='System'):
         """Marca múltiplas demandas como coletadas em lote."""
@@ -289,14 +295,14 @@ class DemandaProducaoService:
         )
 
     def reservar_alocacao_para_demanda(self, product_id, distributions, demanda_id=None,
-                                       deposito_id=None, user_id='System'):
+                                       deposito_id=None, user_id='System', operation_id=None):
         """Reserva estoque existente para itens de demanda (botao [-] da tela).
 
         Alocar nao e sair: o disponivel cai, o saldo fisico permanece. A saida
         fisica acontece na reconciliacao disparada pela finalizacao.
         """
         return self._alocacao_estoque.reservar_alocacao_para_demanda(
-            product_id, distributions, demanda_id, deposito_id, user_id
+            product_id, distributions, demanda_id, deposito_id, user_id, operation_id
         )
 
     def consumir_alocacoes_do_item(self, item_id, deposito_id=None):

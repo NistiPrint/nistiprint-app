@@ -17,6 +17,7 @@ Data: 2026-03-25
 """
 
 from typing import Dict, Any, List, Optional, Tuple
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from decimal import Decimal
 import uuid
@@ -29,6 +30,10 @@ from nistiprint_shared.services.product_service import product_service
 from nistiprint_shared.services.demanda_alocacao.estoque import demanda_alocacao_estoque_service
 from nistiprint_shared.utils.date_utils import get_now_iso
 
+_BOM_EXECUTION_VERSION: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    'bom_execution_version', default=None
+)
+
 
 # ============================================================
 # DATA CLASSES
@@ -39,7 +44,9 @@ class IntencaoItem:
     def __init__(self, item: Dict[str, Any]):
         self.item_id = item.get('id')
         self.demanda_id = item.get('demanda_id')
+        self.produto_id = item.get('produto_id')
         self.demanda_total = Decimal(str(item.get('quantidade', 0) or 0))
+        self.bom_version_id = item.get('bom_version_id')
 
         # Valores reportados (visuais)
         self.finalizados = Decimal(str(item.get('finalizados_qtd', 0) or 0))
@@ -90,7 +97,11 @@ class Movimento:
                  motivo: str,
                  estagio: Optional[str] = None,
                  deposito_id: Optional[int] = None,
-                 saldo_acumulado: Decimal = Decimal('0')):
+                 saldo_acumulado: Decimal = Decimal('0'),
+                 expected_saldo: Optional[Decimal] = None,
+                 expected_reservado: Optional[Decimal] = None,
+                 expected_reserva_propria: Optional[Decimal] = None,
+                 expected_disponivel: Optional[Decimal] = None):
         self.produto_id = produto_id
         self.tipo = tipo
         self.quantidade = quantidade
@@ -98,6 +109,10 @@ class Movimento:
         self.estagio = estagio
         self.deposito_id = deposito_id  # Novo: depósito explícito
         self.saldo_acumulado = saldo_acumulado
+        self.expected_saldo = expected_saldo
+        self.expected_reservado = expected_reservado
+        self.expected_reserva_propria = expected_reserva_propria
+        self.expected_disponivel = expected_disponivel
 
 
 class ReconciliacaoResultado:
@@ -182,7 +197,9 @@ class MotorReconciliacaoEstoque:
         return self._deposito_padrao_id
 
     async def reconcile_item(self, item_id: int, demanda_id: int, user_id: str = 'System',
-                             acquire_lock: bool = True) -> ReconciliacaoResultado:
+                             acquire_lock: bool = True, correlation_id: Optional[str] = None,
+                             operation_id: Optional[str] = None,
+                             lease: Optional[Dict[str, Any]] = None) -> ReconciliacaoResultado:
         """
         Orquestra reconciliação completa de um item.
         Chamado APENAS na finalização (E7).
@@ -200,7 +217,23 @@ class MotorReconciliacaoEstoque:
         Returns:
             ReconciliacaoResultado com detalhes das movimentações.
         """
-        correlation_id = str(uuid.uuid4())
+        correlation_id = str(correlation_id or uuid.uuid4())
+
+        lease_is_valid = bool(
+            operation_id
+            and lease
+            and lease.get('worker_id')
+            and lease.get('lease_token')
+            and lease.get('event_ids')
+        )
+        if not lease_is_valid:
+            return ReconciliacaoResultado(
+                sucesso=False,
+                item_id=item_id,
+                demanda_id=demanda_id,
+                correlation_id=correlation_id,
+                erros=['Reconciliação exige operação estável e lease válido de eventos.'],
+            )
 
         try:
             # 1. Adquirir lock para prevenir concorrência (apenas se o caller
@@ -216,6 +249,7 @@ class MotorReconciliacaoEstoque:
                         erros=['Item já está sendo processado por outra transação']
                     )
 
+            bom_context_token = None
             try:
                 # 2. Ler intenção (estado visual atual do item)
                 intencao = await self._ler_intencao_item(item_id)
@@ -228,6 +262,10 @@ class MotorReconciliacaoEstoque:
                         erros=['Item não encontrado']
                     )
 
+                if intencao.produto_id:
+                    bom_version = self._get_or_pin_bom_version(item_id, intencao)
+                    bom_context_token = _BOM_EXECUTION_VERSION.set(bom_version)
+
                 # 3. Calcular quantidades efetivas (waterfall top-down)
                 efetivas = await self._calcular_quantidades_efetivas(intencao)
 
@@ -237,22 +275,10 @@ class MotorReconciliacaoEstoque:
                 # 5. Calcular deltas
                 deltas = await self._calcular_deltas(efetivas, realizado)
 
-                # 5.1 Consumir as reservas deste item ANTES de olhar saldo.
-                # O botão [-] da tela de Controle de Produção aloca (reserva) o
-                # componente para o item; aqui essa reserva vira saldo
-                # disponível de novo, para que a explosão de BOM CONSUMA o que
-                # já estava separado em vez de produzir JIT um segundo miolo.
-                # É neste ponto que a saída física finalmente acontece — uma
-                # única vez, no fim do fluxo produção -> alocação -> saída.
-                if deltas:
-                    try:
-                        demanda_alocacao_estoque_service.consumir_alocacoes_do_item(item_id)
-                    except Exception as e:
-                        print(f"AVISO: falha ao consumir alocações do item {item_id}: {e}")
-
                 # 6. Processar deltas em transação única via RPC
                 resultado = await self._processar_deltas_transacional(
-                    item_id, demanda_id, deltas, efetivas, intencao, realizado, user_id, correlation_id
+                    item_id, demanda_id, deltas, efetivas, intencao, realizado, user_id, correlation_id,
+                    operation_id=operation_id, lease=lease,
                 )
 
                 # O registro no ledger ja foi feito dentro da RPC
@@ -261,6 +287,8 @@ class MotorReconciliacaoEstoque:
                 return resultado
 
             finally:
+                if bom_context_token is not None:
+                    _BOM_EXECUTION_VERSION.reset(bom_context_token)
                 # Liberar lock apenas se o motor o adquiriu nesta chamada.
                 if acquire_lock:
                     await self._liberar_lock_item(item_id)
@@ -289,6 +317,24 @@ class MotorReconciliacaoEstoque:
             return None
 
         return IntencaoItem(response.data[0])
+
+    def _get_or_pin_bom_version(self, item_id: int, intencao: IntencaoItem) -> Dict[str, Any]:
+        """Fixa a primeira BOM efetiva no item e reutiliza a versão em retentativas."""
+        if intencao.bom_version_id:
+            return bom_service.get_version(intencao.bom_version_id)
+
+        candidate = bom_service.publish_effective_version(int(intencao.produto_id))
+        supabase_db.table('itens_demanda').update({
+            'bom_version_id': candidate['id'],
+        }).eq('id', item_id).is_('bom_version_id', 'null').execute()
+
+        saved = supabase_db.table('itens_demanda').select('bom_version_id').eq(
+            'id', item_id
+        ).limit(1).execute().data or []
+        if not saved or not saved[0].get('bom_version_id'):
+            raise RuntimeError(f'BOM_VERSION_PIN_FAILED:item={item_id}')
+        intencao.bom_version_id = saved[0]['bom_version_id']
+        return bom_service.get_version(intencao.bom_version_id)
 
     async def _calcular_quantidades_efetivas(self, intencao: IntencaoItem) -> QuantidadesEfetivas:
         """
@@ -328,24 +374,18 @@ class MotorReconciliacaoEstoque:
         )
 
     async def _ler_ledger_item(self, item_id: int) -> Dict[str, Decimal]:
-        """
-        Busca o saldo acumulado de processamento para cada estágio no ledger.
-        Soma todas as movimentações do item.
-        """
-        response = self.ledger_table\
-            .select('estagio', 'quantidade')\
+        """Lê checkpoints confirmados; soma física mistura itens/unidades."""
+        response = supabase_db.table('snapshots_reconciliacao')\
+            .select('payload')\
             .eq('item_id', item_id)\
+            .order('created_at', desc=True)\
+            .limit(1)\
             .execute()
-
-        ledger: Dict[str, Decimal] = {}
-
-        if response.data:
-            for row in response.data:
-                estagio = row['estagio']
-                quantidade = Decimal(str(row['quantidade'] or 0))
-                ledger[estagio] = ledger.get(estagio, Decimal('0')) + quantidade
-
-        return ledger
+        rows = response.data or []
+        if not rows:
+            return {}
+        checkpoints = (rows[0].get('payload') or {}).get('efetivas_confirmadas') or {}
+        return {key: Decimal(str(value or 0)) for key, value in checkpoints.items()}
 
     async def _calcular_deltas(self, efetivas: QuantidadesEfetivas,
                                 realizado: Dict[str, Decimal]) -> Dict[str, Decimal]:
@@ -360,6 +400,8 @@ class MotorReconciliacaoEstoque:
             valor_realizado = realizado.get(estagio, Decimal('0'))
             delta = valor_efetivo - valor_realizado
 
+            if delta < Decimal('-0.001'):
+                raise ValueError(f'RECONCILIACAO_REDUCAO_REQUER_COMPENSACAO:{estagio}:{delta}')
             # Apenas processa se delta > 0 (tolerância para float)
             if delta > Decimal('0.001'):
                 deltas[estagio] = delta
@@ -375,7 +417,9 @@ class MotorReconciliacaoEstoque:
         intencao: IntencaoItem,
         realizado: Dict[str, Decimal],
         user_id: str,
-        correlation_id: str
+        correlation_id: str,
+        operation_id: Optional[str] = None,
+        lease: Optional[Dict[str, Any]] = None,
     ) -> ReconciliacaoResultado:
         """
         Gera movimentos e delega a persistência atômica para a RPC Postgres.
@@ -459,7 +503,7 @@ class MotorReconciliacaoEstoque:
 
                     if tem_bom:
                         # Produto com BOM (Intermediário ou Acabado): NUNCA fica negativo
-                        saldo_info = await self._get_saldo_disponivel(produto_id)
+                        saldo_info = await self._get_saldo_disponivel(produto_id, item_id, deposito_padrao)
                         saldo_disponivel = Decimal(str(saldo_info.get('quantidade_disponivel', 0) or 0))
 
                         # Estágio finalizados_qtd é PRODUÇÃO de produto acabado:
@@ -484,13 +528,16 @@ class MotorReconciliacaoEstoque:
                             # consolidada (somente JITs abrem sub-blocos jit_<comp_id>).
                             movimentos_bom = await self._explodir_bom_consumo(
                                 produto_id, delta, demanda_id, user_id, deposito_padrao,
-                                estagio_pai=estagio,
+                                estagio_pai=estagio, item_id=item_id,
                             )
                             movimentos.extend(movimentos_bom)
                         else:
                             # Estágios de CONSUMO de intermediário
-                            qtd_usar_estoque = min(saldo_disponivel, delta)
+                            # A disponibilidade negativa é déficit preexistente,
+                            # não quantidade consumível. Só MP pode carregar esse déficit.
+                            qtd_usar_estoque = max(Decimal('0'), min(saldo_disponivel, delta))
                             qtd_faltante = delta - qtd_usar_estoque
+                            inicio_movimentos_produto = len(movimentos)
 
                             # 1. Consome do estoque (parte coberta)
                             if qtd_usar_estoque > 0:
@@ -531,9 +578,13 @@ class MotorReconciliacaoEstoque:
                                 # 2.c Recursão: filhos da BOM do JIT herdam o sub-bloco.
                                 movimentos_bom = await self._explodir_bom_consumo(
                                     produto_id, qtd_faltante, demanda_id, user_id, deposito_padrao,
-                                    estagio_pai=estagio_jit,
+                                    estagio_pai=estagio_jit, item_id=item_id,
                                 )
                                 movimentos.extend(movimentos_bom)
+
+                            self._anexar_precondicao_saldo(
+                                movimentos[inicio_movimentos_produto:], produto_id, saldo_info
+                            )
 
                     else:
                         # Materia-prima sem BOM: consome direto e pode ir negativo.
@@ -555,15 +606,20 @@ class MotorReconciliacaoEstoque:
                 'deltas_calculados': {k: float(v) for k, v in deltas.items()},
                 'efetivas_calculadas': {k: float(v) for k, v in efetivas.to_dict().items()}
             }
+            snapshot['efetivas_confirmadas'] = snapshot['efetivas_calculadas']
+            bom_version = _BOM_EXECUTION_VERSION.get()
+            if bom_version:
+                snapshot['bom_version_id'] = bom_version['id']
+                snapshot['bom_version_hash'] = bom_version['content_hash']
 
             # Persistir TUDO atomicamente via RPC
-            resultado_rpc = await self._persistir_via_rpc(movimentos, item_id, demanda_id, correlation_id, user_id, snapshot)
+            resultado_rpc = await self._persistir_via_rpc(
+                movimentos, item_id, demanda_id, correlation_id, user_id, snapshot,
+                operation_id=operation_id, lease=lease,
+            )
 
             if not resultado_rpc.sucesso:
                 return resultado_rpc
-
-            # Libera reservas correspondentes
-            await self._liberar_reservas(demanda_id, deltas, item_id)
 
             return ReconciliacaoResultado(
                 sucesso=True,
@@ -603,6 +659,8 @@ class MotorReconciliacaoEstoque:
         profundidade: int = 0,
         max_profundidade: int = 10,
         estagio_pai: Optional[str] = None,
+        _path: Optional[List[int]] = None,
+        item_id: Optional[int] = None,
     ) -> List[Movimento]:
         """
         Explosão recursiva de BOM para produção compensatória.
@@ -623,8 +681,13 @@ class MotorReconciliacaoEstoque:
             - estagio jit_miolo       : analogo para Miolo
         """
         if profundidade >= max_profundidade:
-            print(f"AVISO: Atingida profundidade máxima {max_profundidade} na explosão de BOM")
-            return []
+            raise ValueError(f'BOM_DEPTH_LIMIT: produto={produto_id} profundidade={profundidade}')
+
+        path = list(_path or [])
+        if produto_id in path:
+            cycle = path[path.index(produto_id):] + [produto_id]
+            raise ValueError('BOM_CYCLE: ' + ' -> '.join(map(str, cycle)))
+        path.append(produto_id)
 
         movimentos: List[Movimento] = []
 
@@ -668,11 +731,12 @@ class MotorReconciliacaoEstoque:
 
             if tem_bom:
                 # Produto tem BOM: prioriza estoque e produz recursivamente se faltar.
-                saldo_info = await self._get_saldo_disponivel(comp_id)
+                saldo_info = await self._get_saldo_disponivel(comp_id, item_id, deposito_padrao)
                 saldo_disponivel = Decimal(str(saldo_info.get('quantidade_disponivel', 0) or 0))
 
-                qtd_usar_estoque = min(saldo_disponivel, qtd_necessaria)
+                qtd_usar_estoque = max(Decimal('0'), min(saldo_disponivel, qtd_necessaria))
                 qtd_faltante = qtd_necessaria - qtd_usar_estoque
+                inicio_movimentos_componente = len(movimentos)
 
                 # Consumo do estoque cai no BLOCO PAI (estagio_corrente).
                 if qtd_usar_estoque > 0:
@@ -715,8 +779,14 @@ class MotorReconciliacaoEstoque:
                         comp_id, qtd_faltante, demanda_id, user_id, deposito_padrao,
                         profundidade + 1, max_profundidade,
                         estagio_pai=estagio_jit,
+                        _path=path,
+                        item_id=item_id,
                     )
                     movimentos.extend(movimentos_rec)
+
+                self._anexar_precondicao_saldo(
+                    movimentos[inicio_movimentos_componente:], comp_id, saldo_info
+                )
 
             else:
                 # Materia-prima / folha: consome no BLOCO PAI (estagio_corrente).
@@ -828,20 +898,62 @@ class MotorReconciliacaoEstoque:
         if produto_id is None:
             return []
 
-        response = supabase_db.table('ficha_tecnica')\
-            .select('componente_id, quantidade_necessaria')\
-            .eq('produto_pai_id', produto_id)\
-            .execute()
+        version = _BOM_EXECUTION_VERSION.get()
+        if version:
+            node = (version.get('graph') or {}).get('nodes', {}).get(str(produto_id)) or {}
+            return list(node.get('componentes') or [])
 
-        return response.data or []
+        componentes = bom_service.get_bom_for_produto(produto_id)
+        return [{
+            'componente_id': row.componente_id,
+            'quantidade_necessaria': row.quantidade,
+            'unidade_medida': row.unit,
+            'is_inherited': row.is_inherited,
+            'grupo': row.group,
+            'line_id': row.line_id,
+        } for row in componentes]
 
-    async def _get_saldo_disponivel(self, produto_id: int) -> Dict[str, Any]:
+    async def _get_saldo_disponivel(self, produto_id: int, item_id: Optional[int] = None,
+                                    deposito_id: Optional[int] = None) -> Dict[str, Any]:
         """Obtém saldo disponível de um produto."""
         produto_id = _normalizar_produto_id(produto_id)
         if produto_id is None:
             return {'quantidade_disponivel': 0}
 
-        return estoque_service.get_saldo_atual(produto_id)
+        result = estoque_service.get_saldo_atual(produto_id, deposito_id)
+        if item_id is not None:
+            allocated_query = supabase_db.table('demanda_alocacoes_estoque')\
+                .select('quantidade_alocada,quantidade_consumida,quantidade_liberada')\
+                .eq('item_id', str(item_id))\
+                .eq('produto_id', str(produto_id))\
+                .eq('status', 'PENDENTE')
+            deposito_resolvido = result.get('deposito_id') or deposito_id
+            if deposito_resolvido is not None:
+                allocated_query = allocated_query.eq('deposito_id', int(deposito_resolvido))
+            allocated = allocated_query.execute()
+            own_reserved = sum(
+                max(Decimal('0'), Decimal(str(r.get('quantidade_alocada') or 0))
+                    - Decimal(str(r.get('quantidade_consumida') or 0))
+                    - Decimal(str(r.get('quantidade_liberada') or 0)))
+                for r in (allocated.data or [])
+            )
+            result = dict(result or {})
+            result['reserva_propria'] = own_reserved
+            result['quantidade_disponivel'] = Decimal(str(result.get('quantidade_disponivel', 0) or 0)) + own_reserved
+        return result
+
+    @staticmethod
+    def _anexar_precondicao_saldo(movimentos: List[Movimento], produto_id: int,
+                                  saldo_info: Dict[str, Any]) -> None:
+        """Marca todas as pernas do produto com a fotografia usada na decisão JIT."""
+        produto_movimentos = [m for m in movimentos if int(m.produto_id) == int(produto_id)]
+        if not produto_movimentos:
+            raise RuntimeError(f'JIT_STOCK_GUARD_MISSING_MOVEMENT:produto={produto_id}')
+        for movimento in produto_movimentos:
+            movimento.expected_saldo = Decimal(str(saldo_info.get('quantidade', 0) or 0))
+            movimento.expected_reservado = Decimal(str(saldo_info.get('quantidade_reservada', 0) or 0))
+            movimento.expected_reserva_propria = Decimal(str(saldo_info.get('reserva_propria', 0) or 0))
+            movimento.expected_disponivel = Decimal(str(saldo_info.get('quantidade_disponivel', 0) or 0))
 
     async def _persistir_via_rpc(self,
                                   movimentos: List[Movimento],
@@ -849,7 +961,8 @@ class MotorReconciliacaoEstoque:
                                   demanda_id: int,
                                   correlation_id: str,
                                   user_id: str,
-                                  snapshot: Dict[str, Any]) -> ReconciliacaoResultado:
+                                  snapshot: Dict[str, Any], operation_id: Optional[str] = None,
+                                  lease: Optional[Dict[str, Any]] = None) -> ReconciliacaoResultado:
         """
         Persiste todos os movimentos e snapshot atomicamente via RPC.
         """
@@ -867,6 +980,13 @@ class MotorReconciliacaoEstoque:
                 'motivo': m.motivo,
                 'estagio': m.estagio
             })
+            if m.expected_saldo is not None:
+                mov_json[-1].update({
+                    'expected_saldo': str(m.expected_saldo),
+                    'expected_reservado': str(m.expected_reservado or 0),
+                    'expected_reserva_propria': str(m.expected_reserva_propria or 0),
+                    'expected_disponivel': str(m.expected_disponivel or 0),
+                })
 
         try:
             # 2. Chamar RPC Atômica
@@ -879,10 +999,36 @@ class MotorReconciliacaoEstoque:
                 'p_user_id': user_id
             }
 
-            response = supabase_db.rpc('reconciliar_item_estoque', params).execute()
+            if not operation_id or not lease:
+                raise ValueError('Reconciliação sem lease ou operation_id estável foi bloqueada.')
+            import hashlib
+            import json
+            content = json.dumps({
+                'item_id': item_id,
+                'event_ids': sorted(lease['event_ids']),
+                'operation_id': operation_id,
+            }, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+            params = {
+                'p_operation_id': operation_id,
+                'p_content_hash': hashlib.sha256(content.encode('utf-8')).hexdigest(),
+                'p_item_id': item_id,
+                'p_demanda_id': demanda_id,
+                'p_movimentos': mov_json,
+                'p_snapshot': snapshot,
+                'p_correlation_id': correlation_id,
+                'p_user_id': user_id,
+                'p_worker_id': lease['worker_id'],
+                'p_lease_token': lease['lease_token'],
+                'p_event_ids': lease['event_ids'],
+            }
+            response = supabase_db.rpc('confirmar_reconciliacao_producao', params).execute()
 
-            if not response.data or not response.data.get('sucesso'):
-                erro_msg = response.data.get('erro') if response.data else "Erro desconhecido na RPC"
+            data = response.data
+            if isinstance(data, list):
+                data = data[0] if data else None
+
+            if not data or not data.get('sucesso'):
+                erro_msg = data.get('erro') if data else "Erro desconhecido na RPC"
                 raise Exception(f"Falha na RPC de reconciliação: {erro_msg}")
 
             # 3. Sucesso!
@@ -893,8 +1039,8 @@ class MotorReconciliacaoEstoque:
                 correlation_id=correlation_id,
                 movimentos=movimentos,
                 metadata={
-                    'rpc_response': response.data,
-                    'snapshot_id': response.data.get('snapshot_id')
+                    'rpc_response': data,
+                    'snapshot_id': data.get('snapshot_id')
                 }
             )
 

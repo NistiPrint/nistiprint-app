@@ -40,7 +40,7 @@ from nistiprint_shared.services.marketplace_account_identity import (
     integration_account_identifiers,
     normalize_account_identifier,
 )
-from nistiprint_shared.utils.date_utils import get_now_iso, unix_to_app_iso
+from nistiprint_shared.utils.date_utils import get_now_iso, normalize_to_iso, unix_to_app_iso
 
 logger = logging.getLogger(__name__)
 
@@ -306,13 +306,6 @@ class MarketplaceWebhookIngestService:
         body = payload.get("data") if isinstance(payload.get("data"), dict) else payload
         parsed = mercadolivre_adapter.parse_webhook(payload)
         resource = parsed.primary_resource
-        if parsed.classification == "chat":
-            from nistiprint_shared.services.mercadolivre_personalization_service import enqueue_notification
-            return {**enqueue_notification(payload, webhook_event_id=webhook_event_id),
-                    "provider_topic": resource.topic if resource else "messages",
-                    "provider_resource": resource.resource_path if resource else None,
-                    "provider_resource_type": resource.resource_type if resource else "message",
-                    "provider_resource_id": resource.resource_id if resource else None}
         if parsed.classification == "unsupported":
             return {
                 "status": "skipped",
@@ -347,6 +340,18 @@ class MarketplaceWebhookIngestService:
         if resolution_error:
             return {**resolution_error, **metadata, "resolution_status": "integration_unresolved"}
         integration = self._meli_integration(marketplace_inst)
+        account_error = self._confirm_meli_webhook_account(resource, integration)
+        if account_error and account_error.get("error_type") == "credential_action_required":
+            refreshed = self._renew_marketplace_integration_once(marketplace_inst)
+            if refreshed:
+                marketplace_inst = refreshed
+                integration = self._meli_integration(refreshed)
+                account_error = self._confirm_meli_webhook_account(resource, integration)
+        if account_error:
+            return {**account_error, **metadata, "marketplace_integration_id": marketplace_inst.get("id")}
+        if parsed.classification == "chat":
+            from nistiprint_shared.services.mercadolivre_personalization_service import enqueue_notification
+            return {**enqueue_notification(payload, webhook_event_id=webhook_event_id), **metadata}
         resolved = mercadolivre_adapter.resolve_order_ids(
             resource,
             integration,
@@ -497,6 +502,13 @@ class MarketplaceWebhookIngestService:
             snapshot.order_status,
             snapshot.shipping_status,
         )
+        if webhook_event_id:
+            from nistiprint_shared.services.reliable_ingest_service import (
+                record_authenticated_resource_confirmation,
+            )
+            record_authenticated_resource_confirmation(
+                webhook_event_id, "mercadolivre", "order", order_id
+            )
         pedido_meli_id = self._upsert_meli_mirror(detail, marketplace_inst.get("id"))
         order = detail.get("order") or {}
         rollout = marketplace_rollout_service.normalize(
@@ -530,7 +542,7 @@ class MarketplaceWebhookIngestService:
             },
             mirror_fields={"pedido_mercadolivre_id": pedido_meli_id},
             raw_customer=self._meli_customer(order), total=order.get("total_amount"),
-            currency=order.get("currency_id") or "BRL", data_venda=order.get("date_created"),
+            currency=order.get("currency_id") or "BRL", data_venda=normalize_to_iso(order.get("date_created")),
             details=detail,
         )
         return {
@@ -550,6 +562,48 @@ class MarketplaceWebhookIngestService:
             "adapter_mode": rollout.mode,
             "shadow_comparison": rollout_comparison if rollout.mode == "shadow" else None,
         }
+
+    @staticmethod
+    def _confirm_meli_webhook_account(resource, integration: dict) -> dict | None:
+        """Bind the webhook's claimed seller ID to the account behind its OAuth token."""
+        account_id = str(getattr(resource, "account_id", None) or "").strip()
+        if not account_id:
+            return {
+                "status": "error",
+                "event_status": "missing_marketplace_account_id",
+                "error_type": "missing_marketplace_account_id",
+                "message": "Webhook Mercado Livre sem user_id/seller_id",
+                "retryable": False,
+            }
+        profile = meli_driver.get_shipping_user(integration)
+        if not isinstance(profile, dict) or profile.get("error"):
+            error_type = profile.get("error_type") or "mercadolivre_account_confirmation_failed" if isinstance(profile, dict) else "mercadolivre_account_confirmation_failed"
+            return {
+                "status": "error",
+                "event_status": error_type,
+                "error_type": error_type,
+                "message": (profile.get("error") or "Nao foi possivel confirmar a conta do token Mercado Livre") if isinstance(profile, dict) else "Nao foi possivel confirmar a conta do token Mercado Livre",
+                "retryable": bool(profile.get("retryable")) if isinstance(profile, dict) else True,
+                "retry_after": profile.get("retry_after") if isinstance(profile, dict) else None,
+            }
+        authenticated_account_id = str(profile.get("id") or profile.get("user_id") or "").strip()
+        if not authenticated_account_id:
+            return {
+                "status": "error",
+                "event_status": "mercadolivre_account_identity_missing",
+                "error_type": "mercadolivre_account_identity_missing",
+                "message": "API autenticada do Mercado Livre nao retornou o ID da conta",
+                "retryable": False,
+            }
+        if authenticated_account_id != account_id:
+            return {
+                "status": "error",
+                "event_status": "marketplace_account_mismatch",
+                "error_type": "marketplace_account_mismatch",
+                "message": "A conta do webhook nao corresponde a conta autenticada pelo token Mercado Livre",
+                "retryable": False,
+            }
+        return None
 
     def _inactive_source_result(
         self, source: str, link: dict | None, external_order_id: str,
@@ -1266,11 +1320,11 @@ class MarketplaceWebhookIngestService:
             )
         elif source == "mercadolivre":
             order = (details or {}).get("order") or {}
-            data_compra_marketplace = order.get("date_created") or data_venda
+            data_compra_marketplace = normalize_to_iso(order.get("date_created") or data_venda)
             if _meli_date_approved(order):
-                data_pagamento_marketplace = _meli_date_approved(order)
+                data_pagamento_marketplace = normalize_to_iso(_meli_date_approved(order))
                 payment_time_source = "mercadolivre.payments.date_approved"
-            data_envio_marketplace = meli_dispatch_timestamp(details)
+            data_envio_marketplace = normalize_to_iso(meli_dispatch_timestamp(details))
             logger.info(
                 "[marketplace-webhook] meli resolve timestamps order_id=%s status=%s source=%s resolved=%s",
                 external_order_id,

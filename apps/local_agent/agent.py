@@ -7,6 +7,8 @@ de impressão: o caminho sempre vem do mapa local previamente configurado.
 from __future__ import annotations
 
 import json
+import sqlite3
+import hashlib
 import logging
 import os
 import re
@@ -18,6 +20,7 @@ import threading
 import ctypes
 import uuid
 import time
+from contextlib import closing, contextmanager
 from http.client import HTTPConnection
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,6 +53,7 @@ ALLOWED_ORIGINS = {
 }
 PRINT_JOBS: dict[int, dict] = {}
 PRINT_REQUESTS_FILE = DATA_DIR / "print_requests.json"
+PRINT_REQUESTS_DB = DATA_DIR / "print_requests.sqlite3"
 try:
     PRINT_REQUESTS: dict[str, dict] = json.loads(PRINT_REQUESTS_FILE.read_text(encoding="utf-8"))
 except (FileNotFoundError, json.JSONDecodeError):
@@ -58,6 +62,53 @@ for saved_result in PRINT_REQUESTS.values():
     if saved_result.get("job_id") and saved_result.get("printer_name"):
         PRINT_JOBS[int(saved_result["job_id"])] = saved_result
 PRINT_LOCK = threading.RLock()
+
+
+@contextmanager
+def _print_journal_connection():
+    """Commit or roll back the SQLite unit of work, then always close its handle."""
+    with closing(sqlite3.connect(PRINT_REQUESTS_DB, timeout=10)) as db:
+        with db:
+            yield db
+
+
+def _init_print_journal() -> None:
+    with _print_journal_connection() as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("""CREATE TABLE IF NOT EXISTS print_requests (
+            request_id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, status TEXT NOT NULL,
+            result_json TEXT NOT NULL, updated_at TEXT NOT NULL
+        )""")
+        for request_id, result in PRINT_REQUESTS.items():
+            content_hash = result.get("content_hash") or hashlib.sha256(
+                json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            result["content_hash"] = content_hash
+            db.execute("INSERT OR IGNORE INTO print_requests VALUES (?, ?, ?, ?, ?)",
+                (request_id, content_hash, result.get("status", "RESULTADO_DESCONHECIDO"),
+                 json.dumps(result, ensure_ascii=False), _now()))
+        rows = db.execute("SELECT request_id, result_json FROM print_requests").fetchall()
+        for request_id, raw in rows:
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError:
+                result = {"success": False, "status": "RESULTADO_DESCONHECIDO", "request_id": request_id}
+            if result.get("status") == "ENVIANDO":
+                result.update({"success": False, "status": "RESULTADO_DESCONHECIDO",
+                               "message": "Agente reiniciado durante o envio; verifique o spooler antes de reimprimir."})
+                db.execute("UPDATE print_requests SET status=?, result_json=?, updated_at=? WHERE request_id=?",
+                           (result["status"], json.dumps(result, ensure_ascii=False), _now(), request_id))
+            PRINT_REQUESTS[request_id] = result
+
+
+def _save_print_request(request_id: str, content_hash: str, result: dict) -> None:
+    PRINT_REQUESTS[request_id] = result
+    with _print_journal_connection() as db:
+        db.execute("INSERT INTO print_requests VALUES (?, ?, ?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET "
+                   "content_hash=excluded.content_hash,status=excluded.status,result_json=excluded.result_json,updated_at=excluded.updated_at",
+                   (request_id, content_hash, result.get("status", "RESULTADO_DESCONHECIDO"),
+                    json.dumps(result, ensure_ascii=False), _now()))
+
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
@@ -70,6 +121,9 @@ logger = logging.getLogger("NistiPrintAgent")
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_init_print_journal()
 
 
 def _recent_log_lines(limit: int = 200) -> list[str]:
@@ -88,14 +142,17 @@ def _recent_log_lines(limit: int = 200) -> list[str]:
 
 
 def _save_print_requests() -> None:
-    fd, temporary = tempfile.mkstemp(prefix="print-requests-", suffix=".json", dir=DATA_DIR)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as output:
-            json.dump(PRINT_REQUESTS, output, ensure_ascii=False, indent=2)
-        os.replace(temporary, PRINT_REQUESTS_FILE)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    # Compatibilidade para o chamador antigo: a fonte de verdade agora é SQLite.
+    with _print_journal_connection() as db:
+        for request_id, result in PRINT_REQUESTS.items():
+            content_hash = result.get("content_hash") or hashlib.sha256(
+                json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            result["content_hash"] = content_hash
+            db.execute("INSERT INTO print_requests VALUES (?, ?, ?, ?, ?) ON CONFLICT(request_id) DO UPDATE SET "
+                       "status=excluded.status,result_json=excluded.result_json,updated_at=excluded.updated_at",
+                       (request_id, content_hash, result.get("status", "RESULTADO_DESCONHECIDO"),
+                        json.dumps(result, ensure_ascii=False), _now()))
 
 
 def _request_running_agent_restart() -> bool:
@@ -506,7 +563,17 @@ def _print_pdf(path: str, printer: str, copies: int, request_id: str) -> dict:
                 return {"success": False, "status": "cancelled_size_warning", "request_id": request_id}
 
         doc_name = f"NistiPrint-{request_id}"
+        current = PRINT_REQUESTS.get(request_id, {})
+        request_hash = current.get("content_hash") or hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+        _save_print_request(request_id, request_hash, {
+            **current, "success": False, "status": "ENVIANDO", "request_id": request_id,
+            "message": "Trabalho iniciado no spooler; aguardando confirmação do agente.",
+        })
         job_id = win32print.StartDoc(hdc, (doc_name, None, None, 0))
+        _save_print_request(request_id, request_hash, {
+            **PRINT_REQUESTS.get(request_id, {}), "success": False, "status": "ENVIANDO",
+            "request_id": request_id, "job_id": int(job_id), "printer_name": selected_printer,
+        })
         try:
             print_copies = int(dialog.nCopies or copies)
             for _ in range(print_copies):
@@ -615,6 +682,24 @@ class AgentHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(length) or b"{}")
 
+    def _discard_request_body(self) -> int | None:
+        """Consume small POST bodies before an early response closes the socket."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return 400
+        if length < 0:
+            return 400
+        if length > 64 * 1024:
+            return 413
+        remaining = length
+        while remaining:
+            chunk = self.rfile.read(min(remaining, 8192))
+            if not chunk:
+                return 400
+            remaining -= len(chunk)
+        return None
+
     def do_GET(self):
         if not self._origin_allowed():
             return self._send(403, {"error": "Origem do navegador não autorizada"})
@@ -627,7 +712,12 @@ class AgentHandler(BaseHTTPRequestHandler):
             return self._send_dashboard()
         if path == "/health":
             return self._send(200, {"success": True, "status": "online", "port": PORT,
-                                    "version": updater.VERSION, "update": updater.snapshot()})
+                                    "version": updater.VERSION, "update": updater.snapshot(),
+                                    "capabilities": ["print_request_journal_sqlite", "request_status_lookup"]})
+        if path.startswith("/requests/"):
+            request_id = unquote(path.removeprefix("/requests/")).strip()
+            result = PRINT_REQUESTS.get(request_id)
+            return self._send(200, result) if result else self._send(404, {"error": "Solicitação não encontrada"})
         if path == "/updates/check":
             return self._send(200, updater.check())
         if path == "/printers":
@@ -676,13 +766,22 @@ class AgentHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if not self._origin_allowed():
+            self._discard_request_body()
             return self._send(403, {"error": "Origem do navegador não autorizada"})
         path = urlparse(self.path).path
         if path == "/restart":
             if self.headers.get("Origin"):
                 return self._send(403, {"error": "Reinício permitido somente ao agente local"})
+            # The restart caller sends a JSON body. Consume it before closing
+            # this HTTP/1.0 connection; otherwise Windows may reset the socket
+            # while the client is reading the 202 response.
+            body_error = self._discard_request_body()
+            if body_error:
+                return self._send(body_error, {"error": "Corpo da solicitação inválido"})
+            self._send(202, {"success": True, "status": "restarting"})
+            self.wfile.flush()
             threading.Thread(target=self.server.shutdown, name="agent-restart", daemon=True).start()
-            return self._send(202, {"success": True, "status": "restarting"})
+            return
         if path == "/updates/install":
             try:
                 result = updater.install(self.server)
@@ -740,26 +839,45 @@ class AgentHandler(BaseHTTPRequestHandler):
                 if not mapping:
                     return self._send(404, {"error": "SKU não mapeado"})
                 with PRINT_LOCK:
+                    try:
+                        file_stat = Path(mapping["file_path"]).stat()
+                    except OSError as error:
+                        return self._send(400, {"error": f"Arquivo indisponível: {error}"})
+                    request_hash = hashlib.sha256(json.dumps({
+                        "path": str(Path(mapping["file_path"]).resolve()),
+                        "size": file_stat.st_size, "mtime_ns": file_stat.st_mtime_ns,
+                        "printer": mapping["printer_name"], "copies": int(data.get("copies", 1)),
+                        "action": path,
+                    }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
                     previous = PRINT_REQUESTS.get(request_id)
                     if previous:
+                        if previous.get("content_hash") not in (None, request_hash):
+                            return self._send(409, {"error": "request_id reutilizado com conteúdo de impressão diferente"})
                         return self._send(200, previous)
+                    preparing = {"success": False, "status": "PREPARADO", "request_id": request_id,
+                                 "content_hash": request_hash}
+                    _save_print_request(request_id, request_hash, preparing)
                     if path == "/open":
                         if Path(mapping["file_path"]).suffix.lower() != ".pdf":
+                            _save_print_request(request_id, request_hash, {**preparing, "status": "FALHOU"})
                             return self._send(400, {"error": "A abertura do editor aceita apenas PDF"})
                         open_file(mapping["file_path"])
                         result = {"success": True, "status": "file_opened", "request_id": request_id,
-                                  "message": "PDF base aberto no editor padrão."}
+                                  "content_hash": request_hash, "message": "PDF base aberto no editor padrão."}
                     else:
-                        result = _print_pdf(mapping["file_path"], mapping["printer_name"],
-                                            data.get("copies", 1), request_id)
-                    # Cancelar um prompt não deve consumir a chave de idempotência.
-                    if result.get("status") not in ("cancelled", "cancelled_size_warning"):
-                        PRINT_REQUESTS[request_id] = result
-                        # Persistir a chave localmente evita uma segunda impressão
-                        # se o navegador repetir a requisição após reinício do agente.
-                        if len(PRINT_REQUESTS) > 1000:
-                            PRINT_REQUESTS.pop(next(iter(PRINT_REQUESTS)))
-                        _save_print_requests()
+                        try:
+                            result = _print_pdf(mapping["file_path"], mapping["printer_name"],
+                                                data.get("copies", 1), request_id)
+                            result["content_hash"] = request_hash
+                        except Exception as error:
+                            current = PRINT_REQUESTS.get(request_id, {})
+                            state = "RESULTADO_DESCONHECIDO" if current.get("status") == "ENVIANDO" else "FALHOU"
+                            result = {"success": False, "status": state, "request_id": request_id,
+                                      "content_hash": request_hash, "message": str(error)}
+                            _save_print_request(request_id, request_hash, result)
+                    if result.get("status") in ("cancelled", "cancelled_size_warning"):
+                        result = {**result, "status": "CANCELADO", "content_hash": request_hash}
+                    _save_print_request(request_id, request_hash, result)
                     return self._send(200, result)
             return self._send(404, {"error": "Rota não encontrada"})
         except (ValueError, json.JSONDecodeError) as error:

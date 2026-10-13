@@ -89,6 +89,12 @@ class WorkflowService:
             "produto_id, quantidade").eq('pedido_id', order_id).execute().data
         if not items:
             return
+        totals_by_product = {}
+        for item in items:
+            product_id = item.get('produto_id')
+            if product_id:
+                product_id = int(product_id)
+                totals_by_product[product_id] = totals_by_product.get(product_id, 0) + float(item['quantidade'])
 
         # Flag de Reserva
         old_reserva = old_meta.get('flag_reserva_estoque', False)
@@ -97,10 +103,9 @@ class WorkflowService:
         # Flag de Baixa (Fatura/Saída)
         old_baixa = old_meta.get('flag_fatura', False)
         new_baixa = new_meta.get('flag_fatura', False)
+        transition_key = f"pedido:{order_id}:status:{old_meta.get('id')}:{new_meta.get('id')}"
 
-        for item in items:
-            p_id = item['produto_id']
-            qtd = float(item['quantidade'])
+        for p_id, qtd in totals_by_product.items():
             if not p_id:
                 continue
 
@@ -111,15 +116,17 @@ class WorkflowService:
 
             # Ação A: Entrou em status de reserva e não estava reservado
             if new_reserva and not old_reserva:
-                try:
-                    estoque_service.reservar_estoque(p_id, qtd, deposito_id)
-                except Exception as e:
-                    logger.warning(
-                        f"Não foi possível reservar estoque para o produto {p_id}: {e}")
+                estoque_service.reservar_estoque(
+                    p_id, qtd, deposito_id, ordem_id=str(order_id), tipo_ordem='PEDIDO',
+                    idempotency_key=f'{transition_key}:produto:{p_id}:reserva',
+                )
 
             # Ação B: Saiu de status de reserva e não baixou estoque (ex: Cancelou)
             if old_reserva and not new_reserva and not new_baixa:
-                estoque_service.liberar_reserva(p_id, qtd, deposito_id)
+                estoque_service.liberar_reserva(
+                    p_id, qtd, deposito_id, ordem_id=str(order_id), tipo_ordem='PEDIDO',
+                    idempotency_key=f'{transition_key}:produto:{p_id}:liberacao',
+                )
 
             # Ação C: Entrou em status de baixa (ex: Enviado/Faturado)
             if new_baixa and not old_baixa:
@@ -128,10 +135,17 @@ class WorkflowService:
                 # O comportamento vai depender da lógica de permissão no serviço
                 if old_reserva:
                     estoque_service.confirmar_saida_reservada(
-                        p_id, qtd, deposito_id, motivo=f"Pedido {order_id} faturado.", usuario_id=usuario_id, user_context=None)
+                        p_id, qtd, deposito_id, motivo=f"Pedido {order_id} faturado.",
+                        usuario_id=usuario_id, user_context=None, ordem_id=str(order_id),
+                        tipo_ordem='PEDIDO',
+                        idempotency_key=f'{transition_key}:produto:{p_id}:baixa-reservada',
+                    )
                 else:
                     estoque_service.registrar_saida(
-                        p_id, deposito_id, qtd, motivo=f"Venda direta pedido {order_id}", usuario_id=usuario_id, user_context=None)
+                        p_id, deposito_id, qtd, motivo=f"Venda direta pedido {order_id}",
+                        usuario_id=usuario_id, user_context=None,
+                        idempotency_key=f'{transition_key}:produto:{p_id}:baixa-direta',
+                    )
 
 
 workflow_service = WorkflowService()

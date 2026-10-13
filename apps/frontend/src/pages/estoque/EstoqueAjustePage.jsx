@@ -125,6 +125,7 @@ function EstoqueAjustePage() {
       setor_responsavel_nome: product.setor_responsavel_nome, // Adicionando o nome do setor responsável
       system_quantity: product.saldo, // Assuming 'saldo' from API is system quantity
       counted: 0,
+      operation_id: crypto.randomUUID(),
     });
     setProductSearchTerm(''); // Clear search input
     setSearchResults([]); // Clear search results
@@ -141,6 +142,7 @@ function EstoqueAjustePage() {
           counted: adj.counted,
           system: adj.system_quantity,
           variance: adj.counted - adj.system_quantity,
+          operation_id: adj.operation_id,
         })),
       };
 

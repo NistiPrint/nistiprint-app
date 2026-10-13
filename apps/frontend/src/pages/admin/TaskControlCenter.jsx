@@ -429,6 +429,11 @@ function TaskControlCenter({ basePath = null }) {
           </p>
         </div>
         <div className="flex gap-2">
+          {isAdmin() && (
+            <Button variant="outline" onClick={() => navigate('/relatorios/webhooks')}>
+              Webhooks e exceções
+            </Button>
+          )}
           {showReloadWarning && <Badge variant="outline" className="border-amber-400 bg-amber-50 text-amber-800">Worker precisa ser reiniciado manualmente</Badge>}
           <select value={hours} onChange={event => setHours(Number(event.target.value))} className="h-9 rounded border bg-background px-2 text-sm">
             <option value={24}>Últimas 24 horas</option><option value={72}>Últimos 3 dias</option><option value={168}>Últimos 7 dias</option>

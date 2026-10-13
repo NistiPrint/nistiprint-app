@@ -1,4 +1,5 @@
 from typing import List, Dict, Any
+from datetime import datetime, timezone
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.bom_service import bom_service
 import logging
@@ -15,9 +16,9 @@ class PrevisaoConsumoService:
         Isso permite saber antecipadamente o que será necessário comprar/produzir.
         """
         try:
-            # 1. Limpar previsões antigas da demanda para evitar duplicidade em re-cálculos
-            supabase_db.table(self.table_name).delete().eq('demanda_id', demanda_id).execute()
-
+            demanda_pk = int(demanda_id)
+            if demanda_pk <= 0:
+                raise ValueError("demanda_id deve ser um inteiro positivo")
             consumo_consolidado = {}
 
             # 2. Iterar sobre cada item da demanda
@@ -46,20 +47,24 @@ class PrevisaoConsumoService:
                             'unidade': unidade
                         }
 
-            # 4. Salvar previsões consolidadas no banco
-            if consumo_consolidado:
-                payload = []
-                for comp_id, dados in consumo_consolidado.items():
-                    payload.append({
-                        'demanda_id': demanda_id,
-                        'produto_id': comp_id,
-                        'quantidade_prevista': dados['quantidade'],
-                        'unidade': dados['unidade'],
-                        'status': 'PLANEJADO'
-                    })
-                
-                supabase_db.table(self.table_name).insert(payload).execute()
-                logging.info(f"Previsão de consumo gerada para demanda {demanda_id} com {len(payload)} insumos.")
+            # Validate the entire replacement before the RPC deletes the old plan.
+            payload = [
+                {
+                    'produto_id': int(comp_id),
+                    'quantidade_prevista': dados['quantidade'],
+                    'unidade': dados['unidade'],
+                }
+                for comp_id, dados in sorted(consumo_consolidado.items(), key=lambda entry: int(entry[0]))
+            ]
+            response = supabase_db.rpc('substituir_previsao_consumo_demanda', {
+                'p_demanda_id': demanda_pk, 'p_linhas': payload,
+            }).execute()
+            result = response.data
+            if isinstance(result, list):
+                result = result[0] if result else None
+            if not isinstance(result, dict) or result.get('status') != 'CONFIRMADO':
+                raise RuntimeError(f"Banco não confirmou a substituição da previsão: {result}")
+            logging.info(f"Previsão de consumo gerada para demanda {demanda_id} com {len(payload)} insumos.")
             
             return True
         except Exception as e:
@@ -82,42 +87,67 @@ class PrevisaoConsumoService:
 
             previsao_map = {}
             for p in previsao_res.data:
-                pid = p['produto_id']
+                pid = int(p['produto_id'])
+                product = p.get('produtos') or {}
                 previsao_map[pid] = {
                     'produto_id': pid,
-                    'nome': p['produtos']['nome'],
-                    'sku': p['produtos']['sku'],
+                    'nome': product.get('nome'),
+                    'sku': product.get('sku'),
                     'previsto': float(p['quantidade_prevista']),
                     'unidade': p['unidade'],
                     'realizado': 0.0
                 }
 
-            # 2. Obter Movimentações Reais
-            # Busca por documento_referencia (ID da demanda)
-            mov_res = supabase_db.table('movimentacoes_estoque')\
-                .select('produto_id, quantidade, tipo_movimentacao')\
-                .eq('documento_referencia', str(demanda_id))\
-                .execute()
-            
-            all_movements = mov_res.data or []
-            
-            # Fallback por motivo se não houver doc_ref (compatibilidade)
-            if not all_movements:
-                mov_res_motivo = supabase_db.table('movimentacoes_estoque')\
-                    .select('produto_id, quantidade, tipo_movimentacao')\
-                    .ilike('motivo', f'%{demanda_id}%')\
-                    .execute()
-                all_movements = mov_res_motivo.data or []
+            # Novos movimentos se relacionam pelo item interno; documento_referencia
+            # permanece apenas como leitura de compatibilidade do histórico legado.
+            demand_pk = int(demanda_id)
+            item_res = (supabase_db.table('itens_demanda').select('id')
+                        .eq('demanda_id', demand_pk).execute())
+            item_ids = [int(row['id']) for row in (item_res.data or [])]
+            movement_fields = (
+                'id, produto_id, quantidade, tipo_movimentacao, data_movimentacao, '
+                'operation_id, item_demanda_id, documento_referencia, correlation_id'
+            )
+            movements_by_id = {}
+            if item_ids:
+                linked = (supabase_db.table('movimentacoes_estoque').select(movement_fields)
+                          .in_('item_demanda_id', item_ids).execute())
+                movements_by_id.update({str(row['id']): row for row in (linked.data or [])})
+            legacy = (supabase_db.table('movimentacoes_estoque').select(movement_fields)
+                      .eq('documento_referencia', str(demand_pk)).execute())
+            movements_by_id.update({str(row['id']): row for row in (legacy.data or [])})
+
+            consumption_types = {
+                'CONS_MP', 'CONS_INT', 'SAIDA_INSUMO_PRODUCAO', 'SAIDA', 'SAIDA_RESERVADA'
+            }
+            compensation_types = {
+                'COMPENSACAO_CONSUMO', 'COMPENSACAO_CONS_MP', 'COMPENSACAO_CONS_INT',
+                'ESTORNO_CONS_MP', 'ESTORNO_CONS_INT', 'ESTORNO'
+            }
+            all_movements = list(movements_by_id.values())
+            audited_movements = []
 
             for m in all_movements:
-                pid = m['produto_id']
+                pid = int(m['produto_id'])
                 qty = abs(float(m['quantidade']))
-                
                 if pid in previsao_map:
-                    if m['tipo_movimentacao'] == 'SAIDA':
+                    movement_type = str(m['tipo_movimentacao'] or '').upper()
+                    if movement_type in consumption_types:
                         previsao_map[pid]['realizado'] += qty
-                    elif m['tipo_movimentacao'] == 'ENTRADA': # Estorno
+                    elif movement_type in compensation_types:
                         previsao_map[pid]['realizado'] -= qty
+                    else:
+                        continue
+                    audited_movements.append(m)
+                    previsao_map[pid].setdefault('movimentos', []).append({
+                        'movimento_id': m.get('id'),
+                        'operation_id': m.get('operation_id'),
+                        'correlation_id': m.get('correlation_id'),
+                        'item_demanda_id': m.get('item_demanda_id'),
+                        'tipo': movement_type,
+                        'quantidade': float(m['quantidade']),
+                        'data_movimentacao': m.get('data_movimentacao'),
+                    })
 
             # 3. Formatar Resultado
             report = []
@@ -128,7 +158,10 @@ class PrevisaoConsumoService:
 
             return {
                 'success': True,
-                'demanda_id': demanda_id,
+                'demanda_id': demand_pk,
+                'generated_at': datetime.now(timezone.utc).isoformat(),
+                'period_start': min((m.get('data_movimentacao') for m in audited_movements if m.get('data_movimentacao')), default=None),
+                'period_end': max((m.get('data_movimentacao') for m in audited_movements if m.get('data_movimentacao')), default=None),
                 'audit_report': report
             }
         except Exception as e:
