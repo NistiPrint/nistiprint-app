@@ -135,19 +135,36 @@ class OrdersQueryService:
                 )
             return query.eq("marketplace_integration_id", int(integration_id))
 
-        def count_for(**filters):
-            query = scoped(supabase_db.table(summary_table).select("id", count="exact", head=True))
-            for column, value in filters.items():
-                query = query.eq(column, value)
-            return int(getattr(query.execute(), "count", 0) or 0)
+        try:
+            count_result = (supabase_db.rpc("contar_pedidos_personalizados_shopee", {
+                "p_integration_id": integration_id,
+                "p_include_unassigned": bool(include_unassigned),
+            }).execute().data or [])
+            count_row = count_result[0] if count_result else {}
+            status_counts = {
+                "pendente_ia": int(count_row.get("pendente_ia") or 0),
+                "com_chat": int(count_row.get("com_chat") or 0),
+                "sem_chat": int(count_row.get("sem_chat") or 0),
+                "nome_identificado": int(count_row.get("nome_identificado") or 0),
+                "sem_nome": int(count_row.get("sem_nome") or 0),
+            }
+        except Exception:
+            # Keep rolling deploys compatible while the additive RPC migration
+            # is being applied to the database.
+            def count_for(**filters):
+                query = scoped(supabase_db.table(summary_table).select("id", count="exact", head=True))
+                for column, value in filters.items():
+                    query = query.eq(column, value)
+                return int(getattr(query.execute(), "count", 0) or 0)
 
-        status_counts = {
-            "pendente_ia": count_for(needs_ai_processing=True),
-            "com_chat": count_for(has_chat_messages=True),
-            "sem_chat": count_for(has_chat_messages=False),
-            "nome_identificado": count_for(has_identified_name=True),
-            "sem_nome": count_for(has_no_name=True),
-        }
+            status_counts = {
+                "pendente_ia": count_for(needs_ai_processing=True),
+                "com_chat": count_for(has_chat_messages=True),
+                "sem_chat": count_for(has_chat_messages=False),
+                "nome_identificado": count_for(has_identified_name=True),
+                "sem_nome": count_for(has_no_name=True),
+            }
+
         query = scoped(
             supabase_db.table(summary_table).select("id", count="exact"),
             global_order_search=search_by_order_number,
