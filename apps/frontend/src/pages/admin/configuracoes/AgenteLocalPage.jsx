@@ -67,8 +67,10 @@ export default function AgenteLocalPage() {
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
           <p>1. Baixe o arquivo e coloque o EXE em uma pasta em que seu usuário possa gravar, por exemplo, Documentos\NistiPrint.</p>
-          <p>2. Execute o EXE. O ícone NistiPrint aparecerá na bandeja do Windows.</p>
-          <p>3. Para iniciar junto com o Windows, crie um atalho para o EXE na pasta de Inicialização do seu usuário.</p>
+          <p>2. Se o Windows mostrar o SmartScreen, confira se baixou o agente NistiPrint e selecione <strong>Mais informações</strong> → <strong>Executar assim mesmo</strong>. Se essa opção não aparecer, o Defender ou uma política da empresa pode estar bloqueando o arquivo; solicite a liberação ao administrador de TI.</p>
+          <p>3. Execute o EXE. Confirme que iniciou abrindo <a className="text-primary underline" href="http://127.0.0.1:8181/health" target="_blank" rel="noreferrer">127.0.0.1:8181/health</a>; a resposta deve mostrar <code>"status":"online"</code>. O ícone também aparece na área de notificações, perto do relógio.</p>
+          <p>4. Para iniciar junto com o Windows, crie um atalho para o EXE na pasta de Inicialização do seu usuário.</p>
+          <p>Se nada acontecer, execute o arquivo <code>diagnose_agent.bat</code> na mesma pasta do agente para manter a mensagem de erro visível. Verifique também <code>%LOCALAPPDATA%\NistiPrint\agent.log</code> e <code>startup-error.log</code>.</p>
           <p>As próximas versões poderão ser instaladas pelo aviso na aplicação ou pelo menu da bandeja.</p>
         </CardContent>
       </Card>

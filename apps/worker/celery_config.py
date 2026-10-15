@@ -47,6 +47,7 @@ def get_default_schedules():
     """
     return {
         **logistica_schedules(),
+        **operational_read_model_schedules(),
         **mercadolivre_schedules(),
         'reconcile-pending-erp-references': {
             'task': 'nistiprint_shared.services.order_erp_reference_service.reconcile_pending',
@@ -273,6 +274,7 @@ def load_dynamic_schedules():
                 logger.info(f"Task periódica desativada via banco: {task_name}")
                 
         schedules.update(logistica_schedules())
+        schedules.update(operational_read_model_schedules())
         # Integration-critical functions remain active even when the database
         # contains a custom list of user-managed schedules.
         schedules.update(mercadolivre_schedules())
@@ -287,6 +289,18 @@ def logistica_schedules():
         'logistica-agendas': {'task': 'nistiprint_shared.services.logistica_sync_service.sincronizar_agendas', 'schedule': 900},
         'logistica-envios-ativos': {'task': 'nistiprint_shared.services.logistica_sync_service.reconciliar_envios', 'schedule': 900},
         'logistica-janelas': {'task': 'nistiprint_shared.services.despacho_janela_service.fechar_janelas', 'schedule': 60},
+    }
+
+
+def operational_read_model_schedules():
+    # This infrastructure task stays active when Task Center schedules are
+    # customized; it maintains projection freshness and drives the backfill.
+    return {
+        'refresh-operational-read-models': {
+            'task': 'tasks.operational_read_model_tasks.refresh_operational_read_models',
+            'schedule': 2,
+            'kwargs': {'limit': 100},
+        },
     }
 
 
@@ -358,6 +372,7 @@ celery_app = Celery(
         'nistiprint_shared.services.redis_queue_tasks',
         'tasks.eventos_tasks',
         'tasks.estoque_outbox_tasks',
+        'tasks.operational_read_model_tasks',
         'tasks.consolidation_tasks',
         'tasks.pedidos_fetch_tasks',
         'tasks.token_renewal_tasks',

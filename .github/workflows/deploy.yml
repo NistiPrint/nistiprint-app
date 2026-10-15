@@ -69,3 +69,63 @@ jobs:
           # de execucao do arquivo, que se perde ao editar pelo Windows e some
           # de novo a cada `git reset --hard` se o modo nao estiver no indice.
           script: bash /opt/nistiprint/deploy.sh
+
+  build-local-agent:
+    if: github.event_name == 'push' && contains(toJSON(github.event.commits), 'apps/local_agent/')
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install agent dependencies
+        working-directory: apps/local_agent
+        run: python -m pip install -r requirements.txt "pyinstaller>=6.22.3"
+      - name: Build Windows executable
+        working-directory: apps/local_agent
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onefile --windowed
+          --name NistiPrintAgent --icon icon.ico
+          --add-data "icon.ico;." --add-data "dashboard.html;."
+          --add-data "install_update.ps1;."
+          --hidden-import tray --hidden-import updater --hidden-import version
+          --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image
+          --hidden-import win32print --hidden-import win32gui
+          --collect-all pypdfium2 agent.py
+      - name: Create release manifest
+        id: release
+        shell: pwsh
+        working-directory: apps/local_agent
+        run: |
+          $version = (python -c "from version import VERSION; print(VERSION)").Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid agent version: $version" }
+          $filename = "NistiPrintAgent-$version.exe"
+          $digest = (Get-FileHash -LiteralPath 'dist\NistiPrintAgent.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $baseUrl = 'https://app.nistiprint.neolabs.com.br'
+          $manifest = [ordered]@{
+            version = $version
+            url = "$baseUrl/api/v2/local-agent/releases/$filename"
+            sha256 = $digest
+          }
+          [System.IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'latest.json'), ($manifest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "filename=$filename" >> $env:GITHUB_OUTPUT
+      - name: Upload release executable and manifest
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          RELEASE_DIRECTORY: ${{ secrets.AGENT_RELEASE_DIRECTORY }}
+          RELEASE_FILENAME: ${{ steps.release.outputs.filename }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_DIRECTORY" || { echo "Missing AGENT_RELEASE_DIRECTORY secret"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/id_ed25519 "apps/local_agent/dist/NistiPrintAgent.exe" "$SSH_USER@$SSH_HOST:$RELEASE_DIRECTORY/$RELEASE_FILENAME"
+          scp -i ~/.ssh/id_ed25519 "$RUNNER_TEMP/latest.json" "$SSH_USER@$SSH_HOST:$RELEASE_DIRECTORY/latest.json.tmp"
+          ssh -i ~/.ssh/id_ed25519 "$SSH_USER@$SSH_HOST" "mv '$RELEASE_DIRECTORY/latest.json.tmp' '$RELEASE_DIRECTORY/latest.json'"

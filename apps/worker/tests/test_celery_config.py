@@ -17,6 +17,13 @@ class CeleryConfigTest(TestCase):
         self.assertEqual(schedules['logistica-envios-ativos']['schedule'], 900)
         self.assertEqual(schedules['logistica-janelas']['schedule'], 60)
 
+    def test_operational_read_model_worker_runs_frequently(self):
+        schedule = celery_config.operational_read_model_schedules()[
+            'refresh-operational-read-models'
+        ]
+        self.assertEqual(schedule['schedule'], 2)
+        self.assertEqual(schedule['kwargs'], {'limit': 100})
+
     def test_default_schedules_use_unified_app_managed_renewal_task(self):
         schedules = celery_config.get_default_schedules()
 

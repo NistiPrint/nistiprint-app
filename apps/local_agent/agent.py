@@ -20,6 +20,8 @@ import threading
 import ctypes
 import uuid
 import time
+import traceback
+import platform
 from contextlib import closing, contextmanager
 from http.client import HTTPConnection
 from datetime import datetime, timezone
@@ -110,12 +112,22 @@ def _save_print_request(request_id: str, content_hash: str, result: dict) -> Non
                     json.dumps(result, ensure_ascii=False), _now()))
 
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler(LOG_FILE, encoding="utf-8")],
-)
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    DATA_DIR = Path(tempfile.gettempdir()) / "NistiPrint"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    MAP_FILE = DATA_DIR / "mappings.json"
+    LOG_FILE = DATA_DIR / "agent.log"
+    PRINT_REQUESTS_FILE = DATA_DIR / "print_requests.json"
+    PRINT_REQUESTS_DB = DATA_DIR / "print_requests.sqlite3"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+try:
+    logging.getLogger().addHandler(logging.FileHandler(LOG_FILE, encoding="utf-8"))
+except OSError:
+    # Keep the HTTP service available if a user profile or temp path is read-only.
+    pass
 logger = logging.getLogger("NistiPrintAgent")
 
 
@@ -902,6 +914,16 @@ class AgentHandler(BaseHTTPRequestHandler):
 
 
 def serve() -> None:
+    if os.name == "nt":
+        try:
+            windows_version = tuple(int(part) for part in platform.win32_ver()[1].split(".")[:2])
+        except (TypeError, ValueError):
+            windows_version = ()
+        if windows_version and windows_version < (10, 0):
+            raise RuntimeError(
+                f"Windows {platform.win32_ver()[1]} não é suportado. "
+                "O agente exige Windows 10 ou superior."
+            )
     mutex = _acquire_single_instance()
     if mutex is False:
         return
@@ -944,5 +966,38 @@ def serve() -> None:
             kernel32.CloseHandle(mutex)
 
 
+def _install_bootstrap_error_logger() -> None:
+    """Capture failures that happen before normal application logging starts."""
+    data_dir = Path(os.environ.get("NISTIPRINT_AGENT_DATA_DIR") or
+                    (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "NistiPrint"))
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        error_file = data_dir / "startup-error.log"
+    except Exception:
+        error_file = Path(tempfile.gettempdir()) / "NistiPrintAgent-startup-error.log"
+
+    def report(exc_type, exc_value, exc_traceback):
+        details = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        try:
+            with error_file.open("a", encoding="utf-8") as target:
+                target.write(f"\n[{datetime.now(timezone.utc).isoformat()}] Falha ao iniciar agente\n{details}\n")
+        except Exception:
+            pass
+        if sys.stderr:
+            try:
+                sys.stderr.write(details)
+            except Exception:
+                pass
+
+    sys.excepthook = report
+
+
+_install_bootstrap_error_logger()
+
+
 if __name__ == "__main__":
-    serve()
+    try:
+        serve()
+    except Exception:
+        logger.exception("Falha fatal ao iniciar o agente")
+        raise

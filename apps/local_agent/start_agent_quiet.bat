@@ -12,5 +12,5 @@ if not exist ".venv\Scripts\pythonw.exe" (
     exit /b 1
 )
 
-start "" /min ".venv\Scripts\pythonw.exe" agent.py
+start "" /min ".venv\Scripts\pythonw.exe" -X faulthandler agent.py
 exit /b 0

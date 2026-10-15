@@ -70,7 +70,21 @@ mostra um aviso de nova versão e a bandeja oferece **Verificar atualizações**
 e **Atualizar agente**. A instalação só começa após o clique do operador.
 
 No servidor, configure `NISTIPRINT_AGENT_RELEASE_DIR` com um diretório persistente
-e legível pela API. Após gerar o EXE, publique com:
+e legível pela API. O workflow `.github/workflows/deploy.yml` gera e publica uma
+nova versão automaticamente em pushes para `main` que alterem `apps/local_agent/`.
+Configure no GitHub os secrets `AGENT_RELEASE_DIRECTORY` (por exemplo,
+`/opt/nistiprint-agent-releases`) e os secrets SSH `SSH_HOST`, `SSH_USER` e
+`SSH_KEY` já usados pelo deploy da aplicação. O usuário SSH precisa gravar no
+diretório de releases; a API precisa ter leitura.
+
+Antes de enviar uma mudança do agente, aumente `VERSION` em `version.py` para
+um valor semântico maior que o atualmente publicado. O job compila no runner
+Windows, calcula o SHA-256, envia o EXE versionado e atualiza `latest.json` por
+último. Se o build ou o upload falhar, o manifesto anterior continua ativo. O
+deploy da aplicação segue independente.
+
+Para uma publicação manual ou para validar um build local, gere o EXE com
+`build_agent.bat` e publique a pasta local com:
 
 ```powershell
 .\publish_release.ps1 -ReleaseDirectory C:\releases\nistiprint-agent -BaseUrl https://app.nistiprint.neolabs.com.br

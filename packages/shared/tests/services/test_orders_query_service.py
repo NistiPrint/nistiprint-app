@@ -89,6 +89,45 @@ class TestOrdersQueryService(unittest.TestCase):
         })
         self.assertIsNone(result["status_counts"])
 
+    def test_projected_page_preserves_public_order_contract(self):
+        supabase = MagicMock()
+        supabase.rpc.return_value.execute.return_value.data = {
+            "ready": True,
+            "rows": [{
+                "id": 8,
+                "numero_pedido": "N-8",
+                "numero_loja": "SHOP-8",
+                "data_pedido": "2026-10-15T10:00:00",
+                "contato": {"nome": "Ana"},
+                "nome_cliente": "Ana",
+                "buyer_username": "ana",
+                "marketplace_integration_id": 12,
+                "shopee_message": "Gravar Ana",
+                "itens": [{"id": 3, "descricao": "Caneca", "personalizations": []}],
+                "has_chat_messages": True,
+                "needs_ai_processing": False,
+            }],
+            "total": 21,
+            "status_counts": {"pendente_ia": 2, "com_chat": 4, "sem_chat": 5,
+                              "nome_identificado": 6, "sem_nome": 7},
+        }
+        with patch("nistiprint_shared.database.supabase_db_service.supabase_db", supabase):
+            result = OrdersQueryService().get_personalized_orders_page(
+                page=2, page_size=20, integration_id=12,
+            )
+
+        supabase.rpc.assert_called_once_with("listar_pedidos_personalizados_projetados", {
+            "p_page": 2, "p_page_size": 20, "p_search": "", "p_ai_filter": "",
+            "p_chat_filter": "", "p_integration_id": 12, "p_include_unassigned": False,
+        })
+        self.assertEqual(result["pagination"], {
+            "page": 2, "page_size": 20, "total": 21, "has_next": False,
+        })
+        self.assertEqual(result["bling_orders"][0]["numero"], "N-8")
+        self.assertEqual(result["bling_orders"][0]["marketplace_integration_id"], 12)
+        self.assertEqual(result["bling_orders"][0]["shopee"]["message"], "Gravar Ana")
+        self.assertEqual(result["status_counts"]["sem_nome"], 7)
+
 
 if __name__ == "__main__":
     unittest.main()

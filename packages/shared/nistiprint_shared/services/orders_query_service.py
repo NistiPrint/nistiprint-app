@@ -1,4 +1,5 @@
 import json
+import logging
 
 from sqlalchemy import text
 
@@ -10,6 +11,8 @@ from nistiprint_shared.models.supabase_chat import MensagemChatShopee
 from nistiprint_shared.models.supabase_personalizacao import PersonalizacaoPedido
 
 from nistiprint_shared.database.supabase_db_service import get_db_session as get_supabase_session
+
+logger = logging.getLogger(__name__)
 
 
 class OrdersQueryService:
@@ -122,6 +125,58 @@ class OrdersQueryService:
                                "has_next": page * page_size < total},
                 "status_counts": None,
             }
+
+        # The projection is populated asynchronously from the same canonical
+        # detail view. During migration/backfill, keep the established query
+        # path as a safe rolling-deploy fallback.
+        try:
+            projected = supabase_db.rpc("listar_pedidos_personalizados_projetados", {
+                "p_page": page,
+                "p_page_size": page_size,
+                "p_search": search_value,
+                "p_ai_filter": ai_filter or "",
+                "p_chat_filter": chat_filter or "",
+                "p_integration_id": integration_id,
+                "p_include_unassigned": bool(include_unassigned),
+            }).execute().data
+            projected = projected[0] if isinstance(projected, list) and projected else projected
+            if isinstance(projected, dict) and projected.get("ready"):
+                rows = projected.get("rows") or []
+                orders = []
+                for row in rows:
+                    contato = self._parse_json_field(row.get("contato"), default={}) or {}
+                    if not contato.get("nome"):
+                        contato["nome"] = row.get("nome_cliente") or ""
+                    items = [self._normalize_item(item) for item in self._parse_json_field(row.get("itens"), default=[])]
+                    orders.append({
+                        "id": row["id"], "numero": row.get("numero_pedido"),
+                        "numeroLoja": row.get("numero_loja"), "nome_cliente": row.get("nome_cliente") or "",
+                        "data": row.get("data_pedido"), "contato": contato, "itens": items,
+                        "shopee": {"username": row.get("buyer_username") or "",
+                                   "order_sn": row.get("numero_loja"),
+                                   "message": row.get("shopee_message") or ""},
+                        "personalizado": True, "has_chat_messages": bool(row.get("has_chat_messages")),
+                        "deletado": bool(row.get("deletado")),
+                        "last_ai_executed_at": row.get("last_ai_executed_at"),
+                        "last_buyer_message_at": row.get("last_buyer_message_at"),
+                        "needs_ai_processing": bool(row.get("needs_ai_processing")),
+                        "ai_status": row.get("ai_status"),
+                        "marketplace_integration_id": row.get("marketplace_integration_id"),
+                    })
+                total = int(projected.get("total") or 0)
+                return {
+                    "bling_orders": orders,
+                    "pagination": {"page": page, "page_size": page_size, "total": total,
+                                   "has_next": page * page_size < total},
+                    "status_counts": projected.get("status_counts"),
+                }
+        except Exception:
+            # Compatibility during rolling migration rollout; the canonical
+            # views remain the source of truth until projection backfill ends.
+            logger.warning(
+                "Leitura projetada de vendas personalizadas indisponível; usando as views atuais",
+                exc_info=True,
+            )
 
         def scoped(query, *, global_order_search=False):
             # A numeric order lookup must find the order regardless of the
