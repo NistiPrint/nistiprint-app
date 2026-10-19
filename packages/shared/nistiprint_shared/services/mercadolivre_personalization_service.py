@@ -10,7 +10,7 @@ import time
 import threading
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from nistiprint_shared.database.supabase_db_service import supabase_db
@@ -19,7 +19,7 @@ from nistiprint_shared.services.platform_drivers import mercadolivre as meli_dri
 
 logger = logging.getLogger(__name__)
 AGENT_IDS = {"3037675074", "3020819166", "3037204123", "3037204279", "3037674934", "3037204685"}
-DEFAULT_PROMPT = """Você é um extrator de dados de personalização pós-venda do Mercado Livre. Analise os itens elegíveis, a mensagem do comprador ao vendedor e todas as mensagens da conversa em ordem cronológica. Use apenas instruções atribuíveis ao comprador. Nunca deduza personalização a partir do nome cadastral, apelido, nome da loja ou texto escrito pelo vendedor/agente. Preserve exatamente a grafia, os acentos e a decisão final do comprador; uma correção posterior explícita substitui a anterior.
+DEFAULT_PROMPT = """Você é um extrator de dados de personalização pós-venda do Mercado Livre. Analise os itens elegíveis, a mensagem do comprador ao vendedor e as mensagens da conversa recebidas nos últimos 7 dias, em ordem cronológica. A mensagem ao vendedor é a primeira mensagem e sua data é a data da compra; ela só deve ser considerada quando a compra estiver dentro dos últimos 7 dias. Use apenas instruções atribuíveis ao comprador. Nunca deduza personalização a partir do nome cadastral, apelido, nome da loja ou texto escrito pelo vendedor/agente. Preserve exatamente a grafia, os acentos e a decisão final do comprador; uma correção posterior explícita substitui a anterior.
 
 PROCESSO OBRIGATÓRIO
 1. Leia todos os pedidos e itens do pacote. Cada item inclui um item_id interno inteiro, pedido_id, descrição e quantidade. Não invente IDs e não use IDs externos no campo item_id.
@@ -85,8 +85,12 @@ class ProviderRetryError(RuntimeError):
         super().__init__("retry:" + message)
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return _utcnow().isoformat()
 
 
 def _json(value: Any, default: Any = None) -> Any:
@@ -417,7 +421,10 @@ def _parse_created(value: Any) -> str | None:
     try:
         if isinstance(value, (int, float)) or str(value).isdigit():
             return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
     except (TypeError, ValueError, OverflowError):
         return None
 
@@ -510,6 +517,67 @@ def _context_hash(messages: list[dict]) -> str:
                  for message in sorted(messages, key=lambda row: (str(row.get("created_at") or ""),
                                                                      str(row.get("provider_message_id") or "")))]
     return hashlib.sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def _extraction_context(messages: list[dict], orders: list[dict], *, now: datetime | None = None):
+    """Filter evidence to the last seven UTC days and hash the exact AI context."""
+    current = now or _utcnow()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    cutoff = current - timedelta(days=7)
+
+    def in_window(value: Any) -> str | None:
+        parsed_value = _parse_created(value)
+        if not parsed_value:
+            return None
+        parsed = datetime.fromisoformat(parsed_value)
+        return parsed_value if cutoff <= parsed <= current else None
+
+    recent_messages = []
+    for message in messages:
+        created_at = in_window(message.get("created_at"))
+        if created_at:
+            recent_messages.append({**message, "created_at": created_at})
+
+    eligible_note_order_ids = set()
+    sanitized_orders = []
+    context_messages = list(recent_messages)
+    for order in orders:
+        note = _text(order.get("message_to_seller"))
+        purchase_at = in_window(order.get("data_venda")) if note else None
+        order_id = str(order.get("id") or "")
+        if note and purchase_at:
+            eligible_note_order_ids.add(order_id)
+            context_messages.append({
+                "provider_message_id": f"message_to_seller:{order_id}",
+                "sender_role": "buyer",
+                "text_content": note,
+                "created_at": purchase_at,
+                "moderation_status": None,
+                "attachments": [],
+            })
+            sanitized_orders.append({**order, "message_to_seller": note})
+        else:
+            sanitized_orders.append({**order, "message_to_seller": ""})
+    return sanitized_orders, recent_messages, _context_hash(context_messages), eligible_note_order_ids
+
+
+def _current_pack_extraction_context(integration_id: int, pack_id: str,
+                                     messages: list[dict] | None = None,
+                                     orders: list[dict] | None = None):
+    if messages is None:
+        messages = (supabase_db.table("mercadolivre_chat_messages").select(
+            "provider_message_id,sender_role,text_content,created_at,moderation_status,attachments"
+        ).eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id))
+          .order("created_at").execute().data or [])
+    if orders is None:
+        conversations = (supabase_db.table("mercadolivre_chat_conversations").select("order_ids")
+                         .eq("marketplace_integration_id", int(integration_id))
+                         .eq("pack_id", str(pack_id)).limit(1).execute().data or [])
+        external_ids = [str(value) for value in (_json(conversations[0].get("order_ids"), []) or [])] if conversations else []
+        orders = _integration_orders(integration_id, external_ids)
+    return _extraction_context(messages, orders)
 
 
 def _meli_request(integration_id: int, endpoint: str, function, *args, **kwargs):
@@ -611,11 +679,13 @@ def sync_pack(integration_id: int, pack_id: str, seller_id: str,
         "provider_message_id,sender_role,text_content,created_at,moderation_status,attachments"
     ).eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id))
       .order("created_at").execute().data or [])
+    context_orders = _integration_orders(integration_id, [str(value) for value in orders])
+    _, recent_messages, current_context_hash, _ = _extraction_context(current_messages, context_orders)
     _mark_inbox_messages_persisted(integration_id, rows)
     needs_review = any(row["sender_role"] == "unknown"
                        or (row.get("attachments") and not _text(row.get("text_content")))
                        or row.get("moderation_status") not in {None, "", "available"}
-                       for row in rows)
+                       for row in recent_messages)
     site_id = next((_text(message.get("site_id")) for message in all_messages if message.get("site_id")), None)
     # Update existing state without overwriting the AI context hash or review state.
     conversation_fields = {
@@ -623,7 +693,7 @@ def sync_pack(integration_id: int, pack_id: str, seller_id: str,
         "last_message_at": max((_message_created_at(message) or "" for message in all_messages), default="") or None,
         "last_synced_at": _now(), "raw_json": {"paging_total": total,
             "order_id_fallback": str(order_id_fallback) if order_id_fallback else None,
-            "buyer_ids": sorted(buyer_ids)}, "current_context_hash": _context_hash(current_messages),
+            "buyer_ids": sorted(buyer_ids)}, "current_context_hash": current_context_hash,
         "updated_at": _now(),
     }
     if needs_review:
@@ -851,6 +921,32 @@ def list_personalized_orders(integration_id: int, limit: int = 200, *,
         for linked_order_id in (_json(conversation.get("order_ids"), []) or []):
             conversations_by_order.setdefault(str(linked_order_id), []).append(conversation)
 
+    relevant_conversations = {}
+    for order in orders:
+        external = str(order.get("marketplace_order_id") or order.get("codigo_pedido_externo") or "")
+        for conversation in conversations_by_order.get(external, []):
+            if conversation.get("pack_id"):
+                relevant_conversations[str(conversation["pack_id"])] = conversation
+    external_ids_by_pack = {
+        pack_id: [str(value) for value in (_json(conversation.get("order_ids"), []) or [])]
+        for pack_id, conversation in relevant_conversations.items()
+    }
+    context_external_ids = list(dict.fromkeys(
+        external for pack_orders in external_ids_by_pack.values() for external in pack_orders
+    ))
+    context_order_rows = _integration_orders(integration_id, context_external_ids)
+    context_orders_by_external = {}
+    for context_order in context_order_rows:
+        for external in (context_order.get("codigo_pedido_externo"), context_order.get("marketplace_order_id")):
+            if external:
+                context_orders_by_external[str(external)] = context_order
+    context_orders_by_pack = {
+        pack_id: list({int(context_orders_by_external[external]["id"]): context_orders_by_external[external]
+                       for external in pack_orders if external in context_orders_by_external}.values())
+        for pack_id, pack_orders in external_ids_by_pack.items()
+    }
+    extraction_now = datetime.now(timezone.utc)
+
     # The list screen can request thousands of orders. Fetch chat and result rows
     # once per account instead of issuing two/three PostgREST requests per order.
     pack_ids = sorted({str(row.get("pack_id")) for row in conversations if row.get("pack_id")})
@@ -894,8 +990,11 @@ def list_personalized_orders(integration_id: int, limit: int = 200, *,
         external = str(order.get("marketplace_order_id") or order.get("codigo_pedido_externo") or "")
         linked = conversations_by_order.get(external, [])
         conversation_messages = messages_by_pack.get(str(linked[0].get("pack_id")), []) if linked else []
-        current_hash = (_context_hash(conversation_messages) if conversation_messages else
-                        linked[0].get("context_hash") if linked else None)
+        conversation = linked[0] if linked else {}
+        pack_id = str(conversation.get("pack_id") or "")
+        _, recent_messages, current_hash, eligible_note_order_ids = _extraction_context(
+            conversation_messages, context_orders_by_pack.get(pack_id, []), now=extraction_now,
+        )
         order_result_rows = results_by_order.get(order_id, [])
         # Keep the last completed extraction visible while newer buyer context is pending.
         valid_rows = order_result_rows
@@ -928,14 +1027,15 @@ def list_personalized_orders(integration_id: int, limit: int = 200, *,
         messages = []
         if linked:
             message_count = message_count_by_pack.get(str(linked[0].get("pack_id")), 0)
-            messages = conversation_messages
-        conversation = linked[0] if linked else {}
+            messages = recent_messages
+        else:
+            messages = []
         last_buyer_message_at = max((row.get("created_at") or "" for row in messages
                                      if row.get("sender_role") == "buyer"), default="") or None
         ai_status = conversation.get("ai_status") or next((str(row.get("status", "")).lower()
                                                              for row in valid_rows), None)
         last_ai_at = conversation.get("last_ai_executed_at")
-        has_buyer_message = bool(str(order.get("message_to_seller") or "").strip()) or bool(last_buyer_message_at)
+        has_buyer_message = str(order_id) in eligible_note_order_ids or bool(last_buyer_message_at)
         conversation_metadata = _json(conversation.get("raw_json"), {}) or {}
         has_chat_context = bool(conversation_metadata.get("order_id_fallback")
                                 or conversation_metadata.get("buyer_ids") or message_count)
@@ -964,7 +1064,7 @@ def list_personalized_orders(integration_id: int, limit: int = 200, *,
                        "last_ai_executed_at": last_ai_at, "needs_ai_processing": needs_ai,
                        "ai_status": ai_status,
                        "chat_context_ambiguous": bool(linked and (linked[0].get("needs_review")
-                           or any(row.get("sender_role") == "unknown" for row in conversation_messages))),
+                           or any(row.get("sender_role") == "unknown" for row in recent_messages))),
                        "items": [{**item, "personalizations": by_item.get(int(item["id"]), []),
                                   "personalization": (by_item.get(int(item["id"])) or [None])[0]}
                                  for item in items_by_order[order_id]]})
@@ -1173,7 +1273,7 @@ def _pack_context(integration_id: int, pack_id: str, *, include_messages: bool =
     }]).matched_items]
     messages = (supabase_db.table("mercadolivre_chat_messages").select("*")
                 .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", str(pack_id)).order("created_at").execute().data or [])
-    digest = _context_hash(messages)
+    orders, messages, digest, _ = _extraction_context(messages, orders)
     flags = any(message.get("sender_role") == "unknown"
                 or (message.get("attachments") and not _text(message.get("text_content")))
                 or message.get("moderation_status") not in {None, "", "available"}
@@ -1863,7 +1963,7 @@ def confirm_personalization(integration_id: int, personalization_id: int, body: 
     if not rows:
         raise LookupError("Personalização não encontrada nesta conta")
     record = rows[0]
-    order = (supabase_db.table("pedidos").select("id,marketplace_integration_id")
+    order = (supabase_db.table("pedidos").select("id,marketplace_integration_id,data_venda,message_to_seller,codigo_pedido_externo,marketplace_order_id")
              .eq("id", record["pedido_id"]).eq("marketplace_integration_id", int(integration_id)).limit(1).execute().data or [])
     item = (supabase_db.table("itens_pedido").select("id,pedido_id,quantidade")
             .eq("id", record["item_pedido_id"]).eq("pedido_id", record["pedido_id"]).limit(1).execute().data or [])
@@ -1879,10 +1979,7 @@ def confirm_personalization(integration_id: int, personalization_id: int, body: 
         raise ValueError("Quantidade inválida") from exc
     if not 1 <= quantity <= max(1, int(item[0].get("quantidade") or 1)):
         raise ValueError("Quantidade incompatível com o item")
-    messages = (supabase_db.table("mercadolivre_chat_messages").select("*")
-                .eq("marketplace_integration_id", int(integration_id))
-                .eq("pack_id", record["pack_id"]).order("created_at").execute().data or [])
-    current_hash = _context_hash(messages) if messages else record["context_hash"]
+    _, _, current_hash, _ = _current_pack_extraction_context(int(integration_id), record["pack_id"])
     updated = (supabase_db.table("mercadolivre_personalizations").update({
         "customization_name": name, "customization_initial": initial,
         "quantity_to_personalize": quantity, "status": "SUCCESS", "source": "manual",
@@ -1905,7 +2002,7 @@ def confirm_personalization(integration_id: int, personalization_id: int, body: 
 
 def save_manual_personalization(integration_id: int, pedido_id: int, body: dict,
                                *, user_id: int | None = None) -> dict:
-    owned = (supabase_db.table("pedidos").select("id,codigo_pedido_externo,marketplace_order_id")
+    owned = (supabase_db.table("pedidos").select("id,codigo_pedido_externo,marketplace_order_id,data_venda,message_to_seller")
              .eq("id", int(pedido_id)).eq("marketplace_integration_id", int(integration_id)).limit(1).execute().data or [])
     if not owned:
         raise LookupError("Pedido não pertence à conta Mercado Livre informada")
@@ -1931,11 +2028,13 @@ def save_manual_personalization(integration_id: int, pedido_id: int, body: dict,
                      .eq("marketplace_integration_id", int(integration_id)).execute().data or [])
     conversation = next((row for row in conversations if external in [str(value) for value in (_json(row.get("order_ids"), []) or [])]), None)
     pack_id = str((body.get("pack_id") or (conversation or {}).get("pack_id") or external))
-    pack_messages = (supabase_db.table("mercadolivre_chat_messages").select("*")
-                     .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", pack_id)
-                     .order("created_at").execute().data or [])
-    context_hash = _context_hash(pack_messages) if pack_messages else hashlib.sha256(
-        f"manual:{integration_id}:{pedido_id}:{item_id}:{_now()}".encode()).hexdigest()
+    pack_orders = _integration_orders(
+        int(integration_id),
+        [str(value) for value in (_json((conversation or {}).get("order_ids"), []) or [])],
+    ) if conversation else [owned[0]]
+    _, _, context_hash, _ = _current_pack_extraction_context(
+        int(integration_id), pack_id, orders=pack_orders,
+    )
     rows = (supabase_db.table("mercadolivre_personalizations").insert({
         "marketplace_integration_id": int(integration_id), "pedido_id": int(pedido_id),
         "item_pedido_id": item_id, "pack_id": pack_id, "provider_order_id": external,
@@ -1962,7 +2061,9 @@ def save_manual_personalization(integration_id: int, pedido_id: int, body: dict,
 def printable_personalizations(integration_id: int, pedido_id: int) -> dict:
     """Return valid, current-context names keyed by canonical item ID."""
     _integration(integration_id, active=False)
-    orders = (supabase_db.table("pedidos").select("id,codigo_pedido_externo,marketplace_order_id")
+    orders = (supabase_db.table("pedidos").select(
+        "id,codigo_pedido_externo,marketplace_order_id,marketplace_integration_id,data_venda,message_to_seller"
+    )
               .eq("id", int(pedido_id)).eq("marketplace_integration_id", int(integration_id))
               .limit(1).execute().data or [])
     if not orders:
@@ -1973,27 +2074,10 @@ def printable_personalizations(integration_id: int, pedido_id: int) -> dict:
     items = [item for item in items if item.get("personalizado") or classify_items([{
         "descricao": item.get("titulo_anuncio") or item.get("descricao")
     }]).matched_items]
-    if not items:
-        return {"ready": True, "by_item_id": {}, "message": None}
-    all_stored = (supabase_db.table("mercadolivre_personalizations").select("*")
-                  .eq("marketplace_integration_id", int(integration_id)).eq("pedido_id", int(pedido_id))
-                  .execute().data or [])
-    pack_ids = {str(row.get("pack_id")) for row in all_stored}
-    conversations = (supabase_db.table("mercadolivre_chat_conversations").select("pack_id,context_hash,last_ai_executed_at,ai_status")
-                     .eq("marketplace_integration_id", int(integration_id)).execute().data or [])
-    known_conversations = {str(row["pack_id"]): row for row in conversations}
-    current_messages = {}
-    for pack_id in pack_ids:
-        current_messages[pack_id] = (supabase_db.table("mercadolivre_chat_messages").select("provider_message_id,sender_role")
-            .eq("marketplace_integration_id", int(integration_id)).eq("pack_id", pack_id).execute().data or [])
-    pending_events = (supabase_db.table("mercadolivre_chat_inbox").select("id", count="exact")
-                      .eq("marketplace_integration_id", int(integration_id))
-                      .in_("status", ["pending", "retry", "processing", "unmatched"]).execute())
-    has_pending_events = bool(getattr(pending_events, "count", None) or getattr(pending_events, "data", None))
-    return _evaluate_printable_personalizations(
-        int(integration_id), items, all_stored, known_conversations,
-        current_messages, has_pending_events,
-    )
+    order = orders[0]
+    order_id = int(order["id"])
+    items = [{**item, "pedido_id": order_id} for item in items]
+    return printable_personalizations_many([order], {order_id: items})[order_id]
 
 
 def printable_personalizations_many(orders: list[dict], items_by_order: dict[int, list[dict]]) -> dict[int, dict]:
@@ -2043,7 +2127,6 @@ def printable_personalizations_many(orders: list[dict], items_by_order: dict[int
         .in_("marketplace_integration_id", integrations).in_("pedido_id", todos_os_ids).execute().data or [])
     stored_por_pedido: dict[int, list[dict]] = {}
     pack_ids = set()
-    provider_ids = set()
     for row in stored_rows:
         try:
             pedido_id = int(row.get("pedido_id"))
@@ -2052,32 +2135,72 @@ def printable_personalizations_many(orders: list[dict], items_by_order: dict[int
         stored_por_pedido.setdefault(pedido_id, []).append(row)
         if row.get("pack_id"):
             pack_ids.add(str(row["pack_id"]))
-        details = _json(row.get("details"), {}) or {}
-        for value in (
-            details.get("name_source_message_id") or row.get("provider_message_id"),
-            details.get("initial_source_message_id"),
-        ):
-            if value and str(value) != "message_to_seller":
-                provider_ids.add(str(value))
 
     conversations = []
     if pack_ids:
         conversations = (supabase_db.table("mercadolivre_chat_conversations")
-            .select("marketplace_integration_id,pack_id,context_hash,last_ai_executed_at,ai_status")
+            .select("marketplace_integration_id,pack_id,order_ids,context_hash,current_context_hash,last_ai_executed_at,ai_status")
             .in_("marketplace_integration_id", integrations).in_("pack_id", sorted(pack_ids)).execute().data or [])
     conversas_por_integracao_pack = {
         (int(row["marketplace_integration_id"]), str(row["pack_id"])): row
         for row in conversations
     }
 
-    messages = []
-    if provider_ids:
-        messages = (supabase_db.table("mercadolivre_chat_messages").select("marketplace_integration_id,pack_id,provider_message_id,sender_role")
-            .in_("marketplace_integration_id", integrations).in_("provider_message_id", sorted(provider_ids)).execute().data or [])
     mensagens_por_integracao_pack: dict[tuple[int, str], list[dict]] = {}
-    for row in messages:
-        key = (int(row["marketplace_integration_id"]), str(row["pack_id"]))
-        mensagens_por_integracao_pack.setdefault(key, []).append(row)
+    pedidos_contexto_por_integracao_pack: dict[tuple[int, str], list[dict]] = {}
+    conversas_por_integracao_pack = dict(conversas_por_integracao_pack)
+    for integration_id in integrations:
+        account_packs = sorted(pack for account_id, pack in conversas_por_integracao_pack if account_id == integration_id)
+        for pack_offset in range(0, len(account_packs), 100):
+            pack_batch = account_packs[pack_offset:pack_offset + 100]
+            page = (supabase_db.table("mercadolivre_chat_messages").select(
+                "marketplace_integration_id,pack_id,provider_message_id,sender_role,text_content,created_at,moderation_status,attachments"
+            ).eq("marketplace_integration_id", integration_id).in_("pack_id", pack_batch)
+                .order("created_at").execute().data or [])
+            for row in page:
+                key = (int(row["marketplace_integration_id"]), str(row["pack_id"]))
+                mensagens_por_integracao_pack.setdefault(key, []).append(row)
+    for integration_id in integrations:
+        account_conversations = [row for (account_id, _), row in conversas_por_integracao_pack.items()
+                                 if account_id == integration_id]
+        external_ids = list(dict.fromkeys(
+            str(value) for row in account_conversations
+            for value in (_json(row.get("order_ids"), []) or [])
+        ))
+        context_orders = _integration_orders(integration_id, external_ids)
+        order_by_external = {}
+        for order in context_orders:
+            for external in (order.get("codigo_pedido_externo"), order.get("marketplace_order_id")):
+                if external:
+                    order_by_external[str(external)] = order
+        for conversation in account_conversations:
+            key = (integration_id, str(conversation["pack_id"]))
+            external_order_ids = [str(value) for value in (_json(conversation.get("order_ids"), []) or [])]
+            orders_for_pack = {
+                int(order_by_external[external]["id"]): order_by_external[external]
+                for external in external_order_ids if external in order_by_external
+            }
+            for order in pedidos_por_id.values():
+                if int(order.get("marketplace_integration_id") or 0) != integration_id:
+                    continue
+                external = str(order.get("marketplace_order_id") or order.get("codigo_pedido_externo") or "")
+                if external in external_order_ids:
+                    orders_for_pack[int(order["id"])] = order
+            pedidos_contexto_por_integracao_pack[key] = list(orders_for_pack.values())
+
+    extraction_now = _utcnow()
+    note_sources_by_integration_pack = {}
+    for key, conversation in conversas_por_integracao_pack.items():
+        context_orders = pedidos_contexto_por_integracao_pack.get(key, [])
+        _, recent_messages, digest, eligible_notes = _extraction_context(
+            mensagens_por_integracao_pack.get(key, []), context_orders, now=extraction_now,
+        )
+        note_sources_by_integration_pack[key] = eligible_notes
+        if context_orders or recent_messages:
+            conversation["legacy_context_hash"] = _context_hash(recent_messages)
+            conversation["context_hash"] = digest
+            conversation["current_context_hash"] = digest
+        mensagens_por_integracao_pack[key] = recent_messages
 
     integrations_com_fila = set()
     for integration_id in integrations:
@@ -2100,9 +2223,13 @@ def printable_personalizations_many(orders: list[dict], items_by_order: dict[int
             conversas = {pack: conversas_por_integracao_pack[(integration_id, pack)]
                 for pack in packs_do_pedido if (integration_id, pack) in conversas_por_integracao_pack}
             mensagens = {pack: mensagens_por_integracao_pack.get((integration_id, pack), []) for pack in packs_do_pedido}
+            note_sources = {pack: note_sources_by_integration_pack.get((integration_id, pack), set())
+                            for pack in packs_do_pedido}
+            for item in items:
+                item.setdefault("pedido_id", pedido_id)
             resultados[pedido_id] = _evaluate_printable_personalizations(
                 integration_id, items, rows, conversas, mensagens,
-                integration_id in integrations_com_fila,
+                integration_id in integrations_com_fila, note_sources,
             )
 
     for pedido_id in pedidos_por_id:
@@ -2117,41 +2244,44 @@ def _evaluate_printable_personalizations(
     conversations: dict[str, dict],
     current_messages: dict[str, list[dict]],
     has_pending_events: bool,
+    eligible_note_order_ids: dict[str, set[str]] | None = None,
 ) -> dict:
     """Aplica as regras de validade sem fazer consultas ao banco."""
     known_conversations = conversations
-    current_rows = [row for row in all_stored if row.get("source") == "manual" or
-                    row.get("marketplace_integration_id") == int(integration_id)]
+    eligible_note_order_ids = eligible_note_order_ids or {}
+    current_rows = [row for row in all_stored
+                    if row.get("marketplace_integration_id") == int(integration_id)]
     item_quantities = {int(item["id"]): max(1, int(item.get("quantidade") or 1)) for item in items}
-    latest_success: dict[tuple[str, int], tuple[str, str]] = {}
-    for row in current_rows:
-        if row.get("status") == "SUCCESS" and row.get("marketplace_integration_id") == int(integration_id):
-            key = (str(row.get("pack_id")), int(row.get("item_pedido_id") or 0))
-            if (known_conversations.get(key[0]) or {}).get("context_hash") and row.get("context_hash") != (known_conversations.get(key[0]) or {}).get("context_hash"):
-                continue
-            latest_success[key] = max(latest_success.get(key, ("", "")), (
-                str(row.get("updated_at") or row.get("created_at") or ""), str(row.get("id") or "")))
     valid = []
     unresolved_rows = []
     for row in current_rows:
         item_id = int(row.get("item_pedido_id") or 0)
+        pack_id = str(row.get("pack_id"))
+        conversation = known_conversations.get(pack_id) or {}
+        active_context_hash = conversation.get("current_context_hash") or conversation.get("context_hash")
+        legacy_context_hash = conversation.get("legacy_context_hash")
+        context_is_current = (
+            row.get("context_hash") in {active_context_hash, legacy_context_hash}
+            if active_context_hash else row.get("source") == "manual"
+        )
+        if not context_is_current:
+            continue
         details = _json(row.get("details"), {}) or {}
-        buyer_message_ids = {str(message.get("provider_message_id")) for message in current_messages.get(str(row.get("pack_id")), [])
+        buyer_message_ids = {str(message.get("provider_message_id")) for message in current_messages.get(pack_id, [])
                              if message.get("sender_role") == "buyer"}
         try:
             quantity = int(row.get("quantity_to_personalize") or 0)
         except (TypeError, ValueError):
             quantity = 0
+        order_id = str(next((item.get("pedido_id") for item in items if int(item["id"]) == item_id), ""))
+        valid_sources = buyer_message_ids | ({"message_to_seller"}
+            if order_id in eligible_note_order_ids.get(pack_id, set()) else set())
         source_ok = row.get("source") == "manual" or (
             (not row.get("customization_name") or str(details.get("name_source_message_id")
-                or row.get("provider_message_id") or "") in buyer_message_ids | {"message_to_seller"})
-            and (not row.get("customization_initial") or str(details.get("initial_source_message_id") or "") in buyer_message_ids | {"message_to_seller"})
+                or row.get("provider_message_id") or "") in valid_sources)
+            and (not row.get("customization_initial") or str(details.get("initial_source_message_id") or "") in valid_sources)
         )
-        row_key = (str(row.get("pack_id")), item_id)
-        row_time = (str(row.get("updated_at") or row.get("created_at") or ""), str(row.get("id") or ""))
-        current_success = row.get("status") == "SUCCESS" and row.get("context_hash") == (known_conversations.get(row_key[0]) or {}).get("context_hash")
         if (row.get("status") == "SUCCESS" and row.get("marketplace_integration_id") == int(integration_id)
-                and (row_time == latest_success.get(row_key) or not current_success)
                 and item_id in item_quantities and 1 <= quantity <= item_quantities[item_id] and source_ok):
             valid.append(row)
         elif (str(row.get("status") or "").upper() != "NO_PERSONALIZATION_FOUND"

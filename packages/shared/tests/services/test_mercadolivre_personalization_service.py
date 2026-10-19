@@ -1,5 +1,6 @@
 import json
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 from scripts import backfill_mercadolivre_chat as chat_backfill
@@ -157,6 +158,41 @@ class PackContextExtractionTests(unittest.TestCase):
         self.ai.assert_not_called()
         self.database.rpc.assert_not_called()
 
+    def test_ai_payload_only_includes_messages_and_purchase_note_from_last_seven_days(self):
+        now = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
+        self.database.tables["pedidos"][0].update({
+            "data_venda": (now - timedelta(days=2)).isoformat(),
+            "message_to_seller": "Nome: Ana",
+        })
+        self.database.tables["mercadolivre_chat_messages"].extend([
+            {"marketplace_integration_id": 7, "pack_id": "pack-7",
+             "provider_message_id": "msg-old", "sender_role": "buyer",
+             "created_at": (now - timedelta(days=8)).isoformat(), "text_content": "Nome antigo"},
+            {"marketplace_integration_id": 7, "pack_id": "pack-7",
+             "provider_message_id": "msg-future", "sender_role": "buyer",
+             "created_at": (now + timedelta(minutes=1)).isoformat(), "text_content": "Nome futuro"},
+        ])
+
+        with patch.object(service, "_utcnow", return_value=now), patch.object(service, "sync_pack"):
+            service.process_pack(7, "pack-7")
+
+        payload = json.loads(self.ai.call_args.args[3])
+        self.assertEqual([message["id"] for message in payload["messages"]], ["msg-1"])
+        self.assertEqual(payload["orders"][0]["message_to_seller"], "Nome: Ana")
+        record = self.database.rpc.call_args.args[1]["p_records"][0]
+        self.assertEqual(record["details"]["name_source_message_id"], "msg-1")
+
+    def test_old_purchase_note_is_excluded_from_extraction_payload(self):
+        now = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
+        self.database.tables["pedidos"][0].update({
+            "data_venda": (now - timedelta(days=7, seconds=1)).isoformat(),
+            "message_to_seller": "Nome: Ana",
+        })
+        with patch.object(service, "_utcnow", return_value=now), patch.object(service, "sync_pack"):
+            service.process_pack(7, "pack-7")
+        payload = json.loads(self.ai.call_args.args[3])
+        self.assertEqual(payload["orders"][0]["message_to_seller"], "")
+
 
 class PedidosSchemaQuery(FakeQuery):
     def select(self, columns, **kwargs):
@@ -172,6 +208,39 @@ class PedidosSchemaDatabase(FakeDatabase):
 
 
 class MercadoLivrePersonalizationTests(unittest.TestCase):
+    def test_extraction_window_is_inclusive_and_uses_purchase_date_for_seller_note(self):
+        now = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
+        cutoff = now - timedelta(days=7)
+        messages = [
+            {"provider_message_id": "at-cutoff", "sender_role": "buyer",
+             "text_content": "Nome Ana", "created_at": cutoff.isoformat()},
+            {"provider_message_id": "too-old", "sender_role": "buyer",
+             "text_content": "Nome antiga", "created_at": (cutoff - timedelta(seconds=1)).isoformat()},
+            {"provider_message_id": "future", "sender_role": "buyer",
+             "text_content": "Nome futuro", "created_at": (now + timedelta(seconds=1)).isoformat()},
+        ]
+        orders = [
+            {"id": 10, "data_venda": cutoff.isoformat(), "message_to_seller": "Nome ao vendedor"},
+            {"id": 11, "data_venda": (cutoff - timedelta(seconds=1)).isoformat(),
+             "message_to_seller": "Mensagem antiga"},
+        ]
+
+        sanitized_orders, recent, digest, note_order_ids = service._extraction_context(
+            messages, orders, now=now,
+        )
+
+        self.assertEqual([message["provider_message_id"] for message in recent], ["at-cutoff"])
+        self.assertEqual(note_order_ids, {"10"})
+        self.assertEqual(sanitized_orders[0]["message_to_seller"], "Nome ao vendedor")
+        self.assertEqual(sanitized_orders[1]["message_to_seller"], "")
+        self.assertEqual(digest, service._context_hash([
+            recent[0], {
+                "provider_message_id": "message_to_seller:10", "sender_role": "buyer",
+                "text_content": "Nome ao vendedor", "created_at": cutoff.isoformat(),
+                "moderation_status": None, "attachments": [],
+            },
+        ]))
+
     def test_missing_item_result_makes_current_extraction_incomplete(self):
         database = FakeDatabase({"mercadolivre_personalizations": []})
         with patch.object(service, "supabase_db", database):
@@ -599,8 +668,9 @@ class MercadoLivrePersonalizationTests(unittest.TestCase):
 
     def test_print_rows_require_current_context_and_exact_internal_account(self):
         integration_id, pedido_id, item_id = 7, 101, 201
+        recent = (service._utcnow() - timedelta(days=1)).isoformat()
         message = {"provider_message_id": "msg-1", "sender_role": "buyer",
-                   "text_content": "Duas unidades: Ana e Bia", "created_at": "2026-10-01T10:00:00+00:00",
+                   "text_content": "Duas unidades: Ana e Bia", "created_at": recent,
                    "moderation_status": "available", "attachments": []}
         context_hash = service._context_hash([message])
         base = {"marketplace_integration_id": integration_id, "pedido_id": pedido_id,
@@ -629,13 +699,14 @@ class MercadoLivrePersonalizationTests(unittest.TestCase):
         with patch.object(service, "_integration", return_value={}), \
              patch.object(service, "supabase_db", fake_db):
             result = service.printable_personalizations(integration_id, pedido_id)
-        self.assertFalse(result["ready"])
-        self.assertEqual([row["customization_name"] for row in result["by_item_id"][item_id]], ["Bia", "Antigo"])
+        self.assertTrue(result["ready"])
+        self.assertEqual([row["customization_name"] for row in result["by_item_id"][item_id]], ["Ana", "Bia"])
 
     def test_print_is_blocked_by_unconfirmed_review_or_unprocessed_message(self):
         integration_id, pedido_id, item_id = 7, 101, 201
+        recent = (service._utcnow() - timedelta(days=1)).isoformat()
         message = {"provider_message_id": "msg-1", "sender_role": "buyer",
-                   "text_content": "Nome Ana", "created_at": "2026-10-01T10:00:00+00:00",
+                   "text_content": "Nome Ana", "created_at": recent,
                    "moderation_status": "available", "attachments": []}
         context_hash = service._context_hash([message])
         tables = {
@@ -660,6 +731,90 @@ class MercadoLivrePersonalizationTests(unittest.TestCase):
              patch.object(service, "supabase_db", FakeDatabase(tables)):
             result = service.printable_personalizations(integration_id, pedido_id)
         self.assertFalse(result["ready"])
+
+    def test_repeated_extraction_of_same_name_prints_once_for_single_unit(self):
+        integration_id, item_id = 7, 348528
+        recent_message = {
+            "provider_message_id": "buyer-message", "sender_role": "buyer",
+            "text_content": "Boa noite! Nome Enzo",
+            "created_at": (service._utcnow() - timedelta(days=4)).isoformat(),
+            "moderation_status": "available", "attachments": [],
+        }
+        context_hash = service._context_hash([recent_message])
+        rows = [
+            {"id": 396, "marketplace_integration_id": integration_id, "pedido_id": 744681,
+             "item_pedido_id": item_id, "pack_id": "2000018988659918", "status": "SUCCESS",
+             "source": "ai", "context_hash": "older-extraction", "provider_message_id": "buyer-message",
+             "quantity_to_personalize": 1, "customization_name": "Enzo",
+             "details": {"name_source_message_id": "buyer-message"}},
+            {"id": 433, "marketplace_integration_id": integration_id, "pedido_id": 744681,
+             "item_pedido_id": item_id, "pack_id": "2000018988659918", "status": "SUCCESS",
+             "source": "ai", "context_hash": context_hash, "provider_message_id": "buyer-message",
+             "quantity_to_personalize": 1, "customization_name": "Enzo",
+             "details": {"name_source_message_id": "buyer-message"}},
+        ]
+
+        result = service._evaluate_printable_personalizations(
+            integration_id,
+            [{"id": item_id, "pedido_id": 744681, "quantidade": 1}],
+            rows,
+            {"2000018988659918": {"context_hash": context_hash}},
+            {"2000018988659918": [recent_message]},
+            False,
+        )
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(
+            [row["customization_name"] for row in result["by_item_id"][item_id]], ["Enzo"],
+        )
+
+    def test_batch_print_uses_only_current_extraction_context(self):
+        integration_id, pedido_id, item_id = 7, 744681, 348528
+        pack_id = "2000018988659918"
+        order = {
+            "id": pedido_id, "marketplace_integration_id": integration_id,
+            "codigo_pedido_externo": pack_id, "marketplace_order_id": pack_id,
+            "data_venda": None, "message_to_seller": None,
+        }
+        message = {
+            "marketplace_integration_id": integration_id, "pack_id": pack_id,
+            "provider_message_id": "buyer-message", "sender_role": "buyer",
+            "text_content": "Nome Enzo",
+            "created_at": (service._utcnow() - timedelta(days=4)).isoformat(),
+            "moderation_status": "available", "attachments": [],
+        }
+        context_hash = service._context_hash([message])
+        row = {
+            "marketplace_integration_id": integration_id, "pedido_id": pedido_id,
+            "item_pedido_id": item_id, "pack_id": pack_id, "status": "SUCCESS",
+            "source": "ai", "context_hash": context_hash, "provider_message_id": "buyer-message",
+            "quantity_to_personalize": 1, "customization_name": "Enzo",
+            "details": {"name_source_message_id": "buyer-message"},
+        }
+        database = FakeDatabase({
+            "mercadolivre_personalizations": [
+                {**row, "id": 1, "context_hash": "old-context", "customization_name": "Enzo"},
+                {**row, "id": 2},
+            ],
+            "mercadolivre_chat_conversations": [{
+                "marketplace_integration_id": integration_id, "pack_id": pack_id,
+                "order_ids": [pack_id], "context_hash": context_hash,
+            }],
+            "mercadolivre_chat_messages": [message],
+            "mercadolivre_chat_inbox": [],
+        })
+        with patch.object(service, "_integration", return_value={}), \
+             patch.object(service, "_integration_orders", return_value=[order]), \
+             patch.object(service, "supabase_db", database):
+            result = service.printable_personalizations_many(
+                [order], {pedido_id: [{"id": item_id, "pedido_id": pedido_id,
+                                      "quantidade": 1, "personalizado": True}]},
+            )[pedido_id]
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(
+            [row["customization_name"] for row in result["by_item_id"][item_id]], ["Enzo"],
+        )
 
 
 class CaptureQuery:
