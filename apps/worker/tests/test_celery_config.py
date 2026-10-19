@@ -23,6 +23,7 @@ class CeleryConfigTest(TestCase):
         ]
         self.assertEqual(schedule['schedule'], 2)
         self.assertEqual(schedule['kwargs'], {'limit': 100})
+        self.assertEqual(schedule['options'], {'queue': 'operational_read_models', 'expires': 4})
 
     def test_default_schedules_use_unified_app_managed_renewal_task(self):
         schedules = celery_config.get_default_schedules()

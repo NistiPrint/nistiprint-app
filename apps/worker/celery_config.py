@@ -300,6 +300,7 @@ def operational_read_model_schedules():
             'task': 'tasks.operational_read_model_tasks.refresh_operational_read_models',
             'schedule': 2,
             'kwargs': {'limit': 100},
+            'options': {'queue': 'operational_read_models', 'expires': 4},
         },
     }
 
@@ -400,9 +401,11 @@ celery_app.conf.task_queues = {
     'celery': {'exchange': 'celery', 'routing_key': 'celery'},
     'ai_personalization': {'exchange': 'ai', 'routing_key': 'ai.personalization'},
     'bling_status_sync':  {'exchange': 'bling', 'routing_key': 'bling.status'},
+    'operational_read_models': {'exchange': 'operational_read_models', 'routing_key': 'operational_read_models'},
 }
 
 celery_app.conf.task_routes = {
+    'tasks.operational_read_model_tasks.refresh_operational_read_models': {'queue': 'operational_read_models'},
     'services.ai_personalization.processar_batch': {'queue': 'ai_personalization'},
     'services.ai_personalization.processar_pedido': {'queue': 'ai_personalization'},
     'services.ai_personalization.processar_conta': {'queue': 'ai_personalization'},

@@ -49,7 +49,10 @@ class TestOrdersQueryService(unittest.TestCase):
         rpc_query = MagicMock()
         rpc_query.execute.return_value.data = [{"id": 679562, "total_count": 1}]
         supabase = MagicMock()
-        supabase.rpc.return_value = rpc_query
+        supabase.rpc.side_effect = lambda name, _params: (
+            MagicMock(execute=lambda: MagicMock(data={"ready": False}))
+            if name == "buscar_pedidos_personalizados_projetados" else rpc_query
+        )
         service_rows = [{
             "id": 679562,
             "order_id": "494099",
@@ -66,7 +69,7 @@ class TestOrdersQueryService(unittest.TestCase):
                 page=1, page_size=20, search="494", integration_id=99,
             )
 
-        supabase.rpc.assert_called_once_with("search_personalized_shopee_order_ids", {
+        supabase.rpc.assert_any_call("search_personalized_shopee_order_ids", {
             "p_prefix": "494", "p_page": 1, "p_page_size": 20,
         })
         get_orders.assert_called_once_with(pedido_ids=[679562], situacao_ids=[2, 3, 4])
@@ -75,7 +78,10 @@ class TestOrdersQueryService(unittest.TestCase):
         rpc_query = MagicMock()
         rpc_query.execute.return_value.data = [{"id": 1, "total_count": 1}]
         supabase = MagicMock()
-        supabase.rpc.return_value = rpc_query
+        supabase.rpc.side_effect = lambda name, _params: (
+            MagicMock(execute=lambda: MagicMock(data={"ready": False}))
+            if name == "buscar_pedidos_personalizados_projetados" else rpc_query
+        )
         with (
             patch("nistiprint_shared.database.supabase_db_service.supabase_db", supabase),
             patch("nistiprint_shared.services.ai_personalization_service.get_orders_with_chats", return_value=[]),
@@ -88,6 +94,49 @@ class TestOrdersQueryService(unittest.TestCase):
             "page": 1, "page_size": 20, "total": 1, "has_next": False,
         })
         self.assertIsNone(result["status_counts"])
+
+    def test_numeric_search_uses_global_projection_without_canonical_assembly(self):
+        supabase = MagicMock()
+        supabase.rpc.return_value.execute.return_value.data = {
+            "ready": True,
+            "total": 21,
+            "rows": [{"id": 8, "numero_pedido": "494099",
+                      "numero_loja": "261011B24BQVJG", "nome_cliente": "Ana",
+                      "marketplace_integration_id": 6, "itens": []}],
+        }
+        with (
+            patch("nistiprint_shared.database.supabase_db_service.supabase_db", supabase),
+            patch("nistiprint_shared.services.ai_personalization_service.get_orders_with_chats") as assemble,
+        ):
+            result = OrdersQueryService().get_personalized_orders_page(
+                page=2, page_size=20, search="494", integration_id=99,
+            )
+        supabase.rpc.assert_called_once_with("buscar_pedidos_personalizados_projetados", {
+            "p_prefix": "494", "p_page": 2, "p_page_size": 20,
+        })
+        assemble.assert_not_called()
+        self.assertEqual(result["bling_orders"][0]["numero"], "494099")
+        self.assertEqual(result["bling_orders"][0]["marketplace_integration_id"], 6)
+        self.assertEqual(result["pagination"], {
+            "page": 2, "page_size": 20, "total": 21, "has_next": False,
+        })
+
+    def test_numeric_search_with_filters_keeps_account_scoped_projection(self):
+        supabase = MagicMock()
+        supabase.rpc.return_value.execute.return_value.data = {
+            "ready": True, "rows": [], "total": 0, "status_counts": {},
+        }
+        with patch("nistiprint_shared.database.supabase_db_service.supabase_db", supabase):
+            result = OrdersQueryService().get_personalized_orders_page(
+                page=1, page_size=20, search="494", ai_filter="pendente_ia",
+                integration_id=99,
+            )
+        supabase.rpc.assert_called_once_with("listar_pedidos_personalizados_projetados", {
+            "p_page": 1, "p_page_size": 20, "p_search": "494",
+            "p_ai_filter": "pendente_ia", "p_chat_filter": "",
+            "p_integration_id": 99, "p_include_unassigned": False,
+        })
+        self.assertEqual(result["bling_orders"], [])
 
     def test_projected_page_preserves_public_order_contract(self):
         supabase = MagicMock()

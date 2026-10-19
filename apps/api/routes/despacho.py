@@ -12,6 +12,7 @@ si por caminhos diferentes de codigo.
 """
 
 from datetime import date, datetime
+from time import perf_counter
 import hashlib
 import json
 import os
@@ -215,16 +216,20 @@ def get_arvore():
     Query params:
     - data: YYYY-MM-DD (default hoje)
     """
+    started = perf_counter()
+    rpc_ms = None
     try:
         user = get_current_user()
         if not user:
             return jsonify({"success": False, "error": "Nao autorizado"}), 401
 
         p_data = _parse_data(request.args.get("data"))
+        rpc_started = perf_counter()
         contexto = _contexto_rpc("despacho_arvore_contexto", {"p_data": p_data})
         rows = contexto["rows"] if contexto is not None else (
             supabase_db.rpc("despacho_arvore", {"p_data": p_data}).execute().data or []
         )
+        rpc_ms = (perf_counter() - rpc_started) * 1000
 
         # Monta a arvore no shape que o frontend consome, sem repetir a
         # invariante de soma no cliente: cada linha ja veio agregada pelo
@@ -568,6 +573,8 @@ def get_arvore():
 
         return jsonify({"success": True, "data": {
             "data": p_data,
+            "snapshot_gerado_em": (contexto or {}).get("snapshot_gerado_em")
+                or datetime.now(ZoneInfo("America/Sao_Paulo")).isoformat(),
             "marketplaces": payload,
             "abas": abas_totais,
             "lotes_timeline": lotes_timeline,
@@ -576,6 +583,12 @@ def get_arvore():
     except Exception as exc:
         logger.error("Erro ao montar arvore de despacho: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
+    finally:
+        logger.info(
+            "despacho_arvore duration_ms=%.1f rpc_ms=%s",
+            (perf_counter() - started) * 1000,
+            f"{rpc_ms:.1f}" if rpc_ms is not None else "unavailable",
+        )
 
 
 def _bucket_operacional(prazo: str | None, data: str, coleta: str | None = None) -> str:

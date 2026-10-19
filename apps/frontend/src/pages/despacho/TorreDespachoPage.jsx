@@ -239,7 +239,9 @@ export default function TorreDespachoPage() {
       if (!json.success) throw new Error(json.error || 'Falha ao carregar a torre de despacho');
       if (!controller.signal.aborted) {
         setArvore(json.data);
-        setAtualizadoEm(new Date());
+        const geradoEm = json.data?.snapshot_gerado_em;
+        const dataGeracao = geradoEm ? new Date(geradoEm) : new Date();
+        setAtualizadoEm(Number.isNaN(dataGeracao.getTime()) ? new Date() : dataGeracao);
       }
     } catch (err) {
       if (controller.signal.aborted) return;
@@ -254,8 +256,16 @@ export default function TorreDespachoPage() {
     // Pedido novo precisa aparecer sem o operador dar refresh.
     const id = setInterval(() => {
       if (!document.hidden && !emCursoRef.current) carregar();
-    }, 60_000);
-    return () => { clearInterval(id); requisicaoRef.current?.abort(); };
+    }, 4_000);
+    const aoVoltar = () => {
+      if (!document.hidden && !emCursoRef.current) carregar();
+    };
+    document.addEventListener('visibilitychange', aoVoltar);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', aoVoltar);
+      requisicaoRef.current?.abort();
+    };
   }, [carregar]);
 
   useEffect(() => {
@@ -443,7 +453,7 @@ export default function TorreDespachoPage() {
       {erro && (
         <Card className="mb-4 border-destructive/50">
           <CardContent className="py-4 text-sm text-destructive">
-            {erro}{atualizadoEm && ` Os dados exibidos são da última atualização, às ${atualizadoEm.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}.`}
+            {erro}{atualizadoEm && ` Os dados exibidos são da última atualização, às ${atualizadoEm.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}.`}
           </CardContent>
         </Card>
       )}
@@ -503,7 +513,7 @@ export default function TorreDespachoPage() {
 
           {atualizadoEm && !erro && (
             <p className="mb-4 text-right text-xs text-muted-foreground">
-              Atualizado às {atualizadoEm.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+              Atualizado às {atualizadoEm.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </p>
           )}
 
@@ -643,7 +653,7 @@ export default function TorreDespachoPage() {
         <>
           {atualizadoEm && !erro && (
             <p className="mb-4 text-right text-xs text-muted-foreground">
-              Atualizado às {atualizadoEm.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+              Atualizado às {atualizadoEm.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </p>
           )}
 

@@ -66,10 +66,13 @@ class TestLeiturasDespacho(unittest.TestCase):
         banco = MagicMock()
         banco.rpc.return_value.execute.return_value = SimpleNamespace(data={
             'rows': [], 'timeline': [], 'catalogo': [], 'integracoes': [], 'composicao': [],
-            'lotes': [], 'rascunhos': [], 'janelas': []})
+            'lotes': [], 'rascunhos': [], 'janelas': [],
+            'snapshot_gerado_em': '2026-10-05T12:00:00-03:00'})
         with patch.object(modulo, 'get_current_user', return_value={'id': 1}), patch.object(modulo, 'supabase_db', banco):
             response = self.client.get('/api/v2/despacho/arvore?data=2026-10-05')
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['data']['snapshot_gerado_em'],
+                         '2026-10-05T12:00:00-03:00')
         banco.rpc.assert_called_once_with('despacho_arvore_contexto', {'p_data': '2026-10-05'})
         banco.table.assert_not_called()
 

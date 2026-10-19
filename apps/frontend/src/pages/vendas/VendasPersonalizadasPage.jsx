@@ -77,17 +77,11 @@ function VendasPersonalizadasPage() {
 
   const [submittingBatch, setSubmittingBatch] = useState(false);
   const fetchOrdersRef = useRef(null);
+  const ordersRequestRef = useRef(null);
 
   useEffect(() => {
     fetchMode();
   }, []);
-
-  // Só carrega pedidos DEPOIS de saber o modo correto
-  useEffect(() => {
-    if (opMode !== null) {
-      fetchOrdersRef.current?.();
-    }
-  }, [opMode, integrationId]);
 
   // Helper seguro para renderizar campos JSONB do banco
   // Supabase retorna objetos já parseados, mas às vezes vem como string
@@ -163,7 +157,11 @@ function VendasPersonalizadasPage() {
     }
   };
 
-  const fetchOrders = useCallback(async (reset = false, signal) => {
+  const fetchOrders = useCallback(async (reset = false) => {
+    ordersRequestRef.current?.abort();
+    const controller = new AbortController();
+    ordersRequestRef.current = controller;
+    setLoading(true);
     setError(null);
     try {
       const query = new URLSearchParams({ mode: opMode, page: String(reset ? 1 : page), page_size: String(ITEMS_PER_PAGE) });
@@ -173,11 +171,12 @@ function VendasPersonalizadasPage() {
       if (aiFilter) query.set('ai_filter', aiFilter);
       if (chatFilter) query.set('chat_filter', chatFilter);
       const response = await fetch(`/api/v2/vendas/personalizadas?${query}`, {
-        signal,
+        signal: controller.signal,
         headers: { 'Accept': 'application/json' }
       });
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
+      if (controller.signal.aborted) return;
       const rows = data.data?.bling_orders || [];
       const effectivePage = reset ? 1 : page;
       setOrders(current => opMode === 'legacy'
@@ -188,11 +187,14 @@ function VendasPersonalizadasPage() {
       setServerPagination(data.data?.pagination || { page: 1, page_size: rows.length, total: rows.length, has_next: false });
       if (data.data?.status_counts) setServerStatusCounts(data.data.status_counts);
     } catch (e) {
-      if (e.name === 'AbortError') return;
-        setError(e.message);
+      if (controller.signal.aborted || e.name === 'AbortError') return;
+      setError(e.message);
       toast.error(`Erro ao carregar vendas: ${e.message}`);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        ordersRequestRef.current = null;
+        setLoading(false);
+      }
     }
   }, [opMode, page, integrationId, singleShopeeAccount,
     debouncedSearchTerm, aiFilter, chatFilter]);
@@ -200,9 +202,8 @@ function VendasPersonalizadasPage() {
 
   useEffect(() => {
     if (opMode === null) return undefined;
-    const controller = new AbortController();
-    fetchOrders(false, controller.signal);
-    return () => controller.abort();
+    fetchOrders();
+    return () => ordersRequestRef.current?.abort();
   }, [fetchOrders, opMode]);
 
   // Memoized filtered orders

@@ -99,6 +99,7 @@ configure_worker_logging()
 celery_app.conf.update(
     task_routes={
         **(celery_app.conf.task_routes or {}),
+        'tasks.operational_read_model_tasks.refresh_operational_read_models': {'queue': 'operational_read_models'},
         'services.ai_personalization.processar_batch': {'queue': 'ai_personalization'},
         'services.ai_personalization.processar_pedido': {'queue': 'ai_personalization'},
         'services.ai_personalization.processar_conta': {'queue': 'ai_personalization'},

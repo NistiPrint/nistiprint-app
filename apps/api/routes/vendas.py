@@ -1,4 +1,6 @@
 from flask import Blueprint, render_template, jsonify, request
+import logging
+from time import perf_counter
 from routes.auth import login_required, require_request_permission
 from nistiprint_shared.services.orders_query_service import orders_query_service
 from nistiprint_shared.services.order_service import order_service
@@ -7,6 +9,7 @@ from utils.api_response import ApiResponse
 
 vendas_bp = Blueprint('vendas', __name__, url_prefix='/vendas')
 vendas_api_bp = Blueprint('vendas_api', __name__, url_prefix='/api/v2/vendas')
+logger = logging.getLogger(__name__)
 
 
 @vendas_bp.before_request
@@ -51,6 +54,7 @@ def api_canal_venda_options():
 @vendas_api_bp.route('/personalizadas', methods=['GET'])
 @login_required
 def api_personalizadas():
+    started = perf_counter()
     try:
         mode = request.args.get('mode')
         page = request.args.get('page', type=int)
@@ -80,6 +84,14 @@ def api_personalizadas():
         import traceback
         traceback.print_exc()
         return ApiResponse.error(message=str(e), status_code=500)
+    finally:
+        search = request.args.get('search', '')
+        logger.info(
+            'vendas_personalizadas duration_ms=%.1f mode=%s search_kind=%s',
+            (perf_counter() - started) * 1000,
+            request.args.get('mode', ''),
+            'numeric' if search.isdigit() else 'text' if search else 'none',
+        )
 
 # Regular Vendas routes
 @vendas_bp.route('/personalizadas_legacy')

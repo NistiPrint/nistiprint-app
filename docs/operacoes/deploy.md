@@ -256,6 +256,18 @@ Para uma revisão que altera estoque, produção, integrações ou impressão, s
 
 ## 6. Verificação pós-deploy
 
+Para a revisão de latência das telas operacionais, aplique primeiro a migration
+`20261019124500_operational_read_model_latency.sql` pelo MCP HTTP e confirme a
+versão no ledger remoto. Instale as units em `apps/worker/systemd/` para o
+worker geral, a IA e os modelos de leitura; faça `daemon-reload`, habilite os
+três serviços e reinicie o beat depois que os consumidores estiverem ativos.
+O lote de IA continua às 12h. Confirme que
+`shopee_personalization_read_model_state.backfill_complete` voltou a `true`,
+que a fila `operational_read_model_outbox` está esvaziando e que
+`despacho_contexto_read_model.refreshed_at` avança. O refresh anterior falhava
+com `DELETE requires a WHERE clause` na reconstrução das janelas; a migration
+substitui essas exclusões por `TRUNCATE` transacional.
+
 ```bash
 # API direta no host
 curl http://127.0.0.1:8080/health

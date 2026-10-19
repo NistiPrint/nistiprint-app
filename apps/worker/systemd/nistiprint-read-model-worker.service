@@ -1,0 +1,17 @@
+[Unit]
+Description=NistiPrint Celery Worker for operational read models
+After=network.target
+
+[Service]
+Type=simple
+User=nistiprint
+Group=nistiprint
+WorkingDirectory=/opt/nistiprint/apps/worker
+EnvironmentFile=/opt/nistiprint/.env
+ExecStart=/opt/nistiprint/.venv/bin/celery -A worker_entrypoint worker --loglevel=info --queues=operational_read_models --concurrency=1 --prefetch-multiplier=1
+Restart=always
+RestartSec=5
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

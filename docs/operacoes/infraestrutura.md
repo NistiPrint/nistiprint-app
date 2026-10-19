@@ -82,6 +82,12 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
+Use `apps/worker/systemd/nistiprint-worker.service` para limitar o worker geral
+às filas `celery,bling_status_sync`. Os modelos de leitura têm a unit
+`apps/worker/systemd/nistiprint-read-model-worker.service`, que consome apenas
+`operational_read_models` com concorrência 1. Mantenha a unit de IA abaixo ativa
+para o lote do meio-dia.
+
 ### `nistiprint-ai-worker.service`
 
 Install this unit from `apps/worker/systemd/nistiprint-ai-worker.service`. It

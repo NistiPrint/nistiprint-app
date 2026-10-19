@@ -91,6 +91,30 @@ class OrdersQueryService:
             "chat_context_ambiguous": row.get("chat_context_ambiguous", False),
         }
 
+    def _map_projected_personalized_order(self, row):
+        contato = self._parse_json_field(row.get("contato"), default={}) or {}
+        if not contato.get("nome"):
+            contato["nome"] = row.get("nome_cliente") or ""
+        items = [self._normalize_item(item) for item in
+                 self._parse_json_field(row.get("itens"), default=[])]
+        return {
+            "id": row["id"], "numero": row.get("numero_pedido"),
+            "numeroLoja": row.get("numero_loja"),
+            "nome_cliente": row.get("nome_cliente") or "",
+            "data": row.get("data_pedido"), "contato": contato, "itens": items,
+            "shopee": {"username": row.get("buyer_username") or "",
+                       "order_sn": row.get("numero_loja"),
+                       "message": row.get("shopee_message") or ""},
+            "personalizado": True,
+            "has_chat_messages": bool(row.get("has_chat_messages")),
+            "deletado": bool(row.get("deletado")),
+            "last_ai_executed_at": row.get("last_ai_executed_at"),
+            "last_buyer_message_at": row.get("last_buyer_message_at"),
+            "needs_ai_processing": bool(row.get("needs_ai_processing")),
+            "ai_status": row.get("ai_status"),
+            "marketplace_integration_id": row.get("marketplace_integration_id"),
+        }
+
     def get_personalized_orders_page(self, *, page=1, page_size=20, search="",
                                     ai_filter="", chat_filter="",
                                     integration_id=None, include_unassigned=False):
@@ -104,6 +128,28 @@ class OrdersQueryService:
         search_by_order_number = search_value.isdigit()
 
         if search_by_order_number and not ai_filter and not chat_filter:
+            try:
+                projected = supabase_db.rpc("buscar_pedidos_personalizados_projetados", {
+                    "p_prefix": search_value,
+                    "p_page": page,
+                    "p_page_size": page_size,
+                }).execute().data
+                projected = projected[0] if isinstance(projected, list) and projected else projected
+                if isinstance(projected, dict) and projected.get("ready"):
+                    logger.info("Busca numérica de personalizados usando projeção")
+                    total = int(projected.get("total") or 0)
+                    return {
+                        "bling_orders": [self._map_projected_personalized_order(row)
+                                         for row in projected.get("rows") or []],
+                        "pagination": {"page": page, "page_size": page_size,
+                                       "total": total, "has_next": page * page_size < total},
+                        "status_counts": None,
+                    }
+            except Exception:
+                logger.warning("Busca numérica projetada indisponível; usando consulta canônica",
+                               exc_info=True)
+            else:
+                logger.info("Busca numérica projetada ainda não está pronta; usando consulta canônica")
             from nistiprint_shared.services.ai_personalization_service import get_orders_with_chats
 
             matches = (supabase_db.rpc("search_personalized_shopee_order_ids", {
@@ -141,28 +187,9 @@ class OrdersQueryService:
             }).execute().data
             projected = projected[0] if isinstance(projected, list) and projected else projected
             if isinstance(projected, dict) and projected.get("ready"):
+                logger.info("Listagem de personalizados usando projeção")
                 rows = projected.get("rows") or []
-                orders = []
-                for row in rows:
-                    contato = self._parse_json_field(row.get("contato"), default={}) or {}
-                    if not contato.get("nome"):
-                        contato["nome"] = row.get("nome_cliente") or ""
-                    items = [self._normalize_item(item) for item in self._parse_json_field(row.get("itens"), default=[])]
-                    orders.append({
-                        "id": row["id"], "numero": row.get("numero_pedido"),
-                        "numeroLoja": row.get("numero_loja"), "nome_cliente": row.get("nome_cliente") or "",
-                        "data": row.get("data_pedido"), "contato": contato, "itens": items,
-                        "shopee": {"username": row.get("buyer_username") or "",
-                                   "order_sn": row.get("numero_loja"),
-                                   "message": row.get("shopee_message") or ""},
-                        "personalizado": True, "has_chat_messages": bool(row.get("has_chat_messages")),
-                        "deletado": bool(row.get("deletado")),
-                        "last_ai_executed_at": row.get("last_ai_executed_at"),
-                        "last_buyer_message_at": row.get("last_buyer_message_at"),
-                        "needs_ai_processing": bool(row.get("needs_ai_processing")),
-                        "ai_status": row.get("ai_status"),
-                        "marketplace_integration_id": row.get("marketplace_integration_id"),
-                    })
+                orders = [self._map_projected_personalized_order(row) for row in rows]
                 total = int(projected.get("total") or 0)
                 return {
                     "bling_orders": orders,
@@ -177,6 +204,8 @@ class OrdersQueryService:
                 "Leitura projetada de vendas personalizadas indisponível; usando as views atuais",
                 exc_info=True,
             )
+        else:
+            logger.info("Projeção de personalizados ainda não está pronta; usando as views atuais")
 
         def scoped(query, *, global_order_search=False):
             # A numeric order lookup must find the order regardless of the
