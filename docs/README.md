@@ -49,6 +49,8 @@ docs/
 
 ## Onde comecar
 
+Nova área de Gestão e inteligência de negócio: [contrato, implantação e validação](./specs/02-domains/gestao/spec.md).
+
 | Perfil | Documento |
 | --- | --- |
 | Backend | `tecnico/ARQUITETURA.md` then `specs/03-contracts/supabase-contracts.md` |

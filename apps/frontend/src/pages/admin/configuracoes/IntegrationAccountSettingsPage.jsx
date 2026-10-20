@@ -10,6 +10,7 @@ import { JanelasLogisticas } from '@/pages/admin/configuracoes/LogisticaIntegrac
 import ConfiguracoesIA from '@/pages/configuracoes/ConfiguracoesIA';
 import IAPage from '@/pages/admin/IAPage';
 import RessincronizarConta from '@/components/integracoes/RessincronizarConta';
+import AccountInsightsSettings from '@/components/integracoes/AccountInsightsSettings';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -22,6 +23,7 @@ const SECTIONS = [
   { id: 'logistica', label: 'Logística', icon: Truck },
   { id: 'despacho', label: 'Despacho', icon: CalendarClock },
   { id: 'ia', label: 'Inteligência artificial', icon: Bot },
+  { id: 'insights', label: 'Dados e inteligência', icon: Settings2 },
 ];
 
 const getAccountIdentifier = (integration) => {
@@ -226,6 +228,7 @@ export default function IntegrationAccountSettingsPage() {
 
         <main className="min-w-0 space-y-5">
           {activeSection === 'geral' && <GeneralAccountSettings integration={integration} onSaved={refresh} />}
+          {activeSection === 'insights' && ['shopee', 'mercadolivre'].includes(integration.module_id) && <AccountInsightsSettings integration={integration} />}
           {activeSection === 'conexao' && (
             <section className="space-y-3">
               <div><h2 className="text-lg font-semibold">Conexão e vínculos</h2><p className="text-sm text-muted-foreground">Estado da autorização, aplicativos e lojas associadas a esta conta.</p></div>

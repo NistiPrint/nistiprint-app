@@ -15,7 +15,7 @@ TOKEN_REFRESH = "TOKEN_REFRESH"
 CONNECTION_TEST = "CONNECTION_TEST"
 
 MARKETPLACE_DIRECT_CAPABILITIES = {ORDER_IMPORT, ORDER_UPDATE, WEBHOOK_INGEST}
-LOCAL_CAPABILITIES = {TOKEN_REFRESH, CONNECTION_TEST}
+LOCAL_CAPABILITIES = {TOKEN_REFRESH, CONNECTION_TEST, 'ORDER_INSIGHTS', 'SHOPEE_ESCROW', 'SHOPEE_PRODUCT', 'SHOPEE_ADS', 'ML_VISITS', 'ML_ADS', 'ML_BILLING', 'BLING_HISTORY'}
 
 
 @dataclass
@@ -102,6 +102,13 @@ class IntegrationCapabilityService:
         requested = self._get_installation(requested_id)
         if not requested:
             return CapabilityResolution(capability, requested_id, None, "none", reason="integration_not_found")
+
+        from nistiprint_shared.services.platform_drivers.insights_registry import CAPABILITIES
+        insight_provider = CAPABILITIES.get(capability.lower())
+        if (insight_provider and _module_id(requested) != insight_provider) or (
+            capability == 'ORDER_INSIGHTS' and _module_id(requested) not in {'shopee','mercadolivre','bling'}
+        ):
+            return CapabilityResolution(capability, requested_id, None, 'none', reason='insights_not_supported_by_account')
 
         if capability in LOCAL_CAPABILITIES:
             return CapabilityResolution(capability, requested_id, _to_integration(requested), "self", mode="local")

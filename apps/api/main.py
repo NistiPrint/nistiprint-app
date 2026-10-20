@@ -56,6 +56,8 @@ from routes.producao_web import producao_bp
 from routes.producao_api import producao_api_bp
 from routes.api import api_bp
 from routes.relatorios import relatorios_api_bp
+from routes.gestao import gestao_bp
+from routes.marketplace_insights import marketplace_insights_bp
 from routes.uom_conversions import uom_conversions_bp, uom_conversions_api_bp
 from routes.demanda_producao_web import demanda_producao_bp
 from routes.demanda_producao_api import demanda_producao_api_bp
@@ -207,6 +209,8 @@ def create_app():
     app.register_blueprint(producao_bp)
     app.register_blueprint(producao_api_bp, url_prefix='/api/v2/producao')
     app.register_blueprint(relatorios_api_bp, url_prefix='/api/v2/relatorios')
+    app.register_blueprint(gestao_bp)
+    app.register_blueprint(marketplace_insights_bp)
     app.register_blueprint(uom_conversions_bp)
     app.register_blueprint(uom_conversions_api_bp, url_prefix='/api/v2/cadastros/uom-conversions')
     app.register_blueprint(demanda_producao_bp)

@@ -1,4 +1,5 @@
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
+import { lazy, Suspense } from 'react'
 import GerencialHistorico from './components/GerencialHistorico'
 import ProtectedRoute from './components/ProtectedRoute'
 import MainLayout from './components/layout/MainLayout'
@@ -6,6 +7,7 @@ import InstallWizard from './components/marketplace/InstallWizard'
 import { Toaster } from './components/ui/sonner'
 import { LayoutProvider } from './contexts/LayoutContext'
 import HomePage from './pages/HomePage'
+const GestaoPage = lazy(() => import('./pages/gestao/GestaoPage'))
 import LoginPage from './pages/LoginPage'
 import CadastrosPage from './pages/admin/CadastrosPage'
 import ConfiguracoesPage from './pages/admin/ConfiguracoesPage'
@@ -126,6 +128,8 @@ function App() {
           {/* Dashboard/Home Route */}
           <Route index element={<HomePage />} />
           <Route path='perfil' element={<PerfilPage />} />
+          <Route path='gestao' element={<Navigate to='/gestao/visao-geral' replace />} />
+          <Route path='gestao/:area' element={<ProtectedRoute permission={{ a: 'gestao', I: 'ler' }}><Suspense fallback={<p>Carregando Gestão…</p>}><GestaoPage /></Suspense></ProtectedRoute>} />
 
           {/* 1. Produtos (Dados Mestres) */}
           <Route path='produtos' element={<ProtectedRoute permission={{ a: 'produtos', I: 'ler' }}><ProdutoListPage /></ProtectedRoute>} />

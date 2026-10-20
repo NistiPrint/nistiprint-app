@@ -25,6 +25,7 @@ import {
 // ---------------------------------------------------------------------------
 export const TOP_NAV = [
   { name: 'Home', href: '/', icon: Home, type: 'link' },
+  { name: 'Gestão', href: '/gestao/visao-geral', icon: BarChart3, type: 'link', permission: { a: 'gestao', I: 'ler' } },
   {
     name: 'Pedidos',
     icon: ShoppingCart,
@@ -103,6 +104,15 @@ export const TOP_NAV = [
 // entre secoes irmas.
 // ---------------------------------------------------------------------------
 export const SECOES = [
+  { id: 'gestao', titulo: 'Gestão', prefixos: ['/gestao'], grupos: [{ itens: [
+    { name: 'Visão geral', href: '/gestao/visao-geral', icon: BarChart3, permission: { a: 'gestao', I: 'ler' } },
+    { name: 'Vendas e canais', href: '/gestao/vendas', icon: Store, permission: { a: 'gestao', I: 'ler' } },
+    { name: 'Produtos e personalização', href: '/gestao/produtos', icon: Boxes, permission: { a: 'gestao', I: 'ler' } },
+    { name: 'Público', href: '/gestao/publico', icon: Users, permission: { a: 'gestao', I: 'ler' } },
+    { name: 'Rentabilidade', href: '/gestao/rentabilidade', icon: Scale, permission: { a: 'gestao_financeiro', I: 'ler' } },
+    { name: 'Planejamento', href: '/gestao/planejamento', icon: CalendarClock, permission: { a: 'gestao', I: 'ler' } },
+    { name: 'Dados e integrações', href: '/gestao/qualidade', icon: Database, permission: { a: 'gestao', I: 'ler' } },
+  ] }] },
   {
     id: 'agente-local',
     titulo: 'Configurações: Agente local',

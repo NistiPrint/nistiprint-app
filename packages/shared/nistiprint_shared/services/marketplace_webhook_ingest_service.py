@@ -1094,14 +1094,14 @@ class MarketplaceWebhookIngestService:
     def _upsert_shopee_mirror(self, detail: dict, marketplace_integration_id: int | None) -> int | None:
         if not marketplace_integration_id:
             return None
-        from nistiprint_shared.services.bling_order_processing_service import _upsert_pedido_shopee
+        from nistiprint_shared.services.platform_drivers.order_mirrors import _upsert_pedido_shopee
 
         return _upsert_pedido_shopee(detail, marketplace_integration_id)
 
     def _upsert_meli_mirror(self, detail: dict, marketplace_integration_id: int | None) -> int | None:
         if not marketplace_integration_id:
             return None
-        from nistiprint_shared.services.bling_order_processing_service import _upsert_pedido_meli
+        from nistiprint_shared.services.platform_drivers.order_mirrors import _upsert_pedido_meli
 
         return _upsert_pedido_meli(detail, marketplace_integration_id)
 

@@ -32,6 +32,7 @@ const rotulosExtras = {
   'canal-venda': 'Canais de venda',
   'regras-erp': 'Regras ERP',
   manutencao: 'Manutenção',
+  insights: 'Dados e inteligência',
 };
 
 const routeLabels = { ...rotulosDerivados, ...rotulosExtras };

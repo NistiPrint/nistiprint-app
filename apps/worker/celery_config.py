@@ -49,6 +49,7 @@ def get_default_schedules():
         **logistica_schedules(),
         **operational_read_model_schedules(),
         **mercadolivre_schedules(),
+        **gestao_schedules(),
         'reconcile-pending-erp-references': {
             'task': 'nistiprint_shared.services.order_erp_reference_service.reconcile_pending',
             'schedule': 60,
@@ -80,6 +81,16 @@ def get_default_schedules():
             'options': {'queue': 'ai_personalization'},
         },
     }
+
+
+def gestao_schedules():
+    if os.getenv('GESTAO_ENABLED', '1').lower() in {'0', 'false', 'no'}:
+        return {}
+    return {'gestao-collect-due': {'task': 'tasks.gestao_tasks.collect_due','schedule':30,
+                                 'options': {'queue':'marketplace_insights','expires':25}},
+            'gestao-refresh': {'task': 'tasks.gestao_tasks.refresh', 'schedule': 5,
+                             'kwargs': {'limit': 100},
+                             'options': {'queue': 'gestao_projection', 'expires': 4}}}
 
 
 def mercadolivre_schedules():
@@ -278,6 +289,7 @@ def load_dynamic_schedules():
         # Integration-critical functions remain active even when the database
         # contains a custom list of user-managed schedules.
         schedules.update(mercadolivre_schedules())
+        schedules.update(gestao_schedules())
         return schedules
     except Exception as e:
         logger.error(f"Erro ao carregar tasks dinâmicas: {e}. Usando padrões de código.")
@@ -374,6 +386,7 @@ celery_app = Celery(
         'tasks.eventos_tasks',
         'tasks.estoque_outbox_tasks',
         'tasks.operational_read_model_tasks',
+        'tasks.gestao_tasks',
         'tasks.consolidation_tasks',
         'tasks.pedidos_fetch_tasks',
         'tasks.token_renewal_tasks',
@@ -398,6 +411,8 @@ celery_app.conf.update(
 
 # Roteamento e Filas
 celery_app.conf.task_queues = {
+    'gestao_projection': {'exchange':'gestao_projection','routing_key':'gestao_projection'},
+    'marketplace_insights': {'exchange':'marketplace_insights','routing_key':'marketplace_insights'},
     'celery': {'exchange': 'celery', 'routing_key': 'celery'},
     'ai_personalization': {'exchange': 'ai', 'routing_key': 'ai.personalization'},
     'bling_status_sync':  {'exchange': 'bling', 'routing_key': 'bling.status'},
@@ -405,6 +420,9 @@ celery_app.conf.task_queues = {
 }
 
 celery_app.conf.task_routes = {
+    'tasks.gestao_tasks.refresh': {'queue':'gestao_projection'},
+    'tasks.gestao_tasks.collect': {'queue':'marketplace_insights'},
+    'tasks.gestao_tasks.collect_due': {'queue':'marketplace_insights'},
     'tasks.operational_read_model_tasks.refresh_operational_read_models': {'queue': 'operational_read_models'},
     'services.ai_personalization.processar_batch': {'queue': 'ai_personalization'},
     'services.ai_personalization.processar_pedido': {'queue': 'ai_personalization'},
