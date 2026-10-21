@@ -22,6 +22,18 @@ class InsightTests(unittest.TestCase):
                 self.assertIsNotNone(facts['buyer_key'])
                 self.assertEqual(facts['insights']['evidence']['order_detail_requests'],0)
 
+    def test_meli_destination_path_and_masked_shopee_address(self):
+        source=self.source('mercadolivre')
+        source['shipment']={'destination':{'shipping_address':{
+            'state':{'name':'São Paulo','id':'BR-SP'},'city':{'name':'Campinas'}}}}
+        fact=project(source,Catalog([],[],[]))
+        self.assertEqual((fact['region'],fact['city']),('São Paulo','Campinas'))
+        source=self.source('shopee')
+        source['shopee']['recipient_address']={'state':'****','city':'****'}
+        fact=project(source,Catalog([],[],[]))
+        self.assertIsNone(fact['region'])
+        self.assertIsNone(fact['city'])
+
     def test_version_ignores_bookkeeping_and_detects_commercial_changes(self):
         for provider in ('shopee','mercadolivre'):
             source=self.source(provider)

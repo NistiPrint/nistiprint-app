@@ -11,7 +11,8 @@ try {
   for (const path of ['supabase/tests/fixtures/gestao_schema.sql',
     'supabase/migrations/20261020160000_gestao_business_intelligence.sql',
     'supabase/migrations/20261020200000_marketplace_insights.sql',
-    'supabase/migrations/20261020210000_gestao_queries.sql']) {
+    'supabase/migrations/20261020210000_gestao_queries.sql',
+    'supabase/migrations/20261020220000_gestao_consistency_signals.sql']) {
     await db.exec(await readFile(path, 'utf8'));
     if (path.endsWith('gestao_schema.sql')) await db.exec(`
       ALTER TABLE pedido_snapshots ADD items jsonb NOT NULL DEFAULT '[]';
@@ -71,6 +72,12 @@ try {
   assert.equal((await query()).rows[0].data.summary.sales, 100); checks++;
   const cachedQuery = () => db.query("SELECT gestao_report_cached('2026-10-01','2026-10-19','{}',true) data");
   assert.equal((await cachedQuery()).rows[0].data.summary.sales, 100); checks++;
+  const corrected = (await cachedQuery()).rows[0].data;
+  assert.equal(corrected.regions[0].ticket, 100); checks++;
+  assert.equal(corrected.quality.masked_geography, 0); checks++;
+  assert.equal(corrected.finance_gaps.missing_payout, 1); checks++;
+  const publicReport = (await db.query("SELECT gestao_report_cached('2026-10-01','2026-10-19','{}',false) data")).rows[0].data;
+  assert.ok(!('finance_gaps' in publicReport) && !('profitability' in publicReport)); checks++;
   await store(fact(1, 6, 'shopee', 'v4'));
   assert.equal((await cachedQuery()).rows[0].data.summary.sales, 200); checks++;
   const components={net_payout:80,taxes:2,operating_cost:1,ads:3};
@@ -97,6 +104,18 @@ try {
   assert.equal((await db.query('SELECT count(*) n FROM snapshot_sync_calls')).rows[0].n,1); checks++;
   await db.exec(`UPDATE pedido_snapshots SET items='[{"sku":"B"}]' WHERE id=1`);
   assert.equal((await db.query('SELECT count(*) n FROM snapshot_sync_calls')).rows[0].n,2); checks++;
+  await store({...fact(1,6,'shopee','v5'),region:'****',city:'****'});
+  report=(await cachedQuery()).rows[0].data;
+  assert.equal(report.quality.masked_geography,1); checks++;
+  assert.equal(report.regions.find(r=>r.region==='Não informado').ticket,100); checks++;
+  await store({...fact(2,7,'mercadolivre','v5'),region:null,city:null});
+  const repair=(await db.query('SELECT gestao_requeue_geography(7,0,100) data')).rows[0].data;
+  assert.equal(repair.queued,1); checks++;
+  await db.exec(`INSERT INTO pedidos_mercadolivre VALUES(9,'{}','{"destination":{"shipping_address":{"state":{"name":"SP"}}}}');
+    UPDATE pedidos SET pedido_mercadolivre_id=9 WHERE id=2;
+    DELETE FROM gestao_outbox WHERE pedido_id=2;`);
+  await db.exec(`UPDATE pedidos_mercadolivre SET raw_shipment='{"destination":{"shipping_address":{"state":{"name":"RJ"}}}}' WHERE id=9;`);
+  assert.equal((await db.query('SELECT count(*) n FROM gestao_outbox WHERE pedido_id=2')).rows[0].n,1); checks++;
   await db.exec('BEGIN; SET LOCAL ROLE authenticated;');
   await assert.rejects(db.query("SELECT marketplace_insights_claim(6,'shopee_escrow')"), /permission denied/); checks++;
   await db.exec('ROLLBACK;');

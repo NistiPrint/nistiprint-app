@@ -4,6 +4,7 @@ from datetime import date, datetime
 
 from nistiprint_shared.services.gestao_projection import Catalog, TZ, number, project
 from nistiprint_shared.services.gestao_service import analyze, contribution, paginate
+from nistiprint_shared.services.gestao_signals import build_signals
 
 
 def source(**changes):
@@ -184,6 +185,55 @@ class AnalyticsTests(unittest.TestCase):
             def execute(self):
                 return type('Result',(),{'data':list(range(2501))[self.start:self.end+1]})()
         self.assertEqual(len(list(paginate(Query))),2501)
+
+
+class SignalTests(unittest.TestCase):
+    def report(self):
+        return {
+            'period':{'start':'2026-10-01','end':'2026-10-28'},
+            'summary':{'created':100,'cancelled':15,'cancel_rate':15,'unknown':3},
+            'previous':{'created':100,'cancelled':4,'cancel_rate':4},
+            'changes':{'sales':5},
+            'quality':{'items':100,'mapped_items':20,'masked_geography':10},
+            'operations':{'observed_dispatches':40,'late_dispatches':8},
+            'product_movements':[{'key':'listing:6:abc:','name':'Agenda','product_id':None,
+                'account_id':6,'current_orders':18,'previous_orders':12,
+                'current_sales':1400,'previous_sales':1000}],
+            'channel_movements':[], 'planning':[], 'projection_pending':0,
+        }
+
+    def test_evidence_thresholds_and_quality_exceptions(self):
+        report=self.report()
+        opportunities, exceptions=build_signals(report,{})
+        ids={item['id'] for item in opportunities}
+        self.assertIn('product_growth:listing:6:abc:',ids)
+        self.assertIn('account_id=6',opportunities[0]['href'])
+        exception_ids={item['id'] for item in exceptions}
+        self.assertTrue({'cancellations','late_dispatch','product_mapping','masked_geography','unknown_stage'}<=exception_ids)
+        self.assertIn('8/40',next(item['evidence'] for item in exceptions if item['id']=='late_dispatch'))
+
+    def test_incomplete_history_suppresses_growth_and_finance_is_gated(self):
+        report=self.report()
+        report['changes']['sales']=None
+        opportunities, exceptions=build_signals(report,{})
+        self.assertFalse(any(item['id'].startswith('product_growth') for item in opportunities))
+        self.assertFalse(any(item['id']=='finance_gap' for item in exceptions))
+        report['finance_gaps']={'orders':100,'missing_payout':100,'missing_product_cost':80,
+                                'missing_taxes':100,'missing_operating_cost':100}
+        report['profitability']={'coverage':0}
+        _, exceptions=build_signals(report,{})
+        self.assertIn('finance_gap',{item['id'] for item in exceptions})
+
+    def test_concentration_requires_known_sales_and_orders(self):
+        report=self.report()
+        report['products']=[{'key':'listing:6:abc:','name':'Agenda','sales':5000,
+                             'share':50,'orders':25}]
+        report['summary']['sales_coverage']=90
+        _, exceptions=build_signals(report,{})
+        self.assertNotIn('product_concentration',{item['id'] for item in exceptions})
+        report['summary']['sales_coverage']=100
+        _, exceptions=build_signals(report,{})
+        self.assertIn('product_concentration',{item['id'] for item in exceptions})
 
 
 if __name__=='__main__':

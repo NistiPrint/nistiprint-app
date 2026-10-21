@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import re
 from nistiprint_shared.services.gestao_projection import TZ, number
 from nistiprint_shared.services.platform_drivers.insights_contract import CollectionError
+from nistiprint_shared.services.platform_drivers.insights_location import location
 
 def collect(db, account, capability, integration, cp, provider_get, metric, finance, order_batch):
     today = datetime.now(TZ).date()
@@ -93,11 +94,9 @@ def extract(source):
     raw = source.get('shopee') or {}
     raw = raw.get('raw') or raw
     address = raw.get('recipient_address') or {}
-    facts = {'sold_at': raw.get('create_time'), 'buyer_id': raw.get('buyer_user_id'), 'region': address.get('state'), 'city': address.get('city')}
+    facts = {'sold_at': raw.get('create_time'), 'buyer_id': raw.get('buyer_user_id'),
+             'region': location(address.get('state')), 'city': location(address.get('city'))}
     enrichments = ('shopee_escrow',) if not (source.get('finance') or {}).get('settled') else ()
-    for key in ('region', 'city'):
-        if isinstance(facts[key], dict):
-            facts[key] = facts[key].get('name') or facts[key].get('id')
     facts['commercial'] = {k: order.get(k) for k in ('total_pedido', 'marketplace_lifecycle_stage', 'marketplace_payment_status', 'pack_id', 'data_pagamento_marketplace', 'data_compra_marketplace', 'data_venda', 'data_envio_marketplace', 'despachado_em', 'data_limite_envio', 'modalidade_logistica', 'servico_logistico', 'personalizado')}
     facts['items'] = [{k: v for k, v in i.items() if k not in {'updated_at', 'created_at'}} for i in source.get('items') or []]
     from nistiprint_shared.services.order_status_lexicon import SEED_LEXICON

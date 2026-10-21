@@ -25,6 +25,13 @@ def report(db, start, end, filters, include_finance):
     payload=db.rpc('gestao_report_cached',{'p_start':start.isoformat(),'p_end':end.isoformat(),
         'p_filters':filters,'p_finance':include_finance}).execute().data
     data.update(payload)
+    # JSON aggregation order is not guaranteed by the input CTE ordering.
+    data['products'].sort(key=lambda row: (row.get('sales') is not None, row.get('sales') or 0), reverse=True)
+    for rows in data.get('rankings', {}).values():
+        rows.sort(key=lambda row: (row.get('sales') is not None, row.get('sales') or 0), reverse=True)
+    data['names'].sort(key=lambda row: row.get('occurrences') or 0, reverse=True)
+    data['regions'].sort(key=lambda row: (row.get('sales') is not None, row.get('sales') or 0), reverse=True)
+    data['pairs'].sort(key=lambda row: row.get('orders') or 0, reverse=True)
     data['personalization']['coverage']=rate(data['personalization']['identified_orders'],data['personalization']['eligible_orders'])
     data['customers']['average_gap_days']=data['customers'].pop('avg_gap_days',None)
     for cohort in data['customers']['cohorts']:
@@ -56,17 +63,9 @@ def report(db, start, end, filters, include_finance):
     data.setdefault('component_requirements',[])
     data.setdefault('goals',[])
     add_planning(db,data,start,end,filters,include_finance)
-    data['alerts']=[]
-    if data['changes'].get('sales') is not None and data['changes']['sales']<=-20:
-        data['alerts'].append({'title':'Queda no valor dos itens','evidence':f"{data['changes']['sales']}% no período comparável",'action':'Investigue canais, produtos e cobertura antes de rever campanhas.'})
-    if data['products'] and (data['products'][0].get('share') or 0)>=40:
-        p=data['products'][0]
-        data['alerts'].append({'title':'Concentração em um produto/anúncio','evidence':f"{p['name']}: {p['share']}% das vendas",'action':'Avalie dependência, estoque e alternativas de catálogo.'})
-    if data['summary']['unknown']:
-        data['alerts'].append({'title':'Estados comerciais não classificados','evidence':f"{data['summary']['unknown']} pedidos",'action':'Revise a classificação dos estados e a cobertura da fonte.'})
-    current,previous=data['summary'],data['previous']
-    if min(current['created'],previous['created'])>=10 and current['cancel_rate'] is not None and previous['cancel_rate'] is not None and current['cancel_rate']-previous['cancel_rate']>=5:
-        data['alerts'].append({'title':'Aumento de cancelamentos','evidence':f"{current['cancel_rate']}% contra {previous['cancel_rate']}%",'action':'Investigue disponibilidade e prazos por canal.'})
+    from nistiprint_shared.services.gestao_signals import build_signals
+    data['opportunities'], data['exceptions'] = build_signals(data, filters)
+    data['alerts'] = data['exceptions']  # Existing readers retain the old key.
     with _lock:
         _cache[key]=(revision,monotonic(),deepcopy(data))
         _cache.move_to_end(key)
