@@ -86,6 +86,9 @@ class ProjectedDatabase(FakeDatabase):
 
 class PackContextExtractionTests(unittest.TestCase):
     def setUp(self):
+        # Keep the fixture messages inside the seven-day extraction window,
+        # regardless of when or in which time zone the suite runs.
+        self.now = datetime(2026, 10, 19, 12, tzinfo=timezone.utc)
         self.database = ProjectedDatabase({
             "mercadolivre_chat_conversations": [{
                 "marketplace_integration_id": 7, "pack_id": "pack-7",
@@ -118,6 +121,7 @@ class PackContextExtractionTests(unittest.TestCase):
             ("supabase_db", {"new": self.database}),
             ("_integration", {"return_value": {"id": 7}}),
             ("_settings", {"return_value": {}}),
+            ("_utcnow", {"return_value": self.now}),
             ("_ai_response", {"new": self.ai}),
         ):
             patcher = patch.object(service, target, **kwargs)
@@ -143,6 +147,15 @@ class PackContextExtractionTests(unittest.TestCase):
         self.database.tables["pedidos"][0]["codigo_pedido_externo"] = None
         self.assertEqual(service.process_pack(7, "pack-7")["status"], "success")
         self.ai.assert_called_once()
+
+    def test_ai_cannot_reference_a_message_outside_the_extraction_window(self):
+        with patch.object(service, "_utcnow", return_value=self.now + timedelta(days=8)), \
+             patch.object(service.logger, "exception"), \
+             self.assertRaisesRegex(ValueError, "mensagem inexistente"):
+            service.process_pack(7, "pack-7")
+        payload = json.loads(self.ai.call_args.args[3])
+        self.assertEqual(payload["messages"], [])
+        self.database.rpc.assert_not_called()
 
     def test_pack_without_imported_orders_still_waits(self):
         self.database.tables["pedidos"] = []

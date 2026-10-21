@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import sys
 import tempfile
 import unittest
@@ -76,12 +77,17 @@ if os.getenv("NISTIPRINT_TEST_DATABASE_URL"):
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="nistiprint-agent-tests-") as app_data:
         os.environ["LOCALAPPDATA"] = app_data
-        suite = unittest.TestSuite()
-        loader = unittest.defaultTestLoader
-        for module in TEST_MODULES:
-            suite.addTests(loader.loadTestsFromName(module))
-        result = unittest.TextTestRunner(verbosity=2).run(suite)
-        return 0 if result.wasSuccessful() else 1
+        try:
+            suite = unittest.TestSuite()
+            loader = unittest.defaultTestLoader
+            for module in TEST_MODULES:
+                suite.addTests(loader.loadTestsFromName(module))
+            result = unittest.TextTestRunner(verbosity=2).run(suite)
+            return 0 if result.wasSuccessful() else 1
+        finally:
+            # The local agent opens a FileHandler inside this temporary folder.
+            # Release it before cleanup; Windows cannot unlink an open log.
+            logging.shutdown()
 
 
 if __name__ == "__main__":
