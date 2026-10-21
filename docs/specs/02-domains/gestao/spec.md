@@ -64,6 +64,9 @@ explícitos; falta de apontamento não é produtividade zero.
 
 Migrações: `20261020160000_gestao_business_intelligence.sql`,
 `20261020200000_marketplace_insights.sql` e `20261020210000_gestao_queries.sql`.
+O painel executivo também usa `20261021200000_gestao_dashboard_aggregates.sql`,
+que acrescenta agregados por UF e séries diárias de anúncios ao relatório em
+cache, sem solicitar novas coletas aos marketplaces.
 
 - `gestao_fatos_pedido`: uma projeção por pedido, com itens e personalizações.
 - `gestao_outbox`: invalidação transacional de pedidos, itens, espelhos,
@@ -127,7 +130,7 @@ Todos os endpoints usam sessão ativa e permissão base `gestao`:
 
 | Endpoint `/api/v2/gestao` | Contrato |
 | --- | --- |
-| `GET /resumo` | start/end ISO, marketplace, account_id, product_id, category_id, logistics; período máximo de 731 dias |
+| `GET /resumo` | start/end ISO, marketplace, account_id, product_id, category_id, logistics; período máximo de 731 dias. Inclui `regions_by_state` para todas as UFs/destinos e `advertising_daily` completo por dia/conta/plataforma/tipo quando há permissão financeira. |
 | `GET /pedidos` | Mesmo recorte; page, 50 por página; requer `gestao_detalhes.ler` |
 | `GET /exportar` | CSV com proteção contra fórmulas; requer `gestao_detalhes.ler` |
 | `PUT /metas` | month no primeiro dia, account_id opcional, metric, target positivo |
@@ -221,6 +224,9 @@ tempo da tarefa. Falha de analytics não altera pedidos operacionais.
 - PostgreSQL isolado: `scripts/check_gestao_sql.mjs`, com GESTAO_PGLITE_MODULE
   apontando para uma instalação temporária de PGlite; ou testes opcionais
   `test_gestao_postgres.py` com GESTAO_TEST_DSN apontando para banco descartável vazio.
+- Agregados do painel: validar `regions_by_state` e `advertising_daily` com
+  recortes vazios/incompletos, múltiplas contas e mais de 500 registros; conferir
+  que publicidade não é retornada sem permissão financeira.
 - Captura/concorrência/cache: `scripts/check_marketplace_insights.mjs`;
   `GESTAO_BENCHMARK=1` executa cargas sintéticas de 20 mil e 100 mil pedidos.
 - Contratos locais e isolamento: `test_marketplace_insights.py`,

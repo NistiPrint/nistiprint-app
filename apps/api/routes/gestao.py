@@ -68,6 +68,9 @@ def report():
     finance_allowed = user_has_permission(user, 'gestao_financeiro', 'ler')
     details_allowed = user_has_permission(user, 'gestao_detalhes', 'ler')
     data = service().report(start, end, filters, include_finance=finance_allowed)
+    if not finance_allowed:
+        data.pop('advertising_daily', None)
+        data.pop('ad_metrics', None)
     if not details_allowed and 'profitability' in data:
         data['profitability'].pop('orders', None)
     data['access'] = {'finance': finance_allowed, 'details': details_allowed,

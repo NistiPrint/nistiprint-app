@@ -50,6 +50,13 @@ class ApiTests(unittest.TestCase):
             r=self.client.get('/api/v2/gestao/resumo')
         self.assertNotIn('orders',r.json['data']['profitability'])
 
+    def test_advertising_metrics_redacted_without_finance_permission(self):
+        fake=MagicMock();fake.report.return_value={'advertising_daily':[{'spend':10}], 'ad_metrics':[{'kind':'ads'}]}
+        with patch.object(gestao,'user_has_permission',return_value=False),patch.object(gestao,'service',return_value=fake):
+            r=self.client.get('/api/v2/gestao/resumo')
+        self.assertNotIn('advertising_daily',r.json['data'])
+        self.assertNotIn('ad_metrics',r.json['data'])
+
     def test_invalid_dates_and_filter_ids(self):
         for query in ('start=bad','start=2026-01-02&end=2026-01-01','end=2099-01-01','account_id=-1','product_id=NaN','start=2000-01-01'):
             self.assertEqual(self.client.get('/api/v2/gestao/resumo?'+query).status_code,400,query)
