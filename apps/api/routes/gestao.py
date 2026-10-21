@@ -53,7 +53,7 @@ def invalid(exc):
 @gestao_bp.errorhandler(Exception)
 def unavailable(exc):
     # Do not return database details, provider responses, or credentials.
-    logger.error('Gestão indisponível (%s)', type(exc).__name__)
+    logger.exception('Gestão indisponível (%s)', type(exc).__name__)
     return jsonify(success=False, error='Não foi possível consultar Gestão. Verifique a migração e a atualização analítica.'), 503
 
 
