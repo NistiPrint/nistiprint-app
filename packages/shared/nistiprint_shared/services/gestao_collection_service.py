@@ -15,11 +15,18 @@ def provider_get(integration, resource, params=None, headers=None):
         integration,resource,params,headers,request_json=request_json)
 
 
-def metric(db,account,resource,day,kind,values,source):
+def metric(db,account,resource,day,kind,values,source,*,resource_type=None,
+           timezone_name='America/Sao_Paulo',semantic='diaria',partial=False):
     # Keep native attribution fields: visits and accumulated counters are not interchangeable.
     db.table('gestao_metricas_anuncio').upsert({'account_id':account,'resource_id':str(resource),
         'day':day,'kind':kind,'metrics':values,'source':source,'updated_at':datetime.now(TZ).isoformat()},
         on_conflict='account_id,resource_id,day,kind').execute()
+    db.table('gestao_metricas_anuncio_periodo').upsert({
+        'account_id':account,'recurso_tipo':resource_type or ('ad_group' if kind=='ads' else 'listing'),
+        'resource_id':str(resource),'periodo_inicio':day,'periodo_fim':day,'source':source,'kind':kind,
+        'fuso_origem':timezone_name,'semantica':semantic,'metrics':values,'parcial':bool(partial),
+        'collected_at':datetime.now(TZ).isoformat(),
+    },on_conflict='account_id,recurso_tipo,resource_id,periodo_inicio,periodo_fim,source,kind').execute()
 
 
 def finance(db,pedido_id,components,source,settled,evidence):

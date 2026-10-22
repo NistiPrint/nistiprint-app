@@ -32,6 +32,7 @@ import BlingLinkManager from '@/components/produtos/BlingLinkManager';
 import ExternalIdentifiersManager from '@/components/produtos/ExternalIdentifiersManager';
 import LocalArtworkSection from '@/components/produtos/LocalArtworkSection';
 import VariationManager from '@/components/produtos/VariationManager';
+import ProductAnnouncementsPanel from '@/components/produtos/ProductAnnouncementsPanel';
 
 function ProdutoFormPage() {
   const { id: produto_id } = useParams();
@@ -323,6 +324,7 @@ function ProdutoFormPage() {
     { id: 'general', label: 'Dados Gerais' },
     { id: 'bom', label: 'Composição' },
     ...(!productData?.parent_id ? [{ id: 'variations', label: 'Variações' }] : []),
+    ...(produto_id ? [{ id: 'anuncios', label: 'Anúncios' }] : []),
     { id: 'artwork', label: 'Artes e Impressão' },
     { id: 'integrations', label: 'Integrações' },
   ];
@@ -855,7 +857,8 @@ function ProdutoFormPage() {
                       await ProductService.createProductWithVariations(
                         produto_id,
                         variationsData.variations_config,
-                        variationsData.variations_data
+                        variationsData.variations_data,
+                        variationsData.inativar_ids
                       );
                       toast.success("Variações salvas com sucesso!");
                       // Refresh the product data
@@ -873,6 +876,8 @@ function ProdutoFormPage() {
             </CardContent>
           </Card>
         )}
+
+        {activeTab === 'anuncios' && produto_id && <ProductAnnouncementsPanel productId={produto_id} />}
 
         {activeTab === "artwork" && (
           <Card>

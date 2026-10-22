@@ -22,6 +22,7 @@ class PostgresTests(unittest.TestCase):
                 raise RuntimeError('Fixture requires an empty disposable database')
             cursor.execute((root/'supabase/tests/fixtures/gestao_schema.sql').read_text(encoding='utf-8'))
             cursor.execute((root/'supabase/migrations/20261020160000_gestao_business_intelligence.sql').read_text(encoding='utf-8'))
+            cursor.execute((root/'supabase/migrations/20261023120000_catalogo_anuncios_gestao_items.sql').read_text(encoding='utf-8'))
 
     @classmethod
     def tearDownClass(cls):
@@ -30,7 +31,7 @@ class PostgresTests(unittest.TestCase):
     def setUp(self):
         self.db.autocommit=False
         self.c=self.db.cursor()
-        self.c.execute("INSERT INTO installed_integrations VALUES(6,'Loja A'); INSERT INTO produtos VALUES(2,10);")
+        self.c.execute("INSERT INTO installed_integrations(id,instance_name,platform_slug,module_id) VALUES(6,'Loja A','shopee','shopee'); INSERT INTO produtos(id,preco_custo,sku,nome) VALUES(2,10,'ABC','Produto A');")
         self.c.execute("INSERT INTO pedidos_shopee VALUES(9,'{\"buyer_user_id\":10,\"create_time\":1790859600}');")
         self.c.execute("INSERT INTO pedidos VALUES(1,6,null,9,null,'shopee','2026-10-01T10:00:00-03:00','delivered',100)")
         self.c.execute("INSERT INTO itens_pedido VALUES(11,1,2,'ABC',2,50,100)")
@@ -100,6 +101,64 @@ class PostgresTests(unittest.TestCase):
         with self.assertRaises(psycopg2.errors.InsufficientPrivilege):
             self.c.execute('SELECT gestao_claim(1)')
         self.c.execute('ROLLBACK TO SAVEPOINT rpc_test')
+
+    def test_family_rpc_creates_canonical_values_and_rejects_stale_versions(self):
+        self.c.execute("INSERT INTO produtos(id,sku,nome,status,formato,atributos) VALUES(10,'MODEL','Modelo','ativo','com_variacao','{\"variations_config\":[]}')")
+        axes=[{'name':'Cor','options':['Azul','Vermelho'],'posicao':1}]
+        variants=[{'sku':'MODEL-AZ','nome':'Modelo Azul','status':'ativo','variation_values':{'Cor':'Azul'}}]
+        self.c.execute('SELECT catalogo_salvar_familia(10,1,%s::jsonb,%s::jsonb)',(json.dumps(axes),json.dumps(variants)))
+        self.assertEqual(self.c.fetchone()[0]['catalogo_versao'],2)
+        self.c.execute("SELECT papel_catalogo FROM produtos WHERE sku='MODEL-AZ'")
+        self.assertEqual(self.c.fetchone()[0],'variacao')
+        self.c.execute('SELECT count(*) FROM produto_variacao_combinacoes WHERE produto_pai_id=10')
+        self.assertEqual(self.c.fetchone()[0],1)
+        self.c.execute('SAVEPOINT stale_version_test')
+        with self.assertRaises(Exception):
+            self.c.execute('SELECT catalogo_salvar_familia(10,1,%s::jsonb,%s::jsonb)',(json.dumps(axes),json.dumps(variants)))
+        self.c.execute('ROLLBACK TO SAVEPOINT stale_version_test')
+
+    def test_legacy_catalog_backfill_supplies_required_axis_codes(self):
+        self.c.execute("SELECT codigo FROM produto_eixos WHERE nome='Cor'")
+        self.assertTrue(self.c.fetchone()[0])
+        self.c.execute("SELECT codigo FROM produto_eixo_opcoes WHERE nome='Azul'")
+        self.assertTrue(self.c.fetchone()[0])
+        self.c.execute('SELECT count(*) FROM produto_variacao_valores WHERE produto_id=9001')
+        self.assertEqual(self.c.fetchone()[0],1)
+
+    def test_family_save_is_atomic_when_two_variants_claim_same_combination(self):
+        self.c.execute("INSERT INTO produtos(id,sku,nome,status,formato,atributos) VALUES(10,'MODEL','Modelo','ativo','com_variacao','{}')")
+        axes=[{'name':'Cor','options':['Azul'],'posicao':1}]
+        variants=[{'sku':'MODEL-A','status':'ativo','variation_values':{'Cor':'Azul'}},
+                  {'sku':'MODEL-B','status':'ativo','variation_values':{'Cor':'Azul'}}]
+        self.c.execute('SAVEPOINT atomic_family_test')
+        with self.assertRaises(Exception):
+            self.c.execute('SELECT catalogo_salvar_familia(10,1,%s::jsonb,%s::jsonb)',(json.dumps(axes),json.dumps(variants)))
+        self.c.execute('ROLLBACK TO SAVEPOINT atomic_family_test')
+        self.c.execute('SELECT count(*) FROM produto_pai_eixos WHERE produto_pai_id=10')
+        self.assertEqual(self.c.fetchone()[0],0)
+        self.c.execute('SELECT catalogo_versao FROM produtos WHERE id=10')
+        self.assertEqual(self.c.fetchone()[0],1)
+
+    def test_order_refresh_preserves_audited_item_attribution_until_explicit_rebuild(self):
+        self.c.execute("INSERT INTO produtos(id,preco_custo,sku,nome) VALUES(99,5,'OTHER','Produto B')")
+        self.finish([project(self.claim()[0],Catalog([{'id':2,'sku':'ABC'}],[],[]))])
+        changed={'items':[{'id':11,'product_id':99,'mapping':'matched','sku':'ABC','quantity':2,'subtotal':100}]}
+        self.c.execute('UPDATE gestao_fatos_pedido SET payload=payload||%s::jsonb WHERE pedido_id=1',(json.dumps(changed),))
+        self.c.execute('SELECT produto_id FROM gestao_fatos_item WHERE pedido_id=1')
+        self.assertEqual(self.c.fetchone()[0],2)
+        self.c.execute("SELECT gestao_replace_item_facts(1,%s::jsonb)",(json.dumps([{'chave_grupo':'sku:abc','produto_id':99,'origem_atribuicao':'matched','quantidade':2,'subtotal':100,'sold_on':'2026-10-01'}]),))
+        self.c.execute('SELECT produto_id FROM gestao_fatos_item WHERE pedido_id=1')
+        self.assertEqual(self.c.fetchone()[0],99)
+
+    def test_item_fact_backfill_is_paged_and_rebuilds_missing_rows(self):
+        self.finish([project(self.claim()[0],Catalog([{'id':2,'sku':'ABC'}],[],[]))])
+        self.c.execute('DELETE FROM gestao_fatos_item WHERE pedido_id=1')
+        self.c.execute('SELECT gestao_backfill_order_item_facts(0,1)')
+        result=self.c.fetchone()[0]
+        self.assertEqual(result['processed'],1)
+        self.assertFalse(result['has_more'])
+        self.c.execute('SELECT count(*),max(produto_id) FROM gestao_fatos_item WHERE pedido_id=1')
+        self.assertEqual(self.c.fetchone(),(1,2))
 
 
 if __name__=='__main__':

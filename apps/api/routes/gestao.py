@@ -9,6 +9,7 @@ from routes.auth import get_current_user, require_request_permission, user_has_p
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.gestao_projection import TZ, local_time, number
 from nistiprint_shared.services.gestao_service import GestaoService
+from utils.api_response import ApiResponse
 
 gestao_bp = Blueprint('gestao', __name__, url_prefix='/api/v2/gestao')
 logger = logging.getLogger(__name__)
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 def authorize():
     if request.method == 'OPTIONS':
         return None
+    if request.endpoint == 'gestao.performance':
+        return require_request_permission('relatorios', 'ler')
     denied = require_request_permission('gestao', 'ler' if request.method == 'GET' else 'editar')
     if denied:
         return denied
@@ -77,6 +80,35 @@ def report():
                       'edit': user_has_permission(user, 'gestao', 'editar'),
                       'edit_finance': user_has_permission(user, 'gestao_financeiro', 'editar')}
     return jsonify(success=True, data=data)
+
+
+@gestao_bp.get('/desempenho')
+def performance():
+    from nistiprint_shared.services.gestao_desempenho_service import GestaoDesempenhoService
+    today = datetime.now(TZ).date()
+    try:
+        end = date.fromisoformat(request.args.get('date_to', today.isoformat()))
+        start = date.fromisoformat(request.args.get('date_from', (today-timedelta(days=29)).isoformat()))
+        if end > today or start > end or (end-start).days > 730:
+            raise ValueError()
+        group_by = request.args.get('group_by', 'produto')
+        if group_by not in {'plataforma','conta','modelo','produto','anuncio','variacao'}:
+            raise ValueError()
+        filters = {}
+        for key in ('platform',):
+            if request.args.get(key): filters[key] = request.args[key]
+        for key in ('account_id','model_id','product_id','announcement_id'):
+            if request.args.get(key):
+                value = int(request.args[key])
+                if value <= 0: raise ValueError()
+                filters[key] = value
+        page = max(1, int(request.args.get('page',1)))
+        per_page = min(500, max(1, int(request.args.get('per_page',100))))
+    except (ValueError, TypeError):
+        return ApiResponse.error('Informe período, agrupamento e filtros válidos.',400)
+    data = GestaoDesempenhoService(supabase_db).report(
+        start,end,filters,group_by,per_page,(page-1)*per_page)
+    return ApiResponse.success(data)
 
 
 def detail_page(page):
@@ -224,6 +256,13 @@ def refresh():
     from nistiprint_shared.services.celery_app import celery_app
     celery_app.send_task('tasks.gestao_tasks.refresh',queue='gestao_projection')
     return jsonify(success=True, message='Atualização analítica agendada.'),202
+
+
+@gestao_bp.post('/itens/backfill')
+def backfill_items():
+    from nistiprint_shared.services.celery_app import celery_app
+    task=celery_app.send_task('tasks.gestao_tasks.backfill_order_items',queue='gestao_projection')
+    return ApiResponse.success({'task_id':task.id},status_code=202)
 
 
 @gestao_bp.post('/coletar/<int:account_id>')

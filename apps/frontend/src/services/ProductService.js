@@ -123,12 +123,25 @@ const ProductService = {
   },
 
   // Variations Operations
-  createProductWithVariations: async (productId, variationsConfig, variationsData) => {
-    const response = await api.post(`/produtos/${productId}/variations`, {
-      variations_config: variationsConfig,
-      variations_data: variationsData
+  createProductWithVariations: async (productId, variationsConfig, variationsData, deactivateIds = []) => {
+    const current = await api.get(`/produtos/${productId}/familia`);
+    const response = await api.put(`/produtos/${productId}/familia`, {
+      expected_version: current.data.data.catalogo_versao,
+      eixos: variationsConfig,
+      variacoes: variationsData,
+      inativar_ids: deactivateIds
     });
     return response.data;
+  },
+
+  getFamily: async (productId) => {
+    const response = await api.get(`/produtos/${productId}/familia`);
+    return response.data?.data;
+  },
+
+  getAnnouncements: async (productId) => {
+    const response = await api.get(`/produtos/${productId}/anuncios`);
+    return response.data?.data;
   },
 
   // Clone Product

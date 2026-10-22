@@ -226,6 +226,8 @@ def create_app():
     app.register_blueprint(activity_api_bp)
     app.register_blueprint(orders_api_bp, url_prefix='/api/v2/orders')
     app.register_blueprint(marketplace_api_bp, url_prefix='/api/v2/marketplace')
+    from routes.catalogo_api import catalogo_bp
+    app.register_blueprint(catalogo_bp)
     app.register_blueprint(marketplace_bp)
     app.register_blueprint(jobs_bp)
     app.register_blueprint(unified_orders_bp)

@@ -207,6 +207,17 @@ class ProductService:
         if validation_errors:
             raise ValueError(f"Validation errors: {', '.join(validation_errors)}")
 
+        papel = product_data.get('papel_catalogo') or (
+            'variacao' if product_data.get('parent_id') else
+            'modelo' if product_data.get('formato') == 'com_variacao' else 'individual')
+        estrutura = product_data.get('estrutura') or (
+            'kit' if product_data.get('formato') == 'kit' else
+            'manufaturado' if product_data.get('formato') == 'composicao' else 'simples')
+        legacy_format = product_data.get('formato')
+        formato = ('com_variacao' if papel == 'modelo' else 'variacao' if papel == 'variacao' else
+                   legacy_format if legacy_format in {'kit','composicao','simples'} else
+                   ('kit' if estrutura == 'kit' else 'composicao' if estrutura == 'manufaturado' else 'simples'))
+
         # Prepare data for insertion with normalized columns
         data = {
             'sku': product_data.get('sku'),
@@ -228,7 +239,9 @@ class ProductService:
             'setor_responsavel_id': product_data.get('setor_responsavel_id'),
 
             # New fields for product formats and inheritance
-            'formato': product_data.get('formato', 'simples'),
+            'formato': formato,
+            'papel_catalogo': papel,
+            'estrutura': estrutura,
             'herdar_dados_pai': product_data.get('herdar_dados_pai', True),
             'herdar_bom_pai': product_data.get('herdar_bom_pai', True),
 
@@ -315,8 +328,34 @@ class ProductService:
         if str(current.get('estagio') or '').upper() == 'RASCUNHO':
             update_data['status'] = 'rascunho'
 
-        # New fields for product formats and inheritance
-        if 'formato' in product_data: update_data['formato'] = product_data['formato']
+        # Keep legacy format as a projection of the canonical role/structure.
+        if any(key in product_data for key in ('formato','papel_catalogo','estrutura','parent_id')):
+            if 'papel_catalogo' in product_data:
+                papel = product_data['papel_catalogo']
+            elif 'parent_id' in product_data:
+                papel = 'variacao' if product_data['parent_id'] else 'individual'
+            elif product_data.get('formato') == 'com_variacao':
+                papel = 'modelo'
+            elif product_data.get('formato') == 'variacao':
+                papel = 'variacao'
+            else:
+                papel = current.get('papel_catalogo') or 'individual'
+            if 'estrutura' in product_data:
+                estrutura = product_data['estrutura']
+            elif 'formato' in product_data:
+                estrutura = ('kit' if product_data['formato'] == 'kit' else
+                    'manufaturado' if product_data['formato'] == 'composicao' else 'simples')
+            else:
+                estrutura = current.get('estrutura') or 'simples'
+            if papel == 'modelo':
+                formato = 'com_variacao'
+            elif papel == 'variacao':
+                formato = 'variacao'
+            else:
+                legacy_format = product_data.get('formato')
+                formato = legacy_format if legacy_format in {'kit','composicao','simples'} else (
+                    'kit' if estrutura == 'kit' else 'composicao' if estrutura == 'manufaturado' else 'simples')
+            update_data.update({'papel_catalogo':papel,'estrutura':estrutura,'formato':formato})
         if 'herdar_dados_pai' in product_data: update_data['herdar_dados_pai'] = product_data['herdar_dados_pai']
         if 'herdar_bom_pai' in product_data: update_data['herdar_bom_pai'] = product_data['herdar_bom_pai']
 
@@ -1199,6 +1238,9 @@ class ProductService:
 
             # New fields for product formats and inheritance
             'formato': 'variacao',  # Variants always have this formato
+            'papel_catalogo': 'variacao',
+            'estrutura': parent.get('estrutura') or ('kit' if parent.get('formato') == 'kit' else
+                'manufaturado' if parent.get('formato') == 'composicao' else 'simples'),
             'status': variant_data.get('status') or 'rascunho',
             'herdar_dados_pai': variant_data.get('herdar_dados_pai', True),
             'herdar_bom_pai': variant_data.get('herdar_bom_pai', True),
@@ -1279,6 +1321,9 @@ class ProductService:
 
         # New fields for product formats and inheritance
         if 'formato' in variant_data: update_data['formato'] = variant_data['formato']
+        update_data['papel_catalogo'] = 'variacao'
+        if 'estrutura' in variant_data:
+            update_data['estrutura'] = variant_data['estrutura']
         if 'herdar_dados_pai' in variant_data: update_data['herdar_dados_pai'] = variant_data['herdar_dados_pai']
         if 'herdar_bom_pai' in variant_data: update_data['herdar_bom_pai'] = variant_data['herdar_bom_pai']
 
@@ -1547,6 +1592,11 @@ class ProductService:
         errors = []
 
         formato = product_data.get('formato', 'simples')
+        papel = product_data.get('papel_catalogo')
+        if papel == 'modelo':
+            formato = 'com_variacao'
+        elif papel == 'variacao':
+            formato = 'variacao'
         parent_id = product_data.get('parent_id')
         estoque = product_data.get('estoque_atual', 0)  # Assuming estoque_atual comes from elsewhere
 
@@ -1567,7 +1617,7 @@ class ProductService:
                 pass
 
         # Rule: Products with formato 'variacao' must have a parent
-        if formato == 'variacao' and not parent_id:
+        if (formato == 'variacao' or papel == 'variacao') and not parent_id:
             errors.append("Produtos do tipo 'variacao' devem ter um produto pai associado.")
 
         return errors

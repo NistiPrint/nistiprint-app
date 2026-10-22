@@ -11,7 +11,7 @@ class CollectionTests(unittest.TestCase):
     def db_for(self,platform,checkpoint=None):
         db=MagicMock()
         db.rpc.return_value.execute.return_value.data=True
-        tables={name:MagicMock() for name in ('gestao_coletas','installed_integrations','gestao_metricas_anuncio')}
+        tables={name:MagicMock() for name in ('gestao_coletas','installed_integrations','gestao_metricas_anuncio','gestao_metricas_anuncio_periodo')}
         for table in tables.values():
             for method in ('select','eq','limit','single','update','upsert'):
                 getattr(table,method).return_value=table
@@ -29,6 +29,8 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(result['status'],'available')
         self.assertEqual(provider.call_args.args[2],{'start_date':'01-10-2026','end_date':'02-10-2026'})
         self.assertEqual(tables['gestao_metricas_anuncio'].upsert.call_args.args[0]['day'],'2026-10-01')
+        period=tables['gestao_metricas_anuncio_periodo'].upsert.call_args.args[0]
+        self.assertEqual((period['periodo_inicio'],period['periodo_fim'],period['semantica']),('2026-10-01','2026-10-01','diaria'))
 
     def test_unexpected_ads_shape_does_not_advance_checkpoint(self):
         db,tables,resolver=self.db_for('shopee',{'day':'2026-10-01'})

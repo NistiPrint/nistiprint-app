@@ -9,6 +9,7 @@ import { AlertTriangle, CheckCircle, Edit3, Package, Plus, RefreshCw, Save, Sett
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import VariationEditModal from './VariationEditModal';
+import ProductService from '@/services/ProductService';
 
 const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
   const [variationsConfig, setVariationsConfig] = useState([]);
@@ -28,6 +29,8 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [assigningVariantId, setAssigningVariantId] = useState(null);
   const [assignedValues, setAssignedValues] = useState({});
+  const [deactivateIds, setDeactivateIds] = useState([]);
+  const [catalogState, setCatalogState] = useState(null);
 
   // Initialize from product data if available
   useEffect(() => {
@@ -40,6 +43,14 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
         refreshTable(product.atributos?.variations_config || [], product.variants || []);
     }
   }, [product]);
+
+  useEffect(() => {
+    let active = true;
+    if (!product?.id) { setCatalogState(null); return () => { active = false; }; }
+    ProductService.getFamily(product.id).then(value => { if (active) setCatalogState(value); })
+      .catch(() => { if (active) setCatalogState(null); });
+    return () => { active = false; };
+  }, [product?.id]);
 
   // Auto-open variation modal when autoOpenVariationId is provided
   useEffect(() => {
@@ -263,7 +274,7 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
       // Usually we send everything and the backend figures it out,
       // creating new ones (drafts) and updating existing ones.
       
-      const variationsData = variationsTable.filter(item => !item.needsAttributes).map(item => ({
+      const variationsData = variationsTable.filter(item => !item.needsAttributes && !item.isOrphan).map(item => ({
         ...item.variantData, // Include existing data if available
         id: item.isPersisted ? item.id : undefined, // Send ID only if persisted
         sku: item.sku,
@@ -273,9 +284,16 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
         parent_id: product.id
       }));
 
+      const preview = [
+        `Eixos na configuração: ${variationsConfig.length}`,
+        `Variações incluídas ou atualizadas: ${variationsData.length}`,
+        `Variações a inativar: ${deactivateIds.length}`,
+      ].join('\n');
+      if (!window.confirm(`Revise as alterações da família antes de salvar:\n\n${preview}\n\nConfirmar gravação?`)) return;
       await onSave({
         variations_config: variationsConfig,
-        variations_data: variationsData
+        variations_data: variationsData,
+        inativar_ids: deactivateIds
       });
       // The parent component (ProdutoFormPage) handles the toast and data refresh
     } catch (error) {
@@ -315,6 +333,8 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
       </CardHeader>
       
       <CardContent className="pb-6 px-6">
+        {catalogState&&<div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Badge variant="outline">Versão da família {catalogState.catalogo_versao}</Badge><span>Modelo e variações são salvos em uma única operação.</span></div>}
+        {!!catalogState?.pendencias?.length&&<div role="status" className="mb-4 rounded-lg border border-amber-400/60 bg-warning-soft p-3 text-sm"><p className="font-semibold">{catalogState.pendencias.length} pendência(s) de catálogo exigem revisão</p><ul className="mt-1 list-inside list-disc text-xs">{catalogState.pendencias.slice(0,5).map(item=><li key={item.id}>{item.codigo}: {JSON.stringify(item.detalhes||{})}</li>)}</ul></div>}
         {/* Attributes Configuration */}
         <div className="attributes-section space-y-4 mb-8 bg-muted/30 p-4 rounded-lg">
           <div className="attributes-header flex justify-between items-center mb-2">
@@ -429,7 +449,7 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
                               <Badge variant="outline">Atributos pendentes</Badge>
                           ) : variation.isOrphan ? (
                               <Badge variant="destructive" className="bg-red-100 text-red-700 border-red-200">
-                                  <Trash2 className="w-3 h-3 mr-1" /> Será Inativado
+                                  <Trash2 className="w-3 h-3 mr-1" /> Fora da grade
                               </Badge>
                           ) : variation.isPersisted ? (
                               <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
@@ -482,6 +502,15 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
                       </TableCell>
 
                       <TableCell className="text-right">
+                        {variation.isOrphan && variation.id && (
+                          <label className="inline-flex items-center gap-2 text-xs">
+                            <input type="checkbox" checked={deactivateIds.includes(Number(variation.id))}
+                              onChange={event => setDeactivateIds(current => event.target.checked
+                                ? [...new Set([...current, Number(variation.id)])]
+                                : current.filter(id => id !== Number(variation.id)))} />
+                            Inativar explicitamente
+                          </label>
+                        )}
                         {variation.needsAttributes ? (
                             <Button size="sm" variant="secondary" disabled={!variationsConfig.length} onClick={() => {
                               setAssigningVariantId(variation.id);

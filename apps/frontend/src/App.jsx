@@ -8,6 +8,7 @@ import { Toaster } from './components/ui/sonner'
 import { LayoutProvider } from './contexts/LayoutContext'
 import HomePage from './pages/HomePage'
 const GestaoPage = lazy(() => import('./pages/gestao/GestaoPage'))
+const AnunciosPage = lazy(() => import('./pages/produtos/AnunciosPage'))
 import LoginPage from './pages/LoginPage'
 import CadastrosPage from './pages/admin/CadastrosPage'
 import ConfiguracoesPage from './pages/admin/ConfiguracoesPage'
@@ -133,6 +134,7 @@ function App() {
 
           {/* 1. Produtos (Dados Mestres) */}
           <Route path='produtos' element={<ProtectedRoute permission={{ a: 'produtos', I: 'ler' }}><ProdutoListPage /></ProtectedRoute>} />
+          <Route path='anuncios' element={<ProtectedRoute permission={{ a: 'produtos', I: 'ler' }}><Suspense fallback={<p>Carregando anúncios…</p>}><AnunciosPage /></Suspense></ProtectedRoute>} />
           <Route path='produtos/novo' element={<ProtectedRoute permission={{ a: 'produtos', I: 'criar' }}><ProdutoFormPage /></ProtectedRoute>} />
           <Route path='produtos/:id/editar' element={<ProtectedRoute permission={{ a: 'produtos', I: 'editar' }}><ProdutoFormPage /></ProtectedRoute>} />
 

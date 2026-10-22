@@ -19,10 +19,11 @@ def refresh(limit=100):
     sources=supabase_db.rpc('gestao_claim',{'p_limit':max(1,min(int(limit),250))}).execute().data
     if not sources:
         return {'processed':0}
-    products=list(paginate(lambda:supabase_db.table('produtos').select('id,nome,sku,parent_id,categoria_id,formato,preco_custo').order('id')))
-    listings=list(paginate(lambda:supabase_db.table('produto_anuncios').select('integration_id,item_externo_id,variacao_externa_id,produto_id').order('id')))
+    products=list(paginate(lambda:supabase_db.table('produtos').select('id,nome,sku,parent_id,categoria_id,formato,papel_catalogo,estrutura,preco_custo').order('id')))
+    listings=list(paginate(lambda:supabase_db.table('produto_anuncios').select('id,integration_id,item_externo_id,variacao_externa_id,produto_id,anuncio_id').order('id')))
+    aliases=list(paginate(lambda:supabase_db.table('produtos_externos').select('produto_id,codigo_externo,plataforma,tipo,integration_id,aprovado,normalizado').order('id')))
     costs=list(paginate(lambda:supabase_db.table('gestao_custos').select('*').order('id')))
-    catalog=Catalog(products,listings,costs)
+    catalog=Catalog(products,listings,costs,aliases)
     rows=[]
     for source in sources:
         try:
@@ -32,6 +33,19 @@ def refresh(limit=100):
     processed=supabase_db.rpc('gestao_finish',{'p_rows':rows}).execute().data if rows else 0
     logger.info('gestao_projection processed=%s claimed=%s duration_ms=%s',processed,len(sources),round((monotonic()-started)*1000))
     return {'processed':processed,'claimed':len(sources)}
+
+
+@celery_app.task(bind=True, name='tasks.gestao_tasks.backfill_order_items',
+                soft_time_limit=120, time_limit=150, max_retries=6)
+def backfill_order_items(self, after=0, limit=100):
+    """Populate granular facts from existing canonical projections in bounded batches."""
+    result=supabase_db.rpc('gestao_backfill_order_item_facts',{
+        'p_after':max(0,int(after)),'p_limit':max(1,min(int(limit),250)),
+    }).execute().data or {}
+    if result.get('has_more'):
+        backfill_order_items.apply_async(args=[result.get('next_after',after),limit],
+            countdown=1,queue='gestao_projection')
+    return result
 
 
 @celery_app.task(name='tasks.gestao_tasks.collect', soft_time_limit=120, time_limit=150, ignore_result=True)

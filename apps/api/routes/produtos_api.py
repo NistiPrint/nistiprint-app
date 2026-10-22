@@ -327,7 +327,27 @@ def api_get_bling_product(bid):
 def api_create_product_with_variations(produto_id):
     try:
         data = request.get_json()
-        res = product_service.create_product_with_variations({'id': produto_id}, data.get('variations_config', []), data.get('variations_data', []))
+        from nistiprint_shared.services.catalogo_familia_service import CatalogoFamiliaService
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        catalog = CatalogoFamiliaService(supabase_db)
+        family = catalog.get(int(produto_id))
+        if family is None:
+            return jsonify({'success': False, 'error': 'Produto não encontrado'}), 404
+        expected_version = data.get('expected_version', family.get('catalogo_versao', 1))
+        result = catalog.save(int(produto_id), {
+            'expected_version': expected_version,
+            'eixos': data.get('eixos', data.get('variations_config', [])),
+            'variacoes': data.get('variacoes', data.get('variations_data', [])),
+            'inativar_ids': data.get('inativar_ids', []),
+        }, (get_current_user() or {}).get('id'))
+        updated = product_service.get_by_id(produto_id)
+        res = product_service.enrich_product_data_with_variations(updated) if updated else result
         return jsonify({'success': True, 'produto': res})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        code = getattr(e, 'code', None) or getattr(e, 'sqlstate', None)
+        if code in {'40001', 'CATALOG_VERSION_CONFLICT'}:
+            return jsonify({'success': False, 'error': 'A família foi alterada por outra pessoa. Atualize os dados e tente novamente.'}), 409
+        if code in {'22023', '23505', '23503', 'P0002'} or isinstance(e, ValueError):
+            return jsonify({'success': False, 'error': str(e)}), 422
+        logging.exception('Erro ao salvar grade transacional do produto %s', produto_id)
+        return jsonify({'success': False, 'error': 'Não foi possível salvar a grade do produto.'}), 503

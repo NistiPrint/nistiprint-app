@@ -54,8 +54,23 @@ class ProjectionTests(unittest.TestCase):
 
     def test_listing_variation_is_scoped_to_account(self):
         s=source(items=[{'id':11,'item_externo_id':'100','variacao_externa_id':'20'}])
-        cat=Catalog([{'id':2}],[{'produto_id':2,'integration_id':7,'item_externo_id':'100','variacao_externa_id':'20'}],[])
+        cat=Catalog([{'id':2}],[{'id':34,'anuncio_id':17,'produto_id':2,'integration_id':7,'item_externo_id':'100','variacao_externa_id':'20'}],[])
         self.assertIsNone(project(s,cat)['items'][0]['product_id'])
+        self.assertIsNone(project(s,cat)['items'][0]['listing_unit_id'])
+        s['order']['marketplace_integration_id']=7
+        item=project(s,cat)['items'][0]
+        self.assertEqual(item['product_id'],2)
+        self.assertEqual(item['listing_unit_id'],34)
+        self.assertEqual(item['announcement_id'],17)
+
+    def test_only_approved_aliases_can_resolve_and_models_stay_unassigned(self):
+        products=[{'id':2,'sku':'ABC','papel_catalogo':'individual'},
+                  {'id':3,'sku':'MODEL','papel_catalogo':'modelo'}]
+        pending=Catalog(products,[],[],[{'produto_id':2,'codigo_externo':'ALIAS','plataforma':'shopee','integration_id':6,'aprovado':False}])
+        approved=Catalog(products,[],[],[{'produto_id':2,'codigo_externo':'ALIAS','plataforma':'shopee','integration_id':6,'aprovado':True}])
+        self.assertEqual(pending.resolve({'sku_externo':'ALIAS'},6,'shopee')[1],'unmapped')
+        self.assertEqual(approved.resolve({'sku_externo':'ALIAS'},6,'shopee')[0]['id'],2)
+        self.assertEqual(approved.resolve({'sku_externo':'MODEL'},6,'shopee')[1],'unmapped')
 
     def test_current_cost_is_estimated_and_does_not_replace_history(self):
         costs=[{'produto_id':2,'valid_from':'2026-01-01T00:00:00-03:00','unit_cost':4,'source':'manual','estimated':False},

@@ -12,6 +12,12 @@ const TABS = [['visao-geral','Visão geral'],['vendas','Vendas e canais'],['prod
 const WEEKDAYS = ['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'];
 const CHART_COLORS = ['#2d6ea3','#138f91','#d75a8a','#bd8b13','#6956b8','#db6b36'];
 const money = value => value == null ? 'Não disponível' : new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(value);
+const currencyMoney = (value,currency) => {
+  if(value==null)return 'Não disponível';
+  if(!currency)return numeric(value);
+  try{return new Intl.NumberFormat('pt-BR',{style:'currency',currency}).format(value);}
+  catch{return `${numeric(value)} ${currency}`;}
+};
 const numeric = value => value == null ? '—' : new Intl.NumberFormat('pt-BR',{maximumFractionDigits:2}).format(value);
 const percent = value => value == null ? '—' : `${numeric(value)}%`;
 function dateHere() { return new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()); }
@@ -57,6 +63,8 @@ export default function GestaoPage() {
   const [notice,setNotice]=useState(''),[details,setDetails]=useState(null),[detailPage,setDetailPage]=useState(1),[busy,setBusy]=useState(false);
   const [scenario,setScenario]=useState({price:'',cost:'',fees:'',shipping:'',taxes:'',ads:''});
   const [ranking,setRanking]=useState('products');
+  const [performance,setPerformance]=useState(null),[performanceError,setPerformanceError]=useState(''),[performanceLoading,setPerformanceLoading]=useState(false);
+  const [performanceGroup,setPerformanceGroup]=useState('produto'),[performancePage,setPerformancePage]=useState(1),[performanceFilters,setPerformanceFilters]=useState({});
   const [filtersOpen,setFiltersOpen]=useState(Boolean(search.get('marketplace')||search.get('account_id')||search.get('product_id')||search.get('category_id')||search.get('logistics')));
   const query=search.toString();
   useEffect(()=>{const params=new URLSearchParams(query);setDraft({start:params.get('start')||initialStart(),end:params.get('end')||dateHere(),
@@ -69,6 +77,18 @@ export default function GestaoPage() {
     api(`resumo?${query}`,{signal:controller.signal}).then(r=>setData(r.data)).catch(e=>{if(e.name!=='AbortError')setError(e.message);}).finally(()=>{if(!controller.signal.aborted)setLoading(false);});
     return ()=>controller.abort();
   },[query,revision]);
+  useEffect(()=>{
+    if(area!=='produtos')return;
+    const controller=new AbortController();
+    setPerformanceLoading(true);setPerformanceError('');
+    const params=new URLSearchParams({date_from:draft.start,date_to:draft.end,group_by:performanceGroup,page:String(performancePage),per_page:'100'});
+    if(draft.marketplace)params.set('platform',draft.marketplace);
+    if(draft.account_id)params.set('account_id',draft.account_id);
+    if(draft.product_id)params.set('product_id',draft.product_id);
+    Object.entries(performanceFilters).forEach(([key,value])=>{if(value)params.set(key,value);});
+    api(`desempenho?${params}`,{signal:controller.signal}).then(r=>setPerformance(r.data)).catch(e=>{if(e.name!=='AbortError')setPerformanceError(e.message);}).finally(()=>{if(!controller.signal.aborted)setPerformanceLoading(false);});
+    return ()=>controller.abort();
+  },[area,draft.start,draft.end,draft.marketplace,draft.account_id,draft.product_id,performanceGroup,performancePage,performanceFilters,revision]);
   const act=async(path,payload,method='POST')=>{
     setBusy(true);setNotice('');
     try { const result=await api(path,{method,body:JSON.stringify(payload)});setNotice(result.message||'Salvo. A atualização dos indicadores ocorre em lotes.');setRevision(v=>v+1);return true; }
@@ -79,6 +99,23 @@ export default function GestaoPage() {
   const clearAdvanced=()=>{const next={...draft,marketplace:'',account_id:'',product_id:'',category_id:'',logistics:''};setDraft(next);setSearch(Object.fromEntries(Object.entries(next).filter(([,v])=>v!=='')));};
   const openDetails=async(page=1)=>{try{const r=await api(`pedidos?${query}&page=${page}`);setDetails(r);setDetailPage(page);}catch(e){setNotice(e.message);}};
   const productFilter=id=>{const next=new URLSearchParams(search);next.set('product_id',id);setDraft(d=>({...d,product_id:String(id)}));setSearch(next);};
+  const drillPerformance=row=>{
+    const next={...performanceFilters};
+    if(performanceGroup==='modelo')next.model_id=row.group_key;
+    else if(performanceGroup==='produto')next.product_id=row.group_key;
+    else if(performanceGroup==='anuncio')next.announcement_id=row.group_key;
+    else if(performanceGroup==='conta')next.account_id=row.group_key;
+    else if(performanceGroup==='plataforma')next.platform=row.group_key;
+    setPerformanceFilters(next);
+    setPerformanceGroup(performanceGroup==='produto'?'anuncio':performanceGroup==='anuncio'?'variacao':'produto');
+    setPerformancePage(1);
+  };
+  const performanceRowDrillable=row=>{
+    if(performanceGroup==='plataforma')return Boolean(row.group_key);
+    if(!['conta','modelo','produto','anuncio'].includes(performanceGroup))return false;
+    return /^\d+$/.test(String(row.group_key||''));
+  };
+  const clearPerformanceDrill=()=>{setPerformanceFilters({});setPerformanceGroup('produto');setPerformancePage(1);};
   const tabLinks=TABS.filter(([id])=>(id!=='rentabilidade'&&id!=='anuncios')||canFinance);
   const exportCsv=async()=>{
     setBusy(true);
@@ -126,6 +163,24 @@ export default function GestaoPage() {
         <Panel title="Estados comerciais"><dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-5">{[['Criados',data.summary.created],['Aguardando pagamento',data.summary.awaiting_payment],['Cancelados',data.summary.cancelled],['Devolvidos',data.summary.returned],['Não classificados',data.summary.unknown]].map(([k,v])=><div key={k} className="rounded-xl bg-muted/60 p-3"><dt className="text-muted-foreground">{k}</dt><dd className="mt-1 text-xl font-semibold">{numeric(v)}</dd></div>)}</dl></Panel>
       </>}
       {area==='produtos'&&<>
+        <Panel title="Desempenho comercial por produto e anúncio">
+          <p className="mb-3 text-xs text-muted-foreground">Detalha fatos comerciais por pedido e unidade externa. Tráfego permanece no nível do anúncio e não é distribuído entre variações.</p>
+          <div className="mb-4 flex flex-wrap items-end gap-3">
+            <label className="grid gap-1 text-xs font-medium">Agrupar por<select className="h-10 rounded-md border bg-background px-3 text-sm" value={performanceGroup} onChange={e=>{setPerformanceGroup(e.target.value);setPerformanceFilters({});setPerformancePage(1);}}>{[['plataforma','Plataforma'],['conta','Conta'],['modelo','Modelo'],['produto','Produto/SKU'],['anuncio','Anúncio'],['variacao','Variação externa']].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
+            {Object.keys(performanceFilters).length>0&&<Button variant="outline" onClick={clearPerformanceDrill}>Voltar ao resumo</Button>}
+            {performanceLoading&&<span role="status" className="text-xs text-muted-foreground">Carregando detalhamento…</span>}
+          </div>
+          {performanceError?<div role="alert" className="rounded-lg border border-amber-400/60 bg-warning-soft p-3 text-sm">Detalhamento indisponível: {performanceError}</div>:<>
+            <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><MetricCard label="Valor dos itens" value={performance?.totals?.currency_count>1?'Por moeda':currencyMoney(performance?.totals?.sales,performance?.totals?.sales_by_currency?.[0]?.currency==='desconhecida'?null:performance?.totals?.sales_by_currency?.[0]?.currency)} icon={TrendingUp} description={`${numeric(performance?.coverage?.known_subtotals)} de ${numeric(performance?.coverage?.item_groups)} grupos com subtotal conhecido`}/><MetricCard label="Pedidos elegíveis" value={numeric(performance?.totals?.orders)} icon={BarChart3} accent="aqua"/><MetricCard label="Unidades" value={numeric(performance?.totals?.units)} icon={Sparkles} accent="pink"/><MetricCard label="Cancelamentos" value={numeric(performance?.totals?.cancellations)} icon={AlertTriangle} accent="yellow"/><MetricCard label="Devoluções / reembolsos" value={`${numeric(performance?.totals?.returns)} / ${numeric(performance?.totals?.refunds)}`} icon={AlertTriangle} accent="purple" description="Separados das vendas elegíveis"/></div>
+            {performance?.totals?.currency_count>1&&<p className="mb-3 text-xs text-muted-foreground">Moedas mantidas separadas: {(performance.totals.sales_by_currency||[]).map(item=>`${item.currency}: ${currencyMoney(item.sales,item.currency==='desconhecida'?null:item.currency)}`).join(' · ')}</p>}
+            <p className="mb-2 text-xs text-muted-foreground">Fatos atualizados {performance?.updated_at?new Date(performance.updated_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'sem horário disponível'}.</p>
+            <Table rows={performance?.rows||[]} columns={[{key:'group_label',label:'Agrupamento',render:(v,r)=><button className="text-left font-medium text-primary hover:underline disabled:cursor-default disabled:text-foreground" disabled={!performanceRowDrillable(r)} onClick={()=>drillPerformance(r)}>{v||'Não identificado'}{performanceRowDrillable(r)&&<span className="block text-xs font-normal text-muted-foreground">Abrir detalhamento</span>}</button>},{key:'currency',label:'Moeda',render:v=>v||'Não informada'},{key:'orders',label:'Pedidos',render:numeric},{key:'units',label:'Unidades',render:numeric},{key:'sales',label:'Valor dos itens',render:(v,r)=>currencyMoney(v,r.currency)},{key:'known_subtotals',label:'Subtotais conhecidos',render:(v,r)=>`${numeric(v)} / ${numeric(r.item_groups)}`}]}/>
+            <div className="mt-3 flex items-center gap-3"><Button variant="outline" disabled={performancePage<=1||performanceLoading} onClick={()=>setPerformancePage(p=>p-1)}>Anterior</Button><span className="text-sm">Página {performancePage}</span><Button variant="outline" disabled={(performance?.rows||[]).length<100||performanceLoading} onClick={()=>setPerformancePage(p=>p+1)}>Próxima</Button></div>
+            {!!performance?.traffic?.length&&<Panel title="Tráfego no período"><p className="mb-2 text-xs text-muted-foreground">Métricas compartilhadas por anúncio; contadores acumulados e totais entre variações não são somados. A razão pedidos/visitas aparece somente com visitas positivas e vendas atribuídas ao mesmo anúncio e dia.</p><Table rows={performance.traffic} columns={[{key:'day',label:'Data'},{key:'resource_id',label:'Anúncio externo'},{key:'kind',label:'Tipo'},{key:'source',label:'Origem'},{key:'metrics',label:'Métricas',render:v=>Object.entries(v||{}).map(([k,n])=>`${k}: ${numeric(n)}`).join(' · ')||'Sem valores conhecidos'},{key:'order_visit_rate',label:'Pedidos / visitas',render:v=>v==null?'—':percent(v)},{key:'partial',label:'Cobertura',render:v=>v?'Parcial':'Completa'}]}/></Panel>}
+            {!performance?.traffic?.length&&<Panel title="Tráfego no período"><p className="text-sm text-muted-foreground">Sem métricas diárias disponíveis para este recorte. Ausência de coleta não representa zero visitas.</p></Panel>}
+            {performance?.definitions&&<p className="mt-3 text-xs text-muted-foreground">{Object.entries(performance.definitions).map(([k,v])=>`${k}: ${v}`).join(' · ')}</p>}
+          </>}
+        </Panel>
         <label className="flex items-center gap-3 text-sm">Agrupar ranking por<select className="h-10 rounded-md border bg-background px-3" value={ranking} onChange={e=>setRanking(e.target.value)}>{[['products','Produto interno'],['listings','Anúncio e variação'],['families','Família'],['categories','Categoria'],['formats','Formato']].map(([value,label])=><option key={value} value={value}>{label}</option>)}</select></label>
         <div className="grid gap-3 sm:grid-cols-3"><MetricCard label="Grupos no ranking" value={numeric(data.products?.length||0)} icon={BarChart3}/><MetricCard label="Itens vinculados" value={`${numeric(data.quality.mapped_items)} / ${numeric(data.quality.items)}`} icon={CheckCircle2} accent="aqua" description={`${percent(data.quality.items?100*data.quality.mapped_items/data.quality.items:null)} do catálogo`}/><MetricCard label="Produtos classe A" value={numeric(data.products?.filter(row=>row.abc==='A').length||0)} icon={Target} accent="yellow" description="Até 80% do valor acumulado"/></div>
         <Panel title="Maiores grupos por valor dos itens"><Chart data={(ranking==='products'?data.products:(data.rankings[ranking]||[])).filter(row=>row.sales!=null).slice(0,10).map(row=>({...row,label:row.name}))} x="label" y="sales" bar horizontal label="Valor dos itens em reais" format={value=>new Intl.NumberFormat('pt-BR',{notation:'compact',maximumFractionDigits:1}).format(value)}/></Panel>
@@ -168,7 +223,7 @@ export default function GestaoPage() {
         <Panel title="Operação e serviço"><p className="text-sm">{numeric(data.operations?.events||0)} apontamentos no recorte · {numeric(data.operations?.late_dispatches||0)} de {numeric(data.operations?.observed_dispatches||0)} despachos com prazo e horário registrados ocorreram após o prazo.</p><p className="mt-1 text-xs text-muted-foreground">Confira a definição do prazo do marketplace antes de tratar a diferença como violação de SLA. Sem apontamentos, produtividade, perdas e retrabalho permanecem sem histórico.</p></Panel>{data.access.edit&&<EventForm act={act} busy={busy}/ >}
       </>}
       {area==='qualidade'&&<>
-        <Panel title="Cobertura histórica por conta"><Table rows={data.coverage} columns={[{key:'marketplace',label:'Marketplace'},{key:'account_id',label:'Conta'},{key:'from',label:'Primeiro pedido observado'},{key:'to',label:'Último pedido observado'},{key:'orders',label:'Pedidos',render:numeric}]}/><p className="mt-3 text-sm">{numeric(data.quality.mapping_conflicts)} itens com vínculos conflitantes e {numeric(data.quality.masked_geography||0)} destinos mascarados no recorte. Última projeção: {data.last_synced_at?new Date(data.last_synced_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'Ainda não projetado'}.</p>{data.access.edit&&<Button className="mt-3" disabled={busy} onClick={()=>act('atualizar',{})}>Atualizar projeção em segundo plano</Button>}</Panel>
+        <Panel title="Cobertura histórica por conta"><Table rows={data.coverage} columns={[{key:'marketplace',label:'Marketplace'},{key:'account_id',label:'Conta'},{key:'from',label:'Primeiro pedido observado'},{key:'to',label:'Último pedido observado'},{key:'orders',label:'Pedidos',render:numeric}]}/><p className="mt-3 text-sm">{numeric(data.quality.mapping_conflicts)} itens com vínculos conflitantes e {numeric(data.quality.masked_geography||0)} destinos mascarados no recorte. Última projeção: {data.last_synced_at?new Date(data.last_synced_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'Ainda não projetado'}.</p>{data.access.edit&&<div className="mt-3 flex flex-wrap gap-2"><Button disabled={busy} onClick={()=>act('atualizar',{})}>Atualizar projeção em segundo plano</Button><Button variant="outline" disabled={busy} onClick={()=>act('itens/backfill',{})}>Preencher fatos granulares do histórico</Button></div>}<p className="mt-2 text-xs text-muted-foreground">O backfill é retomável e processa pedidos canônicos em lotes; vínculos já auditados permanecem preservados nas atualizações regulares.</p></Panel>
         <Panel title="Coletas e permissões dos provedores"><Table rows={data.collections} columns={[{key:'account_id',label:'Conta'},{key:'capability',label:'Recurso'},{key:'status',label:'Situação'},{key:'error_code',label:'Código de impedimento'},{key:'checked_at',label:'Última tentativa',render:v=>new Date(v).toLocaleString('pt-BR')}]}/><p className="mt-3 text-sm">Gerencie as coletas em Dados e inteligência de cada conta.</p><div className="mt-2 flex flex-wrap gap-3">{(data.options?.accounts||[]).filter(a=>['shopee','mercadolivre'].includes(a.platform_slug)).map(a=><Link className="text-sm underline" key={a.id} to={`/configuracoes/integracoes/${a.id}/insights`}>{a.instance_name}</Link>)}</div></Panel>
         <Panel title="Dicionário de indicadores"><dl className="space-y-3 text-sm">{Object.entries(data.definitions).map(([key,value])=><div key={key}><dt className="font-medium">{({orders:'Pedidos',sales:'Valor dos itens',ticket:'Ticket médio',buyer_total:'Total pago',contribution:'Contribuição',recurrence:'Recompra',names:'Personalizações',forecast:'Previsão'})[key]}</dt><dd className="text-muted-foreground">{value}</dd></div>)}</dl></Panel>
       </>}

@@ -41,15 +41,19 @@ def path(data, *keys):
 
 
 class Catalog:
-    def __init__(self, products, listings, costs):
+    def __init__(self, products, listings, costs, aliases=None):
         self.products = {p['id']: p for p in products}
         self.skus = defaultdict(set)
         self.listings = defaultdict(set)
+        self.listing_units = {}
         self.costs = defaultdict(list)
+        self.aliases = defaultdict(set)
         for p in products:
-            if p.get('sku'):
+            if p.get('sku') and not self._is_model(p):
                 self.skus[p['sku'].strip().casefold()].add(p['id'])
         for a in listings:
+            self.listing_units[(a['integration_id'], str(a['item_externo_id']),
+                                str(a.get('variacao_externa_id') or ''))] = a
             if a.get('produto_id') in self.products:
                 self.listings[(a['integration_id'], str(a['item_externo_id']),
                                str(a.get('variacao_externa_id') or ''))].add(a['produto_id'])
@@ -59,16 +63,41 @@ class Catalog:
                 self.costs[c['produto_id']].append((at, c))
         for values in self.costs.values():
             values.sort(key=lambda pair: pair[0])
+        for alias in aliases or []:
+            if not alias.get('aprovado') or not alias.get('produto_id'):
+                continue
+            code = str(alias.get('normalizado') or alias.get('codigo_externo') or '').strip().casefold()
+            if code:
+                key = (alias.get('integration_id'), str(alias.get('plataforma') or '').casefold(),
+                       str(alias.get('tipo') or 'SKU').upper(), code)
+                self.aliases[key].add(alias['produto_id'])
 
-    def resolve(self, item, account):
+    def resolve(self, item, account, platform=None):
         direct = item.get('produto_id')
-        if direct in self.products:
-            return self.products[direct], 'direct'
-        candidates = self.skus[str(item.get('sku_externo') or '').strip().casefold()] | self.listings[
+        sku = str(item.get('sku_externo') or '').strip().casefold()
+        platform_key = str(platform or '').casefold()
+        candidates = self.skus[sku] | self.listings[
             (account, str(item.get('item_externo_id') or ''), str(item.get('variacao_externa_id') or ''))]
+        if sku:
+            candidates |= self.aliases[(account, platform_key, 'SKU', sku)]
+            candidates |= self.aliases[(None, platform_key, 'SKU', sku)]
+        if direct in self.products and not self._is_model(self.products[direct]):
+            candidates.add(direct)
+        candidates = {product_id for product_id in candidates
+                      if product_id in self.products and not self._is_model(self.products[product_id])}
         if len(candidates) == 1:
-            return self.products[next(iter(candidates))], 'matched'
+            product_id = next(iter(candidates))
+            return self.products[product_id], 'direct' if product_id == direct else 'matched'
         return {}, 'conflict' if candidates else 'unmapped'
+
+    @staticmethod
+    def _is_model(product):
+        return product.get('papel_catalogo') == 'modelo' or (
+            product.get('papel_catalogo') is None and product.get('formato') == 'com_variacao')
+
+    def listing_unit(self, item, account):
+        return self.listing_units.get((account, str(item.get('item_externo_id') or ''),
+                                      str(item.get('variacao_externa_id') or '')))
 
     def cost(self, product, sold_at):
         eligible = [c for at, c in self.costs[product.get('id')] if at <= sold_at]
@@ -110,13 +139,16 @@ def project(source, catalog):
     region, city = facts.get('region'), facts.get('city')
     items = []
     for ip in source.get('items') or []:
-        product, mapping = catalog.resolve(ip, account)
+        product, mapping = catalog.resolve(ip, account, marketplace)
+        listing_unit = catalog.listing_unit(ip, account)
         cost, estimated, cost_source = catalog.cost(product, sold_at)
         items.append({
             'id': ip['id'], 'product_id': product.get('id'), 'mapping': mapping,
             'name': product.get('nome') or ip.get('titulo_anuncio') or ip.get('descricao') or 'Sem descrição',
             'listing_title': ip.get('titulo_anuncio') or ip.get('descricao'),
             'sku': ip.get('sku_externo'), 'listing': ip.get('item_externo_id'),
+            'listing_unit_id': (listing_unit or {}).get('id'),
+            'announcement_id': (listing_unit or {}).get('anuncio_id'),
             'variation': ip.get('variacao_externa_id'), 'variation_name': ip.get('variacao_externa'),
             'family_id': product.get('parent_id') or product.get('id'),
             'family_name': (catalog.products.get(product.get('parent_id')) or product).get('nome'),
@@ -144,7 +176,8 @@ def project(source, catalog):
         'sold_on': sold_at.date().isoformat(), 'sold_at': sold_at.isoformat(),
         'hour': sold_at.hour if precise else None, 'weekday': sold_at.weekday(),
         'stage': stage, 'payment_status':payment_status, 'eligible': eligible, 'paid_at': paid.isoformat() if paid else None,
-        'total': number(order.get('total_pedido')), 'buyer_key': buyer_key,
+        'total': number(order.get('total_pedido')), 'currency': order.get('currency') or order.get('moeda') or facts.get('currency'),
+        'buyer_key': buyer_key,
         'region': region, 'city': city, 'personalized': bool(order.get('personalizado')),
         'logistics': order.get('modalidade_logistica') or order.get('servico_logistico'),
         'shipped_at': order.get('despachado_em') or order.get('data_envio_marketplace'),

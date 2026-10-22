@@ -15,6 +15,7 @@ ResourceType = Literal[
     "return",
     "chat",
     "verification",
+    "catalog",
     "unknown",
 ]
 
