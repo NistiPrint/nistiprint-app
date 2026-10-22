@@ -117,18 +117,17 @@ def post_impressao_data():
         if ids_com_erp:
             resolution = order_erp_reference_service.resolve_many(ids_com_erp, allow_remote=True)
             ready_ids.update(item['pedido_id'] for item in resolution['ready'])
-            # A resolução ERP não pode impedir um papel ML quando o cadastro local
-            # contém o pedido e seus itens. Tente montar usando exclusivamente a base.
-            bloqueados_erp = []
+            # A ausência de referência ERP não deve impedir o papel: quando o
+            # pedido existe localmente, o código do marketplace identifica-o no
+            # cabeçalho e pode ser repetido no campo do número do pedido.
             for blocked in resolution['blocked']:
                 pedido_id = blocked.get('pedido_id')
                 order = _build_order_print_data(pedido_id, plataforma)
-                if order and order.get('plataforma_slug') == 'mercadolivre':
+                if order:
                     orders_prontos[pedido_id] = order
                     ready_ids.add(pedido_id)
                 else:
-                    bloqueados_erp.append(blocked)
-            blocked_orders.extend(bloqueados_erp)
+                    blocked_orders.append(blocked)
         for order_id in ids_com_erp:
             if order_id not in ready_ids:
                 continue
@@ -776,7 +775,7 @@ def _build_order_print_data(pedido_id: int, plataforma_filter: str = None, prepa
             pack_id or pedido.get('marketplace_order_id') or pedido.get('codigo_pedido_externo') or pedido.get('id')
             if plataforma_slug == 'mercadolivre'
             else pedido.get('erp_order_number') or pedido.get('marketplace_order_id')
-            or pedido.get('codigo_pedido_externo') or pedido.get('id')
+            or pedido.get('codigo_pedido_externo') or ''
         )
 
         # 8. Calcular total

@@ -11,6 +11,7 @@ from flask import Flask
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import routes.impressao as impressao_module  # noqa: E402
+import routes.auth as auth_module  # noqa: E402
 
 
 def _order_data(order_id, _plataforma):
@@ -32,6 +33,11 @@ class TestImpressaoEndpoint(unittest.TestCase):
         self.client = app.test_client()
         with self.client.session_transaction() as session:
             session['user_id'] = 1
+        self.auth_patch = patch.object(auth_module, '_active_session_user', return_value={'id': 1})
+        self.auth_patch.start()
+
+    def tearDown(self):
+        self.auth_patch.stop()
 
     def test_post_recebe_ids_no_corpo_json(self):
         resolution = {
@@ -348,6 +354,91 @@ class TestImpressaoEndpoint(unittest.TestCase):
         self.assertEqual(payload['orders'][0]['id'], 78)
         self.assertEqual(payload['blocked_total'], 0)
         build_order.assert_called_once_with(78, None)
+
+    def test_pedido_sem_referencia_erp_e_impresso_com_dados_locais(self):
+        class Query:
+            def select(self, *_args): return self
+            def in_(self, *_args): return self
+            def execute(self):
+                return type('Result', (), {'data': [{'id': 79, 'marketplace_module_id': 'shopee'}]})()
+
+        banco = type('Database', (), {'table': lambda _self, _name: Query()})()
+        pedido = {**_order_data(79, None), 'numero': 'SHOP-79'}
+        resolution = {'ready': [], 'blocked': [{'pedido_id': 79, 'status': 'missing_erp_reference'}]}
+        with (
+            patch.object(impressao_module, 'supabase_db', banco),
+            patch.object(impressao_module.order_erp_reference_service, 'resolve_many', return_value=resolution),
+            patch.object(impressao_module, '_build_order_print_data', return_value=pedido) as build_order,
+        ):
+            response = self.client.post('/api/v2/pedidos/impressao', json={'order_ids': [79]})
+
+        payload = response.get_json()['data']
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload['total'], 1)
+        self.assertEqual(payload['orders'][0]['id'], 79)
+        self.assertEqual(payload['blocked_total'], 0)
+        build_order.assert_called_once_with(79, None)
+
+    def test_pedido_sem_dados_locais_continua_bloqueado(self):
+        class Query:
+            def select(self, *_args): return self
+            def in_(self, *_args): return self
+            def execute(self): return type('Result', (), {'data': [{'id': 80, 'marketplace_module_id': 'shopee'}]})()
+
+        banco = type('Database', (), {'table': lambda _self, _name: Query()})()
+        resolution = {'ready': [], 'blocked': [{'pedido_id': 80, 'status': 'missing_erp_reference'}]}
+        with (
+            patch.object(impressao_module, 'supabase_db', banco),
+            patch.object(impressao_module.order_erp_reference_service, 'resolve_many', return_value=resolution),
+            patch.object(impressao_module, '_build_order_print_data', return_value=None),
+        ):
+            response = self.client.post('/api/v2/pedidos/impressao', json={'order_ids': [80]})
+
+        payload = response.get_json()['data']
+        self.assertEqual(payload['total'], 0)
+        self.assertEqual(payload['blocked_total'], 1)
+        self.assertEqual(payload['blocked_orders'][0]['status'], 'missing_erp_reference')
+
+    def test_personalizacao_pendente_continua_bloqueando_pedido_sem_referencia_erp(self):
+        class Query:
+            def select(self, *_args): return self
+            def in_(self, *_args): return self
+            def execute(self): return type('Result', (), {'data': [{'id': 81, 'marketplace_module_id': 'shopee'}]})()
+
+        banco = type('Database', (), {'table': lambda _self, _name: Query()})()
+        pedido = {**_order_data(81, None), '_print_block_reason': 'Revisar personalização'}
+        resolution = {'ready': [], 'blocked': [{'pedido_id': 81, 'status': 'missing_erp_reference'}]}
+        with (
+            patch.object(impressao_module, 'supabase_db', banco),
+            patch.object(impressao_module.order_erp_reference_service, 'resolve_many', return_value=resolution),
+            patch.object(impressao_module, '_build_order_print_data', return_value=pedido),
+        ):
+            response = self.client.post('/api/v2/pedidos/impressao', json={'order_ids': [81]})
+
+        payload = response.get_json()['data']
+        self.assertEqual(payload['total'], 0)
+        self.assertEqual(payload['blocked_total'], 1)
+        self.assertEqual(payload['blocked_orders'][0]['status'], 'personalization_review_required')
+
+    def test_numero_impressao_sem_erp_usa_codigo_marketplace_ou_vazio(self):
+        class Query:
+            def select(self, *_args, **_kwargs): return self
+            def eq(self, *_args, **_kwargs): return self
+            def execute(self): return type('Result', (), {'data': []})()
+
+        banco = type('Database', (), {'table': lambda _self, _name: Query()})()
+        with patch.object(impressao_module, 'supabase_db', banco):
+            with_marketplace_code = impressao_module._build_order_print_data(82, prepared={
+                'pedido': {'id': 82, 'marketplace_module_id': 'shopee', 'marketplace_order_id': 'SHOP-82'},
+                'itens': [], 'snapshot': {},
+            })
+            without_marketplace_code = impressao_module._build_order_print_data(83, prepared={
+                'pedido': {'id': 83, 'marketplace_module_id': 'shopee'},
+                'itens': [], 'snapshot': {},
+            })
+
+        self.assertEqual(with_marketplace_code['numero'], 'SHOP-82')
+        self.assertEqual(without_marketplace_code['numero'], '')
 
     def test_post_sem_corpo_retorna_400(self):
         response = self.client.post('/api/v2/pedidos/impressao')
