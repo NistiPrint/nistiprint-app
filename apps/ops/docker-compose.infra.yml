@@ -29,7 +29,9 @@ services:
       --maxmemory 256mb
       --maxmemory-policy noeviction
     networks:
-      - nistiprint-shared
+      nistiprint-shared:
+        # Keep in sync with apps/ops/systemd-runtime.env.example.
+        ipv4_address: 172.21.0.4
     ports:
       - 127.0.0.1:6379:6379
     volumes:
@@ -45,7 +47,10 @@ services:
     container_name: nistiprint-redis-celery
     restart: always
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
-    networks: [nistiprint-shared]
+    networks:
+      nistiprint-shared:
+        # Keep in sync with apps/ops/systemd-runtime.env.example.
+        ipv4_address: 172.21.0.6
     ports:
       - 127.0.0.1:6380:6379
     volumes: [redis_celery_data:/data]
@@ -60,7 +65,10 @@ services:
     container_name: nistiprint-redis-cache
     restart: always
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
-    networks: [nistiprint-shared]
+    networks:
+      nistiprint-shared:
+        # Keep in sync with apps/ops/systemd-runtime.env.example.
+        ipv4_address: 172.21.0.3
     ports:
       - 127.0.0.1:6381:6379
     healthcheck:
