@@ -70,24 +70,29 @@ def get_listing_details(integration, item_ids):
         if not item_id or len(item_id) > 64 or not item_id.replace('-', '').isalnum():
             return ProviderCallResult(False, provider='mercadolivre', resource_type='catalog',
                 error_type='invalid_listing_identity', message='Identificador de anúncio inválido.')
-        result = _get(integration, f'/items/{item_id}')
+        result = _get(integration, f'/items/{item_id}', params={'include_attributes': 'all'})
         if not result.ok:
             return result
         item = result.value or {}
         variations = item.get('variations') or []
+        item_sku = _seller_sku(item.get('attributes')) or item.get('seller_custom_field')
         units = []
         for variation in variations:
-            attributes = {str(a.get('id') or '').upper(): a.get('value_name')
-                          for a in variation.get('attribute_combinations') or []}
-            seller_sku = next((str(a.get('value_name')) for a in variation.get('attributes') or []
-                               if str(a.get('id') or '').upper() == 'SELLER_SKU'), None)
+            seller_sku = _seller_sku(variation.get('attributes')) or variation.get('seller_custom_field') or item_sku
+            variation_attributes = {
+                str(attribute.get('name') or attribute.get('id') or 'Atributo'): attribute.get('value_name')
+                for attribute in variation.get('attribute_combinations') or []
+                if attribute.get('value_name') not in (None, '')
+            }
             units.append({'variacao_externa_id': str(variation.get('id') or ''),
-                'sku_externo': seller_sku or attributes.get('SELLER_SKU') or item.get('seller_custom_field'),
+                'sku_externo': seller_sku,
+                'atributos_variacao': variation_attributes,
                 'preco_observado': variation.get('price', item.get('price')),
                 'disponibilidade_observada': str(variation.get('available_quantity', item.get('available_quantity', ''))),
             })
         if not units:
-            units.append({'variacao_externa_id': '', 'sku_externo': item.get('seller_custom_field'),
+            units.append({'variacao_externa_id': '', 'sku_externo': item_sku,
+                'atributos_variacao': {},
                 'preco_observado': item.get('price'),
                 'disponibilidade_observada': str(item.get('available_quantity', ''))})
         updated = item.get('last_updated') or item.get('date_created')
@@ -104,3 +109,11 @@ def normalize_status(value):
     status = str(value or '').strip().lower()
     return {'active': 'ativo', 'paused': 'pausado', 'closed': 'encerrado',
             'under_review': 'em_revisao', 'inactive': 'encerrado'}.get(status, 'desconhecido')
+
+
+def _seller_sku(attributes):
+    for attribute in attributes or []:
+        key = str(attribute.get('id') or attribute.get('name') or '').strip().upper().replace('-', '_')
+        if key == 'SELLER_SKU' and attribute.get('value_name') not in (None, ''):
+            return str(attribute['value_name'])
+    return None

@@ -39,12 +39,13 @@ export default function ProductAnnouncementsPanel({ productId }) {
   return <div className="space-y-4">
     {!units.length && <p className="py-6 text-sm text-muted-foreground">Nenhum anúncio sincronizado para este produto.</p>}
     {units.map(unit => <Card key={unit.id}>
-      <CardHeader className="pb-2"><CardTitle className="text-base">{unit.header.titulo || unit.header.item_externo_id}</CardTitle>
-        <p className="text-xs text-muted-foreground">{unit.header.integration_id} · anúncio {unit.header.item_externo_id} · variação {unit.variacao_externa_id || 'simples'}</p>
+      <CardHeader className="pb-2"><CardTitle className="text-base">{unit.header.titulo || 'Título ainda não sincronizado'}</CardTitle>
+        <p className="text-xs text-muted-foreground">{unit.header.conta_nome || `Conta ${unit.header.integration_id}`} · anúncio {unit.header.item_externo_id}</p>
       </CardHeader>
       <CardContent className="space-y-2">
-        <p className="text-sm">SKU externo: {unit.sku_externo || 'não informado'} · preço observado: {unit.preco_observado ?? '—'} · disponibilidade: {unit.disponibilidade_observada || '—'}</p>
-        <p className="text-sm">Produto vinculado: {unit.produto_id || 'pendente de revisão'}</p>
+        <p className="text-sm">Variação: {Object.entries(unit.atributos_variacao || {}).map(([name, value]) => `${name}: ${value}`).join(' · ') || (unit.variacao_externa_id || 'simples')}</p>
+        <p className="text-sm">SKU externo: {unit.sku_externo || 'não informado pelo anúncio'} · preço observado: {unit.preco_observado ?? '—'} · disponibilidade: {unit.disponibilidade_observada || 'não informada'}</p>
+        <p className="text-sm">Produto vinculado: {unit.produto?.nome || (unit.produto_id ? `Produto ${unit.produto_id}` : 'pendente de revisão')}{unit.produto?.sku ? ` · SKU ${unit.produto.sku}` : ''}{unit.produto_id ? ` · #${unit.produto_id}` : ''}</p>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <div className="min-w-64 flex-1"><ProductSearchInput value={selected[unit.id]?.name || ''} selectedProductId={selected[unit.id]?.id}
             onChange={() => setSelected(current => ({ ...current, [unit.id]: null }))}

@@ -23,6 +23,7 @@ class PostgresTests(unittest.TestCase):
             cursor.execute((root/'supabase/tests/fixtures/gestao_schema.sql').read_text(encoding='utf-8'))
             cursor.execute((root/'supabase/migrations/20261020160000_gestao_business_intelligence.sql').read_text(encoding='utf-8'))
             cursor.execute((root/'supabase/migrations/20261023120000_catalogo_anuncios_gestao_items.sql').read_text(encoding='utf-8'))
+            cursor.execute((root/'supabase/migrations/20261023130000_marketplace_catalog_variation_attributes.sql').read_text(encoding='utf-8'))
 
     @classmethod
     def tearDownClass(cls):
