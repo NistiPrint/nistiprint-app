@@ -44,12 +44,19 @@ export default function AnunciosPage() {
       const params = { page, per_page: 50 };
       Object.entries(filters).forEach(([key, value]) => { if (value) params[key] = value; });
       const response = await api.get('/anuncios', { params });
-      setData(response.data.data);
+      const payload = response.data?.data || {};
+      setData({
+        rows: Array.isArray(payload.rows) ? payload.rows : [],
+        page: Number(payload.page) || page,
+        total: Number(payload.total) || 0,
+        accounts: Array.isArray(payload.accounts) ? payload.accounts : [],
+      });
     } catch (error) { toast.error(error.message || 'Não foi possível carregar anúncios.'); }
   }, [filters]);
   useEffect(() => { load(); }, [load]);
 
-  const selectedAccount = useMemo(() => data.accounts.find(account => String(account.id) === filters.integration_id), [data.accounts, filters.integration_id]);
+  const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+  const selectedAccount = useMemo(() => accounts.find(account => String(account.id) === filters.integration_id), [accounts, filters.integration_id]);
   const linkedOnPage = data.rows.reduce((total, header) => total + (header.unidades || []).filter(unit => unit.produto_id).length, 0);
   const unitsOnPage = data.rows.reduce((total, header) => total + (header.unidades || []).length, 0);
 
@@ -86,11 +93,11 @@ export default function AnunciosPage() {
     </header>
 
     <Card><CardContent className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-[1.3fr_1.3fr_1fr_auto_auto] lg:items-end">
-      <label className="grid gap-1 text-sm">Conta do marketplace
-        <select className="h-10 rounded-md border bg-background px-3" value={filters.integration_id} onChange={e => setFilters({ ...filters, integration_id: e.target.value })}>
+      <label className="grid gap-1 text-sm">{accounts.length ? 'Conta do marketplace' : 'ID da conta integrada'}
+        {accounts.length ? <select className="h-10 rounded-md border bg-background px-3" value={filters.integration_id} onChange={e => setFilters({ ...filters, integration_id: e.target.value })}>
           <option value="">Todas as contas</option>
-          {data.accounts.map(account => <option key={account.id} value={account.id}>{account.name} · conta {account.id}</option>)}
-        </select>
+          {accounts.map(account => <option key={account.id} value={account.id}>{account.name} · conta {account.id}</option>)}
+        </select> : <input className="h-10 rounded-md border bg-background px-3" type="number" min="1" value={filters.integration_id} onChange={e => setFilters({ ...filters, integration_id: e.target.value })} placeholder="Ex.: 6" />}
       </label>
       <label className="grid gap-1 text-sm">Título do anúncio
         <input className="h-10 rounded-md border bg-background px-3" value={filters.q} onChange={e => setFilters({ ...filters, q: e.target.value })} placeholder="Buscar pelo título" />

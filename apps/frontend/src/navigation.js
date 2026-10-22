@@ -68,6 +68,7 @@ export const TOP_NAV = [
     type: 'collapsible',
     children: [
       { name: 'Produtos', href: '/produtos', type: 'link', permission: { a: 'produtos', I: 'ler' } },
+      { name: 'Anúncios', href: '/anuncios', type: 'link', permission: { a: 'produtos', I: 'ler' } },
       { name: 'Categorias', href: '/cadastros/categoria', type: 'link', permission: { a: 'cadastros', I: 'ler' }, adminOnly: true },
       { name: 'Unidades de Medida', href: '/cadastros/unidade-medida', type: 'link', permission: { a: 'cadastros', I: 'ler' }, adminOnly: true },
     ],
@@ -170,7 +171,7 @@ export const SECOES = [
     // Prefixos específicos: /cadastros se divide entre Catálogo e
     // Configurações; o prefixo mais longo identifica a seção de cada rota.
     prefixos: [
-      '/produtos',
+      '/produtos', '/anuncios',
       '/cadastros/categoria', '/cadastros/tag',
       '/cadastros/unidade-medida', '/cadastros/uom-conversions',
     ],
@@ -178,6 +179,7 @@ export const SECOES = [
       {
         itens: [
           { name: 'Produtos', href: '/produtos', icon: Boxes, description: 'Catálogo de produtos e variações' },
+          { name: 'Anúncios', href: '/anuncios', icon: Store, description: 'Publicações dos marketplaces e vínculo com produtos', permission: { a: 'produtos', I: 'ler' } },
           { name: 'Categorias', href: '/cadastros/categoria', icon: Tag, description: 'Classificação de produtos', adminOnly: true },
           { name: 'Tags', href: '/cadastros/tag', icon: Tag, description: 'Marcadores livres', adminOnly: true },
           { name: 'Unidades de Medida', href: '/cadastros/unidade-medida', icon: Scale, description: 'Unidades usadas na ficha técnica', adminOnly: true },
