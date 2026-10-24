@@ -70,7 +70,8 @@ export default function EscopoDespachoPage() {
   const marketplaceNome = searchParams.get('marketplace_nome') || 'Origem não resolvida';
   const modalidadeNome = searchParams.get('modalidade_nome') || 'Modalidade não classificada';
   const abaOrigem = searchParams.get('aba') || 'hoje';
-  const identidadeOrigem = `${integrationId ?? ''}/${modalidadeIds.join(',')}/${conferenciaId ?? ''}/${abaOrigem}`;
+  const incluirPronto = searchParams.get('incluir_pronto') === 'true';
+  const identidadeOrigem = `${integrationId ?? ''}/${modalidadeIds.join(',')}/${conferenciaId ?? ''}/${abaOrigem}/${incluirPronto}`;
   const [horizonte, setHorizonte] = useState(() => horizonteDaAba(abaOrigem));
   const [dataReferencia, setDataReferencia] = useState(() => dataOperacionalHoje());
   const [dados, setDados] = useState(null);
@@ -86,7 +87,7 @@ export default function EscopoDespachoPage() {
   const requisicaoRef = useRef(null);
   const identidadeOrigemRef = useRef(identidadeOrigem);
   const incluirSemPrazo = horizonte.includes('sem_prazo');
-  const chaveDoEscopo = useMemo(() => origemArquivo ? { conferencia_id: conferenciaId } : { integration_id: integrationId ?? undefined, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? undefined, horizonte, data: dataReferencia }, [origemArquivo, conferenciaId, integrationId, modalidadeIds, horizonte, dataReferencia]);
+  const chaveDoEscopo = useMemo(() => origemArquivo ? { conferencia_id: conferenciaId } : { integration_id: integrationId ?? undefined, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? undefined, horizonte, data: dataReferencia, incluir_pronto: incluirPronto }, [origemArquivo, conferenciaId, integrationId, modalidadeIds, horizonte, dataReferencia, incluirPronto]);
   const carregar = useCallback(async () => {
     requisicaoRef.current?.abort();
     const controller = new AbortController();
@@ -101,6 +102,7 @@ export default function EscopoDespachoPage() {
         if (modalidadeIds.length) params.set('modalidade_id', modalidadeIds[0]);
         horizonte.forEach((item) => params.append('horizonte', item));
         params.set('data', dataReferencia);
+        params.set('incluir_pronto', String(incluirPronto));
       }
       params.set('incluir_previsao', '1');
       const escopo = await carregarEscopoDespacho(fetch, params, controller.signal);
@@ -114,7 +116,7 @@ export default function EscopoDespachoPage() {
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, [origemArquivo, conferenciaId, integrationId, modalidadeIds, horizonte, dataReferencia]);
+  }, [origemArquivo, conferenciaId, integrationId, modalidadeIds, horizonte, dataReferencia, incluirPronto]);
   useEffect(() => { carregar(); return () => requisicaoRef.current?.abort(); }, [carregar]);
   useEffect(() => {
     const verificarDiaOperacional = () => {
@@ -130,7 +132,7 @@ export default function EscopoDespachoPage() {
       const planoAtual = planoImpressao?.id
         ? await capaPrintService.savePlan({ pedido_ids: (dados?.pedidos || []).map((pedido) => pedido.id).filter(Boolean), linhas: prepararLinhasParaEnvio(linhasEditadas), previsao_versao: previsaoVersao })
         : null;
-      const lancamento = await fetch('/api/v2/despacho/lancar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ integration_id: integrationId, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? null, horizonte, data: dataReferencia, ...(origemArquivo ? { conferencia_id: conferenciaId } : {}), previsao_versao: previsaoVersao }) });
+      const lancamento = await fetch('/api/v2/despacho/lancar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ integration_id: integrationId, modalidade_ids: modalidadeIds, modalidade_id: modalidadeIds[0] ?? null, horizonte, data: dataReferencia, incluir_pronto: incluirPronto, ...(origemArquivo ? { conferencia_id: conferenciaId } : {}), previsao_versao: previsaoVersao }) });
       const criado = await lancamento.json(); if (!criado.success) throw new Error(criado.error || 'Não foi possível montar a demanda');
       setConflitos(criado.data.ja_em_rascunho || []);
       const linhas = temAlteracoes ? prepararLinhasParaEnvio(linhasEditadas) : undefined;
@@ -179,7 +181,7 @@ export default function EscopoDespachoPage() {
   };
   return <div className="p-6">
     <button type="button" onClick={() => confirmarDescarte() && navigate('/despacho')} className="mb-4 flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Voltar para a torre de despacho</button>
-    <div className="mb-6 flex items-center gap-2 text-sm text-muted-foreground">{origemArquivo && <><span>📄 conferência de arquivo</span><ChevronRight className="h-3.5 w-3.5" /></>}<span>{marketplaceNome}</span><ChevronRight className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{modalidadeNome}</span></div>
+    <div className="mb-6 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">{origemArquivo && <><span>📄 conferência de arquivo</span><ChevronRight className="h-3.5 w-3.5" /></>}<span>{marketplaceNome}</span><ChevronRight className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{modalidadeNome}</span>{incluirPronto && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">Inclui “Pronto para envio”</span>}</div>
     {origemArquivo && <ConferenciaDoArquivo conferenciaId={conferenciaId} onMudou={carregar} />}
     {!origemArquivo && <Card className="mb-6"><CardContent className="py-5"><div className="mb-3 text-sm font-medium">Datas de envio</div><div className="flex flex-wrap gap-2">{HORIZONTE_STEPS.map((step) => <button key={step} type="button" onClick={() => confirmarDescarte() && setHorizonte((atual) => alternarPrazo(atual, step))} className={`rounded-full border px-3 py-1 text-xs ${horizonte.includes(step) ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>{HORIZONTE_LABEL[step]} {dados?.buckets?.[step] ? <span className="ml-1.5 opacity-70">{dados.buckets[step]}</span> : null}</button>)}{qtdSemPrazo > 0 && <button type="button" onClick={() => confirmarDescarte() && setHorizonte((atual) => alternarPrazo(atual, 'sem_prazo'))} className={`rounded-full border px-3 py-1 text-xs ${incluirSemPrazo ? 'border-amber-500 bg-amber-100 text-amber-800' : 'border-border text-muted-foreground'}`}>+ Sem prazo {qtdSemPrazo}</button>}</div>{foraDoHorizonte > 0 && <p className="mt-2 text-xs text-amber-700">{foraDoHorizonte} pedido{foraDoHorizonte === 1 ? '' : 's'} deste card está fora do horizonte selecionado.</p>}</CardContent></Card>}
     {erro && <Card className="mb-4 border-destructive/50"><CardContent className="py-4 text-sm text-destructive">{erro}</CardContent></Card>}

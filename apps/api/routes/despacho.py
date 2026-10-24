@@ -114,7 +114,7 @@ def _conferencia_payload(row: dict) -> dict:
     }
 
 
-def _pedido_ids_da_conferencia(conferencia_id: int) -> list[int]:
+def _pedido_ids_da_conferencia(conferencia_id: int, incluir_pronto: bool = False) -> list[int]:
     conferencia = _conferencia(conferencia_id)
     if not conferencia:
         return []
@@ -125,12 +125,13 @@ def _pedido_ids_da_conferencia(conferencia_id: int) -> list[int]:
     # torre entre a conferencia e a acao. Revalidar evita lancar cancelados ou
     # pedidos ja publicados.
     try:
+        situacoes = [2, 4] if incluir_pronto else [2]
         rows = (supabase_db.table("vw_pedidos_pendentes_despacho")
-                .select("id").in_("id", ids).execute().data or [])
+                .select("id").in_("id", ids).in_("situacao_pedido_id", situacoes).execute().data or [])
     except Exception:
         rows = (supabase_db.table("pedidos").select("id")
                 .in_("id", ids).is_("despachado_em", None)
-                .in_("situacao_pedido_id", [2, 3, 4]).execute().data or [])
+                .in_("situacao_pedido_id", [2, 4] if incluir_pronto else [2]).execute().data or [])
     validos = {int(row["id"]) for row in rows if row.get("id") is not None}
     return [pedido_id for pedido_id in ids if pedido_id in validos]
 
@@ -181,6 +182,12 @@ def _parse_int(raw: str | None) -> int | None:
         return None
 
 
+def _parse_bool(raw) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 # Espelha public.despacho_aba_do_bucket. A aba nunca tem contagem propria: ela
 # agrupa os MESMOS buckets que a arvore ja devolve. Um segundo contador seria um
 # segundo numero para a mesma pergunta, e mais cedo ou mais tarde os dois
@@ -225,7 +232,10 @@ def get_arvore():
 
         p_data = _parse_data(request.args.get("data"))
         rpc_started = perf_counter()
-        contexto = _contexto_rpc("despacho_arvore_contexto", {"p_data": p_data})
+        incluir_pronto = _parse_bool(request.args.get("incluir_pronto"))
+        contexto = _contexto_rpc("despacho_arvore_contexto", {
+            "p_data": p_data, "p_incluir_pronto": incluir_pronto,
+        })
         rows = contexto["rows"] if contexto is not None else (
             supabase_db.rpc("despacho_arvore", {"p_data": p_data}).execute().data or []
         )
@@ -349,7 +359,10 @@ def get_arvore():
             composicao_rows = contexto["composicao"] if contexto is not None else (
                 supabase_db.rpc("despacho_composicao_situacao", {"p_data": p_data}).execute().data or []
             )
+            situacoes_incluidas = {2, 4} if incluir_pronto else {2}
             for c in composicao_rows:
+                if int(c.get("situacao_id") or 0) not in situacoes_incluidas:
+                    continue
                 composicao.setdefault(c["integration_id"], []).append({
                     "situacao_id": c["situacao_id"],
                     "situacao": c["situacao_nome"],
@@ -507,6 +520,7 @@ def get_arvore():
             try:
                 timeline_rows = supabase_db.rpc("despacho_lotes_timeline", {
                     "p_data": p_data,
+                    "p_incluir_pronto": incluir_pronto,
                 }).execute().data or []
             except Exception:
                 # A árvore antiga continua sendo suficiente para a visão
@@ -636,6 +650,7 @@ def get_escopo():
         conferencia_id = _parse_int(request.args.get("conferencia_id"))
         horizonte = request.args.getlist("horizonte") or ["atrasado", "hoje"]
         p_data = _parse_data(request.args.get("data"))
+        incluir_pronto = _parse_bool(request.args.get("incluir_pronto"))
 
         # O no da torre e o LOTE: um ou mais canais que compartilham a janela.
         # `modalidade_id` continua aceito para quem chama a rota antiga.
@@ -650,6 +665,7 @@ def get_escopo():
             contexto = _contexto_rpc("despacho_escopo_contexto", {
                 "p_integration_id": integration_id, "p_modalidade_ids": modalidade_ids,
                 "p_horizonte": horizonte, "p_data": p_data,
+                "p_incluir_pronto": incluir_pronto,
             })
         if contexto is not None:
             pedido_ids = contexto["pedido_ids"]
@@ -1094,6 +1110,7 @@ def post_lancar():
         p_data = _parse_data(body.get("data"))
         nome = body.get("nome")
         observacoes = body.get("observacoes")
+        incluir_pronto = _parse_bool(body.get("incluir_pronto"))
         user_id = str((user or {}).get("id") or (user or {}).get("nome") or "System")
 
         conferencia_id = _parse_int(body.get("conferencia_id"))
@@ -1101,7 +1118,7 @@ def post_lancar():
             conferencia = _conferencia(conferencia_id)
             if not conferencia:
                 return jsonify({"success": False, "error": "Conferencia nao encontrada"}), 404
-            pedido_ids = _pedido_ids_da_conferencia(conferencia_id)
+            pedido_ids = _pedido_ids_da_conferencia(conferencia_id, incluir_pronto)
             if not pedido_ids:
                 return jsonify({"success": False, "error": "Conferencia sem pedidos pendentes"}), 409
             result = supabase_db.rpc("despacho_lancar_pedidos", {
@@ -1115,6 +1132,7 @@ def post_lancar():
                     "module_id": conferencia.get("module_id"),
                     "filtro": conferencia.get("filtro") or {},
                     "nome": nome,
+                    "incluir_pronto": incluir_pronto,
                 },
             }).execute()
             rows = result.data or []
@@ -1141,6 +1159,7 @@ def post_lancar():
             "p_nome": nome,
             "p_user_id": user_id,
             "p_observacoes": observacoes,
+            "p_incluir_pronto": incluir_pronto,
         }).execute()
 
         rows = result.data or []
@@ -1434,11 +1453,13 @@ def _pedido_ids_do_lote(origem) -> tuple[list[int], str]:
         modalidade_ids = [unico] if unico is not None else None
 
     p_data = _parse_data(origem.get("data"))
+    incluir_pronto = _parse_bool(origem.get("incluir_pronto"))
     result = supabase_db.rpc("despacho_escopo_lote", {
         "p_integration_id": integration_id,
         "p_modalidade_ids": modalidade_ids,
         "p_horizonte": horizonte,
         "p_data": p_data,
+        "p_incluir_pronto": incluir_pronto,
     }).execute()
     ids = [row if isinstance(row, int) else row.get("despacho_escopo_lote")
            for row in (result.data or [])]

@@ -217,6 +217,7 @@ export default function TorreDespachoPage() {
   const [marketplaceId, setMarketplaceId] = useState(null);
   const [aba, setAba] = useState('hoje');
   const [visualizacao, setVisualizacao] = useState('anterior');
+  const [incluirPronto, setIncluirPronto] = useState(false);
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState(null);
   const [atualizadoEm, setAtualizadoEm] = useState(null);
@@ -234,7 +235,8 @@ export default function TorreDespachoPage() {
     setErro(null);
     try {
       const hoje = dataOperacionalHoje();
-      const res = await fetch(`/api/v2/despacho/arvore?data=${hoje}`, { signal: controller.signal });
+      const params = new URLSearchParams({ data: hoje, incluir_pronto: String(incluirPronto) });
+      const res = await fetch(`/api/v2/despacho/arvore?${params}`, { signal: controller.signal });
       const json = await res.json();
       if (!json.success) throw new Error(json.error || 'Falha ao carregar a torre de despacho');
       if (!controller.signal.aborted) {
@@ -249,7 +251,7 @@ export default function TorreDespachoPage() {
     } finally {
       if (!controller.signal.aborted) { emCursoRef.current = false; setLoading(false); }
     }
-  }, []);
+  }, [incluirPronto]);
 
   useEffect(() => {
     carregar();
@@ -368,6 +370,7 @@ export default function TorreDespachoPage() {
     params.set('marketplace_nome', nomeMarketplace || '');
     params.set('modalidade_nome', nomeModalidade || '');
     params.set('aba', aba);
+    if (incluirPronto) params.set('incluir_pronto', 'true');
     navigate(`/despacho/escopo?${params.toString()}`);
   };
 
@@ -421,6 +424,15 @@ export default function TorreDespachoPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={incluirPronto}
+              onChange={(event) => setIncluirPronto(event.target.checked)}
+              className="h-4 w-4 rounded border-input accent-primary"
+            />
+            Incluir “Pronto para envio”
+          </label>
           <div role="group" aria-label="Modo de visualização" className="inline-flex rounded-md border p-0.5">
             <Button
               type="button"
