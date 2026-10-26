@@ -13,15 +13,11 @@ const UserService = {
   },
 
   getCurrentUser: async () => {
-    try {
-      const response = await api.get('/current-user');
-      if (response.data && response.data.usuario) {
-        return response.data.usuario;
-      }
-      return null;
-    } catch (error) {
-      throw error;
+    const response = await api.get('/current-user');
+    if (response.data && response.data.usuario) {
+      return response.data.usuario;
     }
+    return null;
   },
 
   updateProfile: async (data) => {
@@ -62,6 +58,11 @@ const UserService = {
 
   provisionAccess: async (id, senhaInicial) => {
     const response = await api.post(`/usuarios-setores/usuario/${id}/access`, { senha_inicial: senhaInicial });
+    return response.data.usuario;
+  },
+
+  reactivate: async (id, senhaInicial) => {
+    const response = await api.post(`/usuarios-setores/usuario/${id}/reactivate`, { senha_inicial: senhaInicial });
     return response.data.usuario;
   },
 };

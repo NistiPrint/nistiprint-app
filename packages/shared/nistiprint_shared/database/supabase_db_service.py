@@ -161,7 +161,7 @@ class SupabaseDBService:
             print(f"Error getting record from {table_name} with id {id}: {e}")
             return None
 
-    def get_all(self, table_name: str, filters: Optional[Dict] = None):
+    def get_all(self, table_name: str, filters: Optional[Dict] = None, *, raise_on_error: bool = False):
         """
         Get all records from a table with optional filters
         """
@@ -190,6 +190,8 @@ class SupabaseDBService:
             return response.data
         except Exception as e:
             print(f"Error getting records from {table_name} with filters {filters}: {e}")
+            if raise_on_error:
+                raise
             return []
 
     def get_by_field(self, table_name: str, field: str, value: Any):
@@ -204,28 +206,35 @@ class SupabaseDBService:
         """
         return self.get_all(table_name, filters)
 
-    def insert(self, table_name: str, data: Dict[str, Any]):
+    def insert(self, table_name: str, data: Dict[str, Any], *, raise_on_error: bool = False):
         """
         Insert a new record
         """
         try:
-            query = self.client.table(table_name).insert(data)
+            query = self.client.table(table_name).insert(data).select("*")
             response = self.execute_with_retry(query)
             return response.data[0] if response.data else None
         except Exception as e:
             print(f"Error inserting record into {table_name}: {e}")
+            if raise_on_error:
+                raise
             return None
 
-    def update(self, table_name: str, id: int, data: Dict[str, Any]):
+    def update(self, table_name: str, id: int, data: Dict[str, Any], *, raise_on_error: bool = False):
         """
         Update a record by ID
         """
         try:
-            query = self.client.table(table_name).update(data).eq("id", id)
+            query = self.client.table(table_name).update(data).eq("id", id).select("*")
             response = self.execute_with_retry(query)
-            return response.data[0] if response.data else None
+            result = response.data[0] if response.data else None
+            if raise_on_error and result is None:
+                raise RuntimeError(f"O Supabase não retornou o registro atualizado em {table_name}.")
+            return result
         except Exception as e:
             print(f"Error updating record in {table_name} with id {id}: {e}")
+            if raise_on_error:
+                raise
             return None
 
     def delete(self, table_name: str, id: int):
