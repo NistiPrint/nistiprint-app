@@ -1,5 +1,5 @@
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import GerencialHistorico from './components/GerencialHistorico'
 import ProtectedRoute from './components/ProtectedRoute'
 import MainLayout from './components/layout/MainLayout'
@@ -110,9 +110,71 @@ function LegacyAuditRedirect() {
   return <Navigate to={{ pathname: '/monitoramento/operacoes/auditoria', search: location.search, hash: location.hash }} replace />;
 }
 
+const pageTitles = [
+  [/^\/login\/?$/, 'Entrar'],
+  [/^\/$/, 'Início'],
+  [/^\/perfil\/?$/, 'Meu perfil'],
+  [/^\/gestao(?:\/|$)/, 'Gestão'],
+  [/^\/produtos\/novo\/?$/, 'Novo produto'],
+  [/^\/produtos\/[^/]+\/editar\/?$/, 'Editar produto'],
+  [/^\/produtos\/?$/, 'Produtos'],
+  [/^\/anuncios\/?$/, 'Anúncios'],
+  [/^\/vendas\/pedidos\/[^/]+\/?$/, 'Detalhe do pedido'],
+  [/^\/vendas\/pedidos(?:\/|$)/, 'Pedidos'],
+  [/^\/vendas\/personalizadas\/mercadolivre(?:\/|$)/, 'Personalizações · Mercado Livre'],
+  [/^\/vendas\/personalizadas(?:\/|$)/, 'Vendas personalizadas'],
+  [/^\/despacho\/escopo\/?$/, 'Escopo do despacho'],
+  [/^\/despacho\/plano-impressao\/?$/, 'Plano de impressão'],
+  [/^\/despacho\/arquivo\/?$/, 'Arquivo de despacho'],
+  [/^\/despacho(?:\/|$)/, 'Torre de despacho'],
+  [/^\/producao\/demanda\/nova\/?$/, 'Nova demanda'],
+  [/^\/producao\/demanda\/[^/]+\/dashboard\/?$/, 'Painel da demanda'],
+  [/^\/producao\/demanda\/[^/]+\/editar\/?$/, 'Editar demanda'],
+  [/^\/producao\/demanda\/prioridade\/?$/, 'Prioridade das demandas'],
+  [/^\/producao\/demanda\/calendario\/?$/, 'Calendário de demandas'],
+  [/^\/producao\/demanda\/?$/, 'Planejamento de demandas'],
+  [/^\/producao\/foco\/?$/, 'Foco da produção'],
+  [/^\/producao\/resumo\/?$/, 'Resumo da produção'],
+  [/^\/producao\/impressao\/?$/, 'Fila de impressão'],
+  [/^\/producao\/miolos\/?$/, 'Produção de miolos'],
+  [/^\/producao\/capas\/?$/, 'Produção de capas'],
+  [/^\/producao\/expedicao\/?$/, 'Expedição'],
+  [/^\/producao\/?$/, 'Produção'],
+  [/^\/estoque(?:\/|$)/, 'Estoque'],
+  [/^\/cadastros(?:\/|$)/, 'Cadastros'],
+  [/^\/configuracoes\/acessos(?:\/|$)/, 'Acessos e permissões'],
+  [/^\/configuracoes\/integracoes(?:\/|$)/, 'Integrações'],
+  [/^\/configuracoes\/producao\/?$/, 'Configurações de produção'],
+  [/^\/configuracoes\/personalizacao\/mercadolivre(?:\/|$)/, 'Configuração de personalização · Mercado Livre'],
+  [/^\/configuracoes\/janelas-despacho\/?$/, 'Janelas de despacho'],
+  [/^\/configuracoes\/ia\/?$/, 'Inteligência artificial'],
+  [/^\/configuracoes\/?$/, 'Configurações'],
+  [/^\/relatorios\/historico-producao\/?$/, 'Histórico de produção'],
+  [/^\/relatorios\/historico-coletas\/?$/, 'Histórico de coletas'],
+  [/^\/relatorios\/monitoramento-estoque\/?$/, 'Monitoramento de estoque'],
+  [/^\/relatorios\/webhooks\/?$/, 'Webhooks'],
+  [/^\/relatorios\/gerencial-historico\/?$/, 'Histórico gerencial'],
+  [/^\/relatorios(?:\/|$)/, 'Relatórios'],
+  [/^\/monitoramento\/operacoes(?:\/|$)/, 'Central de operações'],
+  [/^\/ai\/logs\/?$/, 'Logs de IA'],
+  [/^\/admin\/utilitarios\/tasks\/?$/, 'Central de operações'],
+]
+
+function PageTitle() {
+  const { pathname } = useLocation()
+
+  useEffect(() => {
+    const title = pageTitles.find(([pattern]) => pattern.test(pathname))?.[1] ?? 'NistiPrint'
+    document.title = `${title} | NistiPrint`
+  }, [pathname])
+
+  return null
+}
+
 function App() {
   return (
     <>
+      <PageTitle />
       <Routes>
         {/* Login Route - outside of MainLayout */}
         <Route path='/login' element={<LoginPage />} />
