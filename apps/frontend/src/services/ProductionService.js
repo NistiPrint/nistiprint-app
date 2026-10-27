@@ -6,6 +6,13 @@ const ProductionService = {
     return response.data;
   },
 
+  getDemandPlanning: async (tipo, incluirSimulacoes = false) => {
+    const response = await api.get('/demanda_producao/planejamento-insumos', {
+      params: { tipo, incluir_simulacoes: incluirSimulacoes },
+    });
+    return response.data;
+  },
+
   registerProduction: async (data) => {
     // data: { product_id, quantity, date, field, origem_tipo, sincrono }
     // default origem_tipo: 3 (CONTROLE_PRODUCAO_LOTE)

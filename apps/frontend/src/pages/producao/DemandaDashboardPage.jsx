@@ -53,7 +53,7 @@ import {
     X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { imprimirPapeisDePedido } from '@/lib/papeisDePedido'
 import CapaPrintPlanner from '@/components/producao/CapaPrintPlanner'
@@ -61,7 +61,7 @@ import CapaPrintPlanner from '@/components/producao/CapaPrintPlanner'
 const collectionRequestId = (demandId, quantity) => {
   const key = `demand-collection:${demandId}`
   let saved = null
-  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null') } catch (_) {}
+  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null') } catch { saved = null }
   const quantityKey = String(quantity)
   if (saved?.quantity === quantityKey && saved?.id) return { key, id: saved.id }
   const id = createOperationId()
@@ -71,17 +71,24 @@ const collectionRequestId = (demandId, quantity) => {
 
 function DemandaDashboardPage() {
   const { id } = useParams()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const isSimulation = location.pathname.includes('/simulacao/')
+  const apiBase = isSimulation ? '/api/v2/demanda-simulacoes' : '/api/v2/demanda_producao'
   const { user, hasPermission } = useAuth()
   const { canEditField, canExecuteAction } = usePermissionsHook()
   const canEditDemand = user?.is_admin === true || hasPermission('demanda_producao', 'editar')
   const { isAgentOnline, printMappedFile, getMappedFileForProduct } =
-    useLocalAgent()
+    useLocalAgent(!isSimulation)
   const [demanda, setDemanda] = useState(null)
+  const [simulationEvents, setSimulationEvents] = useState([])
+  const simulationActionsAllowed = !isSimulation || (demanda?.status !== 'RASCUNHO' && demanda?.status !== 'COLETADO')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   // Batch Editing State
   const [pendingChanges, setPendingChanges] = useState({})
   const [isSaving, setIsSaving] = useState(false)
+  const realtimeSaveState = isSimulation ? false : isSaving
   const [isFinalizingItemId, setIsFinalizingItemId] = useState(null)
 
   const [viewMode, setViewMode] = useState('producao')
@@ -109,7 +116,7 @@ function DemandaDashboardPage() {
     async (silent = false) => {
       if (!silent) setLoading(true)
       try {
-        const response = await fetch(`/api/v2/demanda_producao/${id}`, {
+        const response = await fetch(`${apiBase}/${id}`, {
           headers: { Accept: 'application/json' },
         })
         if (!response.ok)
@@ -130,8 +137,40 @@ function DemandaDashboardPage() {
         if (!silent) setLoading(false)
       }
     },
-    [id],
+    [apiBase, id],
   )
+
+  const performSimulationAction = async (action, payload = {}) => {
+    const operationKey = `demand-simulation:${id}:${demanda?.version}:${action}:${JSON.stringify(payload)}`
+    const operationId = sessionStorage.getItem(operationKey) || createOperationId()
+    sessionStorage.setItem(operationKey, operationId)
+    const response = await fetch(`${apiBase}/${id}/acoes`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, payload, version: demanda?.version, operation_id: operationId }),
+    })
+    const result = await response.json()
+    if (!response.ok || !result.success) {
+      if (response.status === 409) { sessionStorage.removeItem(operationKey); await fetchDemanda(true) }
+      throw new Error(result.message || 'Falha ao salvar a simulação')
+    }
+    sessionStorage.removeItem(operationKey)
+    setDemanda(result.demanda)
+    return result.demanda
+  }
+
+  const deleteSimulation = async () => {
+    if (!window.confirm('Excluir esta simulação? Nenhum pedido real será alterado.')) return
+    try {
+      const response = await fetch(`${apiBase}/${id}`, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: demanda.version }),
+      })
+      const result = await response.json()
+      if (!response.ok || !result.success) throw new Error(result.message || 'Falha ao excluir')
+      toast.success('Simulação excluída')
+      navigate('/despacho')
+    } catch (error) { toast.error(error.message) }
+  }
 
   // Ref para pendingChanges para acesso seguro dentro do fetch sem causar re-renders do useCallback
   const pendingChangesRef = useRef(pendingChanges)
@@ -172,6 +211,8 @@ function DemandaDashboardPage() {
   useEffect(() => {
     fetchDemanda()
 
+    if (isSimulation) return undefined
+
     // Supabase Realtime Listener para esta demanda específica ou seus itens
     const channel = supabase
       .channel(`demanda-dashboard-${id}`)
@@ -204,7 +245,14 @@ function DemandaDashboardPage() {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [id, fetchDemanda, isSaving])
+  }, [id, fetchDemanda, realtimeSaveState, isSimulation])
+
+  useEffect(() => {
+    if (!isSimulation || !demanda?.version) return
+    fetch(`${apiBase}/${id}/eventos`).then(response => response.json())
+      .then(result => { if (result.success) setSimulationEvents(result.eventos || []) })
+      .catch(() => {})
+  }, [apiBase, demanda?.version, id, isSimulation])
 
   // Itens com mudanças locais aplicadas (apenas para exibição dos valores nas células)
   const allProcessedItems = useMemo(() => {
@@ -236,27 +284,38 @@ function DemandaDashboardPage() {
       // Um item está pronto para fechar se:
       // - Já foi produzido (capa e miolo) E NÃO está totalmente finalizado
       // - OU está com status "Fechando" (retirado pela expedição mas não finalizado)
-      const isProntoParaFechar =
+      // Capas e miolos prontos ficam disponíveis para a expedição retirar.
+      // Depois de retirados, o casamento capa+miolo passa a estar em fechamento.
+      const paresRetirados = Math.min(
+        orig.expedicao_capas_retiradas_qtd || 0,
+        orig.expedicao_miolos_retirados_qtd || 0,
+      )
+      const isEmFechamento =
         !isFinalizado &&
-        (
-          (orig.status_item === 'Fechando') ||
-          (
-            (orig.capas_prontas_retirada_qtd || 0) >= item.quantidade_total &&
-            (orig.miolos_prontos_retirada_qtd || 0) >= item.quantidade_total
-          )
-        )
+        (orig.status_item === 'Fechando' || paresRetirados > 0)
+      // Capas prontas e miolos prontos ainda não retirados pela expedição.
+      const paresParaRetirar = Math.min(
+        Math.max(0, (orig.capas_prontas_retirada_qtd || 0) - (orig.expedicao_capas_retiradas_qtd || 0)),
+        Math.max(0, (orig.miolos_prontos_retirada_qtd || 0) - (orig.expedicao_miolos_retirados_qtd || 0)),
+      )
+      const isParaRetirar = !isFinalizado && paresParaRetirar > 0
+      // Ainda há quantidade que não passou pela retirada da expedição.
+      const isEmProducao = !isFinalizado && paresRetirados < item.quantidade_total
 
       if (statusFilter === 'finalizados') {
         return isFinalizado
       }
 
+      if (statusFilter === 'retirar') {
+        return isParaRetirar
+      }
+
       if (statusFilter === 'prontos') {
-        return isProntoParaFechar
+        return isEmFechamento
       }
 
       if (statusFilter === 'ativos') {
-        // Se já está pronto para fechar, deve sair da aba de ativos (produção)
-        return !isFinalizado && !isProntoParaFechar
+        return isEmProducao && orig.status_item !== 'Fechando'
       }
 
       return true // Fallback
@@ -269,6 +328,24 @@ function DemandaDashboardPage() {
         (item.variacao || '').toLowerCase().includes(query),
     )
   }, [demanda?.itens, allProcessedItems, debouncedSearchQuery, statusFilter])
+
+  // Totalizadores por etapa: disponível p/ retirada (expedição) → em fechamento → finalizado
+  const stageTotals = useMemo(() => {
+    const totals = { capas: 0, miolos: 0, pares: 0, emFechamento: 0, finalizados: 0 }
+    for (const item of demanda?.itens || []) {
+      const capasRet = item.expedicao_capas_retiradas_qtd || 0
+      const miolosRet = item.expedicao_miolos_retirados_qtd || 0
+      const capasDisp = Math.max(0, (item.capas_prontas_retirada_qtd || 0) - capasRet)
+      const miolosDisp = Math.max(0, (item.miolos_prontos_retirada_qtd || 0) - miolosRet)
+      const finalizados = item.finalizados_qtd || 0
+      totals.capas += capasDisp
+      totals.miolos += miolosDisp
+      totals.pares += Math.min(capasDisp, miolosDisp)
+      totals.emFechamento += Math.max(0, Math.min(capasRet, miolosRet) - finalizados)
+      totals.finalizados += finalizados
+    }
+    return totals
+  }, [demanda?.itens])
 
   const handleLocalChange = useCallback(
     (itemId, fieldName, delta) => {
@@ -357,6 +434,13 @@ function DemandaDashboardPage() {
         return
       }
 
+      if (isSimulation) {
+        await performSimulationAction('producao', { updates })
+        setPendingChanges({})
+        toast.success('Produção simulada salva')
+        return
+      }
+
       console.log(updates)
 
       const response = await fetch(
@@ -400,6 +484,12 @@ function DemandaDashboardPage() {
 
     setIsFinalizingItemId(item.id)
     try {
+      if (isSimulation) {
+        await performSimulationAction('finalizar_item', { item_id: item.id, quantidade: adjustedQuantity })
+        setPartialQuantities(prev => { const next = { ...prev }; delete next[item.id]; return next })
+        toast.success('Finalização simulada registrada')
+        return
+      }
       const response = await fetch(
         `/api/v2/demanda_producao/${id}/item/${item.id}/finalizar-parcial`,
         {
@@ -436,6 +526,11 @@ function DemandaDashboardPage() {
       return
 
     try {
+      if (isSimulation) {
+        await performSimulationAction('reverter_item', { item_id: item.id })
+        toast.success('Finalização simulada revertida')
+        return
+      }
       const response = await fetch(
         `/api/v2/demanda_producao/${id}/item/${item.id}/reverter-finalizacao`,
         {
@@ -458,27 +553,25 @@ function DemandaDashboardPage() {
   }
 
   const handleConfirmCollection = async (demandaId, quantity) => {
-    const operation = collectionRequestId(demandaId, quantity)
-    try {
-      const response = await fetch(
-        `/api/v2/demanda_producao/${demandaId}/coletar`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ quantidade_coletar: quantity, operation_id: operation.id }),
-        },
-      )
-      const data = await response.json()
-      if (data.success) {
-        sessionStorage.removeItem(operation.key)
-        toast.success('Coleta registrada!')
-        fetchDemanda()
-      } else {
-        toast.error(data.message)
-      }
-    } catch (e) {
-      toast.error(e.message)
+    if (isSimulation) {
+      await performSimulationAction('coletar', { quantidade: quantity })
+      toast.success('Coleta simulada registrada')
+      return
     }
+    const operation = collectionRequestId(demandaId, quantity)
+    const response = await fetch(
+      `/api/v2/demanda_producao/${demandaId}/coletar`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quantidade_coletar: quantity, operation_id: operation.id }),
+      },
+    )
+    const data = await response.json()
+    if (!response.ok || !data.success) throw new Error(data.message || 'Não foi possível registrar a coleta.')
+    sessionStorage.removeItem(operation.key)
+    toast.success('Coleta registrada!')
+    fetchDemanda()
   }
 
   const handleCopyOrderChunk = async chunk => {
@@ -604,8 +697,8 @@ function DemandaDashboardPage() {
     capas_produzidas: 'Capas Prod.',
     capas_prontas: 'Capas Prontas',
     miolos_prontos: 'Miolos Prontos',
-    expedicao_capas: 'Exp. Capas',
-    expedicao_miolos: 'Exp. Miolos',
+    expedicao_capas: 'Capas Retiradas',
+    expedicao_miolos: 'Miolos Retirados',
     acoes: 'Finalização',
   }
 
@@ -707,21 +800,32 @@ function DemandaDashboardPage() {
               Parcialmente Finalizado
             </Badge>
           )
-        } else if (
-          !(
-            (item.expedicao_capas_retiradas_qtd || 0) > 0 ||
-            (item.expedicao_miolos_retirados_qtd || 0) > 0
-          ) &&
-          (item.capas_prontas_retirada_qtd || 0) >= item.quantidade_total &&
-          (item.miolos_prontos_retirada_qtd || 0) >= item.quantidade_total
-        ) {
-          statusBadge = (
-            <Badge
-              variant='outline'
-              className='border-green-300 text-green-600 bg-green-50'>
-              Pronto p/ Expedição
-            </Badge>
+        } else {
+          const paresParaRetirar = Math.min(
+            Math.max(0, (item.capas_prontas_retirada_qtd || 0) - (item.expedicao_capas_retiradas_qtd || 0)),
+            Math.max(0, (item.miolos_prontos_retirada_qtd || 0) - (item.expedicao_miolos_retirados_qtd || 0)),
           )
+          const paresRetirados = Math.min(
+            item.expedicao_capas_retiradas_qtd || 0,
+            item.expedicao_miolos_retirados_qtd || 0,
+          )
+          if (paresParaRetirar > 0) {
+            statusBadge = (
+              <Badge
+                variant='outline'
+                className='border-green-300 text-green-600 bg-green-50'>
+                {paresParaRetirar} disponível(is) p/ retirada
+              </Badge>
+            )
+          } else if (paresRetirados > 0) {
+            statusBadge = (
+              <Badge
+                variant='outline'
+                className='border-amber-300 text-amber-700 bg-amber-50'>
+                Em fechamento
+              </Badge>
+            )
+          }
         }
       }
 
@@ -732,7 +836,7 @@ function DemandaDashboardPage() {
               <div
                 className='font-medium text-sm leading-tight mb-1'
                 title={item.item_descricao}>
-                {item.produto_id ? (
+                {!isSimulation && item.produto_id ? (
                   <Link
                     to={`/produtos/${item.produto_id}/editar`}
                     className='text-blue-600 hover:underline'>
@@ -746,7 +850,7 @@ function DemandaDashboardPage() {
                 <span className='font-semibold text-gray-500'>Var:</span>{' '}
                 {item.variacao || item.variation || '-'} <br />
                 <span className='font-semibold text-gray-500'>Mio: </span>
-                {item.id_produto_miolo ? (
+                {!isSimulation && item.id_produto_miolo ? (
                   <Link
                     to={`/produtos/${item.id_produto_miolo}/editar`}
                     className='text-blue-600 hover:underline'>
@@ -759,7 +863,7 @@ function DemandaDashboardPage() {
               {statusBadge}
             </div>
 
-            <div className='opacity-0 group-hover:opacity-100 transition-opacity flex gap-1'>
+            {!isSimulation && <div className='opacity-0 group-hover:opacity-100 transition-opacity flex gap-1'>
               <Button
                 variant='ghost'
                 size='icon'
@@ -794,7 +898,7 @@ function DemandaDashboardPage() {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-            </div>
+            </div>}
           </div>
         </TableCell>
       )
@@ -816,7 +920,7 @@ function DemandaDashboardPage() {
 
       if (isTotalmenteFinalizado) {
         const canRevert =
-          user?.is_admin || (canEditDemand && canExecuteAction('revert_finalize_item'))
+          simulationActionsAllowed && (user?.is_admin || (canEditDemand && canExecuteAction('revert_finalize_item')))
         return (
           <TableCell key={columnName} className='text-right'>
             <div className='flex items-center justify-end gap-2'>
@@ -839,7 +943,7 @@ function DemandaDashboardPage() {
         )
       }
 
-      if (!user?.is_admin && !(canEditDemand && canExecuteAction('finalize_item'))) {
+      if (!simulationActionsAllowed || (!user?.is_admin && !(canEditDemand && canExecuteAction('finalize_item')))) {
         return (
           <TableCell key={columnName} className='text-right'>
             -
@@ -902,7 +1006,7 @@ function DemandaDashboardPage() {
 
     const fieldName = fieldMapping[columnName]
     const canEdit =
-      (user?.is_admin || (canEditDemand && canEditField(fieldName))) &&
+      simulationActionsAllowed && (user?.is_admin || (canEditDemand && canEditField(fieldName))) &&
       item.status_item !== 'Concluído'
     const maxValue = getMaxValueForField(item, fieldName)
 
@@ -926,7 +1030,7 @@ function DemandaDashboardPage() {
             maxValue={maxValue}
             totalQuantity={item.quantidade_total}
           />
-          {estoqueDisponivel !== null && (
+          {!isSimulation && estoqueDisponivel !== null && (
             <div
               className={`text-[9px] font-bold px-1 rounded ${estoqueDisponivel > 0 ? 'text-green-600 bg-green-50' : 'text-gray-400 bg-gray-50'}`}>
               Est: {estoqueDisponivel}
@@ -951,7 +1055,7 @@ function DemandaDashboardPage() {
 
   return (
     <div className='container mx-auto py-6 px-4 max-w-7xl relative'>
-      {selectedItemForHistory && (
+      {!isSimulation && selectedItemForHistory && (
         <StockHistoryViewer
           itemId={selectedItemForHistory}
           onClose={() => setSelectedItemForHistory(null)}
@@ -992,6 +1096,7 @@ function DemandaDashboardPage() {
         <div>
           <div className='flex items-center gap-2'>
             <h1 className='text-2xl font-bold text-gray-900'>{demanda.nome}</h1>
+            {isSimulation && <Badge className='bg-amber-600 text-white'>SIMULAÇÃO · sem impacto operacional</Badge>}
             {demanda.is_flex && (
               <Badge className='bg-purple-600 text-white border-none animate-pulse'>
                 <Flame className='w-3 h-3 mr-1' />
@@ -1019,6 +1124,16 @@ function DemandaDashboardPage() {
           <Button variant='outline' onClick={() => setShowPedidosOrigem(true)} className='gap-2'>
             <List className='h-4 w-4' /> Ver Pedidos Relacionados
           </Button>
+          {isSimulation && demanda.status === 'RASCUNHO' && canEditDemand && (
+            <Button onClick={async () => { try { await performSimulationAction('publicar'); toast.success('Cenário publicado apenas na simulação') } catch (error) { toast.error(error.message) } }}>Publicar na simulação</Button>
+          )}
+          {isSimulation && demanda.status !== 'RASCUNHO' && demanda.status !== 'COLETADO' && canEditDemand && (user?.is_admin || canExecuteAction('finalize_item')) && (
+            <Button variant='outline' onClick={async () => { if (!window.confirm('Finalizar todos os itens na simulação?')) return; try { await performSimulationAction('finalizar_demanda'); toast.success('Demanda simulada finalizada') } catch (error) { toast.error(error.message) } }}>Finalizar demanda simulada</Button>
+          )}
+          {isSimulation && (user?.is_admin || (hasPermission('demanda_producao', 'excluir') && canExecuteAction('delete_demand'))) && (
+            <Button variant='destructive' onClick={deleteSimulation}>Excluir simulação</Button>
+          )}
+          {!isSimulation && <>
           <Button variant='outline' onClick={handlePrintOrderPapers} className='gap-2' disabled={progressoImpressao !== null}>
             {progressoImpressao ? <Loader2 className='h-4 w-4 animate-spin' /> : <FileText className='h-4 w-4' />}
             {progressoImpressao
@@ -1034,13 +1149,14 @@ function DemandaDashboardPage() {
               <List className='h-4 w-4' /> Fila de impressão
             </Button>
           </Link>
+          </>}
 
-          <Link to='/producao/demanda'>
+          <Link to={isSimulation ? '/despacho' : '/producao/demanda'}>
             <Button variant='ghost' size='icon'>
               <ArrowLeft className='h-4 w-4' />
             </Button>
           </Link>
-          {demanda.status !== 'Coletado' &&
+          {demanda.status !== 'Coletado' && demanda.status !== 'COLETADO' && (!isSimulation || demanda.status !== 'RASCUNHO') &&
             canEditDemand && canExecuteAction('collect_demand') && (
               <Button
                 onClick={handleCollectDemand}
@@ -1051,7 +1167,9 @@ function DemandaDashboardPage() {
         </div>
       </div>
 
-      <CapaPrintPlanner demandaId={demanda.id} />
+      {!isSimulation && <CapaPrintPlanner demandaId={demanda.id} />}
+
+      {isSimulation && <Card className='mb-5 border-amber-300 bg-amber-50/40'><CardContent className='py-3 text-sm'><p className='font-semibold'>Histórico da simulação</p><p className='text-xs text-muted-foreground'>As etapas abaixo existem apenas neste cenário. Pedidos, estoque e coletas reais não foram alterados.</p><div className='mt-2 flex flex-wrap gap-2'>{simulationEvents.map((event, index) => <Badge key={`${event.created_at}-${index}`} variant='outline'>{event.action.replaceAll('_', ' ')} · {new Date(event.created_at).toLocaleString('pt-BR')}</Badge>)}</div></CardContent></Card>}
 
       {/* Stats */}
       <div className='grid grid-cols-1 md:grid-cols-4 gap-4 mb-6'>
@@ -1108,6 +1226,21 @@ function DemandaDashboardPage() {
         </div>
       </div>
 
+      <div className='grid grid-cols-2 md:grid-cols-5 gap-3 mb-6 text-sm'>
+        {[
+          ['Capas p/ retirar', stageTotals.capas],
+          ['Miolos p/ retirar', stageTotals.miolos],
+          ['Produtos p/ retirar', stageTotals.pares],
+          ['Produtos em fechamento', stageTotals.emFechamento],
+          ['Produtos finalizados', stageTotals.finalizados],
+        ].map(([label, value]) => (
+          <Card key={label} className='p-3'>
+            <p className='text-[10px] text-muted-foreground uppercase font-bold'>{label}</p>
+            <p className='text-lg font-bold'>{value}</p>
+          </Card>
+        ))}
+      </div>
+
       <div className='flex items-center justify-between mb-4 gap-4'>
         <div className='flex gap-4 items-end'>
           <div className='flex flex-col gap-1'>
@@ -1146,10 +1279,16 @@ function DemandaDashboardPage() {
                 Produção
               </Button>
               <Button
+                variant={statusFilter === 'retirar' ? 'default' : 'outline'}
+                size='sm'
+                onClick={() => setStatusFilter('retirar')}>
+                Para Retirar
+              </Button>
+              <Button
                 variant={statusFilter === 'prontos' ? 'default' : 'outline'}
                 size='sm'
                 onClick={() => setStatusFilter('prontos')}>
-                Prontos para Fechar
+                Em Fechamento
               </Button>
               <Button
                 variant={statusFilter === 'finalizados' ? 'default' : 'outline'}
@@ -1180,7 +1319,7 @@ function DemandaDashboardPage() {
                         'expedicao_miolos',
                       ].includes(col) &&
                         statusFilter === 'ativos' &&
-                        (user?.is_admin || (canEditDemand && canEditField(fieldMapping[col]))) && (
+                        simulationActionsAllowed && (user?.is_admin || (canEditDemand && canEditField(fieldMapping[col]))) && (
                           <Button
                             variant='ghost'
                             size='icon'
@@ -1201,8 +1340,12 @@ function DemandaDashboardPage() {
                     colSpan={activeColumns.length}
                     className='text-center py-8 text-muted-foreground font-medium'>
                     {statusFilter === 'ativos'
-                      ? 'Nenhum item em andamento.'
-                      : 'Nenhum item com quantidade total finalizada.'}
+                      ? 'Nenhum item em produção ou aguardando retirada.'
+                      : statusFilter === 'retirar'
+                        ? 'Nenhum produto com capa e miolo prontos para retirar.'
+                      : statusFilter === 'prontos'
+                        ? 'Nenhum produto em fechamento.'
+                        : 'Nenhum item com quantidade total finalizada.'}
                   </TableCell>
                 </TableRow>
               ) : (
@@ -1222,6 +1365,7 @@ function DemandaDashboardPage() {
         onClose={() => setIsPartialCollectionModalOpen(false)}
         demandaId={demanda.id}
         onConfirm={handleConfirmCollection}
+        apiBase={apiBase}
       />
 
       {/* Dialog for viewing related orders */}
@@ -1232,7 +1376,7 @@ function DemandaDashboardPage() {
           </DialogHeader>
           {demanda.pedidos_origem && demanda.pedidos_origem.length > 0 ? (
             <div className="space-y-4">
-              <div className="flex flex-wrap gap-2">
+              {!isSimulation && <div className="flex flex-wrap gap-2">
                 <Button variant="outline" size="sm" onClick={handlePrintOrderPapers} className="gap-2" disabled={progressoImpressao !== null}>
                   {progressoImpressao ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
                   {progressoImpressao
@@ -1243,9 +1387,9 @@ function DemandaDashboardPage() {
                   {nfeGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Receipt className="h-4 w-4" />}
                   Gerar NFs dos Pedidos
                 </Button>
-              </div>
+              </div>}
 
-              {demanda.pedidos_origem_por_bling?.length > 0 && (
+              {!isSimulation && demanda.pedidos_origem_por_bling?.length > 0 && (
                 <div className="grid gap-2 md:grid-cols-2">
                   {demanda.pedidos_origem_por_bling.map((grupo, idx) => (
                     <div key={grupo.bling_integration_id || idx} className="rounded-md border p-3">
@@ -1270,7 +1414,7 @@ function DemandaDashboardPage() {
                 </div>
               )}
 
-              {demanda.pedidos_origem_chunks?.length > 0 && (
+              {!isSimulation && demanda.pedidos_origem_chunks?.length > 0 && (
                 <div className="rounded-md border bg-muted/30 p-3 space-y-2">
                   <div className="text-sm font-semibold">Codigos para busca manual no Bling</div>
                   {demanda.pedidos_origem_chunks.map((chunk, idx) => (
@@ -1313,7 +1457,7 @@ function DemandaDashboardPage() {
         </DialogContent>
       </Dialog>
 
-      <div className={`fixed inset-y-0 right-0 z-50 w-96 bg-white shadow-2xl transform transition-transform duration-300 ease-in-out ${nfeSidebarOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+      {!isSimulation && <div className={`fixed inset-y-0 right-0 z-50 w-96 bg-white shadow-2xl transform transition-transform duration-300 ease-in-out ${nfeSidebarOpen ? 'translate-x-0' : 'translate-x-full'}`}>
         <div className="flex h-full flex-col">
           <div className="flex items-center justify-between border-b bg-muted p-4">
             <h3 className="text-lg font-bold">Notas Fiscais dos Pedidos</h3>
@@ -1372,7 +1516,7 @@ function DemandaDashboardPage() {
             )}
           </div>
         </div>
-      </div>
+      </div>}
     </div>
   )
 }

@@ -14,10 +14,12 @@
 //   - scripts/verificar-rotas.mjs -> coletarHrefs()
 
 import {
-  Activity, AlertCircle, BarChart3, Boxes, Building, CalendarClock, ClipboardList, Cog, Database, Factory,
-  Download, HardDrive, Home, Layers, MapPin, Monitor, Package, Printer, Scale, ScrollText,
+  Activity, AlertCircle, BarChart3, Boxes, Building, CalendarClock, ClipboardList, Cog, Database,
+  Download,
+  Factory,
+  Home, Layers, MapPin, Monitor, Package, Printer, Scale, ScrollText,
   Settings, Share2, ShieldCheck, ShoppingCart, Sparkles, Store, Tag, TowerControl,
-  Trello, Truck, Users, Warehouse,
+  Trello, Truck, Users, Warehouse
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -25,7 +27,6 @@ import {
 // ---------------------------------------------------------------------------
 export const TOP_NAV = [
   { name: 'Home', href: '/', icon: Home, type: 'link' },
-  { name: 'Gestão', href: '/gestao/visao-geral', icon: BarChart3, type: 'link', permission: { a: 'gestao', I: 'ler' } },
   {
     name: 'Pedidos',
     icon: ShoppingCart,
@@ -85,6 +86,7 @@ export const TOP_NAV = [
       { name: 'Logs de IA', href: '/ai/logs', type: 'link', adminOnly: true },
     ],
   },
+  { name: 'Gestão', href: '/gestao/visao-geral', icon: BarChart3, type: 'link', permission: { a: 'gestao', I: 'ler' } },
   {
     name: 'Configurações',
     icon: Settings,

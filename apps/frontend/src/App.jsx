@@ -249,6 +249,10 @@ function App() {
               element={<ProtectedRoute permission={{ a: 'demanda_producao', I: 'ler' }}><DemandaDashboardPage /></ProtectedRoute>}
             />
             <Route
+              path='simulacao/:id/dashboard'
+              element={<ProtectedRoute permission={{ a: 'demanda_producao', I: 'ler' }}><DemandaDashboardPage /></ProtectedRoute>}
+            />
+            <Route
               path='miolos'
               element={<ControleProducaoPage tipo='miolo' />}
             />

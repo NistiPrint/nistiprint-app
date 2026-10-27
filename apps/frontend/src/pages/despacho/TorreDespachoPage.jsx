@@ -221,9 +221,16 @@ export default function TorreDespachoPage() {
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState(null);
   const [atualizadoEm, setAtualizadoEm] = useState(null);
+  const [simulacoes, setSimulacoes] = useState([]);
   const navigate = useNavigate();
   const requisicaoRef = useRef(null);
   const emCursoRef = useRef(false);
+
+  useEffect(() => {
+    fetch('/api/v2/demanda-simulacoes').then((response) => response.ok ? response.json() : null)
+      .then((json) => { if (json?.success) setSimulacoes(json.data || []); })
+      .catch(() => {});
+  }, []);
 
 
   const carregar = useCallback(async () => {
@@ -414,6 +421,7 @@ export default function TorreDespachoPage() {
 
   return (
     <div className="p-6">
+      {simulacoes.length > 0 && <Card className="mb-5 border-amber-300 bg-amber-50/40"><CardContent className="py-4"><h2 className="mb-2 text-sm font-semibold">Simulações de demanda</h2><div className="flex flex-wrap gap-2">{simulacoes.map((simulacao) => <Button key={simulacao.id} type="button" variant="outline" size="sm" onClick={() => navigate(`/producao/simulacao/${simulacao.id}/dashboard`)}>{simulacao.nome} · {simulacao.status} · {simulacao.pedido_ids.length} pedidos</Button>)}</div><p className="mt-2 text-xs text-muted-foreground">Cenários salvos. Os pedidos reais continuam disponíveis na Torre.</p></CardContent></Card>}
       <div className="mb-5 flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold">Torre de despacho</h1>

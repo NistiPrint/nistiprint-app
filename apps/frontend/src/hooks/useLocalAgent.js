@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import LocalAgentService from '../services/LocalAgentService';
 
-const useLocalAgent = () => {
+const useLocalAgent = (enabled = true) => {
   const [isAgentOnline, setIsAgentOnline] = useState(false);
   const [checkingAgent, setCheckingAgent] = useState(true);
   const [agentHealth, setAgentHealth] = useState(null);
 
   // Function to check if the local agent is online
   const checkAgentStatus = async () => {
+    if (!enabled) return;
     try {
       const health = await LocalAgentService.checkHealth();
       setIsAgentOnline(true);
@@ -22,6 +23,11 @@ const useLocalAgent = () => {
 
   // Check agent status on mount and periodically
   useEffect(() => {
+    if (!enabled) {
+      setIsAgentOnline(false);
+      setCheckingAgent(false);
+      return undefined;
+    }
     // Check immediately
     checkAgentStatus();
 
@@ -31,7 +37,7 @@ const useLocalAgent = () => {
     return () => {
       clearInterval(interval);
     };
-  }, []);
+  }, [enabled]);
 
   // Function to map a file to a product ID
   const mapFileToProduct = async (sku) => {

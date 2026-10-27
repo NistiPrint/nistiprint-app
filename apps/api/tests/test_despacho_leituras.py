@@ -73,7 +73,7 @@ class TestLeiturasDespacho(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()['data']['snapshot_gerado_em'],
                          '2026-10-05T12:00:00-03:00')
-        banco.rpc.assert_called_once_with('despacho_arvore_contexto', {'p_data': '2026-10-05'})
+        banco.rpc.assert_called_once_with('despacho_arvore_contexto', {'p_data': '2026-10-05', 'p_incluir_pronto': False})
         banco.table.assert_not_called()
 
     def test_torre_preserva_visao_anterior_sem_rpc_timeline(self):

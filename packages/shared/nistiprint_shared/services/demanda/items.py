@@ -407,8 +407,9 @@ class DemandaItemsService:
         for dist in distributions:
             item = self.get_item_by_id(dist['item_id'])
             qty = float(dist['quantidade'])
+            stage_qty = float(dist.get('quantidade_estagio', qty))
             total = float(item.get('quantidade') or 0)
-            updates = {field: max(0, min(total, float(item.get(field) or 0) + qty)),
+            updates = {field: max(0, min(total, float(item.get(field) or 0) + stage_qty)),
                        'status_item': 'Em Andamento', 'updated_at': get_now_iso()}
             if role == 'OUTRO':
                 updates['expedicao_miolos_retirados_qtd'] = max(
@@ -418,7 +419,7 @@ class DemandaItemsService:
                     updates['status_item'] = 'Concluído'
             evento_id = str(correlation_id) if correlation_id else None
             self._persistir_intencao_eventos(item, updates, [{
-                'estagio': field, 'quantidade_reportada': abs(qty), 'tipo_evento': 'SINAL'}],
+                'estagio': field, 'quantidade_reportada': abs(stage_qty), 'tipo_evento': 'SINAL'}],
                 user_id, correlation_id=evento_id)
             if updates['status_item'] == 'Concluído':
                 self._verificar_e_finalizar_demanda_automatica(item['demanda_id'], user_id)

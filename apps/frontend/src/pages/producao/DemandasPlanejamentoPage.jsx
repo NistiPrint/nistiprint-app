@@ -37,7 +37,7 @@ const DRAFT_DEMAND_STATUSES = ['RASCUNHO']
 const collectionRequestId = (demandId, quantity) => {
   const key = `demand-collection:${demandId}`
   let saved = null
-  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null') } catch (_) {}
+  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null') } catch { saved = null }
   const quantityKey = String(quantity)
   if (saved?.quantity === quantityKey && saved?.id) return { key, id: saved.id }
   const id = createOperationId()
@@ -117,6 +117,25 @@ export default function DemandasPlanejamentoPage() {
     fetchTotals()
     fetchDashboardSummary()
   }, [fetchTotals, fetchDashboardSummary])
+
+  // Simulações não passam pelo fluxo real (sem coleta/exclusão pelos endpoints
+  // de demanda): aparecem em seção própria, abrindo o dashboard da simulação.
+  const [simulacoes, setSimulacoes] = useState([])
+  useEffect(() => {
+    if (!hasPermission('demanda_producao', 'ler')) return
+    fetch('/api/v2/demanda-simulacoes')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((json) => { if (json?.success) setSimulacoes(json.data || []) })
+      .catch(() => {})
+  }, [hasPermission])
+  const visibleSimulacoes = useMemo(() => {
+    const search = searchTerm.trim().toLowerCase()
+    return simulacoes.filter((simulacao) => {
+      const terminal = TERMINAL_DEMAND_STATUSES.includes(normalizeDemandStatus(simulacao.status))
+      if ((currentTab === 'history') !== terminal) return false
+      return !search || String(simulacao.nome || '').toLowerCase().includes(search)
+    })
+  }, [simulacoes, currentTab, searchTerm])
 
   const filteredDemandas = useMemo(() => {
     const search = searchTerm.trim().toLowerCase()
@@ -245,13 +264,13 @@ export default function DemandasPlanejamentoPage() {
       body: JSON.stringify({ quantidade_coletar: quantity, operation_id: operation.id }),
     })
     const data = await response.json()
-    if (response.ok) {
+    if (response.ok && data.success) {
       sessionStorage.removeItem(operation.key)
       toast.success(data.message || 'Coleta registrada.')
       refresh()
       return
     }
-    toast.error(data.message || 'Nao foi possivel registrar a coleta.')
+    throw new Error(data.message || 'Nao foi possivel registrar a coleta.')
   }
 
   const handleBatchCollect = async () => {
@@ -507,6 +526,27 @@ export default function DemandasPlanejamentoPage() {
             <Button size='sm' variant='ghost' className='text-white hover:bg-slate-800' onClick={() => setSelectedDemandIds([])}>
               <X className='h-4 w-4' />
             </Button>
+          </div>
+        )}
+
+        {visibleSimulacoes.length > 0 && (
+          <div className='mb-4 rounded-2xl border border-amber-300 bg-amber-50/40 p-4'>
+            <h2 className='mb-2 text-sm font-semibold'>Simulações</h2>
+            <div className='grid gap-2'>
+              {visibleSimulacoes.map((simulacao) => (
+                <Link
+                  key={simulacao.id}
+                  to={`/producao/simulacao/${simulacao.id}/dashboard`}
+                  className='flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-white p-3 text-sm hover:border-primary/60'
+                >
+                  <span className='font-medium'>{simulacao.nome}</span>
+                  <span className='text-xs text-slate-500'>
+                    <span className='mr-2 rounded bg-amber-600 px-1.5 py-0.5 text-white'>Simulação</span>
+                    {simulacao.status} · {simulacao.pedido_ids.length} pedidos
+                  </span>
+                </Link>
+              ))}
+            </div>
           </div>
         )}
 

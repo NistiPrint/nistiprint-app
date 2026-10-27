@@ -15,6 +15,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import capaPrintService from '@/services/capaPrintService';
+import { createOperationId } from '@/lib/operationId';
+import { useAuth } from '@/contexts/AuthContext';
 
 const HORIZONTE_STEPS = ['atrasado', 'hoje', 'amanha', 'depois'];
 const HORIZONTE_LABEL = { atrasado: 'Atrasado', hoje: 'Hoje', amanha: 'Amanhã', depois: 'Depois' };
@@ -61,6 +63,8 @@ function PedidosAssociados({ pedidos = [] }) {
 }
 
 export default function EscopoDespachoPage() {
+  const { user, hasPermission } = useAuth();
+  const canCreateSimulation = user?.is_admin === true || hasPermission('demanda_producao', 'criar');
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const integrationId = parseIntOrNull(searchParams.get('integration_id'));
@@ -77,6 +81,7 @@ export default function EscopoDespachoPage() {
   const [dados, setDados] = useState(null);
   const [loading, setLoading] = useState(true);
   const [publicando, setPublicando] = useState(false);
+  const [simulando, setSimulando] = useState(false);
   const [conflitos, setConflitos] = useState([]);
   const [erro, setErro] = useState(null);
   const [linhasEditadas, setLinhasEditadas] = useState([]);
@@ -141,6 +146,29 @@ export default function EscopoDespachoPage() {
       toast.success(`${json.data.demanda_codigo} publicada — ${json.data.total_pedidos} pedidos foram para produção`); navigate('/despacho');
     } catch (err) { toast.error(err.message || 'Não foi possível publicar a demanda'); } finally { setPublicando(false); }
   };
+  const simular = async () => {
+    setSimulando(true);
+    try {
+      const payload = { ...chaveDoEscopo, marketplace_nome: marketplaceNome,
+        modalidade_nome: modalidadeNome, previsao_versao: previsaoVersao,
+        linhas: prepararLinhasParaEnvio(linhasEditadas) };
+      const key = `demand-simulation-create:${JSON.stringify(payload)}`;
+      const operationId = sessionStorage.getItem(key) || createOperationId();
+      sessionStorage.setItem(key, operationId);
+      const response = await fetch('/api/v2/demanda-simulacoes', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, operation_id: operationId }),
+      });
+      const json = await response.json();
+      if (!response.ok || !json.success) {
+        if (response.status === 409) sessionStorage.removeItem(key);
+        throw new Error(json.message || 'Não foi possível criar a simulação');
+      }
+      sessionStorage.removeItem(key);
+      toast.success('Simulação criada sem reservar pedidos');
+      navigate(`/producao/simulacao/${json.demanda.id}/dashboard`);
+    } catch (error) { toast.error(error.message); } finally { setSimulando(false); }
+  };
   const copiar = async () => {
     try { await navigator.clipboard.writeText(linhasParaTsv(linhasEditadas)); toast.success('Tabela copiada para a planilha.'); }
     catch { toast.error('Não foi possível copiar a tabela.'); }
@@ -186,7 +214,7 @@ export default function EscopoDespachoPage() {
     {!origemArquivo && <Card className="mb-6"><CardContent className="py-5"><div className="mb-3 text-sm font-medium">Datas de envio</div><div className="flex flex-wrap gap-2">{HORIZONTE_STEPS.map((step) => <button key={step} type="button" onClick={() => confirmarDescarte() && setHorizonte((atual) => alternarPrazo(atual, step))} className={`rounded-full border px-3 py-1 text-xs ${horizonte.includes(step) ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground'}`}>{HORIZONTE_LABEL[step]} {dados?.buckets?.[step] ? <span className="ml-1.5 opacity-70">{dados.buckets[step]}</span> : null}</button>)}{qtdSemPrazo > 0 && <button type="button" onClick={() => confirmarDescarte() && setHorizonte((atual) => alternarPrazo(atual, 'sem_prazo'))} className={`rounded-full border px-3 py-1 text-xs ${incluirSemPrazo ? 'border-amber-500 bg-amber-100 text-amber-800' : 'border-border text-muted-foreground'}`}>+ Sem prazo {qtdSemPrazo}</button>}</div>{foraDoHorizonte > 0 && <p className="mt-2 text-xs text-amber-700">{foraDoHorizonte} pedido{foraDoHorizonte === 1 ? '' : 's'} deste card está fora do horizonte selecionado.</p>}</CardContent></Card>}
     {erro && <Card className="mb-4 border-destructive/50"><CardContent className="py-4 text-sm text-destructive">{erro}</CardContent></Card>}
     <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2"><Card><CardContent className="py-4"><div className="text-3xl font-semibold">{loading ? '—' : total}</div><div className="text-xs text-muted-foreground">pedidos neste lote</div></CardContent></Card><Card><CardContent className="py-4"><div className="text-3xl font-semibold">{loading ? '—' : Math.round(totalItens)}</div><div className="text-xs text-muted-foreground">itens na tabela</div></CardContent></Card></div>
-    {!erro && total > 0 && <AcoesDoLote className="mb-4" dadosIniciais={dados?.acoes} onAtualizar={() => confirmarDescarte() && carregar()} params={chaveDoEscopo} titulo="Ações dos pedidos associados" mostrarIds={false} acoesExtras={<><Button type="button" variant="outline" size="sm" className="gap-2" onClick={copiar}><Copy className="h-4 w-4" /> Copiar</Button><PedidosAssociados pedidos={dados?.pedidos || []} /><Button type="button" variant="outline" size="sm" className="gap-2" onClick={abrirPlano} disabled={abrindoPlano || !previsaoVersao} title="Abre o plano em uma nova guia"><Printer className="h-4 w-4" /> {abrindoPlano ? 'Preparando…' : 'Plano de impressão'} <ExternalLink className="h-3.5 w-3.5" /></Button><Button type="button" size="sm" onClick={publicar} disabled={publicando || !previsaoVersao}>{publicando ? 'Publicando…' : `Publicar ${total}`}</Button></>} />}
+    {!erro && total > 0 && <AcoesDoLote className="mb-4" dadosIniciais={dados?.acoes} onAtualizar={() => confirmarDescarte() && carregar()} params={chaveDoEscopo} titulo="Ações dos pedidos associados" mostrarIds={false} acoesExtras={<><Button type="button" variant="outline" size="sm" className="gap-2" onClick={copiar}><Copy className="h-4 w-4" /> Copiar</Button><PedidosAssociados pedidos={dados?.pedidos || []} /><Button type="button" variant="outline" size="sm" className="gap-2" onClick={abrirPlano} disabled={abrindoPlano || !previsaoVersao} title="Abre o plano em uma nova guia"><Printer className="h-4 w-4" /> {abrindoPlano ? 'Preparando…' : 'Plano de impressão'} <ExternalLink className="h-3.5 w-3.5" /></Button>{canCreateSimulation && <Button type="button" variant="outline" size="sm" onClick={simular} disabled={simulando || !previsaoVersao}>{simulando ? 'Criando…' : 'Simular demanda'}</Button>}<Button type="button" size="sm" onClick={publicar} disabled={publicando || !previsaoVersao}>{publicando ? 'Publicando…' : `Publicar ${total}`}</Button></>} />}
     {!loading && !erro && total > 0 && <LinhasConsolidadas key={`${JSON.stringify(chaveDoEscopo)}-${previsaoVersao}`} itens={dados?.previsao?.itens || []} resumo={dados?.previsao} onChange={setLinhasEditadas} />}
     {conflitos.length > 0 && <Card className="mb-6 border-amber-400 bg-amber-50/60"><CardContent className="py-4 text-sm text-amber-900"><AlertTriangle className="mr-2 inline h-4 w-4" />{conflitos.length} pedido{conflitos.length > 1 ? 's' : ''} já estava{conflitos.length > 1 ? 'm' : ''} em outra consolidação aberta.</CardContent></Card>}
   </div>;
