@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from flask import Blueprint, jsonify, request
 from werkzeug.utils import secure_filename
 from nistiprint_shared.database.supabase_db_service import supabase_db
+from nistiprint_shared.services.despacho_previsao_miolos import build_previsao_miolos
 from nistiprint_shared.services.order_erp_reference_service import (
     order_erp_reference_service,
 )
@@ -202,6 +203,21 @@ ABA_DO_BUCKET = {
     "amanha": "amanha",
     "depois": "proximos",
 }
+
+
+def _chave_do_lote(info: dict | None, modalidade_id: int | None) -> str:
+    """Chave do lote da Torre para uma modalidade.
+
+    Canais que dividem a janela compartilham o `lote_chave` de `despacho_lotes`;
+    modalidade sem janela cadastrada e lote de si mesma ("nc" quando nem
+    classificada). A timeline e a previsao de miolos precisam concordar aqui,
+    senao o mesmo caminhao aparece como dois lotes em uma das telas.
+    """
+    return info["lote_chave"] if info else ("nc" if modalidade_id is None else str(modalidade_id))
+
+
+def _modalidades_do_lote(info: dict | None, modalidade_id: int | None) -> list:
+    return list(info.get("modalidade_ids") or []) if info else ([] if modalidade_id is None else [modalidade_id])
 
 
 def _contexto_rpc(nome: str, params: dict) -> dict | None:
@@ -535,8 +551,8 @@ def get_arvore():
             integration_id = row.get("integration_id")
             modalidade_id = row.get("modalidade_id")
             info = lote_por_modalidade.get((integration_id, modalidade_id))
-            lote_chave = info["lote_chave"] if info else ("nc" if modalidade_id is None else str(modalidade_id))
-            modalidade_ids = info.get("modalidade_ids") if info else ([] if modalidade_id is None else [modalidade_id])
+            lote_chave = _chave_do_lote(info, modalidade_id)
+            modalidade_ids = _modalidades_do_lote(info, modalidade_id)
             data_limite_dia = row.get("data_limite_dia")
             chave = (integration_id, lote_chave, data_limite_dia or "sem_prazo")
             lote = timeline_por_chave.setdefault(chave, {
@@ -1073,6 +1089,142 @@ def previsao_consolidacao():
         # sem produto resolvido nao e uma previa pior, e uma previa errada — e
         # ela seria lida como a promessa do que vai para producao.
         logger.error("Erro ao montar previa da consolidacao: %s", exc, exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+HORIZONTES_PREVISAO = ("atrasado", "hoje", "amanha")
+HORIZONTES_VALIDOS = {"atrasado", "hoje", "amanha", "depois", "sem_prazo"}
+# Cada lote custa uma consolidacao; um horizonte largo nao pode virar dezenas de
+# RPCs numa unica leitura. O que passa do limite e avisado, nao omitido em silencio.
+MAX_LOTES_PREVISAO = 40
+
+
+def _produtos_de_miolo() -> list[dict] | None:
+    """Miolos ativos com o saldo disponivel; None se a categoria nao esta configurada.
+
+    Mesma leitura do planejamento de insumos. Importados aqui porque esses
+    servicos abrem a configuracao do banco ao carregar o modulo, e as demais
+    rotas de despacho nao deveriam depender disso para subir.
+    """
+    from nistiprint_shared.services.app_config_service import app_config_service
+    from nistiprint_shared.services.estoque_service import estoque_service
+    from nistiprint_shared.services.product_service import product_service
+
+    category_id = app_config_service.get_config("producao_miolos_category_id")
+    if not category_id:
+        return None
+    products_data, _ = product_service.get_products(categoria_id=category_id, per_page=10000)
+    products = [dict(p) for p in products_data if p.get("status", "ativo") == "ativo"]
+    deposit_id = app_config_service.get_config("default_production_deposit_id") or "principal"
+    stocks = estoque_service.get_saldos_em_lote([p["id"] for p in products], deposit_id)
+    for product in products:
+        product["stock_details"] = stocks.get(str(product["id"]), {})
+    return products
+
+
+def _grafo_bom(root_ids: list[int]) -> dict:
+    from nistiprint_shared.services.bom_service import bom_service
+
+    return bom_service.load_effective_graph(root_ids) if root_ids else {"nodes": {}}
+
+
+def _lotes_da_previsao(rows: list[dict], p_data: str) -> list[dict]:
+    """Funde as linhas por modalidade nos mesmos lotes que a Torre mostra."""
+    lotes_por_modalidade = {}
+    for integration_id in {row.get("integration_id") for row in rows if row.get("integration_id") is not None}:
+        for lote in (supabase_db.rpc("despacho_lotes", {"p_integration_id": integration_id}).execute().data or []):
+            lotes_por_modalidade[(integration_id, lote["modalidade_id"])] = lote
+
+    rascunhos = {}
+    try:
+        for rascunho in (supabase_db.rpc("despacho_rascunhos_abertos", {"p_data": p_data}).execute().data or []):
+            rascunhos[(rascunho.get("integration_id"), rascunho.get("modalidade_id"))] = rascunho
+    except Exception:
+        logger.warning("Falha ao carregar rascunhos abertos da previsao", exc_info=True)
+
+    lotes = {}
+    for row in rows:
+        integration_id, modalidade_id = row.get("integration_id"), row.get("modalidade_id")
+        info = lotes_por_modalidade.get((integration_id, modalidade_id))
+        lote_chave = _chave_do_lote(info, modalidade_id)
+        dia = row.get("data_limite_dia")
+        lote = lotes.setdefault((integration_id, lote_chave, dia or "sem_prazo"), {
+            "integration_id": integration_id,
+            "nome_marketplace": row.get("marketplace_nome") or "Origem não resolvida",
+            "lote_chave": lote_chave,
+            "modalidade_ids": [],
+            "modalidade_id": modalidade_id,
+            "nome_modalidade": info.get("lote_nome") if info else row.get("modalidade_nome"),
+            "entrega_rapida": bool(info.get("entrega_rapida")) if info else bool(row.get("entrega_rapida")),
+            "data_limite_dia": dia,
+            "bucket": row.get("bucket_prazo"),
+            "qtd_pedidos": 0,
+            "pedido_ids": [],
+            "proxima_saida_em": row.get("proxima_saida_em"),
+            "rascunho": None,
+        })
+        lote["qtd_pedidos"] += row.get("qtd_pedidos") or 0
+        lote["pedido_ids"].extend(row.get("pedido_ids") or [])
+        lote["modalidade_ids"] = sorted(set(lote["modalidade_ids"]) | set(_modalidades_do_lote(info, modalidade_id)))
+        saida = row.get("proxima_saida_em")
+        if saida and (not lote["proxima_saida_em"] or saida < lote["proxima_saida_em"]):
+            lote["proxima_saida_em"] = saida
+        if not lote["rascunho"]:
+            lote["rascunho"] = rascunhos.get((integration_id, modalidade_id))
+
+    return sorted(lotes.values(), key=lambda lote: (
+        lote["proxima_saida_em"] or "9999", lote["data_limite_dia"] or "0000",
+        str(lote["integration_id"]), lote["lote_chave"],
+    ))
+
+
+@despacho_bp.route("/previsao-miolos", methods=["GET"])
+def previsao_miolos():
+    """Miolos que os lotes ainda nao publicados vao pedir a producao.
+
+    Le os mesmos lotes que a Torre mostra (`despacho_previsao_lotes`) e
+    consolida cada um com a mesma RPC do lancamento. Pedido so deixa a Torre
+    quando a demanda e publicada (`despachado_em`), e so entao entra no
+    planejamento de insumos: os dois conjuntos nunca se sobrepoem, entao nada e
+    contado duas vezes. Nao reserva estoque.
+
+    Query params: data (YYYY-MM-DD), horizonte (repetivel; default
+    atrasado+hoje+amanha), incluir_pronto.
+    """
+    try:
+        if not get_current_user():
+            return jsonify({"success": False, "error": "Nao autorizado"}), 401
+
+        p_data = _parse_data(request.args.get("data"))
+        incluir_pronto = _parse_bool(request.args.get("incluir_pronto"))
+        horizonte = [h for h in request.args.getlist("horizonte") if h in HORIZONTES_VALIDOS] or list(HORIZONTES_PREVISAO)
+
+        products = _produtos_de_miolo()
+        if products is None:
+            return jsonify({"success": False, "error": "Categoria de produção de miolos não configurada."}), 400
+
+        rows = supabase_db.rpc("despacho_previsao_lotes", {
+            "p_data": p_data, "p_horizonte": horizonte, "p_incluir_pronto": incluir_pronto,
+        }).execute().data or []
+        lotes = _lotes_da_previsao(rows, p_data)
+        total_lotes_pendentes = len(lotes)
+        truncado = total_lotes_pendentes > MAX_LOTES_PREVISAO
+        lotes = lotes[:MAX_LOTES_PREVISAO]
+
+        for lote in lotes:
+            ids = sorted(set(lote.pop("pedido_ids")))
+            consolidadas = supabase_db.rpc("despacho_consolidar_pedidos", {"p_pedido_ids": ids}).execute().data or [] if ids else []
+            lote["linhas"] = [_linha_consolidada(row) for row in consolidadas]
+
+        root_ids = sorted({int(line["produto_id"]) for lote in lotes for line in lote["linhas"]
+                           if str(line.get("produto_id") or "").isdigit()})
+        data = build_previsao_miolos(lotes, products, _grafo_bom(root_ids))
+        data.update({"data": p_data, "horizonte": horizonte, "incluir_pronto": incluir_pronto,
+                     "truncado": truncado, "total_lotes_pendentes": total_lotes_pendentes})
+        return jsonify({"success": True, "data": data})
+    except Exception as exc:
+        # Uma previsao parcial seria lida como carga real de miolos: melhor erro.
+        logger.error("Erro ao montar previsao de miolos: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 

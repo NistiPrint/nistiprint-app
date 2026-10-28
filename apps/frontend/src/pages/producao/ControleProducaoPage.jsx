@@ -12,6 +12,7 @@ import ProductionPlanningViews from '@/components/producao/ProductionPlanningVie
 import { format } from 'date-fns';
 import { Loader2, PackageMinus, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 const ControleProducaoPage = ({tipo}) => {
@@ -26,12 +27,27 @@ const ControleProducaoPage = ({tipo}) => {
   const [revertStock, setRevertStock] = useState(true);
   const [isReverting, setIsReverting] = useState(false);
 
-  const [activeTab, setActiveTab] = useState('produto');
+  // A visão Previsão (só miolos) mora na URL (?vista=previsao) para poder ser compartilhada.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTabState] = useState(() =>
+    tipo === 'miolo' && searchParams.get('vista') === 'previsao' ? 'previsao' : 'produto');
+  const setActiveTab = (view) => {
+    setActiveTabState(view);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (view === 'previsao') next.set('vista', 'previsao'); else next.delete('vista');
+      return next;
+    }, { replace: true });
+  };
   const [planning, setPlanning] = useState(null);
   const [planningLoading, setPlanningLoading] = useState(false);
   const [planningError, setPlanningError] = useState('');
   const [includeSimulations, setIncludeSimulations] = useState(true);
   const [capaSubTab, setCapaSubTab] = useState('impressas'); // Sub-tab para capas: impressas vs acabadas
+  const [previsao, setPrevisao] = useState(null);
+  const [previsaoLoading, setPrevisaoLoading] = useState(false);
+  const [previsaoError, setPrevisaoError] = useState('');
+  const [previsaoFiltros, setPrevisaoFiltros] = useState({ horizonte: ['atrasado', 'hoje', 'amanha'], incluirPronto: false });
 
   // Estados para Distribuição de Saída
   const [distributionModalOpen, setDistributionModalOpen] = useState(false);
@@ -43,6 +59,7 @@ const ControleProducaoPage = ({tipo}) => {
   const pendingReservationOperation = useRef(null);
   const controlRequestId = useRef(0);
   const planningRequestId = useRef(0);
+  const previsaoRequestId = useRef(0);
 
   const [selectedDemandaId, setSelectedDemandaId] = useState(null);
 
@@ -114,6 +131,30 @@ const ControleProducaoPage = ({tipo}) => {
     fetchData();
     fetchPlanning();
   }, [fetchData, fetchPlanning]);
+
+  // Lazy: a consolidação dos lotes da Torre é mais cara que o resto da tela, então
+  // só roda quando a visão Previsão está aberta (e a cada troca de filtro).
+  const fetchPrevisao = useCallback(async () => {
+    const requestId = ++previsaoRequestId.current;
+    setPrevisaoLoading(true);
+    setPrevisaoError('');
+    try {
+      const data = await ProductionService.getPrevisaoMiolos(previsaoFiltros);
+      if (!data.success) throw new Error(data.error || 'Erro ao carregar a previsão de miolos.');
+      if (requestId === previsaoRequestId.current) setPrevisao(data.data);
+    } catch (error) {
+      if (requestId === previsaoRequestId.current) {
+        setPrevisaoError(error.response?.data?.error || error.message || 'Erro ao carregar a previsão de miolos.');
+        setPrevisao(null);
+      }
+    } finally {
+      if (requestId === previsaoRequestId.current) setPrevisaoLoading(false);
+    }
+  }, [previsaoFiltros]);
+
+  useEffect(() => {
+    if (tipo === 'miolo' && activeTab === 'previsao') fetchPrevisao();
+  }, [tipo, activeTab, fetchPrevisao]);
 
   const handleInputChange = (productId, value) => {
     setInputs(prev => ({ ...prev, [productId]: value }));
@@ -415,7 +456,11 @@ const ControleProducaoPage = ({tipo}) => {
         onLog={handleLogClick}
         includeSimulations={includeSimulations}
         setIncludeSimulations={setIncludeSimulations}
-        onRefresh={() => { fetchData(); fetchPlanning(); }}
+        onRefresh={() => { fetchData(); fetchPlanning(); if (activeTab === 'previsao') fetchPrevisao(); }}
+        previsao={tipo === 'miolo' ? {
+          data: previsao, loading: previsaoLoading, error: previsaoError,
+          filtros: previsaoFiltros, onChangeFiltros: setPrevisaoFiltros, onRefresh: fetchPrevisao,
+        } : null}
       />
       {/* Modal de Distribuição de Saída */}
       <Dialog open={distributionModalOpen} onOpenChange={setDistributionModalOpen}>

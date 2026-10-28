@@ -73,11 +73,11 @@ export default function IncrementalInput({
   };
 
   if (disabled) {
-    return <span className="text-gray-600 font-medium">{currentValue}</span>;
+    return <span className="text-gray-600 font-medium tabular-nums">{currentValue}</span>;
   }
 
   return (
-    <div className="flex items-center gap-1 justify-center">
+    <div className="relative flex items-center justify-center">
       <Input
         type="number"
         min="0"
@@ -86,14 +86,14 @@ export default function IncrementalInput({
         onChange={handleChange}
         onBlur={handleBlur}
         onKeyDown={handleKeyDown}
-        className="h-8 w-16 text-center"
+        className="h-7 w-12 px-1 text-center tabular-nums"
       />
       {totalQuantity && totalQuantity > 0 && (
         <Button
           variant="ghost"
           size="sm"
           onClick={handleFillTotal}
-          className="h-6 w-6 p-0 opacity-0 hover:opacity-100 transition-opacity hover:bg-green-100"
+          className="absolute -right-6 top-0.5 h-6 w-6 p-0 opacity-0 group-hover/row:opacity-100 hover:opacity-100 transition-opacity hover:bg-green-100"
           title={`Preencher com total (${totalQuantity})`}
         >
           <Check className="h-3 w-3 text-green-600" />

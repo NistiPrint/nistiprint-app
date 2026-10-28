@@ -185,10 +185,92 @@ class TestLeiturasDespacho(unittest.TestCase):
         self.assertEqual(modulo._bucket_operacional(None, '2026-10-05', '2026-10-06T03:00:00Z'), 'amanha')
         self.assertEqual(modulo._bucket_operacional(None, '2026-10-05'), 'sem_prazo')
 
+    def _previsao_miolos(self, banco, query='data=2026-10-28', miolos=None):
+        miolos = [{'id': 10, 'name': 'Miolo Azul', 'sku': 'MIO-AZ',
+                   'stock_details': {'quantidade_disponivel': 5}}] if miolos is None else miolos
+        with patch.object(modulo, 'get_current_user', return_value={'id': 1}), patch.object(modulo, 'supabase_db', banco),                 patch.object(modulo, '_produtos_de_miolo', return_value=miolos),                 patch.object(modulo, '_grafo_bom', return_value={'nodes': {}}):
+            return self.client.get('/api/v2/despacho/previsao-miolos?' + query)
+
+    def test_previsao_miolos_funde_modalidades_do_mesmo_lote_e_totaliza(self):
+        banco = MagicMock()
+        base = {'integration_id': 6, 'marketplace_nome': 'Shopee', 'data_limite_dia': '2026-10-28',
+                'bucket_prazo': 'hoje', 'tipo_prazo': 'FIXO', 'entrega_rapida': False,
+                'proxima_saida_em': '2026-10-28T15:00:00-03:00', 'saida_apos_prazo': False}
+        lotes = [{**base, 'modalidade_id': 1, 'modalidade_nome': 'Normal', 'qtd_pedidos': 2, 'pedido_ids': [1, 2]},
+                 {**base, 'modalidade_id': 2, 'modalidade_nome': 'Coleta', 'qtd_pedidos': 1, 'pedido_ids': [3]}]
+        consolidacao = [{'titulo_anuncio': 'Agenda', 'sku_externo': 'AGD', 'quantidade': 8, 'produto_id': 31,
+                         'id_produto_miolo': 10, 'miolo_nome': 'Miolo Azul', 'contabiliza_estoque': True}]
+        chamadas = []
+
+        def rpc(nome, params):
+            chamadas.append((nome, params))
+            data = {
+                'despacho_previsao_lotes': lotes,
+                'despacho_lotes': [{'modalidade_id': 1, 'lote_chave': 'janela-1', 'modalidade_ids': [1, 2],
+                                    'lote_nome': 'Normal + Coleta', 'entrega_rapida': False},
+                                   {'modalidade_id': 2, 'lote_chave': 'janela-1', 'modalidade_ids': [1, 2],
+                                    'lote_nome': 'Normal + Coleta', 'entrega_rapida': False}],
+                'despacho_rascunhos_abertos': [],
+                'despacho_consolidar_pedidos': consolidacao,
+            }[nome]
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data=data))
+        banco.rpc.side_effect = rpc
+
+        response = self._previsao_miolos(banco)
+        data = response.get_json()['data']
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(data['lotes']), 1)
+        self.assertEqual((data['lotes'][0]['qtd_pedidos'], data['lotes'][0]['modalidade_ids']), (3, [1, 2]))
+        self.assertEqual((data['miolos'][0]['quantidade_total'], data['miolos'][0]['falta']), (8, 3))
+        self.assertEqual(data['horizonte'], ['atrasado', 'hoje', 'amanha'])
+        self.assertFalse(data['truncado'])
+        consolidar = [params for nome, params in chamadas if nome == 'despacho_consolidar_pedidos']
+        self.assertEqual(consolidar, [{'p_pedido_ids': [1, 2, 3]}])
+        previsao = [params for nome, params in chamadas if nome == 'despacho_previsao_lotes'][0]
+        self.assertEqual(previsao['p_horizonte'], ['atrasado', 'hoje', 'amanha'])
+        self.assertFalse(previsao['p_incluir_pronto'])
+
+    def test_previsao_miolos_sem_categoria_configurada_nao_consulta_lotes(self):
+        banco = MagicMock()
+        with patch.object(modulo, 'get_current_user', return_value={'id': 1}), patch.object(modulo, 'supabase_db', banco),                 patch.object(modulo, '_produtos_de_miolo', return_value=None):
+            response = self.client.get('/api/v2/despacho/previsao-miolos')
+        self.assertEqual(response.status_code, 400)
+        banco.rpc.assert_not_called()
+
+    def test_previsao_miolos_respeita_horizonte_e_ignora_valor_invalido(self):
+        banco = MagicMock()
+        banco.rpc.return_value.execute.return_value = SimpleNamespace(data=[])
+        response = self._previsao_miolos(banco, 'horizonte=depois&horizonte=lixo&incluir_pronto=true')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['data']['horizonte'], ['depois'])
+        params = banco.rpc.call_args_list[0].args[1]
+        self.assertEqual((params['p_horizonte'], params['p_incluir_pronto']), (['depois'], True))
+        self.assertEqual(response.get_json()['data']['resumo']['total_lotes'], 0)
+
+    def test_previsao_miolos_limita_lotes_e_avisa(self):
+        banco = MagicMock()
+        base = {'integration_id': 6, 'marketplace_nome': 'Shopee', 'bucket_prazo': 'hoje', 'tipo_prazo': 'FIXO',
+                'entrega_rapida': False, 'proxima_saida_em': None, 'saida_apos_prazo': False,
+                'qtd_pedidos': 1, 'pedido_ids': [1]}
+        lotes = [{**base, 'modalidade_id': indice, 'modalidade_nome': f'M{indice}',
+                  'data_limite_dia': '2026-10-28', 'pedido_ids': [indice]}
+                 for indice in range(1, modulo.MAX_LOTES_PREVISAO + 6)]
+
+        def rpc(nome, params):
+            data = {'despacho_previsao_lotes': lotes, 'despacho_lotes': [], 'despacho_rascunhos_abertos': [],
+                    'despacho_consolidar_pedidos': []}[nome]
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data=data))
+        banco.rpc.side_effect = rpc
+        data = self._previsao_miolos(banco).get_json()['data']
+        self.assertTrue(data['truncado'])
+        self.assertEqual(len(data['lotes']), modulo.MAX_LOTES_PREVISAO)
+        self.assertEqual(data['total_lotes_pendentes'], modulo.MAX_LOTES_PREVISAO + 5)
+
     def test_autenticacao_antes_de_qualquer_consulta(self):
         banco = MagicMock()
         with patch.object(modulo, 'get_current_user', return_value=None), patch.object(modulo, 'supabase_db', banco):
-            for endpoint in ('arvore', 'escopo'):
+            for endpoint in ('arvore', 'escopo', 'previsao-miolos'):
                 self.assertEqual(self.client.get('/api/v2/despacho/' + endpoint).status_code, 401)
         banco.rpc.assert_not_called()
 

@@ -34,10 +34,16 @@ def apply_miolo_fixes(miolo):
 def fix_amazon_25_to_26(miolo):
     if 'MANI25' in miolo or 'AGMT25' in miolo:
         return 'AGMT26'
+    if 'AGMT26' in miolo: 
+        return 'AGMT27'
     if 'PLAN25' in miolo:
         return 'PLAN26'
+    if 'PLAN26' in miolo:
+        return 'PLAN27'
+    if 'PLANHH24' in miolo:
+        return 'PLAN27'
     if 'PB25' in miolo:
-        return 'PB26'
+        return 'PB27'
     return miolo
 
 

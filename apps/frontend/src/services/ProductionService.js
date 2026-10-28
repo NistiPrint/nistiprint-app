@@ -13,6 +13,16 @@ const ProductionService = {
     return response.data;
   },
 
+  // Miolos previstos pelos lotes da Torre de Despacho ainda não publicados.
+  getPrevisaoMiolos: async ({ data, horizonte = [], incluirPronto = false } = {}) => {
+    const params = new URLSearchParams();
+    if (data) params.set('data', data);
+    horizonte.forEach((prazo) => params.append('horizonte', prazo));
+    if (incluirPronto) params.set('incluir_pronto', 'true');
+    const response = await api.get('/despacho/previsao-miolos', { params });
+    return response.data;
+  },
+
   registerProduction: async (data) => {
     // data: { product_id, quantity, date, field, origem_tipo, sincrono }
     // default origem_tipo: 3 (CONTROLE_PRODUCAO_LOTE)

@@ -2,6 +2,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { dataOperacionalHoje } from '@/lib/dataOperacional';
+import { urlDoEscopo } from '@/lib/escopoDespacho';
 import { AlertTriangle, Clock, FileText, FileUp, Package, RefreshCw, Truck, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -366,19 +367,7 @@ export default function TorreDespachoPage() {
       navigate('/configuracoes/integracoes?aba=logistica&status=nao_classificado');
       return;
     }
-    const params = new URLSearchParams();
-    if (integrationId !== null && integrationId !== undefined) params.set('integration_id', integrationId);
-    // O escopo e o lote inteiro: todos os canais que dividem a janela.
-    // O singular vai junto de proposito: uma API que ainda nao conhece lotes le
-    // `modalidade_id` e devolve o canal principal — menos do que o esperado, mas
-    // nunca uma lista vazia. Ja aconteceu de a tela zerar por essa diferenca.
-    (modalidadeIds || []).forEach((id) => params.append('modalidade_ids', id));
-    if (modalidadeIds && modalidadeIds.length > 0) params.set('modalidade_id', modalidadeIds[0]);
-    params.set('marketplace_nome', nomeMarketplace || '');
-    params.set('modalidade_nome', nomeModalidade || '');
-    params.set('aba', aba);
-    if (incluirPronto) params.set('incluir_pronto', 'true');
-    navigate(`/despacho/escopo?${params.toString()}`);
+    navigate(urlDoEscopo({ integrationId, modalidadeIds, nomeMarketplace, nomeModalidade, aba, incluirPronto }));
   };
 
   const totaisPorAba = useMemo(() => lotes

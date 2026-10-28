@@ -3,12 +3,12 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { AlertTriangle, ChevronRight, History, LayoutGrid, LayoutList, List, Loader2, Minus, Plus, Search } from 'lucide-react';
+import { AlertTriangle, ChevronRight, History, LayoutGrid, LayoutList, List, Loader2, Minus, Plus, Search, TowerControl } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { dataCurta as date, numero as number } from '@/lib/formatoProducao';
+import PrevisaoMiolosTorre from './PrevisaoMiolosTorre';
 
-const number = (value) => new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 4 }).format(Number(value) || 0);
-const date = (value) => value ? new Date(`${String(value).slice(0, 10)}T12:00:00`).toLocaleDateString('pt-BR') : 'Sem prazo';
 const demandPath = (row) => `/producao/${row.simulacao ? 'simulacao' : 'demanda'}/${row.demanda_id ?? row.id}/dashboard`;
 const SimulationBadge = ({ show }) => show ? <Badge className="ml-2 bg-amber-600 text-white">Simulação</Badge> : null;
 const stageName = (tipo, capaSubTab) => tipo === 'miolo' ? 'miolos' : capaSubTab === 'impressas' ? 'capas impressas' : 'capas acabadas';
@@ -26,7 +26,7 @@ const COLUMNS = [
 export default function ProductionPlanningViews({
   tipo, capaSubTab, setCapaSubTab, view, setView, planning, loading, error,
   products, filter, setFilter, inputs, onInputChange, onProduction, onRemoval, onLog, onRefresh,
-  includeSimulations, setIncludeSimulations,
+  includeSimulations, setIncludeSimulations, previsao,
 }) {
   const [expanded, setExpanded] = useState(() => new Set());
   const toggleExpanded = (id) => setExpanded((current) => {
@@ -75,6 +75,7 @@ export default function ProductionPlanningViews({
     replenishment: sum.replenishment + row.reposicao_minimo,
   }), { shortage: 0, replenishment: 0 });
   const stage = stageName(tipo, capaSubTab);
+  const emPrevisao = view === 'previsao';
 
   return <div className="space-y-3">
     <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
@@ -83,11 +84,11 @@ export default function ProductionPlanningViews({
         <p className="text-xs text-muted-foreground">Cobertura projetada com o estoque disponível; nenhuma reserva é criada pelo planejamento.</p>
       </div>
     </div>
-    <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 rounded-lg border bg-muted/30 px-3 py-2 text-sm">
+    {!emPrevisao && <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 rounded-lg border bg-muted/30 px-3 py-2 text-sm">
       <span className="text-muted-foreground">Falta para demandas <strong className="ml-1 text-base tabular-nums text-red-700">{number(totals.shortage)}</strong></span>
       <span className="text-muted-foreground">Reposição do estoque mínimo <strong className="ml-1 text-base tabular-nums text-amber-700">{number(totals.replenishment)}</strong></span>
       <span className="text-xs text-muted-foreground">{visibleProducts.length} de {plannedProducts.length} {stage}</span>
-    </div>
+    </div>}
     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex items-center gap-3">
         {tipo === 'capa' && <div className="flex gap-1.5" role="group" aria-label="Etapa das capas">
@@ -99,22 +100,23 @@ export default function ProductionPlanningViews({
           <Button size="icon" className="h-8 w-8" role="tab" aria-selected={view === 'produto'} variant={view === 'produto' ? 'default' : 'outline'} title="Por produto" onClick={() => setView('produto')}><List className="h-4 w-4" /></Button>
           <Button size="icon" className="h-8 w-8" role="tab" aria-selected={view === 'demanda'} variant={view === 'demanda' ? 'default' : 'outline'} title="Por demanda" onClick={() => setView('demanda')}><LayoutList className="h-4 w-4" /></Button>
           <Button size="icon" className="h-8 w-8" role="tab" aria-selected={view === 'grade'} variant={view === 'grade' ? 'default' : 'outline'} title="Grade" onClick={() => setView('grade')}><LayoutGrid className="h-4 w-4" /></Button>
+          {tipo === 'miolo' && previsao && <Button size="sm" className="h-8 gap-1.5" role="tab" aria-selected={emPrevisao} variant={emPrevisao ? 'default' : 'outline'} title="Miolos previstos pelos lotes ainda não publicados" onClick={() => setView('previsao')}><TowerControl className="h-4 w-4" /> Previsão</Button>}
         </div>
       </div>
       <div className="flex gap-2 w-full sm:w-auto">
         <div className="relative flex-1 sm:w-64"><Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input className="h-9 pl-8" placeholder="Buscar produto ou demanda" value={filter} onChange={(event) => setFilter(event.target.value)} />
         </div>
-        <label className="flex items-center gap-2 whitespace-nowrap text-sm text-muted-foreground">
+        {!emPrevisao && <label className="flex items-center gap-2 whitespace-nowrap text-sm text-muted-foreground">
           <input type="checkbox" className="h-4 w-4 rounded border-input accent-primary" checked={includeSimulations} onChange={(event) => setIncludeSimulations(event.target.checked)} />
           Incluir simulações
-        </label>
-        <Button size="sm" variant="outline" onClick={onRefresh} disabled={loading}>Atualizar</Button>
+        </label>}
+        <Button size="sm" variant="outline" onClick={onRefresh} disabled={loading || previsao?.loading}>Atualizar</Button>
       </div>
     </div>
-    {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</div>}
-    {loading && <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Atualizando planejamento…</div>}
-    {unmapped.length > 0 && <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">
+    {!emPrevisao && error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</div>}
+    {!emPrevisao && loading && <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Atualizando planejamento…</div>}
+    {!emPrevisao && unmapped.length > 0 && <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">
       <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4" /> {unmapped.length} item(ns) sem vínculo confiável nesta etapa</div>
       <details className="mt-1"><summary className="cursor-pointer text-xs font-medium">Ver itens afetados — não entram na sugestão de {tipo === 'capa' && capaSubTab === 'impressas' ? 'impressão' : 'produção'}</summary>
         <ul className="mt-2 space-y-1 pl-4 list-disc">{unmapped.map((row) => <li key={`${row.demanda_id}-${row.item_id}`}><Link className="underline" to={demandPath(row)}>{row.demanda_nome}</Link><SimulationBadge show={row.simulacao} />: {row.item_nome} — {row.motivo}</li>)}</ul>
@@ -174,7 +176,7 @@ export default function ProductionPlanningViews({
             </TableBody>
           </Table>
         </div>}
-    </div> : <div className="space-y-2" role="tabpanel">
+    </div> : view === 'demanda' ? <div className="space-y-2" role="tabpanel">
       {visibleDemands.length === 0 && <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground">Nenhuma demanda encontrada nesta etapa.</div>}
       {visibleDemands.map((demand) => <Card key={demand.id}><CardContent className="space-y-2 p-3">
         <div className="flex flex-wrap items-start justify-between gap-3"><div><Link className="text-base font-semibold leading-tight hover:text-blue-700 hover:underline" to={demandPath(demand)}>{demand.name}</Link><SimulationBadge show={demand.simulacao} /><p className="text-xs text-muted-foreground">Entrega: {date(demand.deadline)} · Prioridade: {number(demand.priority)}</p></div><Badge variant={demand.unmapped.length > 0 ? 'outline' : demand.shortage > 0 ? 'destructive' : 'secondary'}>{demand.unmapped.length > 0 ? 'Mapeamento pendente' : demand.shortage > 0 ? `Faltam ${number(demand.shortage)}` : 'Coberta pelo estoque'}</Badge></div>
@@ -184,8 +186,7 @@ export default function ProductionPlanningViews({
           {demand.unmapped.map((row) => <div key={row.item_id} className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">{row.item_nome}: {row.motivo}</div>)}
         </div>
       </CardContent></Card>)}
-    </div>}
-    {view === 'grade' && <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" role="tabpanel">
+    </div> : view === 'grade' ? <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" role="tabpanel">
       {visibleProducts.length === 0
         ? <div className="col-span-full rounded-lg border border-dashed p-8 text-center text-muted-foreground">Nenhum produto encontrado nesta etapa.</div>
         : visibleProducts.map((product) => {
@@ -212,6 +213,6 @@ export default function ProductionPlanningViews({
             </CardContent>
           </Card>;
         })}
-    </div>}
+    </div> : emPrevisao && previsao ? <PrevisaoMiolosTorre {...previsao} filter={filter} /> : null}
   </div>;
 }
