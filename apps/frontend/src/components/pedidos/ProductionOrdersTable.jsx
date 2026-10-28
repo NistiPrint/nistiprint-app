@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
+import CanalIcon from '@/components/producao/CanalIcon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -8,7 +9,6 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { formatAppDateTime } from '@/lib/dateTime'
 import { getOrderTimestamps } from '@/lib/orderTimestamps'
 import MarketplaceService from '@/services/MarketplaceService'
@@ -76,50 +76,6 @@ function getDemandaStatusColor(status) {
     COLETADO: 'bg-emerald-100 text-emerald-800 border-emerald-300',
   }
   return statusColors[normalized] || 'bg-gray-100 text-gray-800 border-gray-300'
-}
-
-function CanalIcon({ canalNome, marketplaceSlug, marketplaceColor, moduleIcons }) {
-  const canalSlug = marketplaceSlug || (canalNome ? canalNome.toLowerCase().replace(/\s+/g, '') : '')
-  const legacyIconUrls = {
-    shopee: 'https://app.nistiprint.com.br/assets/img/shopee.svg',
-    amazon: 'https://app.nistiprint.com.br/assets/img/amazon.svg',
-    mercadolivre: 'https://app.nistiprint.com.br/assets/img/mercadolivre.svg',
-    shein: 'https://app.nistiprint.com.br/assets/img/shein.svg',
-    magazineluiza: 'https://app.nistiprint.com.br/assets/img/magazineluiza.svg',
-    kwai: 'https://app.nistiprint.com.br/assets/img/kwai.svg',
-    tiktokshop: 'https://app.nistiprint.com.br/assets/img/tiktok.svg',
-    lojaintegrada: 'https://app.nistiprint.com.br/assets/img/lojaintegrada.svg',
-  }
-
-  const iconUrl =
-    moduleIcons?.[canalSlug] ||
-    legacyIconUrls[canalSlug] ||
-    Object.entries(moduleIcons || {}).find(([slug]) => canalSlug.includes(slug))?.[1] ||
-    Object.entries(legacyIconUrls).find(([slug]) => canalSlug.includes(slug))?.[1]
-
-  const [imgError, setImgError] = useState(false)
-
-  if (iconUrl && !imgError) {
-    return (
-      <Tooltip>
-        <TooltipTrigger>
-          <img
-            src={iconUrl}
-            alt={canalNome || 'Origem'}
-            className='h-6 w-6 object-contain'
-            onError={() => setImgError(true)}
-          />
-        </TooltipTrigger>
-        <TooltipContent>{canalNome || 'Origem'}</TooltipContent>
-      </Tooltip>
-    )
-  }
-
-  return (
-    <Badge variant='outline' style={marketplaceColor ? { backgroundColor: marketplaceColor, color: '#fff' } : undefined}>
-      {canalNome || 'Origem indefinida'}
-    </Badge>
-  )
 }
 
 export default function ProductionOrdersTable({
