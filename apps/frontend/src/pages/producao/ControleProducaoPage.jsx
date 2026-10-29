@@ -1,29 +1,25 @@
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import ProductionService from '@/services/ProductionService';
+import ProductionPlanningViews from '@/components/producao/ProductionPlanningViews';
 import { format } from 'date-fns';
-import { ChevronDown, ChevronRight, Eye, History, LayoutGrid, LayoutList, Loader2, Minus, Package, PackageMinus, Plus, Search, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Loader2, PackageMinus, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 
 const ControleProducaoPage = ({tipo}) => {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [viewMode, setViewMode] = useState(() => localStorage.getItem('producaoMiolosView') || 'list');
   const [filter, setFilter] = useState('');
   const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [totalActive, setTotalActive] = useState(0);
   
   // Controle de Reversão de Log
   const [revertDialogOpen, setRevertDialogOpen] = useState(false);
@@ -31,19 +27,28 @@ const ControleProducaoPage = ({tipo}) => {
   const [revertStock, setRevertStock] = useState(true);
   const [isReverting, setIsReverting] = useState(false);
 
-  const [activeTab, setActiveTab] = useState('estoque'); // Adiciona estado para controle das abas
-  const [demandSubTab, setDemandSubTab] = useState(tipo === 'miolo' ? 'miolo' : 'capa');
+  // A visão Previsão (só miolos) mora na URL (?vista=previsao) para poder ser compartilhada.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTabState] = useState(() =>
+    tipo === 'miolo' && searchParams.get('vista') === 'previsao' ? 'previsao' : 'demanda');
+  const setActiveTab = (view) => {
+    setActiveTabState(view);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (view === 'previsao') next.set('vista', 'previsao'); else next.delete('vista');
+      return next;
+    }, { replace: true });
+  };
+  const [planning, setPlanning] = useState(null);
+  const [planningLoading, setPlanningLoading] = useState(false);
+  const [planningError, setPlanningError] = useState('');
+  const [includeSimulations, setIncludeSimulations] = useState(false);
   const [capaSubTab, setCapaSubTab] = useState('impressas'); // Sub-tab para capas: impressas vs acabadas
-
-  // Estados para a visão de demandas
-  const [mioloDemandSummary, setMioloDemandSummary] = useState([]);
-  const [mioloDemandLoading, setMioloDemandLoading] = useState(false);
-  const [capaDemandInfo, setCapaDemandInfo] = useState([]);
-  const [capaDemandLoading, setCapaDemandLoading] = useState(false);
-  const [activeDemands, setActiveDemands] = useState([]);
-  const [activeDemandsLoading, setActiveDemandsLoading] = useState(false);
-  const [mioloDemandModalOpen, setMioloDemandModalOpen] = useState(false);
-  const [capaDemandModalOpen, setCapaDemandModalOpen] = useState(false);
+  const [previsao, setPrevisao] = useState(null);
+  const [previsaoLoading, setPrevisaoLoading] = useState(false);
+  const [previsaoError, setPrevisaoError] = useState('');
+  const [previsaoFiltros, setPrevisaoFiltros] = useState({ horizonte: ['atrasado', 'hoje', 'sem_prazo'], incluirPronto: false });
+  const [horizonte, setHorizonte] = useState(['atrasado', 'hoje', 'sem_prazo']);
 
   // Estados para Distribuição de Saída
   const [distributionModalOpen, setDistributionModalOpen] = useState(false);
@@ -53,6 +58,9 @@ const ControleProducaoPage = ({tipo}) => {
   const [isDistributing, setIsDistributing] = useState(false);
   const [distributionLoading, setDistributionLoading] = useState(false);
   const pendingReservationOperation = useRef(null);
+  const controlRequestId = useRef(0);
+  const planningRequestId = useRef(0);
+  const previsaoRequestId = useRef(0);
 
   const [selectedDemandaId, setSelectedDemandaId] = useState(null);
 
@@ -66,22 +74,11 @@ const ControleProducaoPage = ({tipo}) => {
   const [selectedProductForLog, setSelectedProductForLog] = useState(null);
   const [logLoading, setLogLoading] = useState(false);
 
-  // Estado para expandir demandas no consolidado de miolo
-  const [expandedMiolos, setExpandedMiolos] = useState({});
-
   // Inputs state for quantities
   const [inputs, setInputs] = useState({});
   
-  // Títulos dinâmicos simplificados
-  const getPageTitle = () => {
-    if (tipo === 'miolo') return 'Controle de Produção de Miolos';
-    return 'Controle de Produção de Capas';
-  };
-
-  const pageTitle = getPageTitle();
-  const totalLabel = tipo === 'miolo' ? 'Total de Miolos Ativos' : 'Total de Capas';
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
+    const requestId = ++controlRequestId.current;
     setLoading(true);
     try {
       // Determinar o tipo correto baseado no contexto
@@ -93,55 +90,81 @@ const ControleProducaoPage = ({tipo}) => {
       const data = await ProductionService.getControleData(tipoParam);
       
       if (data.success) {
-        setProducts(data.products || []);
-        setTotalActive(data.total_active_cores || 0);
-        setSelectedDate(data.selected_date || format(new Date(), 'yyyy-MM-dd'));
+        if (requestId === controlRequestId.current) {
+          setProducts(data.products || []);
+          setSelectedDate(data.selected_date || format(new Date(), 'yyyy-MM-dd'));
+        }
       } else {
         toast.error(data.error || 'Erro ao carregar dados.');
-        setProducts([]);
-        setTotalActive(0);
+        if (requestId === controlRequestId.current) setProducts([]);
       }
     } catch (error) {
       const errorMessage = error.response?.data?.error || error.message || 'Erro ao carregar dados.';
       toast.error(errorMessage);
       console.error('ControleProducaoPage - Fetch Error:', error);
-      setProducts([]);
-      setTotalActive(0);
+      if (requestId === controlRequestId.current) setProducts([]);
     } finally {
-      setLoading(false);
+      if (requestId === controlRequestId.current) setLoading(false);
     }
-  };
+  }, [tipo, capaSubTab]);
+
+  const fetchPlanning = useCallback(async () => {
+    const requestId = ++planningRequestId.current;
+    setPlanningLoading(true);
+    setPlanningError('');
+    setPlanning(null);
+    try {
+      const tipoParam = tipo === 'miolo' ? 'miolo' : capaSubTab === 'impressas' ? 'capa' : 'capa_acabada';
+      const data = await ProductionService.getDemandPlanning(tipoParam, includeSimulations, { horizonte });
+      if (!data.success) throw new Error(data.message || 'Erro ao carregar planejamento.');
+      if (requestId === planningRequestId.current) setPlanning({ products: data.products || [], unmapped: data.unmapped || [] });
+    } catch (error) {
+      if (requestId === planningRequestId.current) {
+        setPlanningError(error.response?.data?.message || error.message || 'Erro ao carregar planejamento.');
+        setPlanning(null);
+      }
+    } finally {
+      if (requestId === planningRequestId.current) setPlanningLoading(false);
+    }
+  }, [tipo, capaSubTab, includeSimulations, horizonte]);
 
   useEffect(() => {
     fetchData();
-  }, [tipo, activeTab, capaSubTab]);
+    fetchPlanning();
+  }, [fetchData, fetchPlanning]);
 
-  // Resetar sub-aba de demandas quando o tipo da página mudar
-  useEffect(() => {
-    setDemandSubTab(tipo === 'miolo' ? 'miolo' : 'capa');
-  }, [tipo]);
-
-  // Carregar dados de demanda quando a aba de demandas for selecionada ou o subtab mudar
-  useEffect(() => {
-    if (activeTab === 'demandas') {
-      if (demandSubTab === 'lista') {
-        handleActiveDemandsClick();
-      } else if (demandSubTab === 'miolo') {
-        handleMioloDemandClick();
-      } else if (demandSubTab === 'capa') {
-        handleCapaDemandClick();
+  // Lazy: a consolidação dos lotes da Torre é mais cara que o resto da tela, então
+  // só roda quando a visão Previsão está aberta (e a cada troca de filtro).
+  const fetchPrevisao = useCallback(async () => {
+    const requestId = ++previsaoRequestId.current;
+    setPrevisaoLoading(true);
+    setPrevisaoError('');
+    try {
+      const data = await ProductionService.getPrevisaoMiolos(previsaoFiltros);
+      if (!data.success) throw new Error(data.error || 'Erro ao carregar a previsão de miolos.');
+      if (requestId === previsaoRequestId.current) setPrevisao(data.data);
+    } catch (error) {
+      if (requestId === previsaoRequestId.current) {
+        setPrevisaoError(error.response?.data?.error || error.message || 'Erro ao carregar a previsão de miolos.');
+        setPrevisao(null);
       }
+    } finally {
+      if (requestId === previsaoRequestId.current) setPrevisaoLoading(false);
     }
-  }, [activeTab, demandSubTab, tipo]);
+  }, [previsaoFiltros]);
+
+  useEffect(() => {
+    if (tipo === 'miolo' && activeTab === 'previsao') fetchPrevisao();
+  }, [tipo, activeTab, fetchPrevisao]);
 
   const handleInputChange = (productId, value) => {
     setInputs(prev => ({ ...prev, [productId]: value }));
   };
 
   const handleProduction = async (productId) => {
-    const quantity = parseInt(inputs[productId]);
-    if (!quantity || quantity <= 0) {
-      toast.warning('Insira uma quantidade válida.');
+    const quantity = Number(inputs[productId]);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      toast.warning('Insira uma quantidade inteira positiva.');
       return;
     }
 
@@ -168,6 +191,7 @@ const ControleProducaoPage = ({tipo}) => {
         setInputs(prev => ({ ...prev, [productId]: '' }));
         updateProductState(productId, result);
         fetchData(); // Refresh data to show updated stock
+        fetchPlanning();
       } else {
         toast.error(result.error || 'Erro ao registrar produção.');
       }
@@ -178,31 +202,52 @@ const ControleProducaoPage = ({tipo}) => {
     }
   };
 
-  const handleRemovalClick = async (product) => {
-    const totalToDistribute = parseFloat(inputs[product.id]);
-    if (!totalToDistribute || totalToDistribute <= 0) {
+  const handleRemovalClick = async (product, allocation = {}) => {
+    // Na visão Estoque os produtos vêm do planejamento com `product_id`;
+    // no cadastro de estoque vêm com `id`. Normalize antes de ler o campo e
+    // antes de seguir para os fluxos de reserva.
+    const productId = product?.id ?? product?.product_id;
+    const rawQuantity = allocation.quantity ?? inputs[productId];
+    const totalToDistribute = Number(rawQuantity);
+    if (rawQuantity === undefined || rawQuantity === null || rawQuantity === '' || !Number.isFinite(totalToDistribute) || totalToDistribute <= 0) {
       toast.warning('Insira uma quantidade válida no campo Qtd antes de clicar em saída.');
       return;
     }
+    if (allocation.maxQuantity !== undefined && totalToDistribute > Number(allocation.maxQuantity)) {
+      toast.warning(`A quantidade não pode exceder o pendente desta demanda (${allocation.maxQuantity}).`);
+      return;
+    }
 
-    setSelectedProductForDistribution({ ...product, totalToDistribute });
+    setSelectedProductForDistribution({ ...product, id: productId, totalToDistribute });
     setDistributionModalOpen(true);
     setDistributionQuantities({});
-    setSelectedDemandaId(null);
+    setSelectedDemandaId(allocation.demandaId ? String(allocation.demandaId) : null);
     setDistributionLoading(true);
     
     try {
-      // Buscar TODAS as demandas ativas para o usuário selecionar
-      const response = await fetch('/api/v2/demanda_producao/');
-      const data = await response.json();
-      if (data.success) {
-        // Filtrar apenas demandas em andamento
-        const activeStatuses = ['Pendente', 'Em Produção', 'Em Andamento', 'Criada', 'AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL'];
-        const active = data.demandas.filter(d => activeStatuses.includes(d.status));
-        setPendingDemandsForProduct(active);
-      } else {
-        toast.error(data.message);
-      }
+      // O cadastro ainda não é suficientemente consistente para filtrar por
+      // vínculo de produto. Mostramos todas as demandas e os cenários salvos.
+      const [realResponse, simulationsResponse] = await Promise.all([
+        fetch('/api/v2/demanda_producao/'),
+        fetch('/api/v2/demanda-simulacoes'),
+      ]);
+      const [realData, simulationsData] = await Promise.all([
+        realResponse.json(), simulationsResponse.json(),
+      ]);
+      if (!realData.success) throw new Error(realData.message || 'Erro ao buscar demandas.');
+      const real = (realData.demandas || []).map(d => ({ ...d, simulacao: false }));
+      const simulations = simulationsData.success
+        ? (simulationsData.data || []).map(d => ({ ...d, simulacao: true }))
+        : [];
+      const all = [...real, ...simulations]
+        .filter(d => {
+          const status = String(d.status ?? d.demanda_status ?? '').trim().toLocaleUpperCase('pt-BR');
+          const name = String(d.nome ?? d.name ?? d.descricao ?? '').trim().toLocaleUpperCase('pt-BR');
+          return status !== 'RASCUNHO' && status !== 'CANCELADO' && !name.startsWith('RASCUNHO ');
+        })
+        .filter(d => !allocation.demandaId || String(d.id) === String(allocation.demandaId));
+      setPendingDemandsForProduct(all);
+      if (!simulationsData.success) toast.warning('Não foi possível carregar as simulações. As demandas reais estão disponíveis.');
     } catch (error) {
       const errorMessage = error.response?.data?.error || error.message || 'Erro ao buscar demandas.';
       toast.error(errorMessage);
@@ -211,10 +256,10 @@ const ControleProducaoPage = ({tipo}) => {
     }
   };
 
-  const handleDistributionSubmit = async (manualDists = null) => {
+  const handleDistributionSubmit = async (manualDists = null, demandId = selectedDemandaId) => {
     const distsToUse = manualDists || distributionQuantities;
     const distributions = Object.entries(distsToUse)
-      .filter(([_, qty]) => qty > 0)
+      .filter(([, qty]) => qty > 0)
       .map(([itemId, qty]) => ({ item_id: itemId, quantidade: qty }));
 
     if (distributions.length === 0) {
@@ -231,10 +276,10 @@ const ControleProducaoPage = ({tipo}) => {
 
     setIsDistributing(true);
     try {
-      const reservationKey = `production-reservation:${selectedProductForDistribution.id}:${selectedDemandaId || 'mixed'}`;
+      const reservationKey = `production-reservation:${selectedProductForDistribution.id}:${demandId || 'mixed'}`;
       const requestContent = JSON.stringify({
         product_id: selectedProductForDistribution.id,
-        demanda_id: selectedDemandaId,
+        demanda_id: demandId,
         distributions,
         date: selectedDate,
       });
@@ -242,7 +287,7 @@ const ControleProducaoPage = ({tipo}) => {
       try {
         const saved = JSON.parse(sessionStorage.getItem(reservationKey) || 'null');
         if (!pending && saved?.content === requestContent) pending = saved;
-      } catch (_) { /* sessão sem estado recuperável */ }
+      } catch { /* sessão sem estado recuperável */ }
       if (!pending || pending.content !== requestContent) {
         pending = { content: requestContent, operation_id: crypto.randomUUID() };
         pendingReservationOperation.current = pending;
@@ -254,7 +299,7 @@ const ControleProducaoPage = ({tipo}) => {
         quantity: totalDistributed,
         date: selectedDate,
         distributions: distributions,
-        demanda_id: manualDists ? selectedDemandaId : selectedDemandaId,
+        demanda_id: demandId,
         sincrono: true, // Processamento imediato, sem fila
         operation_id: pending.operation_id,
       });
@@ -284,6 +329,8 @@ const ControleProducaoPage = ({tipo}) => {
           }
           return p;
         }));
+        fetchData();
+        fetchPlanning();
       } else {
         toast.error(result.error || 'Erro ao registrar saída distribuída.');
       }
@@ -316,6 +363,7 @@ const ControleProducaoPage = ({tipo}) => {
         setDistributionModalOpen(false);
         setInputs(prev => ({ ...prev, [product.id]: '' }));
         fetchData();
+        fetchPlanning();
       } else {
         toast.error(result.error || 'Erro ao registrar saída avulsa.');
       }
@@ -363,6 +411,8 @@ const ControleProducaoPage = ({tipo}) => {
         handleLogClick(selectedProductForLog);
         // Update product totals in main list
         updateProductState(selectedProductForLog.id, result);
+        fetchData();
+        fetchPlanning();
       } else {
         toast.error(result.error || 'Erro ao excluir lançamento.');
       }
@@ -372,10 +422,6 @@ const ControleProducaoPage = ({tipo}) => {
     } finally {
       setIsReverting(false);
     }
-  };
-
-  const toggleMioloExpansion = (id) => {
-    setExpandedMiolos(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
   const updateProductState = (productId, result) => {
@@ -404,551 +450,39 @@ const ControleProducaoPage = ({tipo}) => {
 
 
 
-  const handleMioloDemandClick = async () => {
-    setMioloDemandLoading(true);
-    try {
-      const data = await ProductionService.getMioloDemandSummary();
-      if (data.success) {
-        setMioloDemandSummary(data.summary || {});
-      } else {
-        toast.error(data.error);
-        setMioloDemandSummary([]);
-      }
-    } catch (error) {
-      const errorMessage = error.response?.data?.error || error.message || 'Erro ao carregar resumo da demanda de miolos.';
-      toast.error(errorMessage);
-      console.error('Erro ao carregar resumo da demanda de miolos:', error);
-      setMioloDemandSummary([]);
-    } finally {
-      setMioloDemandLoading(false);
-    }
-  };
-
-  const handleCapaDemandClick = async () => {
-    setCapaDemandLoading(true);
-    try {
-      const data = await ProductionService.getCapaDemandInfo();
-      if (data.success) {
-        setCapaDemandInfo(data.items || []);
-      } else {
-        toast.error(data.error);
-        setCapaDemandInfo([]);
-      }
-    } catch (error) {
-      const errorMessage = error.response?.data?.error || error.message || 'Erro ao carregar informações da demanda de capas.';
-      toast.error(errorMessage);
-      console.error('Erro ao carregar informações da demanda de capas:', error);
-      setCapaDemandInfo([]);
-    } finally {
-      setCapaDemandLoading(false);
-    }
-  };
-
-  const handleActiveDemandsClick = async () => {
-    setActiveDemandsLoading(true);
-    try {
-      const response = await fetch('/api/v2/demanda_producao/');
-      const data = await response.json();
-
-      if (data.success) {
-        // Filtrar apenas as demandas ativas (não finalizadas, não coletadas)
-        const activeStatuses = ['Pendente', 'Em Produção', 'Em Andamento', 'Criada', 'AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL'];
-        const active = data.demandas.filter(d => activeStatuses.includes(d.status));
-        setActiveDemands(active || []);
-      } else {
-        toast.error(data.message || 'Erro ao carregar demandas ativas.');
-        setActiveDemands([]);
-      }
-    } catch (error) {
-      const errorMessage = error.message || 'Erro de comunicação com o servidor.';
-      toast.error(errorMessage);
-      console.error('Erro ao carregar demandas ativas:', error);
-      setActiveDemands([]);
-    } finally {
-      setActiveDemandsLoading(false);
-    }
-  };
-
-  const toggleView = (val) => {
-    if (val) {
-      setViewMode(val);
-      localStorage.setItem('producaoMiolosView', val);
-    }
-  };
-
-  const filteredProducts = useMemo(() => {
-    if (!filter) return products;
-    const lowerFilter = filter.toLowerCase();
-    return products.filter(p => 
-      p.name.toLowerCase().includes(lowerFilter) || 
-      (p.sku && p.sku.toLowerCase().includes(lowerFilter))
-    );
-  }, [products, filter]);
-
   if (loading && products.length === 0) {
     return <div className="flex justify-center items-center h-screen"><Loader2 className="animate-spin h-8 w-8" /></div>;
   }
 
   return (
     <div className="container mx-auto p-4 space-y-4">
-      <div className="flex justify-between items-center mb-4">
-        <h1 className="text-2xl font-bold">{pageTitle}</h1>
-        <div className="flex gap-2">
-          <ToggleGroup type="single" value={activeTab} onValueChange={setActiveTab} className="mr-2">
-            <ToggleGroupItem value="estoque" aria-label="Estoque">
-              Estoque
-            </ToggleGroupItem>
-            <ToggleGroupItem value="demandas" aria-label="Demandas">
-              Demandas
-            </ToggleGroupItem>
-          </ToggleGroup>
-          {tipo === 'capa' && (
-            <ToggleGroup type="single" value={capaSubTab} onValueChange={setCapaSubTab}>
-              <ToggleGroupItem value="impressas" aria-label="Capas Impressas">
-                Capas Impressas
-              </ToggleGroupItem>
-              <ToggleGroupItem value="acabadas" aria-label="Capas Acabadas">
-                Capas Acabadas
-              </ToggleGroupItem>
-            </ToggleGroup>
-          )}
-        </div>
-      </div>
-
-      <Card className="shadow-sm">
-        <CardContent className="p-4 flex flex-col md:flex-row justify-between items-center gap-4">
-          <div className="flex items-center gap-4 text-sm">
-            <span><strong>Data:</strong> {format(new Date(selectedDate), 'dd/MM/yyyy')}</span>
-            <Badge variant="secondary">{totalLabel}: {totalActive}</Badge>
-          </div>
-          <div className="flex items-center gap-2 w-full md:w-auto">
-            <div className="relative w-full md:w-64">
-              <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input 
-                placeholder="Filtrar por nome..." 
-                className="pl-8" 
-                value={filter} 
-                onChange={(e) => setFilter(e.target.value)} 
-              />
-            </div>
-            <ToggleGroup type="single" value={viewMode} onValueChange={toggleView}>
-              <ToggleGroupItem value="list" aria-label="Lista"><LayoutList className="h-4 w-4" /></ToggleGroupItem>
-              <ToggleGroupItem value="grid" aria-label="Grade"><LayoutGrid className="h-4 w-4" /></ToggleGroupItem>
-            </ToggleGroup>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Conteúdo baseado na aba selecionada */}
-      {activeTab === 'estoque' ? (
-        <>
-          {filteredProducts.length === 0 && !loading ? (
-            <Card className="border-gray-200 bg-gray-50/50">
-              <CardContent className="pt-6">
-                <div className="text-center text-muted-foreground">
-                  <Package className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>Nenhum {tipo === 'miolo' ? 'miolo' : 'capa'} encontrado{filter ? ` para "${filter}"` : ''}.</p>
-                  {!filter && (
-                    <p className="text-sm mt-2">
-                      Verifique se a categoria de {tipo === 'miolo' ? 'miolos' : 'capas'} está configurada corretamente.
-                    </p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          ) : viewMode === 'list' ? (
-            <Card>
-              <CardContent className="p-0 overflow-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Produto</TableHead>
-                      <TableHead className="text-center">Atual</TableHead>
-                      <TableHead className="text-center">Ideal</TableHead>
-                      <TableHead className="text-center">Variação</TableHead>
-                      <TableHead className="text-center">Impresso</TableHead>
-                      <TableHead className="text-center">Saída</TableHead>
-                      <TableHead style={{ width: '200px' }}>Ações</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredProducts.map(product => {
-                      const stock = product.stock_details?.quantidade_disponivel || 0;
-                      const min = product.stock_min || 0;
-                      const variation = stock - min;
-                      return (
-                        <TableRow key={product.id}>
-                          <TableCell>
-                            <div className="flex items-center">
-                              <Link to={`/produtos/${product.id}/editar`} className="group mr-2">
-                                <div className="font-bold text-blue-600 group-hover:underline">{product.name}</div>
-                                <div className="text-xs text-muted-foreground group-hover:text-blue-500">{product.sku}</div>
-                              </Link>
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-center">
-                            <Popover>
-                              <PopoverTrigger>
-                                <span className={`text-lg font-bold cursor-pointer ${stock < min ? 'text-red-500' : 'text-green-600'}`}>
-                                  {stock}
-                                </span>
-                              </PopoverTrigger>
-                              <PopoverContent>
-                                <div className="text-sm">
-                                  <p>Físico: <Badge variant="outline">{product.stock_details?.quantidade || 0}</Badge></p>
-                                  <p className="mt-1">Reservado: <Badge variant="secondary">{product.stock_details?.quantidade_reservada || 0}</Badge></p>
-                                </div>
-                              </PopoverContent>
-                            </Popover>
-                          </TableCell>
-                          <TableCell className="text-center">{min}</TableCell>
-                          <TableCell className="text-center">
-                            <span className={variation < 0 ? 'text-red-500 font-bold' : ''}>{variation}</span>
-                          </TableCell>
-                          <TableCell className="text-center text-blue-600 font-bold">{product.quantity_produced_today || 0}</TableCell>
-                          <TableCell className="text-center text-red-600 font-bold">{product.quantity_removed_today || 0}</TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-1">
-                              <Input
-                                type="number"
-                                className="w-16 h-8 text-sm px-1"
-                                placeholder="Qtd"
-                                value={inputs[product.id] || ''}
-                                onChange={(e) => handleInputChange(product.id, e.target.value)}
-                              />
-                              <Button size="sm" variant="outline" className="h-8 px-2 text-green-600 border-green-200 hover:bg-green-50" title="Entrada" onClick={() => handleProduction(product.id)}>
-                                <Plus className="h-4 w-4" />
-                              </Button>
-                              <Button size="sm" variant="outline" className="h-8 px-2 text-red-600 border-red-200 hover:bg-red-50" title="Saída" onClick={() => handleRemovalClick(product)}>
-                                <Minus className="h-4 w-4" />
-                              </Button>
-                              <Button size="sm" variant="ghost" className="h-8 px-2" title="Log" onClick={() => handleLogClick(product)}>
-                                <History className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {filteredProducts.map(product => {
-                 const stock = product.stock_details?.quantidade_disponivel || 0;
-                 const min = product.stock_min || 0;
-                 const variation = stock - min;
-                 return (
-                  <Card key={product.id} className="hover:shadow-md transition-shadow">
-                    <CardContent className="p-4 flex flex-col h-full justify-between">
-                       <div className="mb-2">
-                         <div className="flex items-center">
-                           <Link to={`/produtos/${product.id}/editar`} className="group mr-2">
-                             <div className="font-bold text-sm truncate" title={product.name}>{product.name}</div>
-                             <div className="text-xs text-muted-foreground truncate">{product.sku}</div>
-                           </Link>
-                         </div>
-                       </div>
-
-                       <div className="flex flex-col items-center my-2">
-                          <div className="text-xs text-muted-foreground">Ideal: {min} | Var: <span className={variation < 0 ? 'text-red-500' : ''}>{variation}</span></div>
-                          <Popover>
-                            <PopoverTrigger>
-                               <div className={`text-3xl font-bold cursor-pointer my-1 ${stock < min ? 'text-red-500' : 'text-green-600'}`}>
-                                 {stock}
-                               </div>
-                            </PopoverTrigger>
-                            <PopoverContent>
-                              <div className="text-sm">
-                                <p>Físico: <Badge variant="outline">{product.stock_details?.quantidade || 0}</Badge></p>
-                                <p className="mt-1">Reservado: <Badge variant="secondary">{product.stock_details?.quantidade_reservada || 0}</Badge></p>
-                              </div>
-                            </PopoverContent>
-                          </Popover>
-                       </div>
-
-                       <div className="flex justify-between text-xs font-bold mb-3">
-                          <span className="text-blue-600">Imp: {product.quantity_produced_today || 0}</span>
-                          <span className="text-red-600">Sai: {product.quantity_removed_today || 0}</span>
-                       </div>
-
-                       <div className="flex items-center gap-1 mt-auto">
-                          <Input
-                            type="number"
-                            className="w-full h-8 text-sm px-1"
-                            placeholder="Qtd"
-                            value={inputs[product.id] || ''}
-                            onChange={(e) => handleInputChange(product.id, e.target.value)}
-                          />
-                          <Button size="sm" variant="outline" className="h-8 w-8 p-0 text-green-600" onClick={() => handleProduction(product.id)}><Plus className="h-4 w-4" /></Button>
-                          <Button size="sm" variant="outline" className="h-8 w-8 p-0 text-red-600" onClick={() => handleRemovalClick(product)}><Minus className="h-4 w-4" /></Button>
-                          <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => handleLogClick(product)}><History className="h-4 w-4" /></Button>
-                       </div>
-                    </CardContent>
-                  </Card>
-                 );
-              })}
-            </div>
-          )}
-        </>
-      ) : (
-        /* Visão de Demandas */
-        <Card>
-          <CardContent className="p-4">
-            {/* Abas para diferentes visualizações de demandas */}
-            <div className="flex gap-2 mb-4">
-              <Button
-                variant={demandSubTab === 'lista' ? 'default' : 'outline'}
-                onClick={() => setDemandSubTab('lista')}
-              >
-                Demandas Ativas
-              </Button>
-              {tipo === 'miolo' && (
-                <Button
-                  variant={demandSubTab === 'miolo' ? 'default' : 'outline'}
-                  onClick={() => setDemandSubTab('miolo')}
-                >
-                  Consolidado de Miolo
-                </Button>
-              )}
-              {tipo === 'capa' && (
-                <Button
-                  variant={demandSubTab === 'capa' ? 'default' : 'outline'}
-                  onClick={() => setDemandSubTab('capa')}
-                >
-                  Consolidado de Capa
-                </Button>
-              )}
-            </div>
-
-            {/* Conteúdo baseado na seleção */}
-            {demandSubTab === 'lista' ? (
-              <div className="space-y-4">
-                <h2 className="text-xl font-semibold">Demandas Ativas</h2>
-                <div className="space-y-3">
-                  {activeDemandsLoading ? (
-                    <div className="flex justify-center"><Loader2 className="animate-spin" /></div>
-                  ) : activeDemands.length === 0 ? (
-                    <div className="text-center text-muted-foreground py-8">
-                      <p>Nenhuma demanda ativa encontrada.</p>
-                      <p className="text-sm mt-2">Clique no botão acima para recarregar as informações.</p>
-                    </div>
-                  ) : (
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>ID</TableHead>
-                          <TableHead>Nome</TableHead>
-                          <TableHead>Canal</TableHead>
-                          <TableHead>Data Entrega</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead className="text-center">Quantidade</TableHead>
-                          <TableHead className="text-center">Ações</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {activeDemands.map((demanda) => (
-                          <TableRow key={demanda.id}>
-                            <TableCell className="font-mono">{demanda.id.toString().slice(-4)}</TableCell>
-                            <TableCell className="font-medium">{demanda.nome}</TableCell>
-                            <TableCell>{demanda.canal_venda_nome || '-'}</TableCell>
-                            <TableCell>{format(new Date(demanda.data_entrega), 'dd/MM/yyyy')}</TableCell>
-                            <TableCell>
-                              <Badge
-                                variant={
-                                  (demanda.status === 'Em Produção' || demanda.status === 'EM_PRODUCAO') ? 'default' :
-                                  (demanda.status === 'Pendente' || demanda.status === 'AGUARDANDO') ? 'secondary' :
-                                  (demanda.status === 'Em Andamento' || demanda.status === 'COLETA_PARCIAL') ? 'outline' :
-                                  'destructive'
-                                }
-                              >
-                                {demanda.status}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-center font-bold">{demanda.total_itens || 0}</TableCell>
-                            <TableCell className="text-center">
-                              <Link to={`/producao/demanda/${demanda.id}/dashboard`}>
-                                <Button variant="outline" size="sm">
-                                  <Eye className="h-4 w-4 mr-1" />
-                                  Ver
-                                </Button>
-                              </Link>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  )}
-                </div>
-              </div>
-            ) : demandSubTab === 'miolo' ? (
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <h2 className="text-xl font-semibold">Consolidado de Demandas por Miolo</h2>
-                  <Button size="sm" variant="outline" onClick={handleMioloDemandClick} disabled={mioloDemandLoading}>
-                    {mioloDemandLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
-                    Atualizar
-                  </Button>
-                </div>
-                <div className="space-y-3">
-                  {mioloDemandLoading ? (
-                    <div className="flex justify-center py-8"><Loader2 className="animate-spin h-8 w-8 text-blue-500" /></div>
-                  ) : (!mioloDemandSummary || mioloDemandSummary.length === 0) ? (
-                    <div className="text-center text-muted-foreground py-8">
-                      <p>Nenhuma demanda encontrada.</p>
-                      <Button className="mt-4" onClick={handleMioloDemandClick}>
-                        Carregar Demandas
-                      </Button>
-                    </div>
-                  ) : (
-                    mioloDemandSummary.map((miolo) => {
-                      const isExpanded = expandedMiolos[miolo.id || miolo.name];
-                      return (
-                        <div key={miolo.id || miolo.name} className="border rounded-lg overflow-hidden transition-all shadow-sm">
-                          <div 
-                            className={`flex justify-between items-center p-3 cursor-pointer hover:bg-gray-50 ${isExpanded ? 'bg-blue-50 border-b' : 'bg-white'}`}
-                            onClick={() => toggleMioloExpansion(miolo.id || miolo.name)}
-                          >
-                            <div className="flex items-center gap-3">
-                              {isExpanded ? <ChevronDown className="h-4 w-4 text-blue-600" /> : <ChevronRight className="h-4 w-4 text-gray-400" />}
-                              <div className="font-bold text-blue-900">
-                                {miolo.name}
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-4">
-                              <Badge variant="outline" className="bg-white">
-                                {miolo.demandas?.length || 0} demandas
-                              </Badge>
-                              <Badge variant="secondary" className="text-lg px-3 py-1 bg-blue-600 text-white">
-                                {miolo.quantity}
-                              </Badge>
-                            </div>
-                          </div>
-                          
-                          {isExpanded && (
-                            <div className="bg-white p-0 animate-in slide-in-from-top-1 duration-200">
-                              <Table>
-                                <TableHeader className="bg-gray-50">
-                                  <TableRow>
-                                    <TableHead className="h-8 text-[10px] uppercase font-bold">Demanda</TableHead>
-                                    <TableHead className="h-8 text-[10px] uppercase font-bold text-center">Entrega</TableHead>
-                                    <TableHead className="h-8 text-[10px] uppercase font-bold text-center">Faltam</TableHead>
-                                    <TableHead className="h-8 text-[10px] uppercase font-bold text-center">Total Item</TableHead>
-                                    <TableHead className="h-8 text-[10px] uppercase font-bold text-right">Ação</TableHead>
-                                  </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                  {miolo.demandas?.map((d, idx) => (
-                                    <TableRow key={idx} className="hover:bg-gray-50/50">
-                                      <TableCell className="py-2 font-medium text-xs">{d.demanda_nome}</TableCell>
-                                      <TableCell className="py-2 text-center text-xs">{d.data_entrega ? format(new Date(d.data_entrega), 'dd/MM') : '-'}</TableCell>
-                                      <TableCell className="py-2 text-center"><Badge className="bg-orange-100 text-orange-700 hover:bg-orange-100 border-none text-[10px]">{d.quantidade_faltante}</Badge></TableCell>
-                                      <TableCell className="py-2 text-center text-xs text-muted-foreground">{d.quantidade_total}</TableCell>
-                                      <TableCell className="py-2 text-right">
-                                        <Link to={`/producao/demanda/${d.demanda_id}/dashboard`}>
-                                          <Button variant="ghost" size="sm" className="h-7 w-7 p-0"><Eye className="h-3.5 w-3.5" /></Button>
-                                        </Link>
-                                      </TableCell>
-                                    </TableRow>
-                                  ))}
-                                </TableBody>
-                              </Table>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <h2 className="text-xl font-semibold">Consolidado de Demandas por Capa</h2>
-                  <Button size="sm" variant="outline" onClick={handleCapaDemandClick} disabled={capaDemandLoading}>
-                    {capaDemandLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
-                    Atualizar
-                  </Button>
-                </div>
-                <div className="space-y-3">
-                  {capaDemandLoading ? (
-                    <div className="flex justify-center py-8"><Loader2 className="animate-spin h-8 w-8 text-orange-500" /></div>
-                  ) : capaDemandInfo.length === 0 ? (
-                    <div className="text-center text-muted-foreground py-8">
-                      <p>Nenhuma informação de demanda encontrada.</p>
-                      <Button className="mt-4" onClick={handleCapaDemandClick}>
-                        Carregar Informações de Demanda
-                      </Button>
-                    </div>
-                  ) : (
-                    capaDemandInfo.map((capa) => {
-                      const isExpanded = expandedMiolos[`capa_${capa.id}`];
-                      return (
-                        <div key={capa.id || capa.sku} className="border rounded-lg overflow-hidden transition-all shadow-sm">
-                          <div 
-                            className={`flex justify-between items-center p-3 cursor-pointer hover:bg-gray-50 ${isExpanded ? 'bg-orange-50 border-b' : 'bg-white'}`}
-                            onClick={() => setExpandedMiolos(prev => ({ ...prev, [`capa_${capa.id}`]: !isExpanded }))}
-                          >
-                            <div className="flex items-center gap-3">
-                              {isExpanded ? <ChevronDown className="h-4 w-4 text-orange-600" /> : <ChevronRight className="h-4 w-4 text-gray-400" />}
-                              <div>
-                                <div className="font-bold text-orange-900">{capa.name}</div>
-                                <div className="text-xs text-orange-700/70">{capa.sku}</div>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-4">
-                              <Badge variant="outline" className="bg-white">
-                                {capa.demandas?.length || 0} demandas
-                              </Badge>
-                              <Badge variant="secondary" className="text-lg px-3 py-1 bg-orange-600 text-white">
-                                {capa.quantity}
-                              </Badge>
-                            </div>
-                          </div>
-                          
-                          {isExpanded && (
-                            <div className="bg-white p-0 animate-in slide-in-from-top-1 duration-200">
-                              <Table>
-                                <TableHeader className="bg-gray-50">
-                                  <TableRow>
-                                    <TableHead className="h-8 text-[10px] uppercase font-bold">Demanda</TableHead>
-                                    <TableHead className="h-8 text-[10px] uppercase font-bold text-center">Entrega</TableHead>
-                                    <TableHead className="h-8 text-[10px] uppercase font-bold text-center">Faltam</TableHead>
-                                    <TableHead className="h-8 text-[10px] uppercase font-bold text-center">Total Item</TableHead>
-                                    <TableHead className="h-8 text-[10px] uppercase font-bold text-right">Ação</TableHead>
-                                  </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                  {capa.demandas?.map((d, idx) => (
-                                    <TableRow key={idx} className="hover:bg-gray-50/50">
-                                      <TableCell className="py-2 font-medium text-xs">{d.demanda_nome}</TableCell>
-                                      <TableCell className="py-2 text-center text-xs">{d.data_entrega ? format(new Date(d.data_entrega), 'dd/MM') : '-'}</TableCell>
-                                      <TableCell className="py-2 text-center"><Badge className="bg-orange-100 text-orange-700 hover:bg-orange-100 border-none text-[10px]">{d.quantidade_faltante}</Badge></TableCell>
-                                      <TableCell className="py-2 text-center text-xs text-muted-foreground">{d.quantidade_total}</TableCell>
-                                      <TableCell className="py-2 text-right">
-                                        <Link to={`/producao/demanda/${d.demanda_id}/dashboard`}>
-                                          <Button variant="ghost" size="sm" className="h-7 w-7 p-0"><Eye className="h-3.5 w-3.5" /></Button>
-                                        </Link>
-                                      </TableCell>
-                                    </TableRow>
-                                  ))}
-                                </TableBody>
-                              </Table>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
+      <ProductionPlanningViews
+        tipo={tipo}
+        capaSubTab={capaSubTab}
+        setCapaSubTab={setCapaSubTab}
+        view={activeTab}
+        setView={setActiveTab}
+        planning={planning}
+        loading={planningLoading}
+        error={planningError}
+        products={products}
+        filter={filter}
+        setFilter={setFilter}
+        inputs={inputs}
+        onInputChange={handleInputChange}
+        onProduction={handleProduction}
+        onRemoval={handleRemovalClick}
+        onLog={handleLogClick}
+        includeSimulations={includeSimulations}
+        setIncludeSimulations={setIncludeSimulations}
+        horizonte={horizonte}
+        setHorizonte={(next) => setHorizonte(next.length ? next : ['atrasado', 'hoje', 'sem_prazo'])}
+        onRefresh={() => { fetchData(); fetchPlanning(); if (activeTab === 'previsao') fetchPrevisao(); }}
+        previsao={tipo === 'miolo' ? {
+          data: previsao, loading: previsaoLoading, error: previsaoError,
+          filtros: previsaoFiltros, onChangeFiltros: setPrevisaoFiltros, onRefresh: fetchPrevisao,
+        } : null}
+      />
       {/* Modal de Distribuição de Saída */}
       <Dialog open={distributionModalOpen} onOpenChange={setDistributionModalOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col">
@@ -965,7 +499,7 @@ const ControleProducaoPage = ({tipo}) => {
           <div className="flex-1 overflow-hidden flex flex-col gap-4 py-4">
             <div className="bg-blue-50 p-3 rounded-lg border border-blue-100">
               <p className="text-sm text-blue-900 font-medium">Para onde vão estas <strong>{selectedProductForDistribution?.totalToDistribute}</strong> unidades?</p>
-              <p className="text-[10px] text-blue-700 mt-1">Escolha uma demanda abaixo — o item fica <strong>reservado</strong> para ela e a baixa física acontece na finalização — ou registre uma saída avulsa.</p>
+              <p className="text-[10px] text-blue-700 mt-1">Em demandas reais, o item fica reservado até a finalização. Nas simulações, a atualização afeta somente o cenário. Também é possível registrar uma saída avulsa.</p>
             </div>
 
             {/* Saída avulsa como destino de primeira classe, no mesmo lugar em que
@@ -987,7 +521,7 @@ const ControleProducaoPage = ({tipo}) => {
               <Badge variant="outline" className="border-destructive/40 text-destructive shrink-0">Selecionar</Badge>
             </button>
 
-            <ScrollArea className="flex-1 border rounded-md">
+            <ScrollArea type="always" className="h-[55vh] max-h-[55vh] min-h-0 flex-none border rounded-md">
               {distributionLoading ? (
                 <div className="flex justify-center py-12"><Loader2 className="animate-spin h-8 w-8" /></div>
               ) : pendingDemandsForProduct.length === 0 ? (
@@ -1009,20 +543,29 @@ const ControleProducaoPage = ({tipo}) => {
                       return (
                         <TableRow key={demanda.id} className="hover:bg-gray-50">
                           <TableCell className="py-3">
-                            <div className="font-bold text-sm text-gray-900">{demanda.nome}</div>
-                            <div className="text-[10px] text-muted-foreground uppercase">{format(new Date(demanda.data_entrega), 'dd/MM/yyyy')} - {demanda.canal_venda_nome}</div>
+                            <div className="font-bold text-sm text-gray-900 flex items-center gap-2">
+                              {demanda.nome}
+                              {demanda.simulacao && <Badge variant="outline" className="border-amber-400 text-amber-700">Simulação</Badge>}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground uppercase">
+                              {demanda.data_entrega ? format(new Date(demanda.data_entrega), 'dd/MM/yyyy') : 'Sem prazo'} - {demanda.canal_venda_nome || demanda.status || ''}
+                            </div>
                           </TableCell>
                           <TableCell className="text-center py-3">
-                            <Badge variant="outline">{demanda.total_itens} un totais</Badge>
+                            <Badge variant="outline">{(planning?.products || []).find(row => String(row.product_id) === String(selectedProductForDistribution.id))?.demandas
+                              .filter(row => String(row.demanda_id) === String(demanda.id))
+                              .reduce((sum, row) => sum + row.pendente, 0) || '—'} pendentes</Badge>
                           </TableCell>
                           <TableCell className="text-right py-3">
                             <Button 
                               size="sm" 
+                              disabled={demanda.simulacao && demanda.status === 'RASCUNHO'}
                               onClick={async () => {
                                 setSelectedDemandaId(demanda.id);
                                 // 1. Buscar os itens detalhados desta demanda para validar
                                 try {
-                                  const res = await fetch(`/api/v2/demanda_producao/${demanda.id}`);
+                                  const apiBase = demanda.simulacao ? '/api/v2/demanda-simulacoes' : '/api/v2/demanda_producao';
+                                  const res = await fetch(`${apiBase}/${demanda.id}`);
                                   const dData = await res.json();
                                   
                                   if (!dData.success || !dData.demanda?.itens) {
@@ -1031,16 +574,52 @@ const ControleProducaoPage = ({tipo}) => {
                                   }
 
                                   const itens = dData.demanda.itens;
-                                  const isMiolo = tipo === 'miolo';
-                                  
-                                  // Filtrar itens que batem com o produto selecionado
-                                  const matchingItens = itens.filter(i => {
-                                    const targetId = isMiolo ? String(i.id_produto_miolo) : String(i.produto_id);
-                                    return targetId === String(selectedProductForDistribution.id);
-                                  });
+                                  const relatedRows = (planning?.products || [])
+                                    .find(row => String(row.product_id) === String(selectedProductForDistribution.id))?.demandas
+                                    .filter(row => String(row.demanda_id) === String(demanda.id)) || [];
+                                  const relatedItemIds = new Set(relatedRows.map(row => String(row.item_id)));
+                                  const matchingItens = itens.filter(i => relatedItemIds.has(String(i.id))
+                                    || String(i.id_produto_miolo || '') === String(selectedProductForDistribution.id)
+                                    || String(i.produto_id || '') === String(selectedProductForDistribution.id)
+                                    || (selectedProductForDistribution.sku && String(i.sku || '').trim().toLowerCase() === String(selectedProductForDistribution.sku).trim().toLowerCase()));
 
                                   if (matchingItens.length === 0) {
-                                    toast.error(`Esta demanda não contém este ${isMiolo ? 'miolo' : 'item'}.`);
+                                    toast.error('Não foi possível identificar um item correspondente nesta demanda.');
+                                    return;
+                                  }
+
+                                  if (demanda.simulacao) {
+                                    const field = tipo === 'miolo' ? 'miolos_prontos_retirada_qtd' : capaSubTab === 'impressas' ? 'capas_impressas_qtd' : 'capas_produzidas_qtd';
+                                    let remaining = selectedProductForDistribution.totalToDistribute;
+                                    const updates = [];
+                                    matchingItens.forEach(item => {
+                                      if (remaining <= 0) return;
+                                      const needed = Math.max(0, Number(item.quantidade_total || item.quantidade || 0) - Number(item[field] || 0));
+                                      const quantity = Math.min(remaining, needed);
+                                      if (quantity > 0) {
+                                        updates.push({ item_id: item.id, producao_incremental: { [field]: quantity } });
+                                        remaining -= quantity;
+                                      }
+                                    });
+                                    if (!updates.length) {
+                                      toast.warning('Não há saldo pendente correspondente nesta simulação.');
+                                      return;
+                                    }
+                                    if (remaining > 0) toast.warning(`A simulação aceita somente ${selectedProductForDistribution.totalToDistribute - remaining} unidades pendentes.`);
+                                    const simResult = await fetch(`${apiBase}/${demanda.id}/acoes`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({
+                                        version: dData.demanda.version,
+                                        operation_id: crypto.randomUUID(),
+                                        action: 'producao',
+                                        payload: { updates },
+                                      }),
+                                    }).then(response => response.json());
+                                    if (!simResult.success) throw new Error(simResult.message || 'Falha ao atualizar a simulação.');
+                                    toast.success('Produção registrada somente na simulação.');
+                                    setDistributionModalOpen(false);
+                                    fetchPlanning();
                                     return;
                                   }
 
@@ -1050,9 +629,10 @@ const ControleProducaoPage = ({tipo}) => {
                                   
                                   matchingItens.forEach(item => {
                                     if (remaining <= 0) return;
-                                    const field = isMiolo ? 'miolos_prontos_retirada_qtd' : 'expedicao_capas_retiradas_qtd';
+                                    const field = tipo === 'miolo' ? 'miolos_prontos_retirada_qtd' : capaSubTab === 'impressas' ? 'capas_impressas_qtd' : 'capas_produzidas_qtd';
                                     const current = parseFloat(item[field] || 0);
-                                    const needed = Math.max(0, parseFloat(item.quantidade_total) - current);
+                                    const factor = relatedRows.find(row => String(row.item_id) === String(item.id))?.fator || 1;
+                                    const needed = Math.max(0, (parseFloat(item.quantidade_total) - current) * factor);
                                     
                                     if (needed > 0) {
                                       const allocation = Math.min(remaining, needed);
@@ -1066,15 +646,19 @@ const ControleProducaoPage = ({tipo}) => {
                                     return;
                                   }
 
+                                  if (remaining > 0) {
+                                    toast.warning(`Somente ${selectedProductForDistribution.totalToDistribute - remaining} unidades têm saldo pendente nesta demanda.`);
+                                  }
+
                                   setDistributionQuantities(dists);
-                                  handleDistributionSubmit(dists);
+                                  handleDistributionSubmit(dists, demanda.id);
                                 } catch (err) {
                                   const errorMessage = err.message || 'Erro ao processar demanda.';
                                   toast.error(errorMessage);
                                 }
                               }}
                             >
-                              Selecionar
+                              {demanda.simulacao && demanda.status === 'RASCUNHO' ? 'Não publicada' : 'Selecionar'}
                             </Button>
                           </TableCell>
                         </TableRow>
@@ -1089,7 +673,7 @@ const ControleProducaoPage = ({tipo}) => {
           <DialogFooter>
             <Button variant="outline" onClick={() => setDistributionModalOpen(false)}>Cancelar</Button>
             <Button 
-              onClick={handleDistributionSubmit} 
+              onClick={() => handleDistributionSubmit()}
               disabled={isDistributing || Object.values(distributionQuantities).reduce((a, b) => a + b, 0) === 0}
             >
               {isDistributing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

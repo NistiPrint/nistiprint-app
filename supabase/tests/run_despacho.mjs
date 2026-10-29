@@ -20,6 +20,9 @@ try {
     'supabase/migrations/20261007100000_despacho_prazo_sobre_coleta.sql',
     'supabase/tests/despacho_sem_prazo_proxima_coleta.sql',
     'supabase/tests/despacho_abas_por_prazo.sql',
+    'supabase/migrations/20261007110000_despacho_lotes_timeline.sql',
+    'supabase/migrations/20261028120000_despacho_previsao_lotes.sql',
+    'supabase/tests/despacho_previsao_lotes.sql',
   ]) {
     await db.exec(await readFile(file, 'utf8'));
     console.log(`OK: ${file}`);

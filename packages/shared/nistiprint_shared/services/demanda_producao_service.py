@@ -192,9 +192,11 @@ class DemandaProducaoService:
         )
 
     def registrar_retirada_expedicao(self, demanda_id: str, item_id: str, quantidade: int,
-                                     user_id: str = 'System') -> Dict[str, Any]:
+                                     user_id: str = 'System', operation_id: Optional[str] = None,
+                                     componente: Optional[str] = None) -> Dict[str, Any]:
         """Registra a retirada pela expedição (Setor 4)."""
-        return self._items.registrar_retirada_expedicao(demanda_id, item_id, quantidade, user_id)
+        return self._items.registrar_retirada_expedicao(
+            demanda_id, item_id, quantidade, user_id, operation_id, componente=componente)
 
     # ========================================================================
     # MÉTODOS STATUS (demanda.status)

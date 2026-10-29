@@ -280,9 +280,13 @@ def api_custo_calculado(produto_id):
 def api_search():
     try:
         res = []
+        material_types = [value for value in request.args.getlist('material_type') if value]
         for p in product_service.search_produtos(request.args.get('q', ''), int(request.args.get('limit', 20)), request.args.get('exclude_id'), 'ativo', request.args.get('category_id')):
             p = product_service.enrich_product_data(p)
-            res.append({'id': p['id'], 'text': f"{p.get('sku_mestre', '')} - {p.get('name', '')}", 'sku': p.get('sku_mestre', ''), 'name': p.get('name', ''), 'cost': p.get('cost_price', 0), 'categoria_id': p.get('categoria_id')})
+            material_type = p.get('material_type') or p.get('tipo_material') or 'produto_acabado'
+            if material_types and material_type not in material_types:
+                continue
+            res.append({'id': p['id'], 'text': f"{p.get('sku_mestre', '')} - {p.get('name', '')}", 'sku': p.get('sku_mestre', ''), 'name': p.get('name', ''), 'material_type': material_type, 'cost': p.get('cost_price', 0), 'categoria_id': p.get('categoria_id')})
         return jsonify({'results': res})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

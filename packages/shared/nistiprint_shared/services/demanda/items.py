@@ -407,8 +407,9 @@ class DemandaItemsService:
         for dist in distributions:
             item = self.get_item_by_id(dist['item_id'])
             qty = float(dist['quantidade'])
+            stage_qty = float(dist.get('quantidade_estagio', qty))
             total = float(item.get('quantidade') or 0)
-            updates = {field: max(0, min(total, float(item.get(field) or 0) + qty)),
+            updates = {field: max(0, min(total, float(item.get(field) or 0) + stage_qty)),
                        'status_item': 'Em Andamento', 'updated_at': get_now_iso()}
             if role == 'OUTRO':
                 updates['expedicao_miolos_retirados_qtd'] = max(
@@ -418,7 +419,7 @@ class DemandaItemsService:
                     updates['status_item'] = 'Concluído'
             evento_id = str(correlation_id) if correlation_id else None
             self._persistir_intencao_eventos(item, updates, [{
-                'estagio': field, 'quantidade_reportada': abs(qty), 'tipo_evento': 'SINAL'}],
+                'estagio': field, 'quantidade_reportada': abs(stage_qty), 'tipo_evento': 'SINAL'}],
                 user_id, correlation_id=evento_id)
             if updates['status_item'] == 'Concluído':
                 self._verificar_e_finalizar_demanda_automatica(item['demanda_id'], user_id)
@@ -428,28 +429,45 @@ class DemandaItemsService:
             }, user_id)
         return True
 
-    def registrar_retirada_expedicao(self, demanda_id, item_id, quantidade, user_id='System'):
+    def registrar_retirada_expedicao(self, demanda_id, item_id, quantidade, user_id='System', operation_id=None,
+                                     componente=None):
         item = self.get_item_by_id(item_id)
+        if str(item.get('demanda_id')) != str(demanda_id):
+            raise ValueError('O item não pertence à demanda informada.')
         total = float(item.get('quantidade') or 0)
         qty = float(quantidade)
-        if qty <= 0 or qty > total:
-            raise ValueError(f'Quantidade inválida para retirada: {quantidade}')
-        updates = {
-            'expedicao_capas_retiradas_qtd': min(total, float(item.get('expedicao_capas_retiradas_qtd') or 0) + qty),
-            'expedicao_miolos_retirados_qtd': min(total, float(item.get('expedicao_miolos_retirados_qtd') or 0) + qty),
-            'status_item': 'Em Andamento', 'updated_at': get_now_iso(),
-        }
-        if updates['expedicao_capas_retiradas_qtd'] >= total and updates['expedicao_miolos_retirados_qtd'] >= total:
+        capa_left = max(0, float(item.get('capas_prontas_retirada_qtd') or 0) - float(item.get('expedicao_capas_retiradas_qtd') or 0))
+        miolo_left = max(0, float(item.get('miolos_prontos_retirada_qtd') or 0) - float(item.get('expedicao_miolos_retirados_qtd') or 0))
+        if componente not in (None, 'capas', 'miolos'):
+            raise ValueError('Componente inválido. Use capas ou miolos.')
+        available = min(total, capa_left, miolo_left) if componente is None else min(
+            total, capa_left if componente == 'capas' else miolo_left)
+        if qty <= 0 or not qty.is_integer() or qty > available:
+            raise ValueError(f'Quantidade inválida. Disponível para retirada: {int(available)}.')
+        current_covers = float(item.get('expedicao_capas_retiradas_qtd') or 0)
+        current_cores = float(item.get('expedicao_miolos_retirados_qtd') or 0)
+        updates = {'status_item': 'Em Andamento', 'updated_at': get_now_iso()}
+        events = []
+        fields = (
+            ['expedicao_capas_retiradas_qtd']
+            if componente == 'capas' else
+            ['expedicao_miolos_retirados_qtd']
+            if componente == 'miolos' else
+            ['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd']
+        )
+        for field in fields:
+            updates[field] = min(total, float(item.get(field) or 0) + qty)
+            events.append({'estagio': field, 'quantidade_reportada': qty, 'tipo_evento': 'SINAL'})
+        next_covers = updates.get('expedicao_capas_retiradas_qtd', current_covers)
+        next_cores = updates.get('expedicao_miolos_retirados_qtd', current_cores)
+        if next_covers >= total and next_cores >= total:
             updates['status_item'] = 'Fechando'
-        events = [
-            {'estagio': 'expedicao_capas_retiradas_qtd', 'quantidade_reportada': qty, 'tipo_evento': 'SINAL'},
-            {'estagio': 'expedicao_miolos_retirados_qtd', 'quantidade_reportada': qty, 'tipo_evento': 'SINAL'},
-        ]
-        updated = self._persistir_intencao_eventos(item, updates, events, user_id)
+        updated = self._persistir_intencao_eventos(item, updates, events, user_id, correlation_id=operation_id)
         auditoria_service.log_event('RETIRADA_EXPEDICAO', {
             'demanda_id': demanda_id, 'item_id': item_id, 'quantidade': quantidade,
-            'exp_capas_novo': updates['expedicao_capas_retiradas_qtd'],
-            'exp_miolos_novo': updates['expedicao_miolos_retirados_qtd'],
+            'componente': componente or 'par',
+            'exp_capas_novo': updates.get('expedicao_capas_retiradas_qtd', current_covers),
+            'exp_miolos_novo': updates.get('expedicao_miolos_retirados_qtd', current_cores),
         }, user_id)
         return self._process_item_dict({**updated, **updates})
 

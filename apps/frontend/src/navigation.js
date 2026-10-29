@@ -14,10 +14,12 @@
 //   - scripts/verificar-rotas.mjs -> coletarHrefs()
 
 import {
-  Activity, AlertCircle, BarChart3, Boxes, Building, CalendarClock, ClipboardList, Cog, Database, Factory,
-  Download, HardDrive, Home, Layers, MapPin, Monitor, Package, Printer, Scale, ScrollText,
+  Activity, AlertCircle, BarChart3, Boxes, Building, CalendarClock, ClipboardList, Cog, Database,
+  Download,
+  Factory,
+  Home, Layers, MapPin, Monitor, Package, Printer, Scale, ScrollText,
   Settings, Share2, ShieldCheck, ShoppingCart, Sparkles, Store, Tag, TowerControl,
-  Trello, Truck, Users, Warehouse,
+  Trello, Truck, Users, Warehouse
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -25,7 +27,6 @@ import {
 // ---------------------------------------------------------------------------
 export const TOP_NAV = [
   { name: 'Home', href: '/', icon: Home, type: 'link' },
-  { name: 'Gestão', href: '/gestao/visao-geral', icon: BarChart3, type: 'link', permission: { a: 'gestao', I: 'ler' } },
   {
     name: 'Pedidos',
     icon: ShoppingCart,
@@ -41,26 +42,19 @@ export const TOP_NAV = [
     icon: Cog,
     type: 'collapsible',
     children: [
-      { name: 'Produção', href: '/producao', type: 'link', permission: { a: 'producao', I: 'ler' } },
-      { name: 'Fila de Impressão', href: '/producao/impressao', type: 'link', permission: { a: 'producao', I: 'ler' } },
+      { name: 'Demandas', href: '/producao/demanda', type: 'link', permission: { a: 'demanda_producao', I: 'ler' } },
+      { name: 'Miolos', href: '/producao/miolos', type: 'link', permission: { a: 'producao', I: 'ler' } },
+      { name: 'Capas', href: '/producao/capas', type: 'link', permission: { a: 'producao', I: 'ler' } },
       { name: 'Expedição', href: '/producao/expedicao', type: 'link', permission: { a: 'producao', I: 'ler' } },
+      { name: 'Impressão', href: '/producao/impressao', type: 'link', permission: { a: 'producao', I: 'ler' } },
     ],
   },
   {
     name: 'Estoque',
     icon: Warehouse,
-    type: 'collapsible',
+    href: '/estoque',
+    type: 'link',
     permission: { a: 'estoque', I: 'ler' },
-    children: [
-      { name: 'Dashboard', href: '/estoque', icon: Activity, type: 'link' },
-      { name: 'Movimentar', href: '/estoque/movimentar', type: 'link' },
-      { name: 'Movimentação em Lote', href: '/estoque/movimentacao-lote', type: 'link' },
-      { name: 'Posição', href: '/estoque/posicao', type: 'link' },
-      { name: 'Histórico', href: '/estoque/historico', type: 'link' },
-      { name: 'Reservas', href: '/estoque/reservas', type: 'link' },
-      { name: 'Ajuste', href: '/estoque/ajuste', type: 'link' },
-      { name: 'Relatórios', href: '/estoque/relatorios', type: 'link' },
-    ],
   },
   {
     name: 'Catálogo',
@@ -68,8 +62,11 @@ export const TOP_NAV = [
     type: 'collapsible',
     children: [
       { name: 'Produtos', href: '/produtos', type: 'link', permission: { a: 'produtos', I: 'ler' } },
+      { name: 'Anúncios', href: '/anuncios', type: 'link', permission: { a: 'produtos', I: 'ler' } },
       { name: 'Categorias', href: '/cadastros/categoria', type: 'link', permission: { a: 'cadastros', I: 'ler' }, adminOnly: true },
+      { name: 'Tags', href: '/cadastros/tag', type: 'link', permission: { a: 'cadastros', I: 'ler' }, adminOnly: true },
       { name: 'Unidades de Medida', href: '/cadastros/unidade-medida', type: 'link', permission: { a: 'cadastros', I: 'ler' }, adminOnly: true },
+      { name: 'Conversões de Unidade', href: '/cadastros/uom-conversions', type: 'link', permission: { a: 'cadastros', I: 'ler' }, adminOnly: true },
     ],
   },
   {
@@ -77,11 +74,46 @@ export const TOP_NAV = [
     icon: ScrollText,
     type: 'collapsible',
     children: [
-      { name: 'Central de Operações', href: '/monitoramento/operacoes', type: 'link' },
-      { name: 'Índice de Relatórios', href: '/relatorios', type: 'link', permission: { a: 'relatorios', I: 'ler' } },
-      { name: 'Histórico Gerencial', href: '/relatorios/gerencial-historico', type: 'link', adminOnly: true },
-      { name: 'Webhooks', href: '/relatorios/webhooks', type: 'link', adminOnly: true },
-      { name: 'Logs de IA', href: '/ai/logs', type: 'link', adminOnly: true },
+      {
+        name: 'Central de Operações',
+        type: 'sub-collapsible',
+        children: [
+          { name: 'Minha atividade', href: '/monitoramento/operacoes/minha-atividade', type: 'link' },
+          { name: 'Visão geral', href: '/monitoramento/operacoes/visao-geral', type: 'link', permission: { a: 'central_operacoes', I: 'ler' } },
+          { name: 'Execuções', href: '/monitoramento/operacoes/execucoes', type: 'link', permission: { a: 'central_operacoes', I: 'ler' } },
+          { name: 'Filas', href: '/monitoramento/operacoes/filas', type: 'link', permission: { a: 'central_operacoes', I: 'ler' } },
+          { name: 'Auditoria', href: '/monitoramento/operacoes/auditoria', type: 'link', permission: { a: 'auditoria', I: 'ler' } },
+          { name: 'Agendamentos', href: '/monitoramento/operacoes/agendamentos', type: 'link', adminOnly: true },
+          { name: 'Manutenção', href: '/monitoramento/operacoes/manutencao', type: 'link', adminOnly: true },
+        ],
+      },
+      {
+        name: 'Relatórios',
+        type: 'sub-collapsible',
+        children: [
+          { name: 'Dashboard', href: '/relatorios', type: 'link', permission: { a: 'relatorios', I: 'ler' } },
+          { name: 'Histórico Produção', href: '/relatorios/historico-producao', type: 'link', permission: { a: 'relatorios', I: 'ler' } },
+          { name: 'Histórico Coletas', href: '/relatorios/historico-coletas', type: 'link', permission: { a: 'relatorios', I: 'ler' } },
+          { name: 'Monitoramento de Estoque', href: '/relatorios/monitoramento-estoque', type: 'link', permission: { a: 'relatorios', I: 'ler' } },
+          { name: 'Webhooks', href: '/relatorios/webhooks', type: 'link', adminOnly: true },
+          { name: 'Histórico Gerencial', href: '/relatorios/gerencial-historico', type: 'link', adminOnly: true },
+          { name: 'Logs de IA', href: '/ai/logs', type: 'link', adminOnly: true, exato: true },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'Gestão',
+    icon: BarChart3,
+    type: 'collapsible',
+    children: [
+      { name: 'Visão geral', href: '/gestao/visao-geral', type: 'link', permission: { a: 'gestao', I: 'ler' } },
+      { name: 'Vendas e canais', href: '/gestao/vendas', type: 'link', permission: { a: 'gestao', I: 'ler' } },
+      { name: 'Produtos e personalização', href: '/gestao/produtos', type: 'link', permission: { a: 'gestao', I: 'ler' } },
+      { name: 'Público', href: '/gestao/publico', type: 'link', permission: { a: 'gestao', I: 'ler' } },
+      { name: 'Rentabilidade', href: '/gestao/rentabilidade', type: 'link', permission: { a: 'gestao_financeiro', I: 'ler' } },
+      { name: 'Planejamento', href: '/gestao/planejamento', type: 'link', permission: { a: 'gestao', I: 'ler' } },
+      { name: 'Dados e integrações', href: '/gestao/qualidade', type: 'link', permission: { a: 'gestao', I: 'ler' } },
     ],
   },
   {
@@ -90,8 +122,47 @@ export const TOP_NAV = [
     type: 'collapsible',
     children: [
       { name: 'Visão geral', href: '/configuracoes', icon: Settings, type: 'link', adminOnly: true },
-      { name: 'Pessoas e acesso', href: '/configuracoes/acessos', icon: Users, type: 'link', adminOnly: true },
-      { name: 'Agente local', href: '/configuracoes/agente-local', icon: Download, type: 'link' },
+      {
+        name: 'Conexões e canais',
+        type: 'sub-collapsible',
+        children: [
+          { name: 'Contas e integrações', href: '/configuracoes/integracoes', type: 'link', adminOnly: true },
+        ],
+      },
+      {
+        name: 'Operação',
+        type: 'sub-collapsible',
+        children: [
+          { name: 'Logística e despacho', href: '/configuracoes/janelas-despacho', type: 'link', adminOnly: true },
+          { name: 'Pontos de Coleta', href: '/cadastros/ponto-coleta', type: 'link', adminOnly: true },
+          { name: 'Depósitos', href: '/cadastros/deposito', type: 'link', adminOnly: true },
+          { name: 'Fornecedores', href: '/cadastros/fornecedor', type: 'link', adminOnly: true },
+          { name: 'Parâmetros de Produção', href: '/configuracoes/producao', type: 'link', adminOnly: true },
+        ],
+      },
+      {
+        name: 'Pessoas e acesso',
+        type: 'sub-collapsible',
+        children: [
+          { name: 'Usuários', href: '/configuracoes/acessos/usuarios', type: 'link', adminOnly: true },
+          { name: 'Setores', href: '/configuracoes/acessos/setores', type: 'link', adminOnly: true },
+          { name: 'Acesso pendente', href: '/configuracoes/acessos/usuarios?status=pendente', type: 'link', adminOnly: true },
+        ],
+      },
+      {
+        name: 'IA',
+        type: 'sub-collapsible',
+        children: [
+          { name: 'Inteligência artificial', href: '/configuracoes/ia', type: 'link', adminOnly: true },
+        ],
+      },
+      {
+        name: 'Sistema e ferramentas',
+        type: 'sub-collapsible',
+        children: [
+          { name: 'Agente local', href: '/configuracoes/agente-local', type: 'link' },
+        ],
+      },
     ],
   },
 ];
@@ -150,9 +221,9 @@ export const SECOES = [
           // Modo Foco saiu da lateral e virou botao dentro do Painel Geral: e um
           // modo de VER o mesmo trabalho, nao um destino irmao. Como item de
           // menu, competia com o painel de onde o operador acabou de sair.
-          { name: 'Painel Geral', href: '/producao', icon: Trello, description: 'Kanban de produção por setor', adminOnly: true, exato: true },
-          { name: 'Resumo Diário', href: '/producao/resumo', icon: BarChart3, description: 'Visão geral da produção do dia', adminOnly: true },
-      { name: 'Demandas', href: '/producao/demanda', icon: ClipboardList, description: 'Acompanhar as demandas publicadas', permission: { a: 'demanda_producao', I: 'ler' } },
+          { name: 'Painel Geral', href: '/producao', icon: Trello, description: 'Kanban de produção por setor', adminOnly: true, exato: true, disabled: true },
+          { name: 'Resumo Diário', href: '/producao/resumo', icon: BarChart3, description: 'Visão geral da produção do dia', adminOnly: true, disabled: true },
+          { name: 'Demandas', href: '/producao/demanda', icon: ClipboardList, description: 'Acompanhar as demandas publicadas', permission: { a: 'demanda_producao', I: 'ler' } },
           { name: 'Miolos', href: '/producao/miolos', icon: Layers, description: 'Controle de produção de miolos', permission: { a: 'producao', I: 'ler' } },
           { name: 'Capas', href: '/producao/capas', icon: Layers, description: 'Controle de produção de capas', permission: { a: 'producao', I: 'ler' } },
           { name: 'Expedição', href: '/producao/expedicao', icon: Package, description: 'Sincronia e retirada de itens', permission: { a: 'producao', I: 'ler' } },
@@ -170,7 +241,7 @@ export const SECOES = [
     // Prefixos específicos: /cadastros se divide entre Catálogo e
     // Configurações; o prefixo mais longo identifica a seção de cada rota.
     prefixos: [
-      '/produtos',
+      '/produtos', '/anuncios',
       '/cadastros/categoria', '/cadastros/tag',
       '/cadastros/unidade-medida', '/cadastros/uom-conversions',
     ],
@@ -178,6 +249,7 @@ export const SECOES = [
       {
         itens: [
           { name: 'Produtos', href: '/produtos', icon: Boxes, description: 'Catálogo de produtos e variações' },
+          { name: 'Anúncios', href: '/anuncios', icon: Store, description: 'Publicações dos marketplaces e vínculo com produtos', permission: { a: 'produtos', I: 'ler' } },
           { name: 'Categorias', href: '/cadastros/categoria', icon: Tag, description: 'Classificação de produtos', adminOnly: true },
           { name: 'Tags', href: '/cadastros/tag', icon: Tag, description: 'Marcadores livres', adminOnly: true },
           { name: 'Unidades de Medida', href: '/cadastros/unidade-medida', icon: Scale, description: 'Unidades usadas na ficha técnica', adminOnly: true },
@@ -195,6 +267,13 @@ export const SECOES = [
       '/cadastros/fornecedor', '/cadastros/deposito', '/cadastros/ponto-coleta',
     ],
     grupos: [
+      {
+        nome: 'Geral',
+        description: 'Acesso aos principais ajustes da aplicação.',
+        itens: [
+          { name: 'Visão geral', href: '/configuracoes', icon: Settings, adminOnly: true, exato: true },
+        ],
+      },
       {
         nome: 'Conexões e canais',
         description: 'Contas, integrações com marketplaces e canais de venda.',
@@ -257,7 +336,7 @@ export const SECOES = [
           { name: 'Histórico Coletas', href: '/relatorios/historico-coletas', icon: Truck, description: 'Histórico de saídas e coletas', permission: { a: 'relatorios', I: 'ler' } },
           { name: 'Monitoramento de Estoque', href: '/relatorios/monitoramento-estoque', icon: Activity, description: 'Status de processos assíncronos', permission: { a: 'relatorios', I: 'ler' } },
           { name: 'Webhooks', href: '/relatorios/webhooks', icon: Database, description: 'Entregas e reprocessamento de eventos', adminOnly: true },
-          { name: 'Histórico Gerencial', href: '/relatorios/gerencial-historico', icon: Factory, description: 'Consolidado gerencial por período' },
+          { name: 'Histórico Gerencial', href: '/relatorios/gerencial-historico', icon: Factory, description: 'Consolidado gerencial por período', adminOnly: true },
           { name: 'Logs de IA', href: '/ai/logs', icon: Database, description: 'Execuções e erros de IA', adminOnly: true, exato: true },
         ],
       },

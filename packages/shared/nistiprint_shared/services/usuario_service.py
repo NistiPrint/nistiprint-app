@@ -31,13 +31,16 @@ class UsuarioService:
 
     def get_all(self):
         """Get all usuários, including inactive accounts, ordered by name."""
+        if get_current_database_mode().name == 'SUPABASE':
+            from nistiprint_shared.database.supabase_db_service import supabase_db
+            rows = supabase_db.get_all('usuarios', raise_on_error=True)
+            results = [{key: value for key, value in row.items() if key != 'senha_hash'} for row in rows]
+            results.sort(key=lambda usuario: str(usuario.get('nome') or '').casefold())
+            self._populate_setor_nomes(results)
+            return results
+
         usuarios = Usuario.query.order_by(Usuario.nome).all()
         results = [usuario.to_dict_without_password() for usuario in usuarios]
-        
-        # In Supabase mode, the relationship might not be loaded, so we manually populate setor_nome
-        if get_current_database_mode().name == 'SUPABASE':
-            self._populate_setor_nomes(results)
-            
         return results
 
     def get_all_including_inactive(self):
@@ -103,6 +106,11 @@ class UsuarioService:
         
         return data
 
+    def email_belongs_uniquely_to(self, email: str, usuario_id: int):
+        """Return whether exactly one account owns an email, including inactive accounts."""
+        matching_ids = self._matching_email_ids(email)
+        return len(matching_ids) == 1 and matching_ids[0] == int(usuario_id)
+
     def authenticate(self, email: str, senha: str):
         """Authenticate user by email and password."""
         normalized_email = str(email or '').strip().lower()
@@ -130,15 +138,7 @@ class UsuarioService:
 
     def create(self, usuario_data):
         """Create a new usuário."""
-        normalized_email = str(usuario_data.get('email') or '').strip().lower()
-        # Check if email already exists
-        if self._matching_email_ids(normalized_email):
-            raise ValueError(f"Usuário com email '{normalized_email}' já existe")
-
-        # Check if setor exists
-        setor = Setor.query.filter_by(id=usuario_data['setor_id'], ativo=True).first()
-        if not setor:
-            raise ValueError(f"Setor com ID '{usuario_data['setor_id']}' não encontrado")
+        normalized_email = self.validate_create(usuario_data)
 
         usuario = Usuario(
             nome=usuario_data['nome'],
@@ -158,34 +158,46 @@ class UsuarioService:
             db.session.add(usuario)
             db.session.commit()
         else:
-            # For Supabase, we need to handle the creation differently
-            # This would typically involve calling the Supabase client directly
             from nistiprint_shared.database.supabase_db_service import supabase_db
-            # Convert the usuario object to a dictionary
-            usuario_dict = {}
-            for attr_name in dir(usuario):
-                if not attr_name.startswith('_') and not callable(getattr(usuario, attr_name)):
-                    attr_value = getattr(usuario, attr_name)
-                    if attr_name != 'query':  # Skip the query attribute
-                        usuario_dict[attr_name] = attr_value
+            # Send only persisted columns. Iterating over the SQLAlchemy model
+            # also includes descriptors and internal fields that PostgREST
+            # cannot insert, and the old adapter swallowed that failure.
+            usuario_record = {
+                'nome': usuario.nome,
+                'email': usuario.email,
+                'senha_hash': usuario.senha_hash,
+                'setor_id': usuario.setor_id,
+                'ativo': usuario.ativo,
+                'is_admin': usuario.is_admin,
+                'must_change_password': usuario.must_change_password,
+                'session_version': usuario.session_version or 0,
+            }
+            if usuario.auth_user_id:
+                usuario_record['auth_user_id'] = str(usuario.auth_user_id)
 
-            # Remove any SQLAlchemy-specific attributes that don't belong in the database
-            if 'query' in usuario_dict:
-                del usuario_dict['query']
-
-            # Insert the user into Supabase
-            result = supabase_db.insert('usuarios', usuario_dict)
-            if result:
-                usuario.id = result.get('id')
+            result = supabase_db.insert('usuarios', usuario_record, raise_on_error=True)
+            if not result or result.get('id') is None:
+                raise RuntimeError('O Supabase não confirmou a gravação do usuário. Tente novamente.')
+            usuario.id = result['id']
 
         return usuario.to_dict_without_password()
 
-    def update(self, usuario_id: int, usuario_data):
-        """Update an existing usuário."""
+    def validate_create(self, usuario_data):
+        """Validate DB-backed fields before provisioning an external Auth identity."""
+        normalized_email = str(usuario_data.get('email') or '').strip().lower()
+        if self._matching_email_ids(normalized_email):
+            raise ValueError(f"Usuário com email '{normalized_email}' já existe")
+
+        setor = Setor.query.filter_by(id=usuario_data['setor_id'], ativo=True).first()
+        if not setor:
+            raise ValueError(f"Setor com ID '{usuario_data['setor_id']}' não encontrado")
+        return normalized_email
+
+    def validate_update(self, usuario_id: int, usuario_data):
+        """Validate account changes before coordinating with external Auth."""
         usuario = Usuario.query.filter_by(id=usuario_id).first()
         if not usuario:
             raise ValueError(f"Usuário com ID '{usuario_id}' não encontrado")
-
         is_default_admin = str(usuario.email or '').strip().lower() == 'admin@admin.com'
         next_email = str(usuario_data.get('email', usuario.email) or '').strip().lower()
         if is_default_admin and (
@@ -200,22 +212,28 @@ class UsuarioService:
         )
         if loses_admin_access and self._active_admin_count() <= 1:
             raise ValueError('Não é possível desativar ou rebaixar o último administrador ativo.')
-
-        # Check if email conflicts with another usuário
         if 'email' in usuario_data:
             normalized_email = str(usuario_data['email'] or '').strip().lower()
             existing_ids = self._matching_email_ids(normalized_email)
             if any(existing_id != int(usuario_id) for existing_id in existing_ids):
                 raise ValueError(f"Usuário com email '{normalized_email}' já existe")
-
-            usuario.email = normalized_email
-
-        # Check if setor exists
-        if 'setor_id' in usuario_data:
+        if 'setor_id' in usuario_data and int(usuario_data['setor_id']) != int(usuario.setor_id or 0):
             setor = Setor.query.filter_by(id=usuario_data['setor_id'], ativo=True).first()
             if not setor:
                 raise ValueError(f"Setor com ID '{usuario_data['setor_id']}' não encontrado")
+        return usuario
 
+    def update(self, usuario_id: int, usuario_data):
+        """Update an existing usuário."""
+        usuario = self.validate_update(usuario_id, usuario_data)
+
+        if 'email' in usuario_data:
+            normalized_email = str(usuario_data['email'] or '').strip().lower()
+            usuario.email = normalized_email
+
+        # Keep an existing inactive sector assignment editable for inactive
+        # users. A sector must be active when the assignment changes.
+        if 'setor_id' in usuario_data and int(usuario_data['setor_id']) != int(usuario.setor_id or 0):
             usuario.setor_id = usuario_data['setor_id']
 
         if 'nome' in usuario_data:
@@ -257,12 +275,13 @@ class UsuarioService:
                 del update_data['query']
 
             # Update the user in Supabase
-            result = supabase_db.update('usuarios', usuario.id, update_data)
-            if result:
-                # Update the object with the returned data
-                for key, value in result.items():
-                    if hasattr(usuario, key):
-                        setattr(usuario, key, value)
+            result = supabase_db.update('usuarios', usuario.id, update_data, raise_on_error=True)
+            if not result:
+                raise RuntimeError(f"O Supabase não confirmou a atualização do usuário {usuario.id}.")
+            # Update the object with the returned data
+            for key, value in result.items():
+                if hasattr(usuario, key):
+                    setattr(usuario, key, value)
 
         return usuario.to_dict_without_password()
 

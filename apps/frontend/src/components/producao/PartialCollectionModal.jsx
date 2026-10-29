@@ -8,12 +8,14 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { resumoColetaProducao } from '@/lib/coletaProducao';
+import ColetaRegistroDetalhes from './ColetaRegistroDetalhes';
 import { format } from 'date-fns';
 import { AlertTriangle, History, Loader2, Truck } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 
-export default function PartialCollectionModal({ isOpen, onClose, demandaId, onConfirm }) {
+export default function PartialCollectionModal({ isOpen, onClose, demandaId, onConfirm, apiBase = '/api/v2/demanda_producao' }) {
   const [loading, setLoading] = useState(false);
   const [demanda, setDemanda] = useState(null);
   const [quantityToCollect, setQuantityToCollect] = useState('');
@@ -30,24 +32,18 @@ export default function PartialCollectionModal({ isOpen, onClose, demandaId, onC
       setQuantityToCollect('');
       setColetasHistory([]);
     }
-  }, [isOpen, demandaId]);
+  }, [isOpen, demandaId, apiBase]);
 
   const fetchDemandaDetails = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/v2/demanda_producao/${demandaId}`);
+      const res = await fetch(`${apiBase}/${demandaId}`);
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
           setDemanda(data.demanda);
           
-          // Sugestão padrão: O que está pronto na fábrica menos o que já saiu
-          // (Consolidado total de itens montados vs total coletado)
-          const totalReady = (data.demanda.itens || []).reduce((acc, item) => 
-            acc + Number(item.expedicao_capas_retiradas_qtd || 0), 0);
-          const alreadyCollected = Number(data.demanda.quantidade_coletada_total || 0);
-          
-          const suggested = Math.max(0, totalReady - alreadyCollected);
+          const { sugestao: suggested } = resumoColetaProducao(data.demanda);
           setQuantityToCollect(suggested > 0 ? String(suggested) : '');
         } else {
           toast.error(data.message || 'Erro ao carregar detalhes.');
@@ -69,7 +65,7 @@ export default function PartialCollectionModal({ isOpen, onClose, demandaId, onC
   const fetchColetasHistory = async () => {
     setIsLoadingHistory(true);
     try {
-      const res = await fetch(`/api/v2/demanda_producao/${demandaId}/coletas`);
+      const res = await fetch(`${apiBase}/${demandaId}/coletas`);
       if (res.ok) {
         const data = await res.json();
         if (data.success) {
@@ -84,8 +80,8 @@ export default function PartialCollectionModal({ isOpen, onClose, demandaId, onC
   };
 
   const handleConfirm = async () => {
-    const numQty = parseInt(quantityToCollect, 10);
-    if (isNaN(numQty) || numQty <= 0) {
+    const numQty = Number(quantityToCollect);
+    if (!Number.isInteger(numQty) || numQty <= 0) {
         toast.error("Informe uma quantidade válida para coleta.");
         return;
     }
@@ -105,18 +101,14 @@ export default function PartialCollectionModal({ isOpen, onClose, demandaId, onC
         await onConfirm(demandaId, numQty);
         onClose();
     } catch (e) {
-        toast.error("Erro ao registrar coleta consolidada.");
+        toast.error(e.message || "Erro ao registrar coleta consolidada.");
     } finally {
         setSubmitting(false);
     }
   };
 
-  const totalItems = demanda?.total_itens || demanda?.total_quantidade || 0;
-  const alreadyCollected = Number(demanda?.quantidade_coletada_total || 0);
-  const totalProducedReady = (demanda?.itens || []).reduce((acc, item) => acc + Number(item.expedicao_capas_retiradas_qtd || 0), 0);
-  
-  const remainingInOrder = totalItems - alreadyCollected;
-  const readyOnShelf = Math.max(0, totalProducedReady - alreadyCollected);
+  const { total: totalItems, coletado: alreadyCollected, finalizado: totalFinalized,
+    saldoColeta: remainingInOrder, sugestao: suggestedQuantity } = resumoColetaProducao(demanda);
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && !submitting && onClose()}>
@@ -143,16 +135,16 @@ export default function PartialCollectionModal({ isOpen, onClose, demandaId, onC
 
                     <div className="grid grid-cols-2 gap-3">
                         <div className="bg-gray-50 p-3 rounded-lg border text-center">
-                            <p className="text-[10px] text-gray-500 uppercase font-bold mb-1">Total do Pedido</p>
+                            <p className="text-[10px] text-gray-500 uppercase font-bold mb-1">Total da Demanda</p>
                             <p className="text-2xl font-black text-gray-900">{totalItems}</p>
                         </div>
                         <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 text-center">
-                            <p className="text-[10px] text-blue-600 uppercase font-bold mb-1">Já Entregue</p>
+                            <p className="text-[10px] text-blue-600 uppercase font-bold mb-1">Já Coletado</p>
                             <p className="text-2xl font-black text-blue-700">{alreadyCollected}</p>
                         </div>
                     </div>
 
-                    {coletasHistory.length > 0 && (
+                    {(isLoadingHistory || coletasHistory.length > 0) && (
                       <div className="space-y-2 pt-2">
                         <h4 className="text-sm font-bold text-gray-700 flex items-center gap-2">
                           <History className="h-4 w-4" />
@@ -164,7 +156,11 @@ export default function PartialCollectionModal({ isOpen, onClose, demandaId, onC
                           <ul className="space-y-1">
                             {coletasHistory.map(coleta => (
                               <li key={coleta.id} className="text-sm p-2 bg-gray-50 rounded">
-                                - {coleta.quantidade} unidades coletadas em {format(new Date(coleta.created_at), 'dd/MM/yyyy HH:mm')}
+                                <div className="flex justify-between gap-2">
+                                  <span>{format(new Date(coleta.created_at), 'dd/MM/yyyy HH:mm')}</span>
+                                  <span>{coleta.user_id || 'Usuário não informado'}</span>
+                                </div>
+                                <ColetaRegistroDetalhes coleta={coleta} />
                               </li>
                             ))}
                           </ul>
@@ -175,7 +171,7 @@ export default function PartialCollectionModal({ isOpen, onClose, demandaId, onC
                     <div className="space-y-4 pt-2">
                         <div className="flex items-center justify-between px-1">
                             <label className="text-sm font-bold text-gray-700">Quantidade sendo coletada agora:</label>
-                            <Badge variant="secondary" className="font-mono">{remainingInOrder} restante(s)</Badge>
+                            <Badge variant="secondary" className="font-mono">{remainingInOrder} pendentes de coleta</Badge>
                         </div>
                         
                         <div className="relative">
@@ -188,14 +184,14 @@ export default function PartialCollectionModal({ isOpen, onClose, demandaId, onC
                                 autoFocus
                             />
                             <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
-                                {readyOnShelf > 0 && readyOnShelf !== remainingInOrder && (
+                                {suggestedQuantity > 0 && suggestedQuantity !== remainingInOrder && (
                                     <Button 
                                         variant="outline" 
                                         size="sm" 
                                         className="h-8 text-[10px] bg-amber-50 text-amber-700 border-amber-200"
-                                        onClick={() => setQuantityToCollect(String(readyOnShelf))}
+                                        onClick={() => setQuantityToCollect(String(suggestedQuantity))}
                                     >
-                                        Pronto ({readyOnShelf})
+                                        Finalizado ({suggestedQuantity})
                                     </Button>
                                 )}
                                 <Button 
@@ -209,10 +205,10 @@ export default function PartialCollectionModal({ isOpen, onClose, demandaId, onC
                             </div>
                         </div>
 
-                        {readyOnShelf > 0 && (
+                        {suggestedQuantity > 0 && (
                             <div className="flex items-center gap-2 text-[11px] text-amber-600 bg-amber-50/50 p-2 rounded border border-amber-100">
                                 <AlertTriangle className="h-3 w-3 shrink-0" />
-                                <span>A produção indica que existem <b>{readyOnShelf}</b> itens prontos para envio.</span>
+                                <span>A produção registra <b>{totalFinalized}</b> unidades finalizadas; <b>{suggestedQuantity}</b> ainda não foram coletadas.</span>
                             </div>
                         )}
                     </div>

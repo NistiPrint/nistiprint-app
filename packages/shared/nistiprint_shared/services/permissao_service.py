@@ -1,4 +1,5 @@
 from datetime import datetime
+import logging
 
 from nistiprint_shared.database.database import db
 from nistiprint_shared.database.supabase_db_service import get_current_database_mode
@@ -13,20 +14,27 @@ class PermissaoService:
         # Get all permissions for the sector
         if get_current_database_mode().name == 'SUPABASE':
             from nistiprint_shared.database.supabase_db_service import supabase_db
-            response = supabase_db.execute_with_retry(
-                supabase_db.table('permissoes_setor').select("*").eq('setor_id', setor_id)
-            )
-            permissoes_data = response.data or []
+            try:
+                response = supabase_db.execute_with_retry(
+                    supabase_db.table('permissoes_setor').select("*").eq('setor_id', setor_id)
+                )
+            except Exception:
+                logging.exception('Falha ao carregar permissões do setor %s.', setor_id)
+                return {}
+            permissoes_data = getattr(response, 'data', None) or []
             
             # Map data to a list of objects or dicts
             recurso_ids = [p['recurso_id'] for p in permissoes_data]
             recursos_map = {}
 
             if recurso_ids:
-                res_recursos = supabase_db.execute_with_retry(
-                    supabase_db.table('recursos').select("id, nome").in_('id', recurso_ids)
-                )
-                recursos_map = {r['id']: r['nome'] for r in res_recursos.data or []}
+                try:
+                    res_recursos = supabase_db.execute_with_retry(
+                        supabase_db.table('recursos').select("id, nome").in_('id', recurso_ids)
+                    )
+                    recursos_map = {r['id']: r['nome'] for r in getattr(res_recursos, 'data', None) or []}
+                except Exception:
+                    logging.exception('Falha ao carregar recursos das permissões do setor %s.', setor_id)
 
             result = {}
             for p in permissoes_data:
@@ -77,10 +85,14 @@ class PermissaoService:
         # Get User and Sector info
         if get_current_database_mode().name == 'SUPABASE':
             from nistiprint_shared.database.supabase_db_service import supabase_db
-            res_user = supabase_db.execute_with_retry(
-                supabase_db.table('usuarios').select("*, setores(nome)").eq('id', usuario_id).single()
-            )
-            usuario = res_user.data
+            try:
+                res_user = supabase_db.execute_with_retry(
+                    supabase_db.table('usuarios').select("*, setores(nome)").eq('id', usuario_id).single()
+                )
+            except Exception:
+                logging.exception('Falha ao carregar usuário %s para checagem de permissão.', usuario_id)
+                return False
+            usuario = getattr(res_user, 'data', None)
             if not usuario or not usuario.get('ativo'):
                 return False
             
@@ -88,14 +100,21 @@ class PermissaoService:
                 return True
             
             # Check specific permission
-            res_perm = supabase_db.execute_with_retry(
-                supabase_db.table('permissoes_setor')
-                .select("*, recursos!inner(nome)")
-                .eq('setor_id', usuario['setor_id'])
-                .eq('recursos.nome', recurso_nome)
-                .maybe_single()
-            )
-            permissao = res_perm.data
+            try:
+                res_perm = supabase_db.execute_with_retry(
+                    supabase_db.table('permissoes_setor')
+                    .select("*, recursos!inner(nome)")
+                    .eq('setor_id', usuario['setor_id'])
+                    .eq('recursos.nome', recurso_nome)
+                    .maybe_single()
+                )
+            except Exception:
+                logging.exception(
+                    'Falha ao consultar permissão %s/%s para o usuário %s.',
+                    recurso_nome, acao, usuario_id,
+                )
+                return False
+            permissao = getattr(res_perm, 'data', None)
             if not permissao:
                 return False
 
@@ -139,12 +158,16 @@ class PermissaoService:
             return {'fields': [], 'actions': []}
         if get_current_database_mode().name == 'SUPABASE':
             from nistiprint_shared.database.supabase_db_service import supabase_db
-            response = supabase_db.execute_with_retry(
-                supabase_db.table('permissoes_demanda_setor')
-                .select('campos_editaveis,acoes_permitidas')
-                .eq('setor_id', int(setor_id))
-            )
-            row = (response.data or [None])[0]
+            try:
+                response = supabase_db.execute_with_retry(
+                    supabase_db.table('permissoes_demanda_setor')
+                    .select('campos_editaveis,acoes_permitidas')
+                    .eq('setor_id', int(setor_id))
+                )
+            except Exception:
+                logging.exception('Falha ao carregar permissões de demanda do setor %s.', setor_id)
+                return {'fields': [], 'actions': []}
+            row = (getattr(response, 'data', None) or [None])[0]
             if not row:
                 return {'fields': [], 'actions': []}
             return {

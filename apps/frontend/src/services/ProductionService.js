@@ -6,6 +6,23 @@ const ProductionService = {
     return response.data;
   },
 
+  getDemandPlanning: async (tipo, incluirSimulacoes = false, filtros = {}) => {
+    const response = await api.get('/demanda_producao/planejamento-insumos', {
+      params: { tipo, incluir_simulacoes: incluirSimulacoes, horizonte: filtros.horizonte },
+    });
+    return response.data;
+  },
+
+  // Miolos previstos pelos lotes da Torre de Despacho ainda não publicados.
+  getPrevisaoMiolos: async ({ data, horizonte = [], incluirPronto = false } = {}) => {
+    const params = new URLSearchParams();
+    if (data) params.set('data', data);
+    horizonte.forEach((prazo) => params.append('horizonte', prazo));
+    if (incluirPronto) params.set('incluir_pronto', 'true');
+    const response = await api.get('/despacho/previsao-miolos', { params });
+    return response.data;
+  },
+
   registerProduction: async (data) => {
     // data: { product_id, quantity, date, field, origem_tipo, sincrono }
     // default origem_tipo: 3 (CONTROLE_PRODUCAO_LOTE)
@@ -96,9 +113,9 @@ const ProductionService = {
     return response.data;
   },
 
-  registrarRetiradaExpedicao: async (demandaId, itemId, quantidade) => {
+  registrarRetiradaExpedicao: async (demandaId, itemId, quantidade, operationId, componente) => {
     const response = await api.post(`/demanda_producao/${demandaId}/item/${itemId}/retirar-expedicao`, {
-      quantidade
+      quantidade, operation_id: operationId, ...(componente ? { componente } : {})
     });
     return response.data;
   }

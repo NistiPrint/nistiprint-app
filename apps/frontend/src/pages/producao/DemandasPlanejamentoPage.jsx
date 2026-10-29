@@ -8,6 +8,7 @@ import DailyProductionModal from '@/components/producao/DailyProductionModal'
 import PartialCollectionModal from '@/components/producao/PartialCollectionModal'
 import SummaryCards from '@/components/producao/SummaryCards'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -18,6 +19,7 @@ import usePermissionsHook from '@/hooks/usePermissions'
 import { useRealtimeDemandas } from '@/lib/hooks/useRealtimeDemandas'
 import { deriveDemandFlow, DEMANDA_FLOW_OPTIONS } from '@/lib/demandaFlow'
 import {
+  BarChart3,
   CheckSquare,
   Factory,
   RefreshCw,
@@ -37,7 +39,7 @@ const DRAFT_DEMAND_STATUSES = ['RASCUNHO']
 const collectionRequestId = (demandId, quantity) => {
   const key = `demand-collection:${demandId}`
   let saved = null
-  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null') } catch (_) {}
+  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null') } catch { saved = null }
   const quantityKey = String(quantity)
   if (saved?.quantity === quantityKey && saved?.id) return { key, id: saved.id }
   const id = createOperationId()
@@ -117,6 +119,25 @@ export default function DemandasPlanejamentoPage() {
     fetchTotals()
     fetchDashboardSummary()
   }, [fetchTotals, fetchDashboardSummary])
+
+  // Simulações não passam pelo fluxo real (sem coleta/exclusão pelos endpoints
+  // de demanda): aparecem em seção própria, abrindo o dashboard da simulação.
+  const [simulacoes, setSimulacoes] = useState([])
+  useEffect(() => {
+    if (!hasPermission('demanda_producao', 'ler')) return
+    fetch('/api/v2/demanda-simulacoes')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((json) => { if (json?.success) setSimulacoes(json.data || []) })
+      .catch(() => {})
+  }, [hasPermission])
+  const visibleSimulacoes = useMemo(() => {
+    const search = searchTerm.trim().toLowerCase()
+    return simulacoes.filter((simulacao) => {
+      const terminal = TERMINAL_DEMAND_STATUSES.includes(normalizeDemandStatus(simulacao.status))
+      if ((currentTab === 'history') !== terminal) return false
+      return !search || String(simulacao.nome || '').toLowerCase().includes(search)
+    })
+  }, [simulacoes, currentTab, searchTerm])
 
   const filteredDemandas = useMemo(() => {
     const search = searchTerm.trim().toLowerCase()
@@ -245,13 +266,13 @@ export default function DemandasPlanejamentoPage() {
       body: JSON.stringify({ quantidade_coletar: quantity, operation_id: operation.id }),
     })
     const data = await response.json()
-    if (response.ok) {
+    if (response.ok && data.success) {
       sessionStorage.removeItem(operation.key)
       toast.success(data.message || 'Coleta registrada.')
       refresh()
       return
     }
-    toast.error(data.message || 'Nao foi possivel registrar a coleta.')
+    throw new Error(data.message || 'Nao foi possivel registrar a coleta.')
   }
 
   const handleBatchCollect = async () => {
@@ -364,46 +385,64 @@ export default function DemandasPlanejamentoPage() {
 
   return (
     <TooltipProvider>
-      <div className='container mx-auto py-8 pb-32'>
+      <div className='container mx-auto py-4 pb-32'>
         {error ? (
           <div role='status' className='mb-4 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900'>
             Exibindo dados possivelmente desatualizados. A sincronização falhou: {error}
             <Button variant='link' onClick={refresh}>Tentar novamente</Button>
           </div>
         ) : null}
-        <div className='mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between'>
+        <div className='mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between'>
           <div>
-            <h1 className='text-3xl font-bold text-slate-900'>Demandas</h1>
+            <h1 className='flex items-center gap-2 text-2xl font-bold text-slate-900'>
+              Demandas
+              <span
+                className={`h-2 w-2 rounded-full ${realtimeConnected ? 'bg-green-500' : 'bg-amber-500'}`}
+                title={realtimeConnected
+                  ? 'Atualização em tempo real conectada'
+                  : 'Tempo real desconectado; recuperação automática ativa'}
+              />
+            </h1>
             <p className='text-sm text-slate-500'>
               Acompanhe o que ja foi entregue ao galpao. Demanda nova nasce na Torre de Despacho.
             </p>
-            <p className='text-xs text-slate-400'>
-              {realtimeConnected ? 'Atualização em tempo real conectada' : 'Tempo real desconectado; recuperação automática ativa'}
-              {lastUpdatedAt ? ` · Atualizado ${new Date(lastUpdatedAt).toLocaleTimeString()}` : ''}
-            </p>
           </div>
 
-          <div className='flex flex-wrap gap-3'>
+          <div className='flex flex-wrap items-center gap-2'>
             {user?.is_admin || hasPermission('demanda_producao', 'criar') ? (
               <Link to='/producao/demanda/nova'>
-                <Button>Nova demanda</Button>
+                <Button size='sm'>Nova demanda</Button>
               </Link>
             ) : null}
-            <Button variant='outline' onClick={() => setIsCollectedDemandsModalOpen(true)}>
-              <Truck className='mr-2 h-4 w-4' />
-              Coletas
-            </Button>
-            <Button variant='outline' onClick={() => setIsDailyTotalsModalOpen(true)}>
-              <Factory className='mr-2 h-4 w-4' />
-              Producao diaria
-            </Button>
-            <Button variant='outline' onClick={() => {
-              fetchTotals()
-              fetchDashboardSummary()
-              refresh()
-            }}>
-              <RefreshCw className='mr-2 h-4 w-4' />
-              Atualizar
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant='outline' size='sm' className='gap-2'>
+                  <BarChart3 className='h-4 w-4' />
+                  Relatórios
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align='end'>
+                <DropdownMenuItem onClick={() => setIsCollectedDemandsModalOpen(true)}>
+                  <Truck className='mr-2 h-4 w-4' />
+                  Coletas
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setIsDailyTotalsModalOpen(true)}>
+                  <Factory className='mr-2 h-4 w-4' />
+                  Producao diaria
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button
+              variant='outline'
+              size='icon'
+              className='h-8 w-8'
+              title={lastUpdatedAt ? `Atualizar · última atualização ${new Date(lastUpdatedAt).toLocaleTimeString()}` : 'Atualizar'}
+              onClick={() => {
+                fetchTotals()
+                fetchDashboardSummary()
+                refresh()
+              }}>
+              <RefreshCw className='h-4 w-4' />
             </Button>
           </div>
         </div>
@@ -412,69 +451,62 @@ export default function DemandasPlanejamentoPage() {
           <SummaryCards dashboardSummary={dashboardSummary} totals={totals} />
         )}
 
-        <div className='mb-6 rounded-2xl border bg-white shadow-sm'>
-          <div className='flex flex-col gap-4 border-b p-4 lg:flex-row lg:items-center lg:justify-between'>
-            <Tabs value={currentTab} onValueChange={changeTab}>
-              <TabsList>
-                <TabsTrigger value='active'>Ativas</TabsTrigger>
-                <TabsTrigger value='history'>Historico</TabsTrigger>
-              </TabsList>
-            </Tabs>
-
-            <div className='grid gap-3 md:grid-cols-2 xl:grid-cols-4 xl:items-center'>
-              <Input
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder='Buscar por nome, pedido, cliente...'
-              />
-              <Select value={channelFilter} onValueChange={setChannelFilter}>
-                <SelectTrigger>
-                  <SelectValue placeholder='Origem' />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value='all'>Todas as origens</SelectItem>
-                  {uniqueChannels.map((channel) => (
-                    <SelectItem key={channel} value={String(channel)}>
-                      {channel}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select value={modalidadeFilter} onValueChange={setModalidadeFilter}>
-                <SelectTrigger>
-                  <SelectValue placeholder='Modalidade' />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value='all'>Todas as modalidades</SelectItem>
-                  <SelectItem value='STANDARD'>Normal</SelectItem>
-                  <SelectItem value='EXPRESS'>Flex</SelectItem>
-                  <SelectItem value='FULFILLMENT'>Fulfillment</SelectItem>
-                  <SelectItem value='RETIRADA'>Retirada</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={flowFilter} onValueChange={setFlowFilter}>
-                <SelectTrigger>
-                  <SelectValue placeholder='Fluxo' />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value='all'>Todos os fluxos</SelectItem>
-                  {DEMANDA_FLOW_OPTIONS.map((option) => (
-                    <SelectItem key={option.id} value={option.id}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className='flex flex-wrap items-center gap-2 p-4 text-sm text-slate-500'>
-            {(searchTerm || channelFilter !== 'all' || modalidadeFilter !== 'all' || flowFilter !== 'all') && (
-              <Button variant='ghost' size='sm' onClick={clearFilters}>
-                Limpar filtros
-              </Button>
-            )}
-          </div>
+        <div className='mb-3 flex flex-wrap items-center gap-2 rounded-lg border bg-white p-2'>
+          <Tabs value={currentTab} onValueChange={changeTab}>
+            <TabsList>
+              <TabsTrigger value='active'>Ativas</TabsTrigger>
+              <TabsTrigger value='history'>Historico</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <Input
+            className='h-9 min-w-[200px] flex-1'
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder='Buscar por nome, pedido, cliente...'
+          />
+          <Select value={channelFilter} onValueChange={setChannelFilter}>
+            <SelectTrigger className='h-9 w-[170px]'>
+              <SelectValue placeholder='Origem' />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='all'>Todas as origens</SelectItem>
+              {uniqueChannels.map((channel) => (
+                <SelectItem key={channel} value={String(channel)}>
+                  {channel}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={modalidadeFilter} onValueChange={setModalidadeFilter}>
+            <SelectTrigger className='h-9 w-[170px]'>
+              <SelectValue placeholder='Modalidade' />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='all'>Todas as modalidades</SelectItem>
+              <SelectItem value='STANDARD'>Normal</SelectItem>
+              <SelectItem value='EXPRESS'>Flex</SelectItem>
+              <SelectItem value='FULFILLMENT'>Fulfillment</SelectItem>
+              <SelectItem value='RETIRADA'>Retirada</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={flowFilter} onValueChange={setFlowFilter}>
+            <SelectTrigger className='h-9 w-[170px]'>
+              <SelectValue placeholder='Fluxo' />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='all'>Todos os fluxos</SelectItem>
+              {DEMANDA_FLOW_OPTIONS.map((option) => (
+                <SelectItem key={option.id} value={option.id}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {(searchTerm || channelFilter !== 'all' || modalidadeFilter !== 'all' || flowFilter !== 'all') && (
+            <Button variant='ghost' size='sm' onClick={clearFilters}>
+              Limpar filtros
+            </Button>
+          )}
         </div>
 
         {Object.keys(pendingChanges).length > 0 && (
@@ -510,12 +542,33 @@ export default function DemandasPlanejamentoPage() {
           </div>
         )}
 
+        {visibleSimulacoes.length > 0 && (
+          <div className='mb-4 rounded-2xl border border-amber-300 bg-amber-50/40 p-4'>
+            <h2 className='mb-2 text-sm font-semibold'>Simulações</h2>
+            <div className='grid gap-2'>
+              {visibleSimulacoes.map((simulacao) => (
+                <Link
+                  key={simulacao.id}
+                  to={`/producao/simulacao/${simulacao.id}/dashboard`}
+                  className='flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-white p-3 text-sm hover:border-primary/60'
+                >
+                  <span className='font-medium'>{simulacao.nome}</span>
+                  <span className='text-xs text-slate-500'>
+                    <span className='mr-2 rounded bg-amber-600 px-1.5 py-0.5 text-white'>Simulação</span>
+                    {simulacao.status} · {simulacao.pedido_ids.length} pedidos
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+
         {filteredDemandas.length === 0 ? (
           <div className='rounded-2xl border bg-white p-10 text-center text-slate-500'>
             Nenhuma demanda encontrada nesta aba.
           </div>
         ) : (
-          <div className='grid gap-4'>
+          <div className='grid gap-3'>
             {filteredDemandas.map((demanda) => (
               <DemandaCard
                 key={demanda.id}

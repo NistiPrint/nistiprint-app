@@ -187,7 +187,7 @@ function cartaoHtml(order) {
     : (order.numeroLoja || 'N/A');
   const identificadorPedido = ehMercadoLivre
     ? (order.numero || idPedidoMercadoLivre)
-    : (order.numero || order.id || 'N/A');
+    : (order.numero || '');
   return `
     <div class="stamp-card">
       <div class="stamp-header">

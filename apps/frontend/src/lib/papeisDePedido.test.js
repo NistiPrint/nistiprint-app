@@ -158,7 +158,7 @@ test('agrega todos os lotes em um unico documento de impressao', async () => {
     const { order_ids: lote } = JSON.parse(options.body);
     return jsonResponse({
       success: true,
-      data: { orders: lote.map((id) => ({ id, itens: [] })), blocked_orders: [] },
+      data: { orders: lote.map((id) => ({ id, numero: String(id), itens: [] })), blocked_orders: [] },
     });
   };
   globalThis.document = {
@@ -231,6 +231,30 @@ test('exibe o pacote no cabecalho e reaproveita o numero sem ERP no pedido', () 
   assert.match(html, /class="order-info"><div>9007199254740999<\/div>/);
   assert.doesNotMatch(html, /Pedido 9007199254740999/);
   assert.doesNotMatch(html, /ordem-externa/);
+});
+
+
+test('pedido sem ERP repete codigo marketplace e deixa numero vazio sem codigo', () => {
+  const comCodigo = montarDocumentoDePapeis([{
+    id: 31,
+    numero: 'SHOP-31',
+    numeroLoja: 'SHOP-31',
+    marketplace_order_id: 'SHOP-31',
+    plataforma_slug: 'shopee',
+    itens: [],
+  }]);
+  const semCodigo = montarDocumentoDePapeis([{
+    id: 32,
+    numero: '',
+    numeroLoja: '',
+    marketplace_order_id: '',
+    plataforma_slug: 'shopee',
+    itens: [],
+  }]);
+
+  assert.match(comCodigo, /class="order-info"><div>SHOP-31<\/div>/);
+  assert.match(semCodigo, /class="order-info"><div><\/div>/);
+  assert.doesNotMatch(semCodigo, /class="order-info"><div>32<\/div>/);
 });
 
 

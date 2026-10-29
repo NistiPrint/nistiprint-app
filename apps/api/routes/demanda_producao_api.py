@@ -1,5 +1,6 @@
 from flask import request, jsonify, session, Response, stream_with_context
 import json
+import math
 import pytz
 import logging
 from datetime import datetime, timedelta
@@ -10,11 +11,16 @@ from nistiprint_shared.services.permissao_service import permissao_service
 from nistiprint_shared.services.canal_venda_service import canal_venda_service
 from nistiprint_shared.services.estoque_service import estoque_service
 from nistiprint_shared.services.app_config_service import app_config_service
+from nistiprint_shared.services.bom_service import bom_service
+from nistiprint_shared.services.product_service import product_service
+from nistiprint_shared.services.production_demand_planning import build_production_demand_plan, prepare_component_distributions
+from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.unit_of_work import UnitOfWork
 from nistiprint_shared.services.daily_production_log_service import daily_production_log_service
 from nistiprint_shared.services.order_erp_reference_service import order_erp_reference_service
 from nistiprint_shared.services.async_operation_service import async_operation_service
 from .demanda_producao_base import demanda_producao_api_bp
+from .demanda_simulacao_state import simulation_consolidated, simulation_demands
 
 from nistiprint_shared.services.previsao_consumo_service import previsao_consumo_service
 from nistiprint_shared.utils.date_utils import get_today
@@ -1023,6 +1029,15 @@ def api_get_dashboard_summary():
     except Exception as e:
         return jsonify({'success': False, 'message': f'Erro interno: {e}'}), 500
 
+def _incluir_simulacoes():
+    return request.args.get('incluir_simulacoes', 'false').lower() == 'true'
+
+
+def _simulation_rows():
+    return (supabase_db.table('demanda_simulacoes').select('id,state')
+            .order('created_at', desc=True).limit(200).execute().data or [])
+
+
 @demanda_producao_api_bp.route('/consolidado', methods=['GET'])
 def api_get_consolidado():
     try:
@@ -1032,9 +1047,62 @@ def api_get_consolidado():
             dados = demanda_producao_service.get_consolidado_agrupado_por_sku(trilha=trilha)
         else:
             dados = demanda_producao_service.get_consolidado_producao(trilha=trilha)
+            if _incluir_simulacoes():
+                dados = list(dados or []) + [
+                    row for row in simulation_consolidated(_simulation_rows())
+                    if not trilha or row['trilha'] == trilha
+                ]
         return jsonify({'success': True, 'data': dados})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@demanda_producao_api_bp.route('/planejamento-insumos', methods=['GET'])
+def api_get_planejamento_insumos():
+    tipo = request.args.get('tipo', 'miolo')
+    categories = {
+        'miolo': 'producao_miolos_category_id',
+        'capa': 'producao_capas_impressas_category_id',
+        'capa_acabada': 'producao_capas_category_id',
+    }
+    if tipo not in categories:
+        return jsonify({'success': False, 'message': 'Tipo de planejamento inválido.'}), 400
+    try:
+        category_id = app_config_service.get_config(categories[tipo])
+        if not category_id:
+            return jsonify({'success': False, 'message': 'Categoria de produção não configurada.'}), 400
+        products_data, _ = product_service.get_products(categoria_id=category_id, per_page=10000)
+        products = [dict(p) for p in products_data if p.get('status', 'ativo') == 'ativo']
+        deposit_id = app_config_service.get_config('default_production_deposit_id') or 'principal'
+        stocks = estoque_service.get_saldos_em_lote([p['id'] for p in products], deposit_id)
+        for product in products:
+            product['stock_details'] = stocks.get(str(product['id']), {})
+
+        demandas_raw = demanda_producao_service.get_demandas_by_status(
+            ['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL']) or []
+        demandas = [d for d in demandas_raw if isinstance(d, dict) and d.get('id') is not None]
+        horizonte = request.args.getlist('horizonte')
+        if horizonte:
+            from nistiprint_shared.utils.date_utils import get_now
+            data_referencia = request.args.get('data') or get_now().date().isoformat()
+        else:
+            data_referencia = None
+        ids = [str(d['id']) for d in demandas]
+        items_by_demanda = demanda_producao_service.get_items_for_multiple_demandas(ids) or {}
+        if _incluir_simulacoes():
+            for demand, items in simulation_demands(_simulation_rows()):
+                demandas.append(demand)
+                items_by_demanda[str(demand['id'])] = items
+        root_ids = sorted({int(item['produto_id']) for items in items_by_demanda.values()
+                           for item in items if str(item.get('produto_id') or '').isdigit()})
+        graph = bom_service.load_effective_graph(root_ids) if root_ids else {'nodes': {}}
+        result = build_production_demand_plan(tipo, products, demandas, items_by_demanda, graph,
+                                              stage_product_ids=[p['id'] for p in products_data],
+                                              horizonte=horizonte or None, data_referencia=data_referencia)
+        return jsonify({'success': True, **result})
+    except Exception:
+        logger.exception('Falha no planejamento de insumos de produção')
+        return jsonify({'success': False, 'message': 'Não foi possível carregar o planejamento.'}), 500
 
 @demanda_producao_api_bp.route('/ativas-por-item/<string:produto_id>', methods=['GET'])
 def api_get_ativas_por_item(produto_id):
@@ -1048,17 +1116,34 @@ def api_get_ativas_por_item(produto_id):
 @check_permission('demanda_producao', 'editar')
 def api_registrar_retirada_expedicao(demanda_id, item_id):
     try:
-        data = request.get_json()
-        quantidade = int(data.get('quantidade', 1))
-        denied = _deny_unauthorized_demand_fields(['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'])
+        import uuid
+        data = request.get_json(silent=True) or {}
+        quantidade_raw = data.get('quantidade', 1)
+        if isinstance(quantidade_raw, bool) or not str(quantidade_raw).isdigit():
+            raise ValueError('A quantidade deve ser um inteiro positivo.')
+        quantidade = int(quantidade_raw)
+        operation_id = str(uuid.UUID(str(data.get('operation_id'))))
+        componente = data.get('componente')
+        fields_by_component = {
+            'capas': ['expedicao_capas_retiradas_qtd'],
+            'miolos': ['expedicao_miolos_retirados_qtd'],
+        }
+        if componente is not None and componente not in fields_by_component:
+            raise ValueError('Componente inválido. Use capas ou miolos.')
+        fields = fields_by_component.get(componente, [
+            'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'])
+        denied = _deny_unauthorized_demand_fields(fields)
         if denied:
             return denied
         user_id = session.get('user_email', 'System')
-        updated_item = demanda_producao_service.registrar_retirada_expedicao(demanda_id, item_id, quantidade, user_id)
+        updated_item = demanda_producao_service.registrar_retirada_expedicao(
+            demanda_id, item_id, quantidade, user_id, operation_id, componente=componente)
         return jsonify({'success': True, 'message': 'Retirada registrada com sucesso!', 'data': updated_item})
     except ValueError as ve:
         return jsonify({'success': False, 'message': str(ve)}), 400
     except Exception as e:
+        if '40001' in str(e) or 'Revisão do item mudou' in str(e):
+            return jsonify({'success': False, 'message': 'O saldo do item mudou. Atualize a expedição antes de tentar novamente.'}), 409
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @demanda_producao_api_bp.route('/prioritized', methods=['GET'])
@@ -1108,18 +1193,40 @@ def registrar_saida_distribuida():
     if not all([distributions, product_id, total_quantity, production_date_str]):
         return jsonify({'success': False, 'error': 'Dados incompletos.'}), 400
     try:
+        amounts = [float(dist['quantidade']) for dist in distributions]
+        distributed_total = sum(amounts)
+        requested_total = float(total_quantity)
+        if (not all(math.isfinite(value) and value > 0 for value in amounts)
+                or not math.isfinite(requested_total)
+                or abs(distributed_total - requested_total) > 0.0001):
+            raise ValueError('O total informado deve corresponder às quantidades distribuídas.')
         if update_demand:
-            denied = _deny_unauthorized_demand_fields(['miolos_prontos_retirada_qtd'])
+            role = product_service.identify_product_role(str(product_id))
+            permission_fields = {
+                'MIOLO': ['miolos_prontos_retirada_qtd'],
+                'CAPA_IMPRESSAO': ['capas_impressas_qtd'],
+                'CAPA_ACABADA': ['capas_produzidas_qtd'],
+            }.get(role, ['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'])
+            denied = _deny_unauthorized_demand_fields(permission_fields)
             if denied:
                 return denied
+            if role in ('MIOLO', 'CAPA_IMPRESSAO', 'CAPA_ACABADA'):
+                item_ids = [int(dist['item_id']) for dist in distributions]
+                item_rows = supabase_db.table('itens_demanda').select(
+                    'id,demanda_id,produto_id,id_produto_miolo,quantidade,capas_impressas_qtd,capas_produzidas_qtd,miolos_prontos_retirada_qtd'
+                ).in_('id', item_ids).execute().data or []
+                if demanda_id is not None and any(str(row['demanda_id']) != str(demanda_id) for row in item_rows):
+                    raise ValueError('Item não pertence à demanda informada.')
+                root_ids = sorted({int(row['produto_id']) for row in item_rows if str(row.get('produto_id') or '').isdigit()})
+                graph = bom_service.load_effective_graph(root_ids) if root_ids else {'nodes': {}}
+                distributions = prepare_component_distributions(
+                    product_id, role, distributions, {str(row['id']): row for row in item_rows}, graph)
         user_id = session.get('user_id')
         production_date = datetime.strptime(production_date_str, '%Y-%m-%d').date()
         deposito_id = app_config_service.get_config('default_production_deposit_id') or 'principal'
         saldo = estoque_service.get_saldo_atual(product_id, deposito_id)
         if saldo['quantidade_disponivel'] < float(total_quantity):
              return jsonify({'success': False, 'error': f"Saldo insuficiente. Disponível: {saldo['quantidade_disponivel']}, Solicitado: {total_quantity}"}), 400
-        usuario = get_current_user()
-        user_context = {'id': usuario['id'], 'setor_id': usuario['setor_id'], 'setor_nome': usuario['setor_nome'], 'is_admin': usuario['is_admin']}
         with UnitOfWork(user_id=user_id) as uow:
             # [-] ALOCA, nao dá saída física.
             # O fluxo real é: produção -> alocação na demanda -> saída física.
@@ -1146,6 +1253,8 @@ def registrar_saida_distribuida():
             uow.log_audit_event('ALOCACAO_RESERVA_DEMANDA', {'product_id': product_id, 'total_quantity': total_quantity, 'production_date': production_date_str, 'distributions': distributions})
         new_daily_removed = daily_production_log_service.get_total_removed_for_product_on_date(product_id, production_date)
         return jsonify({'success': True, 'message': 'Alocação registrada — o item foi reservado para a demanda. A saída física acontece na finalização.', 'new_daily_removed': new_daily_removed, 'operation_id': (reservation_result or {}).get('operation_id')}), 200
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
     except Exception as e:
         import traceback
         traceback.print_exc()

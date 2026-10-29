@@ -146,7 +146,7 @@ function UsuarioFormPage() {
                   <FormItem>
                     <FormLabel>Senha *</FormLabel>
                     <FormControl>
-                      <Input type="password" placeholder="Mínimo 6 caracteres" {...field} />
+                    <Input type="password" autoComplete="new-password" placeholder="Mínimo 8 caracteres" minLength={8} {...field} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -180,23 +180,22 @@ function UsuarioFormPage() {
             />
 
             <div className="space-y-4">
-              <FormField
-                control={form.control}
-                name="ativo"
-                render={({ field }) => (
-                  <FormItem className="flex flex-row items-center space-x-3 space-y-0">
-                    <FormControl>
-                      <Checkbox
-                        checked={field.value}
-                        onCheckedChange={field.onChange}
-                      />
-                    </FormControl>
-                    <div className="space-y-1 leading-none">
-                      <FormLabel>Usuário ativo</FormLabel>
-                    </div>
-                  </FormItem>
-                )}
-              />
+              {!isEditing && (
+                <FormField
+                  control={form.control}
+                  name="ativo"
+                  render={({ field }) => (
+                    <FormItem className="flex flex-row items-center space-x-3 space-y-0">
+                      <FormControl>
+                        <Checkbox checked={field.value} onCheckedChange={field.onChange} />
+                      </FormControl>
+                      <div className="space-y-1 leading-none">
+                        <FormLabel>Criar usuário ativo</FormLabel>
+                      </div>
+                    </FormItem>
+                  )}
+                />
+              )}
 
               <FormField
                 control={form.control}

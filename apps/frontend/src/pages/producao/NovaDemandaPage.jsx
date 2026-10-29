@@ -1,134 +1,97 @@
-﻿import ProductSearchInput from '@/components/produtos/ProductSearchInput';
-import { Badge } from '@/components/ui/badge';
+﻿import PassoCliente from '@/components/producao/nova-demanda/PassoCliente';
+import PassoItens from '@/components/producao/nova-demanda/PassoItens';
+import PassoOrigem from '@/components/producao/nova-demanda/PassoOrigem';
+import ResumoDemanda from '@/components/producao/nova-demanda/ResumoDemanda';
+import TrilhaPassos from '@/components/producao/nova-demanda/TrilhaPassos';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
+import { Form } from '@/components/ui/form';
+import PageHeader from '@/components/ui/PageHeader';
+import { dataOperacionalHoje } from '@/lib/dataOperacional';
+import { deriveDemandFlow, getDemandFlowConfig } from '@/lib/demandaFlow';
 import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form';
-import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Textarea } from '@/components/ui/textarea';
-import { DEMANDA_FLOW_OPTIONS, deriveDemandFlow, getDemandFlowConfig, getModalidadeLabel } from '@/lib/demandaFlow';
+  calcularFinalizacaoPrevista,
+  modalidadesDisponiveis,
+  montarPayloadDemanda,
+  sugerirHorarioColeta,
+  urlCriacaoDemanda,
+} from '@/lib/novaDemanda';
+import { CAMPOS_POR_PASSO, criarDemandaSchema } from '@/schemas/demandaSchema';
+import CanalVendaService from '@/services/CanalVendaService';
+import MarketplaceService from '@/services/MarketplaceService';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Briefcase, ClipboardPaste, Edit, Loader2, PlusCircle, Trash2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { ArrowLeft, ArrowRight, Edit, Loader2, PlusCircle } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFieldArray, useForm } from 'react-hook-form';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { z } from 'zod';
 
-const INTERACAO_STATUS_OPTIONS = [
-    'Aguardando arte',
-    'Aguardando prévia',
-    'Aguardando aprovação',
-    'Aprovado'
-];
+const PASSO_ORIGEM = 1;
+const PASSO_CLIENTE = 1.5;
+const PASSO_ITENS = 2;
 
-const itemSchema = z.object({
-  product_id: z.string().optional().nullable(),
-  quantidade: z.preprocess(
-    (val) => Number(val),
-    z.number().min(1, { message: "Qtd deve ser >= 1." })
-  ),
-  descricao: z.string().min(1, { message: "Descrição é obrigatória." }),
-  sku: z.string().optional(),
-  variacao: z.string().optional(),
-  miolo_nome: z.string().optional(),
-  id_produto_miolo: z.string().optional().nullable(),
-  observacoes: z.string().optional(),
+const itemVazio = () => ({
+  product_id: null,
+  quantidade: 1,
+  descricao: '',
+  sku: '',
+  variacao: '',
+  miolo_nome: '',
+  id_produto_miolo: null,
+  observacoes: '',
 });
 
-const formSchema = z.object({
-  fluxo_demanda: z.enum(['venda_diaria', 'fulfillment', 'venda_corporativa', 'producao_interna']).default('venda_diaria'),
-  nome: z.string().min(1, { message: "Nome da demanda é obrigatório." }),
-  canal_venda_id: z.string().min(1, { message: "Canal / origem é obrigatório." }),
-  data_entrega: z.string().min(1, { message: "Data de entrega é obrigatória." }),
-  horario_coleta_especifico: z.string().optional(),
-  data_finalizacao_prevista: z.string().optional(),
-  observacoes: z.string().optional(),
+/** Converte um timestamp do backend para o formato do `datetime-local`. */
+function paraDatetimeLocal(valor) {
+  if (!valor) return '';
+  const data = new Date(valor);
+  if (Number.isNaN(data.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${data.getFullYear()}-${p(data.getMonth() + 1)}-${p(data.getDate())}T${p(data.getHours())}:${p(data.getMinutes())}`;
+}
 
-  // Novos campos de refatoração
-  modalidade_logistica: z.enum(['STANDARD', 'EXPRESS', 'FULFILLMENT', 'RETIRADA'], { message: "Modalidade logí­stica é obrigatória." }).default('STANDARD'),
-  classificacao_cliente: z.enum(['B2C', 'B2B', 'INTERNO'], { message: "Classificação do cliente é obrigatória." }).default('B2C'),
-
-  // B2B specific fields, conditional
-  empresa_cliente_nome: z.string().optional(),
-  empresa_wire_o_cor: z.string().optional(),
-  empresa_elastico_cor: z.string().optional(),
-  empresa_interacao_status: z.string().optional(),
-  empresa_pedido_plataforma_numero: z.string().optional(),
-  empresa_responsavel_id: z.string().optional(),
-  empresa_responsavel_nome: z.string().optional(),
-
-  itens: z.array(itemSchema).min(1, { message: "í‰ necessário pelo menos um item." })
-}).superRefine((data, ctx) => {
-  if (data.fluxo_demanda === 'venda_corporativa') {
-    if (!data.empresa_cliente_nome) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Empresa / cliente é obrigatório para demandas B2B.",
-        path: ['empresa_cliente_nome'],
-      });
-    }
-    if (!data.empresa_responsavel_nome) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "Responsável é obrigatório para demandas B2B.",
-            path: ['empresa_responsavel_nome'],
-        });
-    }
+async function buscarProdutoPorSku(sku) {
+  try {
+    const resposta = await fetch(`/api/v2/estoque/produtos-busca?q=${encodeURIComponent(sku)}&only_marketable=true`);
+    const dados = await resposta.json();
+    const item = dados.results?.[0];
+    if (!item) return null;
+    return {
+      id: item.id,
+      name: item.text.split(' - ').slice(1).join(' - ') || item.text,
+      sku: item.text.split(' - ')[0] || '',
+    };
+  } catch (erro) {
+    console.error('Erro ao buscar produto por SKU:', erro);
+    return null;
   }
-});
+}
 
 function NovaDemandaPage() {
-  const { id } = useParams(); // Get ID from URL for editing
+  const { id } = useParams();
   const isEditing = !!id;
   const navigate = useNavigate();
-  const [channels, setChannels] = useState([]);
+
+  const [canais, setCanais] = useState([]);
+  const [moduleIcons, setModuleIcons] = useState({});
   const [loadingInitialData, setLoadingInitialData] = useState(true);
   const [loadingSubmit, setLoadingSubmit] = useState(false);
+  const [passo, setPasso] = useState(PASSO_ORIGEM);
+  const [maiorVisitado, setMaiorVisitado] = useState(PASSO_ORIGEM);
 
-  // Function to search product by SKU (for clipboard paste enrichment)
-  const searchProductBySku = async (sku) => {
-    try {
-      const response = await fetch(`/api/v2/estoque/produtos-busca?q=${encodeURIComponent(sku)}&only_marketable=true`);
-      const data = await response.json();
-      if (data.results && data.results.length > 0) {
-        const item = data.results[0];
-        return {
-          id: item.id,
-          name: item.text.split(' - ').slice(1).join(' - ') || item.text,
-          sku: item.text.split(' - ')[0] || '',
-        };
-      }
-      return null;
-    } catch (error) {
-      console.error('Error searching product by SKU:', error);
-      return null;
-    }
-  };
+  const hoje = useMemo(() => dataOperacionalHoje(), []);
+  // Na edição, os prazos já gravados mandam: o automático só volta a agir
+  // depois que o usuário mexer em canal, modalidade ou data.
+  const autoPrazosAtivo = useRef(!isEditing);
+  const schema = useMemo(() => criarDemandaSchema({ validarDataPassada: !isEditing }), [isEditing]);
 
   const form = useForm({
-    resolver: zodResolver(formSchema),
+    resolver: zodResolver(schema),
     defaultValues: {
       fluxo_demanda: 'venda_diaria',
       nome: '',
       canal_venda_id: '',
-      data_entrega: '',
+      data_entrega: hoje,
       horario_coleta_especifico: '',
       data_finalizacao_prevista: '',
       observacoes: '',
@@ -141,752 +104,440 @@ function NovaDemandaPage() {
       empresa_pedido_plataforma_numero: '',
       empresa_responsavel_id: '',
       empresa_responsavel_nome: '',
-      itens: [{ product_id: null, quantidade: 1, descricao: '', sku: '', variacao: '', miolo_nome: '', id_produto_miolo: null, observacoes: '' }]
+      itens: [itemVazio()],
     },
   });
 
   const { fields: itemFields, append: appendItem, remove: removeItem } = useFieldArray({
     control: form.control,
-    name: "itens",
+    name: 'itens',
   });
 
-  const [userEditedHorario, setUserEditedHorario] = useState(false);
-  const [userEditedFinalizacao, setUserEditedFinalizacao] = useState(false);
+  const fluxo = form.watch('fluxo_demanda');
+  const canalVendaId = form.watch('canal_venda_id');
+  const modalidade = form.watch('modalidade_logistica');
+  const dataEntrega = form.watch('data_entrega');
+  const horarioColeta = form.watch('horario_coleta_especifico');
+  const itens = form.watch('itens');
+  const { dirtyFields } = form.formState;
 
-  const watchFlow = form.watch('fluxo_demanda');
-  const flowConfig = getDemandFlowConfig(watchFlow);
-  const watchCanalVenda = form.watch("canal_venda_id");
-  const watchDataEntrega = form.watch("data_entrega");
-  const watchHorarioColeta = form.watch("horario_coleta_especifico");
+  const canalSelecionado = useMemo(
+    () => canais.find((canal) => String(canal.id) === canalVendaId) || null,
+    [canais, canalVendaId]
+  );
+
+  const passos = useMemo(() => {
+    const lista = [{ id: PASSO_ORIGEM, label: 'Origem e entrega' }];
+    if (fluxo === 'venda_corporativa') lista.push({ id: PASSO_CLIENTE, label: 'Cliente' });
+    lista.push({ id: PASSO_ITENS, label: 'Itens' });
+    return lista;
+  }, [fluxo]);
 
   useEffect(() => {
-    const fetchInitialData = async () => {
+    const carregar = async () => {
       try {
-        const [channelsRes] = await Promise.all([
-          fetch('/api/v2/cadastros/canal-venda?active_only=true'),
+        const [listaCanais, modulos] = await Promise.all([
+          CanalVendaService.getAll(true),
+          MarketplaceService.getAvailableModules().catch(() => []),
         ]);
 
-        const channelsData = await channelsRes.json();
+        setCanais(listaCanais || []);
+        setModuleIcons(
+          Object.fromEntries((modulos || []).filter((m) => m.icon_url).map((m) => [m.slug, m.icon_url]))
+        );
 
-        setChannels(channelsData.canais || []);
-
-        // If editing, fetch demand details
         if (isEditing) {
-            const demandRes = await fetch(`/api/v2/demanda_producao/${id}`);
-            const demandData = await demandRes.json();
+          const resposta = await fetch(`/api/v2/demanda_producao/${id}`);
+          const dados = await resposta.json();
 
-            if (demandData.success) {
-                const d = demandData.demanda;
+          if (!dados.success) {
+            toast.error('Erro ao carregar dados da demanda.');
+            navigate('/producao/demanda');
+            return;
+          }
 
-                // Format dates for inputs
-                const formattedDateEntrega = d.data_entrega ? d.data_entrega.split('T')[0] : '';
-
-                let formattedFinalizacao = '';
-                if (d.data_finalizacao_prevista) {
-                    try {
-                        const dt = new Date(d.data_finalizacao_prevista);
-                        if (!isNaN(dt.getTime())) {
-                            // Extrair componentes locais para evitar o deslocamento do toISOString
-                            const year = dt.getFullYear();
-                            const month = String(dt.getMonth() + 1).padStart(2, '0');
-                            const day = String(dt.getDate()).padStart(2, '0');
-                            const hours = String(dt.getHours()).padStart(2, '0');
-                            const minutes = String(dt.getMinutes()).padStart(2, '0');
-                            formattedFinalizacao = `${year}-${month}-${day}T${hours}:${minutes}`;
-                        }
-                    } catch (e) {
-                        console.error("Erro ao formatar data de finalização:", e);
-                    }
-                }
-
-                form.reset({
-                    fluxo_demanda: deriveDemandFlow(d),
-                    nome: d.nome || '',
-                    canal_venda_id: d.canal_venda_id ? String(d.canal_venda_id) : '',
-                    data_entrega: formattedDateEntrega,
-                    horario_coleta_especifico: d.horario_coleta || '',
-                    data_finalizacao_prevista: formattedFinalizacao,
-                    observacoes: d.observacoes || '',
-
-                    // Novos campos de refatoração
-                    modalidade_logistica: d.modalidade_logistica || 'STANDARD',
-                    classificacao_cliente: d.classificacao_cliente || 'B2C',
-
-                    empresa_cliente_nome: d.empresa_cliente_nome || '',
-                    empresa_wire_o_cor: d.empresa_wire_o_cor || '#000000',
-                    empresa_elastico_cor: d.empresa_elastico_cor || '#000000',
-                    empresa_interacao_status: d.empresa_interacao_status || 'Aguardando arte',
-                    empresa_pedido_plataforma_numero: d.empresa_pedido_plataforma_numero || '',
-                    empresa_responsavel_id: d.empresa_responsavel_id ? String(d.empresa_responsavel_id) : '',
-                    empresa_responsavel_nome: d.empresa_responsavel_nome || '',
-                    itens: d.itens ? d.itens.map(item => ({
-                        product_id: item.product_id ? String(item.product_id) : null,
-                        quantidade: item.quantidade_total || item.quantidade || 1,
-                        descricao: item.descricao || '',
-                        sku: item.sku || '',
-                        variacao: item.variacao || '',
-                        miolo_nome: item.miolo_name || '',
-                        id_produto_miolo: item.id_produto_miolo ? String(item.id_produto_miolo) : null,
-                        observacoes: item.observacoes || ''
-                    })) : []
-                });
-            } else {
-                toast.error("Erro ao carregar dados da demanda.");
-                navigate('/producao/demanda');
-            }
+          const d = dados.demanda;
+          form.reset({
+            fluxo_demanda: deriveDemandFlow(d),
+            nome: d.nome || '',
+            canal_venda_id: d.canal_venda_id ? String(d.canal_venda_id) : '',
+            data_entrega: d.data_entrega ? d.data_entrega.split('T')[0] : '',
+            horario_coleta_especifico: d.horario_coleta || '',
+            data_finalizacao_prevista: paraDatetimeLocal(d.data_finalizacao_prevista),
+            observacoes: d.observacoes || '',
+            modalidade_logistica: d.modalidade_logistica || 'STANDARD',
+            classificacao_cliente: d.classificacao_cliente || 'B2C',
+            empresa_cliente_nome: d.empresa_cliente_nome || '',
+            empresa_wire_o_cor: d.empresa_wire_o_cor || '#000000',
+            empresa_elastico_cor: d.empresa_elastico_cor || '#000000',
+            empresa_interacao_status: d.empresa_interacao_status || 'Aguardando arte',
+            empresa_pedido_plataforma_numero: d.empresa_pedido_plataforma_numero || '',
+            empresa_responsavel_id: d.empresa_responsavel_id ? String(d.empresa_responsavel_id) : '',
+            empresa_responsavel_nome: d.empresa_responsavel_nome || '',
+            itens: (d.itens || []).map((item) => ({
+              product_id: item.product_id ? String(item.product_id) : null,
+              quantidade: item.quantidade_total || item.quantidade || 1,
+              descricao: item.descricao || '',
+              sku: item.sku || '',
+              variacao: item.variacao || '',
+              miolo_nome: item.miolo_name || '',
+              id_produto_miolo: item.id_produto_miolo ? String(item.id_produto_miolo) : null,
+              observacoes: item.observacoes || '',
+            })),
+          });
+          setMaiorVisitado(PASSO_ITENS);
         }
-
-      } catch (error) {
-        toast.error("Erro ao carregar dados iniciais: " + error.message);
+      } catch (erro) {
+        toast.error(`Erro ao carregar dados iniciais: ${erro.message}`);
       } finally {
         setLoadingInitialData(false);
       }
     };
-    fetchInitialData();
+
+    carregar();
   }, [isEditing, id, form, navigate]);
 
-  useEffect(() => {
-    const currentFlow = getDemandFlowConfig(watchFlow);
-    if (!currentFlow) return;
-    form.setValue('classificacao_cliente', currentFlow.classificacao_cliente);
-    form.setValue('modalidade_logistica', currentFlow.modalidade_logistica);
-  }, [watchFlow, form]);
+  /**
+   * Preenche horário de coleta e finalização prevista a partir do canal e da
+   * modalidade. Campos tocados pelo usuário ficam intactos, a menos que ele
+   * peça "Recalcular" (`forcar`). `resetField` mantém o estado dirty honesto:
+   * preenchimento automático não suja o campo.
+   */
+  const aplicarPrazos = useCallback(
+    ({ canal, modalidade: modalidadeAlvo, dataAlvo, forcar = false } = {}) => {
+      if (!forcar && !autoPrazosAtivo.current) return;
+      const canalAtual = canal ?? canalSelecionado;
+      if (!canalAtual) return;
 
-  // Preencher automaticamente o horario de coleta quando o canal de venda e selecionado
-  useEffect(() => {
-    if (watchCanalVenda && !userEditedHorario) {
-      const canal = channels.find(c => String(c.id) === watchCanalVenda);
-      if (canal && canal.horario_coleta) {
-        form.setValue('horario_coleta_especifico', canal.horario_coleta);
+      const modalidadeAtual = modalidadeAlvo ?? form.getValues('modalidade_logistica');
+      const data = dataAlvo ?? form.getValues('data_entrega');
+
+      let horario = form.getValues('horario_coleta_especifico');
+      if (forcar || !dirtyFields.horario_coleta_especifico) {
+        const sugerido = sugerirHorarioColeta(canalAtual, modalidadeAtual);
+        if (sugerido && sugerido !== horario) {
+          form.resetField('horario_coleta_especifico', { defaultValue: sugerido });
+          horario = sugerido;
+        }
       }
-    }
-  }, [watchCanalVenda, channels, form, userEditedHorario]);
 
-  // Calcular data de finalização prevista automaticamente
+      if (forcar || !dirtyFields.data_finalizacao_prevista) {
+        const finalizacao = calcularFinalizacaoPrevista(data, horario);
+        if (finalizacao && finalizacao !== form.getValues('data_finalizacao_prevista')) {
+          form.resetField('data_finalizacao_prevista', { defaultValue: finalizacao });
+        }
+      }
+    },
+    [canalSelecionado, dirtyFields.horario_coleta_especifico, dirtyFields.data_finalizacao_prevista, form]
+  );
+
+  // Recalcula quando canal, modalidade, data ou horário mudam.
   useEffect(() => {
-    if (watchDataEntrega && watchHorarioColeta && !userEditedFinalizacao) {
+    if (!canalSelecionado) return;
+    aplicarPrazos();
+  }, [canalSelecionado, modalidade, dataEntrega, horarioColeta, aplicarPrazos]);
+
+  /** Troca a data e devolve o controle ao preenchimento automático. */
+  const alterarData = useCallback(
+    (valor) => {
+      autoPrazosAtivo.current = true;
+      form.setValue('data_entrega', valor, { shouldDirty: true, shouldValidate: true });
+    },
+    [form]
+  );
+
+  const passoSeguinte = useCallback(
+    (atual) => {
+      if (atual === PASSO_ORIGEM) return fluxo === 'venda_corporativa' ? PASSO_CLIENTE : PASSO_ITENS;
+      return PASSO_ITENS;
+    },
+    [fluxo]
+  );
+
+  const passoAnterior = useCallback(
+    (atual) => {
+      if (atual === PASSO_ITENS) return fluxo === 'venda_corporativa' ? PASSO_CLIENTE : PASSO_ORIGEM;
+      return PASSO_ORIGEM;
+    },
+    [fluxo]
+  );
+
+  const irPara = useCallback((destino) => {
+    setPasso(destino);
+    setMaiorVisitado((anterior) => Math.max(anterior, destino));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  const avancar = useCallback(async () => {
+    const campos = passo === PASSO_ORIGEM ? CAMPOS_POR_PASSO.origem : CAMPOS_POR_PASSO.cliente;
+    const valido = await form.trigger(campos);
+    if (!valido) return;
+    irPara(passoSeguinte(passo));
+  }, [form, irPara, passo, passoSeguinte]);
+
+  const escolherFluxo = (fluxoId) => {
+    const config = getDemandFlowConfig(fluxoId);
+    autoPrazosAtivo.current = true;
+    form.setValue('fluxo_demanda', fluxoId, { shouldDirty: true });
+    form.setValue('classificacao_cliente', config.classificacao_cliente);
+  };
+
+  const escolherCanal = (canal) => {
+    autoPrazosAtivo.current = true;
+    form.setValue('canal_venda_id', String(canal.id), { shouldDirty: true, shouldValidate: true });
+
+    aplicarPrazos({ canal, modalidade: form.getValues('modalidade_logistica') });
+  };
+
+  const escolherModalidade = (novaModalidade) => {
+    autoPrazosAtivo.current = true;
+    form.setValue('modalidade_logistica', novaModalidade, { shouldDirty: true });
+    aplicarPrazos({ modalidade: novaModalidade });
+  };
+
+  const selecionarProduto = useCallback(
+    async (index, produto) => {
+      form.setValue(`itens.${index}.product_id`, String(produto.id));
+      form.setValue(`itens.${index}.descricao`, produto.name);
+      form.setValue(`itens.${index}.sku`, produto.sku);
+
       try {
-        // Garantir que a data esteja no formato completo YYYY-MM-DD
-        if (!watchDataEntrega || watchDataEntrega.length !== 10) {
+        const resposta = await fetch(`/api/v2/demanda_producao/products/${produto.id}/default-miolo`);
+        const dados = await resposta.json();
+
+        if (dados.success && dados.miolo) {
+          form.setValue(`itens.${index}.miolo_nome`, dados.miolo.nome);
+          form.setValue(`itens.${index}.id_produto_miolo`, String(dados.miolo.id));
           return;
         }
-        
-        const timePart = watchHorarioColeta.includes(':') ? watchHorarioColeta.split(':').slice(0, 2).join(':') : watchHorarioColeta;
-        const dataEntregaCompleta = new Date(`${watchDataEntrega}T${timePart}`);
-
-        if (!isNaN(dataEntregaCompleta.getTime())) {
-          dataEntregaCompleta.setHours(dataEntregaCompleta.getHours() - 1);
-
-          const year = dataEntregaCompleta.getFullYear();
-          const month = String(dataEntregaCompleta.getMonth() + 1).padStart(2, '0');
-          const day = String(dataEntregaCompleta.getDate()).padStart(2, '0');
-          const hours = String(dataEntregaCompleta.getHours()).padStart(2, '0');
-          const minutes = String(dataEntregaCompleta.getMinutes()).padStart(2, '0');
-
-          const formatted = `${year}-${month}-${day}T${hours}:${minutes}`;
-          form.setValue('data_finalizacao_prevista', formatted);
-        }
-      } catch (err) {
-        console.error("Erro ao calcular data de finalização prevista:", err);
+      } catch (erro) {
+        console.error('Erro ao buscar miolo padrão:', erro);
       }
-    }
-  }, [watchDataEntrega, watchHorarioColeta, form, userEditedFinalizacao]);
 
-  // Efeito para detectar quando o usuário edita o campo de horário de coleta
-  useEffect(() => {
-    if (watchHorarioColeta !== undefined && watchHorarioColeta !== '') {
-      setUserEditedHorario(true);
-    }
-  }, [watchHorarioColeta]);
+      form.setValue(`itens.${index}.miolo_nome`, '');
+      form.setValue(`itens.${index}.id_produto_miolo`, '');
+    },
+    [form]
+  );
 
-  // Efeito para detectar quando o usuário edita o campo de data de finalização prevista
-  const watchDataFinalizacao = form.watch("data_finalizacao_prevista");
-
-  useEffect(() => {
-    if (watchDataFinalizacao !== undefined && watchDataFinalizacao !== '') {
-      setUserEditedFinalizacao(true);
-    }
-  }, [watchDataFinalizacao]);
-
-  const handlePasteItems = async () => {
-    if (!navigator.clipboard || !navigator.clipboard.readText) {
-      toast.error("Seu navegador nío suporta leitura de clipboard ou permissío negada. Tente usar HTTPS.");
+  const colarItens = async () => {
+    if (!navigator.clipboard?.readText) {
+      toast.error('Seu navegador não suporta leitura da área de transferência. Tente usar HTTPS.');
       return;
     }
 
     try {
-      const text = await navigator.clipboard.readText();
-      if (!text) {
-        toast.warning("Clipboard vazio.");
+      const texto = await navigator.clipboard.readText();
+      if (!texto) {
+        toast.warning('Área de transferência vazia.');
         return;
       }
 
-      const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
-      const newItems = [];
+      const novosItens = texto
+        .split(/\r?\n/)
+        .filter((linha) => linha.trim() !== '')
+        .map((linha) => {
+          const colunas = linha.split('\t');
+          // Colunas esperadas: item, sku, variação, miolo, quantidade
+          const descricao = colunas[0]?.trim() || '';
+          const sku = colunas[1]?.trim() || '';
+          const quantidade = parseInt(colunas[4]?.trim() || '1', 10);
 
-      for (const line of lines) {
-        const columns = line.split('\t');
-        // Expected columns: item, sku, variacao, miolo, quantidade
-        const item_descricao = columns[0]?.trim() || '';
-        const sku = columns[1]?.trim() || '';
-        const variacao = columns[2]?.trim() || '';
-        const miolo = columns[3]?.trim() || '';
-        const quantidadeRaw = columns[4]?.trim() || '1';
+          if (!descricao && !sku) return null;
 
-        const quantidade = parseInt(quantidadeRaw, 10);
+          return {
+            ...itemVazio(),
+            descricao: descricao || sku,
+            sku,
+            variacao: colunas[2]?.trim() || '',
+            miolo_nome: colunas[3]?.trim() || '',
+            quantidade: Number.isNaN(quantidade) ? 1 : quantidade,
+          };
+        })
+        .filter(Boolean);
 
-        if (item_descricao || sku) {
-            newItems.push({
-                product_id: null, // Will be populated later if found
-                descricao: item_descricao || sku, // Use SKU as description if description is empty - matches DB field
-                sku,
-                variacao,
-                miolo_nome: miolo, // Matches DB field name
-                quantidade: isNaN(quantidade) ? 1 : quantidade,
-                observacoes: ''
-            });
-        }
+      if (novosItens.length === 0) {
+        toast.warning('Nenhum item válido encontrado. Os dados precisam estar separados por TAB.');
+        return;
       }
 
-      if (newItems.length > 0) {
-        // If the first item is empty (default state), remove it before appending
-        const currentItems = form.getValues('itens');
-        if (currentItems.length === 1 && !currentItems[0].descricao && !currentItems[0].sku) {
-             removeItem(0);
-        }
+      // Descarta a linha vazia inicial antes de anexar.
+      const atuais = form.getValues('itens');
+      if (atuais.length === 1 && !atuais[0].descricao && !atuais[0].sku) removeItem(0);
 
-        // Append items to form
-        appendItem(newItems);
+      const deslocamento = form.getValues('itens').length;
+      appendItem(novosItens);
 
-        // Try to enrich items with product details based on SKU
-        for (let i = 0; i < newItems.length; i++) {
-          const itemIndex = itemFields.length + i; // Calculate the actual index after appending
-          const item = newItems[i];
-
-          if (item.sku) {
-            // Search for product by SKU
-            try {
-                const product = await searchProductBySku(item.sku);
-                if (product) {
-                  // Use the first match
-                  await handleProductSelect(itemIndex, product);
-                }
-            } catch (searchErr) {
-                console.warn("Auto-enrichment failed for SKU", item.sku, searchErr);
-            }
-          }
-        }
-
-        toast.success(`${newItems.length} itens adicionados do clipboard!`);
-      } else {
-        toast.warning("Nenhum item válido encontrado no clipboard. Certifique-se de que os dados estío separados por TAB.");
+      for (let i = 0; i < novosItens.length; i += 1) {
+        const { sku } = novosItens[i];
+        if (!sku) continue;
+        const produto = await buscarProdutoPorSku(sku);
+        if (produto) await selecionarProduto(deslocamento + i, produto);
       }
-    } catch (err) {
-      console.error("Failed to read clipboard contents: ", err);
-      const msg = err?.message || String(err);
-      toast.error(`Erro ao ler do clipboard: ${msg}`);
+
+      toast.success(`${novosItens.length} itens adicionados da planilha!`);
+    } catch (erro) {
+      console.error('Falha ao ler a área de transferência:', erro);
+      toast.error(`Erro ao ler da área de transferência: ${erro?.message || erro}`);
     }
   };
 
-  const handleProductSelect = async (index, product) => {
-      form.setValue(`itens.${index}.product_id`, String(product.id));
-      form.setValue(`itens.${index}.descricao`, product.name);
-      form.setValue(`itens.${index}.sku`, product.sku);
-
-      // Fetch default miolo for this product from its BOM
-      try {
-        const response = await fetch(`/api/v2/demanda_producao/products/${product.id}/default-miolo`);
-        const data = await response.json();
-
-        if (data.success && data.miolo) {
-          form.setValue(`itens.${index}.miolo_nome`, data.miolo.nome);
-          form.setValue(`itens.${index}.id_produto_miolo`, String(data.miolo.id));
-        } else {
-          form.setValue(`itens.${index}.miolo_nome`, '');
-          form.setValue(`itens.${index}.id_produto_miolo`, '');
-        }
-      } catch (error) {
-        console.error('Error fetching default miolo:', error);
-        form.setValue(`itens.${index}.miolo_nome`, '');
-        form.setValue(`itens.${index}.id_produto_miolo`, '');
-      }
-  };
-
-  const onSubmit = async (data, isDraft = false) => {
+  const enviar = async (valores, isDraft) => {
     setLoadingSubmit(true);
     try {
-      if (data.data_finalizacao_prevista) {
-        data.data_finalizacao_prevista = new Date(data.data_finalizacao_prevista).toISOString();
-      }
-
-      // Corrige o fuso horário da data de entrega para evitar deslocamento de um dia
-      if (data.data_entrega) {
-        // Converte a data para o iní­cio do dia no fuso horário local
-        const dataEntrega = new Date(data.data_entrega);
-        // Garante que a data seja tratada como iní­cio do dia (00:00:00) no fuso horário local
-        data.data_entrega = dataEntrega.toISOString().split('T')[0];
-      }
-
-      const selectedFlow = getDemandFlowConfig(data.fluxo_demanda);
-      const tipo_demanda = selectedFlow.tipo_demanda;
-
-      let url = selectedFlow.tipo_demanda === 'B2B'
-        ? '/api/v2/demanda_producao/empresas'
-        : '/api/v2/demanda_producao/';
-
-      let method = 'POST';
-
-      if (isEditing) {
-          url = `/api/v2/demanda_producao/${id}`;
-          method = 'PUT';
-      }
-
-      const processedPayload = {
-        ...data,
-        is_draft: isDraft,
-        tipo_demanda: tipo_demanda,
-        classificacao_cliente: selectedFlow.classificacao_cliente,
-        modalidade_logistica: selectedFlow.modalidade_logistica,
-        // Mapeamento para manter compatibilidade com campos antigos
-        is_flex: data.modalidade_logistica === 'EXPRESS',
-        fulfillment: data.modalidade_logistica === 'FULFILLMENT',
-        itens: data.itens.map(item => ({
-             ...item,
-             product_id: item.product_id ? parseInt(item.product_id) : null,
-             id_produto_miolo: item.id_produto_miolo ? parseInt(item.id_produto_miolo) : null
-        }))
-      };
-
-      if (selectedFlow.tipo_demanda !== 'B2B') {
-        delete processedPayload.empresa_cliente_nome;
-        delete processedPayload.empresa_wire_o_cor;
-        delete processedPayload.empresa_elastico_cor;
-        delete processedPayload.empresa_interacao_status;
-        delete processedPayload.empresa_pedido_plataforma_numero;
-        delete processedPayload.empresa_responsavel_id;
-        delete processedPayload.empresa_responsavel_nome;
-      }
-
-      const response = await fetch(url, {
-        method: method,
+      const url = isEditing ? `/api/v2/demanda_producao/${id}` : urlCriacaoDemanda(valores.fluxo_demanda);
+      const resposta = await fetch(url, {
+        method: isEditing ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(processedPayload),
+        body: JSON.stringify(montarPayloadDemanda(valores, { isDraft })),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Erro ao salvar demanda.');
+      if (!resposta.ok) {
+        const erro = await resposta.json().catch(() => ({}));
+        throw new Error(erro.message || 'Erro ao salvar demanda.');
       }
 
-      const result = await response.json();
-      toast.success(result.message || 'Demanda salva com sucesso!');
+      const resultado = await resposta.json();
+      toast.success(resultado.message || 'Demanda salva com sucesso!');
       navigate('/producao/demanda');
-    } catch (error) {
-      toast.error(`Erro: ${error.message}`);
+    } catch (erro) {
+      toast.error(`Erro: ${erro.message}`);
     } finally {
       setLoadingSubmit(false);
     }
   };
 
-  if (loadingInitialData) return <div className="text-center py-4">Carregando formulário...</div>;
+  // Enter avança o passo; no último, envia.
+  const onSubmitForm = (evento) => {
+    evento.preventDefault();
+    if (passo === PASSO_ITENS) {
+      form.trigger('itens').then((valido) => {
+        if (valido) enviar(form.getValues(), false);
+      });
+      return;
+    }
+    avancar();
+  };
+
+  if (loadingInitialData) {
+    return (
+      <div className="flex justify-center py-10">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    );
+  }
+
+  const prazosSobrescritos = Boolean(
+    dirtyFields.horario_coleta_especifico || dirtyFields.data_finalizacao_prevista
+  );
 
   return (
-    <Card className="max-w-[95%] mx-auto">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          {isEditing ? <Edit className="h-5 w-5" /> : (watchFlow === 'venda_corporativa' ? <Briefcase className="h-5 w-5" /> : <PlusCircle className="h-5 w-5" />)}
-          {isEditing ? 'Editar Demanda' : 'Nova Demanda'}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <Form {...form}>
-          <form onSubmit={(e) => { e.preventDefault(); form.handleSubmit((data) => onSubmit(data, false))(e); }} className="space-y-6">
-            
-            {/* Fluxo da demanda */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <FormField
-                control={form.control}
-                name="fluxo_demanda"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Fluxo da demanda</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Selecione o fluxo" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {DEMANDA_FLOW_OPTIONS.map((option) => (
-                          <SelectItem key={option.id} value={option.id}>{option.label}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+    <div className="mx-auto w-full max-w-[1800px] space-y-4 py-2">
+      <PageHeader
+        title={isEditing ? 'Editar Demanda' : 'Nova Demanda'}
+        icon={isEditing ? Edit : PlusCircle}
+        description={getDemandFlowConfig(fluxo).description}
+        actions={
+          <Button variant="outline" onClick={() => navigate('/producao/demanda')}>
+            Voltar
+          </Button>
+        }
+      />
 
-              <div className="rounded-xl border bg-muted/40 p-4 text-sm">
-                <div className="font-semibold">{flowConfig.label}</div>
-                <p className="mt-1 text-muted-foreground">{flowConfig.description}</p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Badge variant="outline">Tipo: {flowConfig.tipo_demanda}</Badge>
-                  <Badge variant="outline">Modalidade: {getModalidadeLabel(flowConfig.modalidade_logistica)}</Badge>
-                </div>
+      <TrilhaPassos
+        passos={passos}
+        atual={passo}
+        maiorVisitado={maiorVisitado}
+        onSelecionar={setPasso}
+        liberarTodos={isEditing}
+      />
+
+      {passo !== PASSO_ORIGEM && (
+        <ResumoDemanda
+          canal={canalSelecionado}
+          modalidade={modalidade}
+          dataEntrega={dataEntrega}
+          horarioColeta={horarioColeta}
+          totalItens={(itens || []).length}
+          onVoltarParaOrigem={() => setPasso(PASSO_ORIGEM)}
+        />
+      )}
+
+      <Form {...form}>
+        <form onSubmit={onSubmitForm} className="space-y-6">
+          <Card>
+            <CardContent className="py-4">
+              {passo === PASSO_ORIGEM && (
+                <PassoOrigem
+                  form={form}
+                  canais={canais}
+                  moduleIcons={moduleIcons}
+                  hoje={hoje}
+                  canalSelecionado={canalSelecionado}
+                  fluxo={fluxo}
+                  modalidade={modalidade}
+                  onEscolherFluxo={escolherFluxo}
+                  onEscolherCanal={escolherCanal}
+                  onEscolherModalidade={escolherModalidade}
+                  onAlterarData={alterarData}
+                  onRecalcularPrazos={() => aplicarPrazos({ forcar: true })}
+                  prazosSobrescritos={prazosSobrescritos}
+                  isEditing={isEditing}
+                  onFinalizar={avancar}
+                />
+              )}
+
+              {passo === PASSO_CLIENTE && <PassoCliente form={form} />}
+
+              {passo === PASSO_ITENS && (
+                <PassoItens
+                  form={form}
+                  itemFields={itemFields}
+                  onAdicionarItem={() => appendItem(itemVazio())}
+                  onRemoverItem={removeItem}
+                  onColarItens={colarItens}
+                  onSelecionarProduto={selecionarProduto}
+                  fluxo={fluxo}
+                />
+              )}
+            </CardContent>
+          </Card>
+
+          {passo !== PASSO_ORIGEM && <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={passo === PASSO_ORIGEM}
+              onClick={() => irPara(passoAnterior(passo))}
+            >
+              <ArrowLeft className="mr-2 h-4 w-4" /> Voltar
+            </Button>
+
+            {passo === PASSO_ITENS ? (
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={loadingSubmit}
+                  onClick={form.handleSubmit((valores) => enviar(valores, true))}
+                >
+                  {loadingSubmit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {isEditing ? 'Salvar alterações no rascunho' : 'Salvar como rascunho'}
+                </Button>
+                <Button type="submit" disabled={loadingSubmit} className="shadow-md">
+                  {loadingSubmit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {isEditing ? 'Atualizar e publicar' : 'Criar demanda'}
+                </Button>
               </div>
-            </div>
-
-            <Separator className="my-2" />
-
-            {/* General Demand Fields */}
-            <h3 className="text-lg font-semibold border-b pb-2 mb-4">Dados essenciais</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <FormField
-                control={form.control}
-                name="nome"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Nome da demanda</FormLabel>
-                    <FormControl>
-                      <Input placeholder="Ex: Pedido Bling 12345" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="canal_venda_id"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Canal / origem</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Selecione o canal" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {channels.map(channel => (
-                          <SelectItem key={channel.id} value={String(channel.id)}>
-                            {channel.nome}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="data_entrega"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Data de entrega</FormLabel>
-                    <FormControl>
-                      <Input type="date" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="horario_coleta_especifico"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Horário de Coleta (Op)</FormLabel>
-                    <FormControl>
-                      <Input
-                        type="time"
-                        {...field}
-                        onChange={(e) => {
-                          field.onChange(e);
-                          setUserEditedHorario(true);
-                        }}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="data_finalizacao_prevista"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Finalização Prevista (Op)</FormLabel>
-                    <FormControl>
-                      <Input
-                        type="datetime-local"
-                        {...field}
-                        onChange={(e) => {
-                          field.onChange(e);
-                          // Marcar que o usuário editou manualmente o campo
-                          setUserEditedFinalizacao(true);
-                        }}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="observacoes"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Observações</FormLabel>
-                    <FormControl>
-                      <Textarea placeholder="Observações gerais..." rows={1} className="min-h-[40px]" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-
-            {/* B2B Specific Fields */}
-            {watchFlow === 'venda_corporativa' && (
-              <>
-                <h3 className="text-lg font-semibold border-b pb-2 mb-4 mt-6">Detalhes da venda corporativa</h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <FormField
-                    control={form.control}
-                    name="empresa_cliente_nome"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Empresa / cliente</FormLabel>
-                        <FormControl>
-                          <Input placeholder="Nome da empresa" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="empresa_pedido_plataforma_numero"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>NÂº Pedido Plataforma</FormLabel>
-                        <FormControl>
-                          <Input placeholder="NÂº pedido externo" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="empresa_responsavel_nome"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Contato Responsável</FormLabel>
-                        <FormControl>
-                          <Input placeholder="Nome do contato na empresa" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="empresa_wire_o_cor"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Cor do wire-o</FormLabel>
-                        <FormControl>
-                          <Input type="color" {...field} className="h-10 w-full" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="empresa_elastico_cor"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Cor Elástico</FormLabel>
-                        <FormControl>
-                          <Input type="color" {...field} className="h-10 w-full" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="empresa_interacao_status"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Status Interação</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value}>
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Status" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            {INTERACAO_STATUS_OPTIONS.map(status => (
-                              <SelectItem key={status} value={status}>{status}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-              </>
+            ) : (
+              <Button type="submit">
+                Próximo <ArrowRight className="ml-2 h-4 w-4" />
+              </Button>
             )}
-
-            {/* Demand Items */}
-            <div className="flex items-center justify-between border-b pb-2 mb-4 mt-8">
-                <h3 className="text-lg font-semibold">Itens da demanda</h3>
-                <div className="flex gap-2">
-                     <Button type="button" variant="outline" onClick={handlePasteItems}>
-                        <ClipboardPaste className="mr-2 h-4 w-4" /> Colar itens da planilha
-                    </Button>
-                    <Button type="button" variant="outline" onClick={() => appendItem({ product_id: null, quantidade: 1, descricao: '', sku: '', variacao: '', miolo_nome: '', id_produto_miolo: null, observacoes: '' })}>
-                        <PlusCircle className="mr-2 h-4 w-4" /> Adicionar item
-                    </Button>
-                </div>
-            </div>
-            
-            <div className="rounded-md border">
-                <Table>
-                    <TableHeader>
-                        <TableRow>
-                            <TableHead className="w-[300px]">Item (Descrição / Busca)</TableHead>
-                            <TableHead className="w-[120px]">SKU</TableHead>
-                            <TableHead className="w-[120px]">Variação</TableHead>
-                            <TableHead className="w-[120px]">Miolo</TableHead>
-                            <TableHead className="w-[80px]">Qtd</TableHead>
-                            <TableHead className="w-[50px]"></TableHead>
-                        </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                        {itemFields.map((item, index) => (
-                            <TableRow key={item.id}>
-                                <TableCell>
-                                    <FormField
-                                        control={form.control}
-                                        name={`itens.${index}.descricao`}
-                                        render={({ field }) => (
-                                            <FormItem>
-                                                <FormControl>
-                                                    <ProductSearchInput
-                                                        value={field.value}
-                                                        selectedProductId={form.getValues(`itens.${index}.product_id`)}
-                                                        onChange={field.onChange}
-                                                        onProductSelect={(product) => handleProductSelect(index, product)}
-                                                        placeholder="Digite para buscar ou descrever..."
-                                                        showProductLevelBadge={false}
-                                                    />
-                                                </FormControl>
-                                                <FormMessage />
-                                            </FormItem>
-                                        )}
-                                    />
-                                </TableCell>
-                                <TableCell>
-                                    <FormField
-                                        control={form.control}
-                                        name={`itens.${index}.sku`}
-                                        render={({ field }) => (
-                                            <FormItem>
-                                                <FormControl>
-                                                    <Input {...field} className="h-8" />
-                                                </FormControl>
-                                            </FormItem>
-                                        )}
-                                    />
-                                </TableCell>
-                                <TableCell>
-                                    <FormField
-                                        control={form.control}
-                                        name={`itens.${index}.variacao`}
-                                        render={({ field }) => (
-                                            <FormItem>
-                                                <FormControl>
-                                                    <Input {...field} className="h-8" />
-                                                </FormControl>
-                                            </FormItem>
-                                        )}
-                                    />
-                                </TableCell>
-                                <TableCell>
-                                    <FormField
-                                        control={form.control}
-                                        name={`itens.${index}.miolo_nome`}
-                                        render={({ field }) => (
-                                            <FormItem>
-                                                <FormControl>
-                                                    <ProductSearchInput
-                                                        value={field.value}
-                                                        selectedProductId={form.getValues(`itens.${index}.id_produto_miolo`)}
-                                                        onChange={field.onChange}
-                                                        onProductSelect={(product) => {
-                                                            form.setValue(`itens.${index}.miolo_nome`, product.name);
-                                                            form.setValue(`itens.${index}.id_produto_miolo`, String(product.id));
-                                                        }}
-                                                        placeholder="Digite para buscar miolo..."
-                                                        showProductLevelBadge={false}
-                                                        showCheckIndicator={true}
-                                                    />
-                                                </FormControl>
-                                                <FormMessage />
-                                            </FormItem>
-                                        )}
-                                    />
-                                    <input
-                                      type="hidden"
-                                      {...form.register(`itens.${index}.id_produto_miolo`)}
-                                    />
-                                </TableCell>
-                                <TableCell>
-                                    <FormField
-                                        control={form.control}
-                                        name={`itens.${index}.quantidade`}
-                                        render={({ field }) => (
-                                            <FormItem>
-                                                <FormControl>
-                                                    <Input type="number" min="1" {...field} className="h-8" />
-                                                </FormControl>
-                                                <FormMessage />
-                                            </FormItem>
-                                        )}
-                                    />
-                                </TableCell>
-                                <TableCell>
-                                    <Button type="button" variant="ghost" size="icon" onClick={() => removeItem(index)}>
-                                        <Trash2 className="h-4 w-4 text-red-500" />
-                                    </Button>
-                                </TableCell>
-                            </TableRow>
-                        ))}
-                    </TableBody>
-                </Table>
-            </div>
-
-            <div className="flex gap-4 mt-4">
-                <Button type="button" variant="secondary" disabled={loadingSubmit} className="flex-1" onClick={form.handleSubmit((data) => onSubmit(data, true))}>
-                  {loadingSubmit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  {isEditing ? 'Salvar Alterações no Rascunho' : 'Salvar como Rascunho'}
-                </Button>
-                <Button type="submit" disabled={loadingSubmit} className="flex-1">
-                  {loadingSubmit && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  {isEditing ? 'Atualizar e Publicar (Se Rascunho)' : 'Criar Demanda'}
-                </Button>
-            </div>
-          </form>
-        </Form>
-      </CardContent>
-    </Card>
+          </div>}
+        </form>
+      </Form>
+    </div>
   );
 }
 

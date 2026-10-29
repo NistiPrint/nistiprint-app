@@ -12,6 +12,7 @@ import { format } from 'date-fns'
 import { CheckCircle, Eye, History, Truck } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import ColetaRegistroDetalhes from './ColetaRegistroDetalhes'
 
 function CollectedDemandsModal({ isOpen, onClose, demandasColetadas, demandasAguardandoColeta, handleCollectDemand }) {
   const [coletasHistory, setColetasHistory] = useState([])
@@ -146,7 +147,7 @@ function CollectedDemandsModal({ isOpen, onClose, demandasColetadas, demandasAgu
                                 itens
                               </span>
                               <span>
-                                Coletado {demanda.quantidade_coletada_total} de {demanda.total_itens}
+                                Coletado {demanda.quantidade_coletada_total || 0} de {demanda.total_itens ?? demanda.total_quantidade ?? 0}
                               </span>
                             </div>
                           </div>
@@ -175,7 +176,8 @@ function CollectedDemandsModal({ isOpen, onClose, demandasColetadas, demandasAgu
                             <ul className="space-y-2">
                               {coletasHistory.map(coleta => (
                                 <li key={coleta.id} className="text-sm p-2 bg-gray-50 rounded">
-                                  - {coleta.quantidade} unidades coletadas em {format(new Date(coleta.created_at), 'dd/MM/yyyy HH:mm')}
+                                  <div>{format(new Date(coleta.created_at), 'dd/MM/yyyy HH:mm')} · {coleta.user_id || 'Usuário não informado'}</div>
+                                  <ColetaRegistroDetalhes coleta={coleta} />
                                 </li>
                               ))}
                             </ul>

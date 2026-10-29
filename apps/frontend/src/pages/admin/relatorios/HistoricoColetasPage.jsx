@@ -4,6 +4,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Truck, Calendar, User, ShoppingBag, Package } from 'lucide-react';
 import { toast } from 'sonner';
+import ColetaRegistroDetalhes from '@/components/producao/ColetaRegistroDetalhes';
 
 function HistoricoColetasPage() {
   const [coletas, setColetas] = useState([]);
@@ -99,10 +100,8 @@ function HistoricoColetasPage() {
                         <TableCell className="font-mono text-xs font-semibold">
                           {demandInfo.pedido_numero || '-'}
                         </TableCell>
-                        <TableCell className="text-right">
-                          <Badge variant="secondary" className="text-sm font-black px-3 py-0.5 bg-green-100 text-green-800">
-                            {coleta.quantidade} un
-                          </Badge>
+                        <TableCell>
+                          <ColetaRegistroDetalhes coleta={coleta} />
                         </TableCell>
                         <TableCell className="text-gray-600 italic text-sm">
                           <div className="flex items-center gap-1">

@@ -17,7 +17,6 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import {
     Table,
@@ -33,27 +32,29 @@ import usePermissionsHook from '@/hooks/usePermissions'
 import useDebounce from '@/lib/hooks/useDebounce'
 import { supabase } from '@/lib/supabase'
 import { createOperationId } from '@/lib/operationId'
+import { dataCurta, numero } from '@/lib/formatoProducao'
 import {
     ArrowLeft,
-    Calendar,
     CheckCircle,
     Copy,
+    FileCheck2,
     FileText,
     Flame,
     History,
+    Layers,
+    Hand,
     List,
     Loader2,
-    Package,
+    MoreHorizontal,
     Printer,
     Receipt,
     Save,
     Search,
-    TrendingUp,
     Truck,
     X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { imprimirPapeisDePedido } from '@/lib/papeisDePedido'
 import CapaPrintPlanner from '@/components/producao/CapaPrintPlanner'
@@ -61,7 +62,7 @@ import CapaPrintPlanner from '@/components/producao/CapaPrintPlanner'
 const collectionRequestId = (demandId, quantity) => {
   const key = `demand-collection:${demandId}`
   let saved = null
-  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null') } catch (_) {}
+  try { saved = JSON.parse(sessionStorage.getItem(key) || 'null') } catch { saved = null }
   const quantityKey = String(quantity)
   if (saved?.quantity === quantityKey && saved?.id) return { key, id: saved.id }
   const id = createOperationId()
@@ -71,17 +72,24 @@ const collectionRequestId = (demandId, quantity) => {
 
 function DemandaDashboardPage() {
   const { id } = useParams()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const isSimulation = location.pathname.includes('/simulacao/')
+  const apiBase = isSimulation ? '/api/v2/demanda-simulacoes' : '/api/v2/demanda_producao'
   const { user, hasPermission } = useAuth()
   const { canEditField, canExecuteAction } = usePermissionsHook()
   const canEditDemand = user?.is_admin === true || hasPermission('demanda_producao', 'editar')
   const { isAgentOnline, printMappedFile, getMappedFileForProduct } =
-    useLocalAgent()
+    useLocalAgent(!isSimulation)
   const [demanda, setDemanda] = useState(null)
+  const [simulationEvents, setSimulationEvents] = useState([])
+  const simulationActionsAllowed = !isSimulation || (demanda?.status !== 'RASCUNHO' && demanda?.status !== 'COLETADO')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   // Batch Editing State
   const [pendingChanges, setPendingChanges] = useState({})
   const [isSaving, setIsSaving] = useState(false)
+  const realtimeSaveState = isSimulation ? false : isSaving
   const [isFinalizingItemId, setIsFinalizingItemId] = useState(null)
 
   const [viewMode, setViewMode] = useState('producao')
@@ -109,7 +117,7 @@ function DemandaDashboardPage() {
     async (silent = false) => {
       if (!silent) setLoading(true)
       try {
-        const response = await fetch(`/api/v2/demanda_producao/${id}`, {
+        const response = await fetch(`${apiBase}/${id}`, {
           headers: { Accept: 'application/json' },
         })
         if (!response.ok)
@@ -130,8 +138,40 @@ function DemandaDashboardPage() {
         if (!silent) setLoading(false)
       }
     },
-    [id],
+    [apiBase, id],
   )
+
+  const performSimulationAction = async (action, payload = {}) => {
+    const operationKey = `demand-simulation:${id}:${demanda?.version}:${action}:${JSON.stringify(payload)}`
+    const operationId = sessionStorage.getItem(operationKey) || createOperationId()
+    sessionStorage.setItem(operationKey, operationId)
+    const response = await fetch(`${apiBase}/${id}/acoes`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, payload, version: demanda?.version, operation_id: operationId }),
+    })
+    const result = await response.json()
+    if (!response.ok || !result.success) {
+      if (response.status === 409) { sessionStorage.removeItem(operationKey); await fetchDemanda(true) }
+      throw new Error(result.message || 'Falha ao salvar a simulação')
+    }
+    sessionStorage.removeItem(operationKey)
+    setDemanda(result.demanda)
+    return result.demanda
+  }
+
+  const deleteSimulation = async () => {
+    if (!window.confirm('Excluir esta simulação? Nenhum pedido real será alterado.')) return
+    try {
+      const response = await fetch(`${apiBase}/${id}`, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: demanda.version }),
+      })
+      const result = await response.json()
+      if (!response.ok || !result.success) throw new Error(result.message || 'Falha ao excluir')
+      toast.success('Simulação excluída')
+      navigate('/despacho')
+    } catch (error) { toast.error(error.message) }
+  }
 
   // Ref para pendingChanges para acesso seguro dentro do fetch sem causar re-renders do useCallback
   const pendingChangesRef = useRef(pendingChanges)
@@ -172,6 +212,8 @@ function DemandaDashboardPage() {
   useEffect(() => {
     fetchDemanda()
 
+    if (isSimulation) return undefined
+
     // Supabase Realtime Listener para esta demanda específica ou seus itens
     const channel = supabase
       .channel(`demanda-dashboard-${id}`)
@@ -204,7 +246,14 @@ function DemandaDashboardPage() {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [id, fetchDemanda, isSaving])
+  }, [id, fetchDemanda, realtimeSaveState, isSimulation])
+
+  useEffect(() => {
+    if (!isSimulation || !demanda?.version) return
+    fetch(`${apiBase}/${id}/eventos`).then(response => response.json())
+      .then(result => { if (result.success) setSimulationEvents(result.eventos || []) })
+      .catch(() => {})
+  }, [apiBase, demanda?.version, id, isSimulation])
 
   // Itens com mudanças locais aplicadas (apenas para exibição dos valores nas células)
   const allProcessedItems = useMemo(() => {
@@ -236,27 +285,38 @@ function DemandaDashboardPage() {
       // Um item está pronto para fechar se:
       // - Já foi produzido (capa e miolo) E NÃO está totalmente finalizado
       // - OU está com status "Fechando" (retirado pela expedição mas não finalizado)
-      const isProntoParaFechar =
-        !isFinalizado &&
-        (
-          (orig.status_item === 'Fechando') ||
-          (
-            (orig.capas_prontas_retirada_qtd || 0) >= item.quantidade_total &&
-            (orig.miolos_prontos_retirada_qtd || 0) >= item.quantidade_total
-          )
-        )
+      // Capas e miolos prontos ficam disponíveis para a expedição retirar.
+      // Depois de retirados, o casamento capa+miolo passa a estar em fechamento.
+      const paresRetirados = Math.min(
+        orig.expedicao_capas_retiradas_qtd || 0,
+        orig.expedicao_miolos_retirados_qtd || 0,
+      )
+      const algumComponenteRetirado =
+        (orig.expedicao_capas_retiradas_qtd || 0) > 0 ||
+        (orig.expedicao_miolos_retirados_qtd || 0) > 0
+      const isEmFechamento = !isFinalizado && paresRetirados > (orig.finalizados_qtd || 0)
+      // Cada componente pode ser retirado em um momento diferente.
+      const capasParaRetirar = Math.max(0, (orig.capas_prontas_retirada_qtd || 0) - (orig.expedicao_capas_retiradas_qtd || 0))
+      const miolosParaRetirar = Math.max(0, (orig.miolos_prontos_retirada_qtd || 0) - (orig.expedicao_miolos_retirados_qtd || 0))
+      const paresParaRetirar = Math.min(capasParaRetirar, miolosParaRetirar)
+      const isParaRetirar = !isFinalizado && (capasParaRetirar > 0 || miolosParaRetirar > 0)
+      // Ainda há quantidade que não passou pela retirada da expedição.
+      const isEmProducao = !isFinalizado && paresRetirados < item.quantidade_total
 
       if (statusFilter === 'finalizados') {
         return isFinalizado
       }
 
+      if (statusFilter === 'retirar') {
+        return isParaRetirar
+      }
+
       if (statusFilter === 'prontos') {
-        return isProntoParaFechar
+        return isEmFechamento
       }
 
       if (statusFilter === 'ativos') {
-        // Se já está pronto para fechar, deve sair da aba de ativos (produção)
-        return !isFinalizado && !isProntoParaFechar
+        return isEmProducao && orig.status_item !== 'Fechando'
       }
 
       return true // Fallback
@@ -269,6 +329,24 @@ function DemandaDashboardPage() {
         (item.variacao || '').toLowerCase().includes(query),
     )
   }, [demanda?.itens, allProcessedItems, debouncedSearchQuery, statusFilter])
+
+  // Totalizadores por etapa: disponível p/ retirada (expedição) → em fechamento → finalizado
+  const stageTotals = useMemo(() => {
+    const totals = { capas: 0, miolos: 0, pares: 0, emFechamento: 0, finalizados: 0 }
+    for (const item of demanda?.itens || []) {
+      const capasRet = item.expedicao_capas_retiradas_qtd || 0
+      const miolosRet = item.expedicao_miolos_retirados_qtd || 0
+      const capasDisp = Math.max(0, (item.capas_prontas_retirada_qtd || 0) - capasRet)
+      const miolosDisp = Math.max(0, (item.miolos_prontos_retirada_qtd || 0) - miolosRet)
+      const finalizados = item.finalizados_qtd || 0
+      totals.capas += capasDisp
+      totals.miolos += miolosDisp
+      totals.pares += Math.min(capasDisp, miolosDisp)
+      totals.emFechamento += Math.max(0, Math.min(capasRet, miolosRet) - finalizados)
+      totals.finalizados += finalizados
+    }
+    return totals
+  }, [demanda?.itens])
 
   const handleLocalChange = useCallback(
     (itemId, fieldName, delta) => {
@@ -357,6 +435,13 @@ function DemandaDashboardPage() {
         return
       }
 
+      if (isSimulation) {
+        await performSimulationAction('producao', { updates })
+        setPendingChanges({})
+        toast.success('Produção simulada salva')
+        return
+      }
+
       console.log(updates)
 
       const response = await fetch(
@@ -400,6 +485,12 @@ function DemandaDashboardPage() {
 
     setIsFinalizingItemId(item.id)
     try {
+      if (isSimulation) {
+        await performSimulationAction('finalizar_item', { item_id: item.id, quantidade: adjustedQuantity })
+        setPartialQuantities(prev => { const next = { ...prev }; delete next[item.id]; return next })
+        toast.success('Finalização simulada registrada')
+        return
+      }
       const response = await fetch(
         `/api/v2/demanda_producao/${id}/item/${item.id}/finalizar-parcial`,
         {
@@ -436,6 +527,11 @@ function DemandaDashboardPage() {
       return
 
     try {
+      if (isSimulation) {
+        await performSimulationAction('reverter_item', { item_id: item.id })
+        toast.success('Finalização simulada revertida')
+        return
+      }
       const response = await fetch(
         `/api/v2/demanda_producao/${id}/item/${item.id}/reverter-finalizacao`,
         {
@@ -458,27 +554,25 @@ function DemandaDashboardPage() {
   }
 
   const handleConfirmCollection = async (demandaId, quantity) => {
-    const operation = collectionRequestId(demandaId, quantity)
-    try {
-      const response = await fetch(
-        `/api/v2/demanda_producao/${demandaId}/coletar`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ quantidade_coletar: quantity, operation_id: operation.id }),
-        },
-      )
-      const data = await response.json()
-      if (data.success) {
-        sessionStorage.removeItem(operation.key)
-        toast.success('Coleta registrada!')
-        fetchDemanda()
-      } else {
-        toast.error(data.message)
-      }
-    } catch (e) {
-      toast.error(e.message)
+    if (isSimulation) {
+      await performSimulationAction('coletar', { quantidade: quantity })
+      toast.success('Coleta simulada registrada')
+      return
     }
+    const operation = collectionRequestId(demandaId, quantity)
+    const response = await fetch(
+      `/api/v2/demanda_producao/${demandaId}/coletar`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quantidade_coletar: quantity, operation_id: operation.id }),
+      },
+    )
+    const data = await response.json()
+    if (!response.ok || !data.success) throw new Error(data.message || 'Não foi possível registrar a coleta.')
+    sessionStorage.removeItem(operation.key)
+    toast.success('Coleta registrada!')
+    fetchDemanda()
   }
 
   const handleCopyOrderChunk = async chunk => {
@@ -597,26 +691,19 @@ function DemandaDashboardPage() {
     expedicao_miolos: 'expedicao_miolos_retirados_qtd',
   }
 
-  const columnTitles = {
-    produto_miolo: 'Produto / Miolo',
-    total: 'Total',
-    capas_impressas: 'Capas Imp.',
-    capas_produzidas: 'Capas Prod.',
-    capas_prontas: 'Capas Prontas',
-    miolos_prontos: 'Miolos Prontos',
-    expedicao_capas: 'Exp. Capas',
-    expedicao_miolos: 'Exp. Miolos',
-    acoes: 'Finalização',
-  }
-
-  const columnClasses = {
-    capas_impressas: 'text-center bg-gray-50/50 w-24',
-    capas_produzidas: 'text-center bg-orange-50/50 w-24',
-    capas_prontas: 'text-center bg-blue-50/50 w-24',
-    miolos_prontos: 'text-center bg-blue-50/50 w-24',
-    expedicao_capas: 'text-center bg-green-50/50 w-24',
-    expedicao_miolos: 'text-center bg-green-50/50 w-24',
-    acoes: 'text-right w-40', // Aumentar largura para caber as infos
+  // `short` vai no cabeçalho e `label` no tooltip; a borda esquerda marca o
+  // início de cada grupo (capa / prontos / expedição) no lugar de pintar a coluna.
+  const columnMeta = {
+    produto_miolo: { short: 'Produto', label: 'Produto', className: 'w-[30%] min-w-[220px]' },
+    miolo: { short: 'Miolo', label: 'Miolo', className: 'w-[18%] min-w-[140px]' },
+    total: { short: 'Total', label: 'Quantidade total', className: 'w-[52px] text-center' },
+    capas_impressas: { short: 'Imp.', label: 'Capas impressas', icon: FileText, className: 'w-[60px] text-center border-l' },
+    capas_produzidas: { short: 'Prod.', label: 'Capas produzidas', icon: Copy, className: 'w-[60px] text-center' },
+    capas_prontas: { short: 'Prontas', label: 'Capas prontas para retirada', icon: FileCheck2, className: 'w-[60px] text-center border-l' },
+    miolos_prontos: { short: 'Miolos', label: 'Miolos prontos para retirada', icon: Layers, className: 'w-[60px] text-center' },
+    expedicao_capas: { short: 'Capas ret.', label: 'Capas retiradas pela expedição', icon: FileText, hand: true, className: 'w-[60px] text-center border-l' },
+    expedicao_miolos: { short: 'Miolos ret.', label: 'Miolos retirados pela expedição', icon: Layers, hand: true, className: 'w-[60px] text-center' },
+    acoes: { short: 'Finalização', label: 'Finalização', className: 'w-[104px] text-right' },
   }
 
   const getViewColumns = () => {
@@ -624,6 +711,7 @@ function DemandaDashboardPage() {
       case 'capas_miolos':
         return [
           'produto_miolo',
+          'miolo',
           'total',
           'capas_impressas',
           'capas_produzidas',
@@ -633,6 +721,7 @@ function DemandaDashboardPage() {
       case 'expedicao':
         return [
           'produto_miolo',
+          'miolo',
           'total',
           'capas_prontas',
           'miolos_prontos',
@@ -644,6 +733,7 @@ function DemandaDashboardPage() {
       default:
         return [
           'produto_miolo',
+          'miolo',
           'total',
           'capas_impressas',
           'capas_produzidas',
@@ -699,67 +789,76 @@ function DemandaDashboardPage() {
     if (columnName === 'produto_miolo') {
       let statusBadge = null
       if (item.status_item !== 'Concluído') {
-        if ((item.finalizados_qtd || 0) > 0) {
+        const capasParaRetirar = Math.max(0, (item.capas_prontas_retirada_qtd || 0) - (item.expedicao_capas_retiradas_qtd || 0))
+        const miolosParaRetirar = Math.max(0, (item.miolos_prontos_retirada_qtd || 0) - (item.expedicao_miolos_retirados_qtd || 0))
+        const paresParaRetirar = Math.min(capasParaRetirar, miolosParaRetirar)
+        const algumComponenteRetirado =
+          (item.expedicao_capas_retiradas_qtd || 0) > 0 ||
+          (item.expedicao_miolos_retirados_qtd || 0) > 0
+        if (capasParaRetirar > 0 || miolosParaRetirar > 0) {
+          const disponibilidade = [
+            capasParaRetirar > 0 && `${numero(capasParaRetirar)} cap.`,
+            miolosParaRetirar > 0 && `${numero(miolosParaRetirar)} miol.`,
+          ].filter(Boolean).join(' · ')
           statusBadge = (
             <Badge
               variant='outline'
-              className='border-blue-300 text-blue-600 bg-blue-50'>
-              Parcialmente Finalizado
+              title={`${numero(capasParaRetirar)} capa(s) e ${numero(miolosParaRetirar)} miolo(s) disponível(is) para retirada${paresParaRetirar ? `; ${numero(paresParaRetirar)} par(es) completo(s)` : ''}`}
+              className='h-4 shrink-0 px-1.5 text-[10px] tabular-nums border-green-300 text-green-600 bg-green-50'>
+              {disponibilidade} p/ retirar
             </Badge>
           )
-        } else if (
-          !(
-            (item.expedicao_capas_retiradas_qtd || 0) > 0 ||
-            (item.expedicao_miolos_retirados_qtd || 0) > 0
-          ) &&
-          (item.capas_prontas_retirada_qtd || 0) >= item.quantidade_total &&
-          (item.miolos_prontos_retirada_qtd || 0) >= item.quantidade_total
-        ) {
+        } else if (algumComponenteRetirado) {
           statusBadge = (
             <Badge
               variant='outline'
-              className='border-green-300 text-green-600 bg-green-50'>
-              Pronto p/ Expedição
+              className='h-4 shrink-0 px-1.5 text-[10px] border-amber-300 text-amber-700 bg-amber-50'>
+              Em fechamento
+            </Badge>
+          )
+        } else if ((item.finalizados_qtd || 0) > 0) {
+          statusBadge = (
+            <Badge
+              variant='outline'
+              title='Parcialmente finalizado'
+              className='h-4 shrink-0 px-1.5 text-[10px] border-blue-300 text-blue-600 bg-blue-50'>
+              Parcial
             </Badge>
           )
         }
       }
 
+      const variacao = item.variacao || item.variation || '-'
+      const miolo = item.miolo_name || item.miolo || '-'
+
       return (
-        <TableCell key='produto_miolo' className='max-w-[300px] group relative'>
-          <div className='flex justify-between items-start'>
-            <div>
-              <div
-                className='font-medium text-sm leading-tight mb-1'
-                title={item.item_descricao}>
-                {item.produto_id ? (
-                  <Link
-                    to={`/produtos/${item.produto_id}/editar`}
-                    className='text-blue-600 hover:underline'>
-                    {item.item_descricao}
-                  </Link>
-                ) : (
-                  item.item_descricao
-                )}
-              </div>
-              <div className='text-xs text-muted-foreground leading-tight mb-1'>
-                <span className='font-semibold text-gray-500'>Var:</span>{' '}
-                {item.variacao || item.variation || '-'} <br />
-                <span className='font-semibold text-gray-500'>Mio: </span>
-                {item.id_produto_miolo ? (
-                  <Link
-                    to={`/produtos/${item.id_produto_miolo}/editar`}
-                    className='text-blue-600 hover:underline'>
-                    {item.miolo_name || item.miolo || '-'}
-                  </Link>
-                ) : (
-                  item.miolo_name || item.miolo || '-'
-                )}
-              </div>
+        <TableCell key='produto_miolo' className='group relative px-3 py-1.5'>
+          <div className='min-w-0'>
+            <div
+              className='truncate text-[15px] font-semibold leading-tight'
+              title={item.item_descricao}>
+              {!isSimulation && item.produto_id ? (
+                <Link
+                  to={`/produtos/${item.produto_id}/editar`}
+                  className='hover:text-blue-700 hover:underline'>
+                  {item.item_descricao}
+                </Link>
+              ) : (
+                item.item_descricao
+              )}
+            </div>
+            <div className='flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground'>
+              <span
+                className='truncate'
+                title={`Variação: ${variacao}`}>
+                {variacao}
+              </span>
               {statusBadge}
             </div>
+          </div>
 
-            <div className='opacity-0 group-hover:opacity-100 transition-opacity flex gap-1'>
+          {!isSimulation && (
+            <div className='absolute right-1 top-1 flex gap-0.5 rounded bg-background/90 opacity-0 transition-opacity group-hover:opacity-100'>
               <Button
                 variant='ghost'
                 size='icon'
@@ -795,15 +894,28 @@ function DemandaDashboardPage() {
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-          </div>
+          )}
+        </TableCell>
+      )
+    }
+
+    if (columnName === 'miolo') {
+      const miolo = item.miolo_name || item.miolo || '-'
+      return (
+        <TableCell key='miolo' className='px-2 py-1.5 text-sm'>
+          {!isSimulation && item.id_produto_miolo ? (
+            <Link to={`/produtos/${item.id_produto_miolo}/editar`} className='block truncate text-blue-600 hover:underline' title={miolo}>{miolo}</Link>
+          ) : <span className='block truncate' title={miolo}>{miolo}</span>}
         </TableCell>
       )
     }
 
     if (columnName === 'total')
       return (
-        <TableCell key={columnName} className='text-center font-bold text-sm'>
-          {item.quantidade_total}
+        <TableCell
+          key={columnName}
+          className={`px-2 py-1.5 text-sm font-semibold tabular-nums ${columnMeta.total.className}`}>
+          {numero(item.quantidade_total)}
         </TableCell>
       )
 
@@ -816,12 +928,12 @@ function DemandaDashboardPage() {
 
       if (isTotalmenteFinalizado) {
         const canRevert =
-          user?.is_admin || (canEditDemand && canExecuteAction('revert_finalize_item'))
+          simulationActionsAllowed && (user?.is_admin || (canEditDemand && canExecuteAction('revert_finalize_item')))
         return (
-          <TableCell key={columnName} className='text-right'>
-            <div className='flex items-center justify-end gap-2'>
-              <Badge className='bg-green-100 text-green-700 border-green-200'>
-                {item.quantidade_total}/{item.quantidade_total} FINALIZADO
+          <TableCell key={columnName} className='px-2 py-1.5 text-right'>
+            <div className='flex items-center justify-end gap-1'>
+              <Badge className='h-5 px-1.5 text-[10px] tabular-nums bg-green-100 text-green-700 border-green-200'>
+                {item.quantidade_total}/{item.quantidade_total} OK
               </Badge>
               {canRevert && (
                 <Button
@@ -839,9 +951,9 @@ function DemandaDashboardPage() {
         )
       }
 
-      if (!user?.is_admin && !(canEditDemand && canExecuteAction('finalize_item'))) {
+      if (!simulationActionsAllowed || (!user?.is_admin && !(canEditDemand && canExecuteAction('finalize_item')))) {
         return (
-          <TableCell key={columnName} className='text-right'>
+          <TableCell key={columnName} className='px-2 py-1.5 text-right'>
             -
           </TableCell>
         )
@@ -854,10 +966,10 @@ function DemandaDashboardPage() {
           : ''
 
       return (
-        <TableCell key={columnName} className='text-right'>
-          <div className='flex flex-col items-end gap-1'>
+        <TableCell key={columnName} className='px-2 py-1.5 text-right'>
+          <div className='flex flex-col items-end gap-0.5'>
             {finalizados_qtd > 0 && (
-              <span className='text-[10px] text-green-600 font-bold'>
+              <span className='text-[10px] font-bold tabular-nums text-green-600'>
                 Finalizados: {finalizados_qtd}
               </span>
             )}
@@ -872,7 +984,7 @@ function DemandaDashboardPage() {
                     e.target.value === '' ? '' : parseInt(e.target.value) || 0
                   setPartialQuantities(prev => ({ ...prev, [item.id]: value }))
                 }}
-                className='w-16 h-7 text-xs'
+                className='h-7 w-11 px-1 text-center text-xs tabular-nums'
                 title={`Faltam: ${saldoRestante}`}
                 placeholder={saldoRestante > 0 ? saldoRestante.toString() : '0'}
                 disabled={saldoRestante <= 0 || isItemFinalizing}
@@ -902,7 +1014,7 @@ function DemandaDashboardPage() {
 
     const fieldName = fieldMapping[columnName]
     const canEdit =
-      (user?.is_admin || (canEditDemand && canEditField(fieldName))) &&
+      simulationActionsAllowed && (user?.is_admin || (canEditDemand && canEditField(fieldName))) &&
       item.status_item !== 'Concluído'
     const maxValue = getMaxValueForField(item, fieldName)
 
@@ -915,8 +1027,10 @@ function DemandaDashboardPage() {
       estoqueDisponivel = item.estoque_disponivel_impressao
 
     return (
-      <TableCell key={columnName} className={`${columnClasses[columnName]}`}>
-        <div className='flex flex-col items-center gap-1'>
+      <TableCell
+        key={columnName}
+        className={`px-1 py-1.5 tabular-nums ${columnMeta[columnName].className}`}>
+        <div className='flex flex-col items-center gap-0.5'>
           <IncrementalInput
             currentValue={item[fieldName] || 0}
             fieldName={fieldName}
@@ -926,10 +1040,11 @@ function DemandaDashboardPage() {
             maxValue={maxValue}
             totalQuantity={item.quantidade_total}
           />
-          {estoqueDisponivel !== null && (
+          {!isSimulation && estoqueDisponivel > 0 && (
             <div
-              className={`text-[9px] font-bold px-1 rounded ${estoqueDisponivel > 0 ? 'text-green-600 bg-green-50' : 'text-gray-400 bg-gray-50'}`}>
-              Est: {estoqueDisponivel}
+              title='Estoque disponível'
+              className='rounded bg-green-50 px-1 text-[9px] font-bold tabular-nums text-green-600'>
+              {numero(estoqueDisponivel)}
             </div>
           )}
         </div>
@@ -948,10 +1063,17 @@ function DemandaDashboardPage() {
     (new Date(demanda.data_entrega) - new Date()) / (1000 * 60 * 60 * 24),
   )
   const isUrgente = diasRestantes <= 3
+  const podePublicarSimulacao = isSimulation && demanda.status === 'RASCUNHO' && canEditDemand
+  const podeFinalizarSimulacao =
+    isSimulation && demanda.status !== 'RASCUNHO' && demanda.status !== 'COLETADO' &&
+    canEditDemand && (user?.is_admin || canExecuteAction('finalize_item'))
+  const podeExcluirSimulacao =
+    isSimulation && (user?.is_admin || (hasPermission('demanda_producao', 'excluir') && canExecuteAction('delete_demand')))
+  const temMaisAcoes = !isSimulation || podePublicarSimulacao || podeFinalizarSimulacao || podeExcluirSimulacao
 
   return (
-    <div className='container mx-auto py-6 px-4 max-w-7xl relative'>
-      {selectedItemForHistory && (
+    <div className='container mx-auto py-4 px-4 max-w-screen-2xl relative'>
+      {!isSimulation && selectedItemForHistory && (
         <StockHistoryViewer
           itemId={selectedItemForHistory}
           onClose={() => setSelectedItemForHistory(null)}
@@ -959,7 +1081,7 @@ function DemandaDashboardPage() {
       )}
       {/* Botão Flutuante */}
       {hasPendingChanges && (
-        <div className='fixed bottom-8 right-8 z-50 bg-white p-4 rounded-lg shadow-2xl border-2 border-primary animate-in fade-in slide-in-from-bottom-4 flex items-center gap-4'>
+        <div className='fixed bottom-8 right-8 z-50 bg-white p-3 rounded-lg shadow-2xl border-2 border-primary animate-in fade-in slide-in-from-bottom-4 flex items-center gap-3'>
           <div className='flex flex-col'>
             <span className='text-sm font-bold'>Alterações Pendentes</span>
             <span className='text-xs text-muted-foreground'>
@@ -988,10 +1110,11 @@ function DemandaDashboardPage() {
       )}
 
       {/* Header */}
-      <div className='flex items-start justify-between mb-6'>
+      <div className='mb-3 flex items-start justify-between'>
         <div>
           <div className='flex items-center gap-2'>
             <h1 className='text-2xl font-bold text-gray-900'>{demanda.nome}</h1>
+            {isSimulation && <Badge className='bg-amber-600 text-white'>SIMULAÇÃO · sem impacto operacional</Badge>}
             {demanda.is_flex && (
               <Badge className='bg-purple-600 text-white border-none animate-pulse'>
                 <Flame className='w-3 h-3 mr-1' />
@@ -1015,34 +1138,63 @@ function DemandaDashboardPage() {
             </span>
           </div>
         </div>
-        <div className='flex flex-wrap justify-end gap-2'>
-          <Button variant='outline' onClick={() => setShowPedidosOrigem(true)} className='gap-2'>
-            <List className='h-4 w-4' /> Ver Pedidos Relacionados
+        <div className='flex flex-wrap items-center justify-end gap-2'>
+          <Button variant='outline' size='sm' onClick={() => setShowPedidosOrigem(true)} className='gap-2'>
+            <List className='h-4 w-4' /> Pedidos relacionados
           </Button>
-          <Button variant='outline' onClick={handlePrintOrderPapers} className='gap-2' disabled={progressoImpressao !== null}>
-            {progressoImpressao ? <Loader2 className='h-4 w-4 animate-spin' /> : <FileText className='h-4 w-4' />}
-            {progressoImpressao
-              ? `Preparando ${progressoImpressao.processados}/${progressoImpressao.total}…`
-              : 'Imprimir Papeis dos Pedidos'}
-          </Button>
-          <Button variant='outline' onClick={() => handleGenerateDemandNfe()} disabled={nfeGenerating} className='gap-2'>
-            {nfeGenerating ? <Loader2 className='h-4 w-4 animate-spin' /> : <Receipt className='h-4 w-4' />}
-            Gerar NFs dos Pedidos
-          </Button>
-          <Link to='/producao/impressao'>
-            <Button variant='outline' className='gap-2' title='Fila de impressão de capas'>
-              <List className='h-4 w-4' /> Fila de impressão
-            </Button>
-          </Link>
+          {temMaisAcoes && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant='outline' size='sm' className='gap-2'>
+                  <MoreHorizontal className='h-4 w-4' /> Mais ações
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align='end'>
+                {podePublicarSimulacao && (
+                  <DropdownMenuItem onClick={async () => { try { await performSimulationAction('publicar'); toast.success('Cenário publicado apenas na simulação') } catch (error) { toast.error(error.message) } }}>
+                    Publicar na simulação
+                  </DropdownMenuItem>
+                )}
+                {podeFinalizarSimulacao && (
+                  <DropdownMenuItem onClick={async () => { if (!window.confirm('Finalizar todos os itens na simulação?')) return; try { await performSimulationAction('finalizar_demanda'); toast.success('Demanda simulada finalizada') } catch (error) { toast.error(error.message) } }}>
+                    Finalizar demanda simulada
+                  </DropdownMenuItem>
+                )}
+                {podeExcluirSimulacao && (
+                  <DropdownMenuItem onClick={deleteSimulation} className='text-red-600'>
+                    Excluir simulação
+                  </DropdownMenuItem>
+                )}
+                {!isSimulation && (
+                  <>
+                    <DropdownMenuItem onClick={handlePrintOrderPapers} disabled={progressoImpressao !== null}>
+                      {progressoImpressao ? <Loader2 className='mr-2 h-4 w-4 animate-spin' /> : <FileText className='mr-2 h-4 w-4' />}
+                      {progressoImpressao
+                        ? `Preparando ${progressoImpressao.processados}/${progressoImpressao.total}…`
+                        : 'Imprimir papéis dos pedidos'}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleGenerateDemandNfe()} disabled={nfeGenerating}>
+                      {nfeGenerating ? <Loader2 className='mr-2 h-4 w-4 animate-spin' /> : <Receipt className='mr-2 h-4 w-4' />}
+                      Gerar NFs dos pedidos
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => navigate('/producao/impressao')}>
+                      <List className='mr-2 h-4 w-4' /> Fila de impressão
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
 
-          <Link to='/producao/demanda'>
-            <Button variant='ghost' size='icon'>
+          <Link to={isSimulation ? '/despacho' : '/producao/demanda'}>
+            <Button variant='ghost' size='icon' className='h-8 w-8' title='Voltar'>
               <ArrowLeft className='h-4 w-4' />
             </Button>
           </Link>
-          {demanda.status !== 'Coletado' &&
+          {demanda.status !== 'Coletado' && demanda.status !== 'COLETADO' && (!isSimulation || demanda.status !== 'RASCUNHO') &&
             canEditDemand && canExecuteAction('collect_demand') && (
               <Button
+                size='sm'
                 onClick={handleCollectDemand}
                 className='bg-green-600 hover:bg-green-700'>
                 <Truck className='mr-2 h-4 w-4' /> Coletar
@@ -1051,126 +1203,104 @@ function DemandaDashboardPage() {
         </div>
       </div>
 
-      <CapaPrintPlanner demandaId={demanda.id} />
+      {!isSimulation && <CapaPrintPlanner demandaId={demanda.id} />}
 
-      {/* Stats */}
-      <div className='grid grid-cols-1 md:grid-cols-4 gap-4 mb-6'>
-        <Card className='p-3 flex items-center gap-3'>
-          <TrendingUp className='h-5 w-5 text-blue-500' />
-          <div className='flex-1'>
-            <p className='text-[10px] text-muted-foreground uppercase font-bold'>
-              Progresso
-            </p>
-            <div className='flex items-center justify-between'>
-              <span className='text-sm font-bold'>
-                {demanda.progresso_percentual}%
-              </span>
-              <span className='text-[10px]'>
-                {demanda.itens_concluidos}/{demanda.total_itens}
-              </span>
-            </div>
-            <Progress
-              value={demanda.progresso_percentual}
-              className='h-1.5 mt-1'
-            />
-          </div>
-        </Card>
-        <Card className='p-3 flex items-center gap-3'>
-          <Calendar
-            className={`h-5 w-5 ${isUrgente ? 'text-red-500' : 'text-green-500'}`}
-          />
-          <div>
-            <p className='text-[10px] text-muted-foreground uppercase font-bold'>
-              Entrega
-            </p>
-            <p className='text-sm font-bold'>
-              {new Date(demanda.data_entrega).toLocaleDateString('pt-BR')}
-            </p>
-          </div>
-        </Card>
-        <Card className='p-3 flex items-center gap-3'>
-          <Package className='h-5 w-5 text-purple-500' />
-          <div>
-            <p className='text-[10px] text-muted-foreground uppercase font-bold'>
-              Total Unidades
-            </p>
-            <p className='text-sm font-bold'>{demanda.total_quantidade}</p>
-          </div>
-        </Card>
-        <div className='relative'>
-          <Search className='absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground' />
+      {isSimulation && <Card className='mb-5 border-amber-300 bg-amber-50/40'><CardContent className='py-3 text-sm'><p className='font-semibold'>Histórico da simulação</p><p className='text-xs text-muted-foreground'>As etapas abaixo existem apenas neste cenário. Pedidos, estoque e coletas reais não foram alterados.</p><div className='mt-2 flex flex-wrap gap-2'>{simulationEvents.map((event, index) => <Badge key={`${event.created_at}-${index}`} variant='outline'>{event.action.replaceAll('_', ' ')} · {new Date(event.created_at).toLocaleString('pt-BR')}</Badge>)}</div></CardContent></Card>}
+
+      {/* Totalizadores numa única faixa */}
+      <div className='mb-3 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border bg-muted/30 px-3 py-2 text-sm'>
+        <div className='flex items-center gap-2'>
+          <span className='text-muted-foreground'>Progresso</span>
+          <strong className='tabular-nums'>{demanda.progresso_percentual}%</strong>
+          <span className='text-xs tabular-nums text-muted-foreground'>
+            {demanda.itens_concluidos}/{demanda.total_itens}
+          </span>
+          <Progress value={demanda.progresso_percentual} className='h-1 w-20' />
+        </div>
+        <span className='text-muted-foreground'>
+          Entrega
+          <strong className={`ml-1 ${isUrgente ? 'text-red-700' : ''}`}>
+            {dataCurta(demanda.data_entrega)}
+          </strong>
+        </span>
+        <span className='text-muted-foreground'>
+          Unidades <strong className='ml-1 tabular-nums'>{numero(demanda.total_quantidade)}</strong>
+        </span>
+        <span className='hidden h-4 w-px bg-border sm:block' />
+        {[
+          ['Capas p/ retirar', stageTotals.capas],
+          ['Miolos p/ retirar', stageTotals.miolos],
+          ['Pares completos', stageTotals.pares],
+          ['Em fechamento', stageTotals.emFechamento],
+          ['Finalizados', stageTotals.finalizados],
+        ].map(([label, value]) => (
+          <span key={label} className='text-muted-foreground'>
+            {label} <strong className='ml-1 tabular-nums text-foreground'>{numero(value)}</strong>
+          </span>
+        ))}
+      </div>
+
+      <div className='mb-3 flex flex-wrap items-center gap-2'>
+        <div className='relative w-56'>
+          <Search className='absolute left-2 top-2.5 h-4 w-4 text-muted-foreground' />
           <Input
             placeholder='Buscar itens...'
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            className='pl-9 h-full'
+            className='h-9 pl-8'
           />
         </div>
-      </div>
-
-      <div className='flex items-center justify-between mb-4 gap-4'>
-        <div className='flex gap-4 items-end'>
-          <div className='flex flex-col gap-1'>
-            <Label className='text-xs text-muted-foreground'>Ver como</Label>
-            <div className='flex gap-1'>
-              <Button
-                variant={viewMode === 'producao' ? 'default' : 'outline'}
-                size='sm'
-                onClick={() => setViewMode('producao')}>
-                Geral
-              </Button>
-              <Button
-                variant={viewMode === 'capas_miolos' ? 'default' : 'outline'}
-                size='sm'
-                onClick={() => setViewMode('capas_miolos')}>
-                Capas / Miolos
-              </Button>
-              <Button
-                variant={viewMode === 'expedicao' ? 'default' : 'outline'}
-                size='sm'
-                onClick={() => setViewMode('expedicao')}>
-                Expedição
-              </Button>
-            </div>
-          </div>
-
-          <div className='flex flex-col gap-1 border-l pl-4'>
-            <Label className='text-xs text-muted-foreground'>
-              Status do Item
-            </Label>
-            <div className='flex gap-1'>
-              <Button
-                variant={statusFilter === 'ativos' ? 'default' : 'outline'}
-                size='sm'
-                onClick={() => setStatusFilter('ativos')}>
-                Produção
-              </Button>
-              <Button
-                variant={statusFilter === 'prontos' ? 'default' : 'outline'}
-                size='sm'
-                onClick={() => setStatusFilter('prontos')}>
-                Prontos para Fechar
-              </Button>
-              <Button
-                variant={statusFilter === 'finalizados' ? 'default' : 'outline'}
-                size='sm'
-                onClick={() => setStatusFilter('finalizados')}>
-                Finalizados
-              </Button>
-            </div>
-          </div>
+        <div className='flex gap-1' role='group' aria-label='Visão da tabela'>
+          {[
+            ['producao', 'Geral'],
+            ['capas_miolos', 'Capas / Miolos'],
+            ['expedicao', 'Expedição'],
+          ].map(([mode, label]) => (
+            <Button
+              key={mode}
+              variant={viewMode === mode ? 'default' : 'outline'}
+              size='sm'
+              onClick={() => setViewMode(mode)}>
+              {label}
+            </Button>
+          ))}
+        </div>
+        <div className='h-5 w-px bg-border' />
+        <div className='flex gap-1' role='group' aria-label='Status do item'>
+          {[
+            ['ativos', 'Produção'],
+            ['retirar', 'Para retirar'],
+            ['prontos', 'Em fechamento'],
+            ['finalizados', 'Finalizados'],
+          ].map(([status, label]) => (
+            <Button
+              key={status}
+              variant={statusFilter === status ? 'default' : 'outline'}
+              size='sm'
+              onClick={() => setStatusFilter(status)}>
+              {label}
+            </Button>
+          ))}
         </div>
       </div>
 
       <Card>
         <CardContent className='p-0'>
-          <Table>
+          <Table containerClassName='overflow-visible'>
             <TableHeader>
               <TableRow>
-                {activeColumns.map(col => (
-                  <TableHead key={col} className={columnClasses[col]}>
-                    <div className='flex items-center justify-between'>
-                      <span>{columnTitles[col]}</span>
+                {activeColumns.map(col => {
+                  const ColumnIcon = columnMeta[col].icon
+                  return <TableHead
+                    key={col}
+                    title={columnMeta[col].label}
+                    className={`h-9 px-2 text-xs ${columnMeta[col].className}`}>
+                    <div
+                      className={`flex items-center gap-1 ${col === 'produto_miolo' ? 'justify-start px-1' : col === 'acoes' ? 'justify-end' : 'justify-center'}`}>
+                      {columnMeta[col].icon ? <span className='inline-flex items-center justify-center' aria-label={columnMeta[col].label}>
+                        {columnMeta[col].hand ? <span className='relative inline-flex h-5 w-5 items-center justify-center'><ColumnIcon className='h-4 w-4' aria-hidden='true'/><Hand className='absolute -bottom-1 -right-1 h-2.5 w-2.5 rounded-full bg-background' aria-hidden='true'/></span> : <ColumnIcon className='h-4 w-4' aria-hidden='true'/>}
+                        <span className='sr-only'>{columnMeta[col].short}</span>
+                      </span> : <span>{columnMeta[col].short}</span>}
                       {[
                         'capas_impressas',
                         'capas_produzidas',
@@ -1180,18 +1310,18 @@ function DemandaDashboardPage() {
                         'expedicao_miolos',
                       ].includes(col) &&
                         statusFilter === 'ativos' &&
-                        (user?.is_admin || (canEditDemand && canEditField(fieldMapping[col]))) && (
+                        simulationActionsAllowed && (user?.is_admin || (canEditDemand && canEditField(fieldMapping[col]))) && (
                           <Button
                             variant='ghost'
                             size='icon'
-                            className='h-4 w-4'
+                            className='h-4 w-4 shrink-0'
                             onClick={() => handleFillAllForColumn(col)}>
                             <CheckCircle className='h-3 w-3 text-green-600' />
                           </Button>
                         )}
                     </div>
                   </TableHead>
-                ))}
+                })}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1199,15 +1329,19 @@ function DemandaDashboardPage() {
                 <TableRow>
                   <TableCell
                     colSpan={activeColumns.length}
-                    className='text-center py-8 text-muted-foreground font-medium'>
+                    className='py-8 text-center font-medium text-muted-foreground'>
                     {statusFilter === 'ativos'
-                      ? 'Nenhum item em andamento.'
-                      : 'Nenhum item com quantidade total finalizada.'}
+                      ? 'Nenhum item em produção ou aguardando retirada.'
+                      : statusFilter === 'retirar'
+                        ? 'Nenhuma capa ou miolo pronto para retirar.'
+                      : statusFilter === 'prontos'
+                        ? 'Nenhum produto em fechamento.'
+                        : 'Nenhum item com quantidade total finalizada.'}
                   </TableCell>
                 </TableRow>
               ) : (
                 filteredItems.map(item => (
-                  <TableRow key={item.id}>
+                  <TableRow key={item.id} className='group/row'>
                     {activeColumns.map(col => renderCell(item, col))}
                   </TableRow>
                 ))
@@ -1222,6 +1356,7 @@ function DemandaDashboardPage() {
         onClose={() => setIsPartialCollectionModalOpen(false)}
         demandaId={demanda.id}
         onConfirm={handleConfirmCollection}
+        apiBase={apiBase}
       />
 
       {/* Dialog for viewing related orders */}
@@ -1232,7 +1367,7 @@ function DemandaDashboardPage() {
           </DialogHeader>
           {demanda.pedidos_origem && demanda.pedidos_origem.length > 0 ? (
             <div className="space-y-4">
-              <div className="flex flex-wrap gap-2">
+              {!isSimulation && <div className="flex flex-wrap gap-2">
                 <Button variant="outline" size="sm" onClick={handlePrintOrderPapers} className="gap-2" disabled={progressoImpressao !== null}>
                   {progressoImpressao ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
                   {progressoImpressao
@@ -1243,9 +1378,9 @@ function DemandaDashboardPage() {
                   {nfeGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Receipt className="h-4 w-4" />}
                   Gerar NFs dos Pedidos
                 </Button>
-              </div>
+              </div>}
 
-              {demanda.pedidos_origem_por_bling?.length > 0 && (
+              {!isSimulation && demanda.pedidos_origem_por_bling?.length > 0 && (
                 <div className="grid gap-2 md:grid-cols-2">
                   {demanda.pedidos_origem_por_bling.map((grupo, idx) => (
                     <div key={grupo.bling_integration_id || idx} className="rounded-md border p-3">
@@ -1270,7 +1405,7 @@ function DemandaDashboardPage() {
                 </div>
               )}
 
-              {demanda.pedidos_origem_chunks?.length > 0 && (
+              {!isSimulation && demanda.pedidos_origem_chunks?.length > 0 && (
                 <div className="rounded-md border bg-muted/30 p-3 space-y-2">
                   <div className="text-sm font-semibold">Codigos para busca manual no Bling</div>
                   {demanda.pedidos_origem_chunks.map((chunk, idx) => (
@@ -1313,7 +1448,7 @@ function DemandaDashboardPage() {
         </DialogContent>
       </Dialog>
 
-      <div className={`fixed inset-y-0 right-0 z-50 w-96 bg-white shadow-2xl transform transition-transform duration-300 ease-in-out ${nfeSidebarOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+      {!isSimulation && <div className={`fixed inset-y-0 right-0 z-50 w-96 bg-white shadow-2xl transform transition-transform duration-300 ease-in-out ${nfeSidebarOpen ? 'translate-x-0' : 'translate-x-full'}`}>
         <div className="flex h-full flex-col">
           <div className="flex items-center justify-between border-b bg-muted p-4">
             <h3 className="text-lg font-bold">Notas Fiscais dos Pedidos</h3>
@@ -1372,7 +1507,7 @@ function DemandaDashboardPage() {
             )}
           </div>
         </div>
-      </div>
+      </div>}
     </div>
   )
 }

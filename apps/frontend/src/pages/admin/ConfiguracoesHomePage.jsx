@@ -10,7 +10,7 @@ export default function ConfiguracoesHomePage() {
   const secao = SECOES.find((item) => item.id === 'configuracoes');
   const grupos = (secao?.grupos || []).map((grupo) => ({
     ...grupo,
-    itens: grupo.itens.filter((item) =>
+    itens: grupo.itens.filter((item) => item.href !== '/configuracoes' &&
       (!item.adminOnly || isAdmin()) &&
       (!item.permission || hasPermission(item.permission.a, item.permission.I))
     ),

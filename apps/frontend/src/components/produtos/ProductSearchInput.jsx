@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import ProductService from '../../services/ProductService';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -34,11 +35,14 @@ const ProductSearchInput = ({
   className = '',
   showProductLevelBadge = true,
   showCheckIndicator = true,
+  materialTypes = null,
 }) => {
   const [searchTerm, setSearchTerm] = useState(value);
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [dropdownStyle, setDropdownStyle] = useState(null);
+  const containerRef = useRef(null);
 
   // Debounce search
   useEffect(() => {
@@ -52,12 +56,36 @@ const ProductSearchInput = ({
     }, 500);
 
     return () => clearTimeout(delayDebounceFn);
-  }, [searchTerm, searchCategoryId, formato]);
+  }, [searchTerm, searchCategoryId, formato, materialTypes]);
 
   // Sync with external value
   useEffect(() => {
     setSearchTerm(value);
   }, [value]);
+
+  useLayoutEffect(() => {
+    if (!showDropdown || !containerRef.current) return undefined;
+
+    const updatePosition = () => {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setDropdownStyle({
+        position: 'fixed',
+        left: rect.left,
+        top: rect.bottom + 4,
+        width: rect.width,
+        zIndex: 1000,
+      });
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [showDropdown, searchResults]);
 
   const performSearch = async (query) => {
     if (!query || query.length < 3) {
@@ -72,7 +100,7 @@ const ProductSearchInput = ({
       let contexto = null;
       if (formato === 'kit') {
         contexto = 'kit';
-      } else if (formato === 'composicao') {
+      } else if (formato === 'composicao' && !materialTypes) {
         contexto = 'producao';
       }
 
@@ -93,6 +121,7 @@ const ProductSearchInput = ({
           exclude_id: excludeId,
           category_id: searchCategoryId,
           contexto: contexto,
+          ...(materialTypes ? { material_type: materialTypes } : {}),
         });
         // Normalizar formato dos resultados
         results = (data.results || []).map(product => ({
@@ -100,14 +129,15 @@ const ProductSearchInput = ({
           name: product.name,
           sku: product.sku || '',
           cost: product.cost,
-          material_type: product.material_type,
+          material_type: product.material_type || product.tipo_material || 'produto_acabado',
         }));
       }
 
       // Filtrar produto selecionado e excluídos
       const filtered = results.filter(p => 
         String(p.id) !== String(selectedProductId) &&
-        String(p.id) !== String(excludeId)
+        String(p.id) !== String(excludeId) &&
+        (!materialTypes || materialTypes.includes(p.material_type))
       );
 
       setSearchResults(filtered);
@@ -142,7 +172,7 @@ const ProductSearchInput = ({
   };
 
   return (
-    <div className={`relative w-full ${className}`}>
+    <div ref={containerRef} className={`relative w-full ${className}`}>
       <div className="relative">
         <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
         <Input
@@ -170,8 +200,8 @@ const ProductSearchInput = ({
         )}
       </div>
 
-      {showDropdown && searchResults.length > 0 && (
-        <div className="absolute z-50 w-full bg-popover border rounded-md shadow-md mt-1 max-h-60 overflow-auto">
+      {showDropdown && searchResults.length > 0 && dropdownStyle && createPortal(
+        <div style={dropdownStyle} className="bg-popover border rounded-md shadow-md max-h-60 overflow-auto">
           <ScrollArea className="h-[200px]">
             <div className="p-1">
               {searchResults.map(product => (
@@ -183,9 +213,6 @@ const ProductSearchInput = ({
                   <div className="font-medium">{product.name}</div>
                   <div className="text-xs text-muted-foreground flex items-center gap-2">
                     <span>{product.sku}</span>
-                    {product.cost && (
-                      <span>R$ {product.cost?.toFixed(2)}</span>
-                    )}
                     {showProductLevelBadge && product.material_type && (
                       <ProductLevelBadge type={product.material_type} />
                     )}
@@ -194,13 +221,15 @@ const ProductSearchInput = ({
               ))}
             </div>
           </ScrollArea>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {searchTerm.length >= 3 && !isSearching && searchResults.length === 0 && showDropdown && (
-        <div className="absolute z-50 w-full bg-popover border rounded-md shadow-md mt-1 p-3 text-sm text-muted-foreground">
+      {searchTerm.length >= 3 && !isSearching && searchResults.length === 0 && showDropdown && dropdownStyle && createPortal(
+        <div style={dropdownStyle} className="bg-popover border rounded-md shadow-md p-3 text-sm text-muted-foreground">
           Nenhum produto encontrado.
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

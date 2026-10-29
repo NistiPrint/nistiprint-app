@@ -96,9 +96,13 @@ const DemandaCard = React.memo(({
   
   const isEmergency = priorityScore >= 100 || isExpress || (isLastChance && urgente);
   const isNext = priorityScore >= 50 && priorityScore < 100;
-  const showCriticalBadge = priorityScore >= 100 || (isLastChance && urgente);
+  const urgencia =
+    priorityScore >= 100 ? { texto: 'PRIORIDADE MAXIMA', className: 'bg-red-600 text-white border-none' }
+    : isLastChance && urgente ? { texto: 'ULTIMA CHANCE', className: 'bg-orange-600 text-white border-none' }
+    : urgente ? { texto: 'URGENTE', variant: 'destructive' }
+    : null;
 
-  const totalItens = demanda.total_itens || demanda.total_quantidade || 1;
+  const totalItens = Number(demanda.total_itens ?? demanda.total_quantidade ?? 0);
   // itens_prontos_para_retirar = unidades completas (capa + miolo) no buffer de prontos
   const itensProntosParaRetirar = demanda.itens_concluidos || 0;
   // itens_finalizados = itens que foram FINALIZADOS manualmente no dashboard (progresso real)
@@ -107,7 +111,7 @@ const DemandaCard = React.memo(({
   const itensEmFechamento = demanda.itens_em_fechamento || 0;
 
   // Progresso total considera estritamente itens finalizados manualmente
-  const percentualConcluido = (itensFinalizados / totalItens) * 100;
+  const percentualConcluido = totalItens > 0 ? Math.min((itensFinalizados / totalItens) * 100, 100) : 0;
 
   const capasImpressas = demanda.capas_impressas_qtd || 0;
   const capasProduzidas = demanda.capas_produzidas_qtd || 0;
@@ -177,7 +181,7 @@ const DemandaCard = React.memo(({
         <svg width={size} height={size}>
           <circle cx={center} cy={center} r={radius} fill="none" stroke="#f3f4f6" strokeWidth={strokeWidth} />
           {setoresData.map((setor, idx) => {
-            const percentage = (setor.val || 0) / totalItens;
+            const percentage = totalItens > 0 ? (setor.val || 0) / totalItens : 0;
             const segmentLength = circumference * percentage;
             const dashArray = `${segmentLength} ${circumference}`;
             const rotation = currentAngle;
@@ -204,7 +208,7 @@ const DemandaCard = React.memo(({
     <div className="space-y-3 w-full">
       {progressData.map((step, i) => {
         const currentVal = step.val || 0;
-        const totalScope = step.scope || 1;
+        const totalScope = step.scope ?? 0;
         const percentage = totalScope > 0 ? Math.min(Math.round((currentVal / totalScope) * 100), 100) : 0;
         return (
           <div key={i}>
@@ -237,26 +241,16 @@ const DemandaCard = React.memo(({
       className={`relative shadow-sm hover:shadow-md transition-all cursor-pointer border-l-4 ${isSelected ? 'ring-2 ring-primary' : ''}`}
       style={{ borderLeftColor: borderColor }}
     >
-      {/* Canal Badge / Header */}
-      <div
-        className={`absolute top-0 left-1/2 transform -translate-x-1/2 px-3 py-0.5 rounded-b-md text-[10px] font-bold uppercase tracking-wider shadow-sm z-10 ${
-          isLightBackground ? 'text-gray-900' : 'text-white'
-        }`}
-        style={{ backgroundColor: canalColor }}
-      >
-        {demanda.canal_venda_plataforma}
-      </div>
-
       <div className="flex flex-col">
         {/* Top Row: Title, Selection, Actions */}
-        <div className="flex items-start justify-between p-4 pb-2">
+        <div className="flex items-start justify-between p-3 pb-2">
           <div className="flex items-start gap-3 flex-1">
             <div onClick={(e) => e.stopPropagation()} className="pt-1">
               <Checkbox checked={isSelected} onCheckedChange={() => onSelect(demanda.id)} />
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-1">
-                <h3 className="text-lg font-bold text-gray-900 truncate" data-editable>
+                <h3 className="text-base font-bold text-gray-900 truncate" data-editable>
                   <EditableCell
                     value={demanda.nome}
                     onSave={newValue => handleFieldUpdate(demanda.id, 'nome', newValue)}
@@ -265,6 +259,9 @@ const DemandaCard = React.memo(({
                   />
                 </h3>
                 <span className="text-xs text-gray-400 font-mono">#{demanda.id.toString().slice(-4)}</span>
+                {hasObservacoes && (
+                  <StickyNote className="h-3.5 w-3.5 shrink-0 text-amber-600" title="Possui observações" />
+                )}
               </div>
 
               {/* Links para Cadastro */}
@@ -293,25 +290,26 @@ const DemandaCard = React.memo(({
                 )}
               </div>
               
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {demanda.canal_venda_plataforma && (
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                      isLightBackground ? 'text-gray-900' : 'text-white'
+                    }`}
+                    style={{ backgroundColor: canalColor }}
+                  >
+                    {demanda.canal_venda_plataforma}
+                  </span>
+                )}
                 <Badge variant="outline" className="text-[10px] px-1.5 h-5 border-gray-300 text-gray-600">{demanda.status}</Badge>
-                {showCriticalBadge && <Badge className="bg-red-600 text-white border-none text-[10px] px-1.5 h-5">PRIORIDADE MAXIMA</Badge>}
-                {isLastChance && urgente && <Badge className="bg-orange-600 text-white border-none text-[10px] px-1.5 h-5">ULTIMA CHANCE</Badge>}
-                {urgente && <Badge variant="destructive" className="text-[10px] px-1.5 h-5">URGENTE</Badge>}
+                {urgencia && (
+                  <Badge variant={urgencia.variant} className={`text-[10px] px-1.5 h-5 ${urgencia.className || ''}`}>
+                    {urgencia.texto}
+                  </Badge>
+                )}
                 {flowConfig && (
                   <Badge className="bg-slate-100 text-slate-800 border-none text-[10px] px-1.5 h-5">
                     {flowConfig.shortLabel}
-                  </Badge>
-                )}
-                {modalidadeLogistica && modalidadeLogistica !== 'STANDARD' && (
-                  <Badge className="bg-blue-100 text-blue-800 border-none text-[10px] px-1.5 h-5">
-                    {getModalidadeLabel(modalidadeLogistica)}
-                  </Badge>
-                )}
-                {hasObservacoes && (
-                  <Badge variant="outline" className="text-[10px] px-1.5 h-5 border-amber-200 text-amber-700 bg-amber-50 gap-1">
-                    <StickyNote className="h-3 w-3" />
-                    Obs.
                   </Badge>
                 )}
               </div>
@@ -402,7 +400,7 @@ const DemandaCard = React.memo(({
         </div>
 
         {/* Linear Progress (Always Visible) */}
-        <div className="px-4 pb-4">
+        <div className="px-3 pb-3">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-[10px] font-bold text-gray-500 uppercase">Progresso Total</span>
             <div className="flex items-center gap-3">
@@ -419,7 +417,7 @@ const DemandaCard = React.memo(({
 
         {/* Expanded Content */}
         {isExpanded && (
-          <div className="px-4 pb-4 pt-2 border-t border-gray-50 bg-gray-50/50 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="px-3 pb-3 pt-2 border-t border-gray-50 bg-gray-50/50 animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
               <div className="md:col-span-8">
                 {hasObservacoes && (
@@ -436,6 +434,11 @@ const DemandaCard = React.memo(({
                     <Badge variant="outline" className="gap-1">
                       {demanda.origem_demanda === 'AUTOMATICA' ? <Bot className="h-3 w-3" /> : <Edit className="h-3 w-3" />}
                       {demanda.origem_demanda === 'AUTOMATICA' ? 'Automatica' : 'Manual'}
+                    </Badge>
+                  )}
+                  {modalidadeLogistica && modalidadeLogistica !== 'STANDARD' && (
+                    <Badge className="bg-blue-100 text-blue-800 border-none">
+                      {getModalidadeLabel(modalidadeLogistica)}
                     </Badge>
                   )}
                   {isLateral && (

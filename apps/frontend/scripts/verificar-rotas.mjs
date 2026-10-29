@@ -45,6 +45,8 @@ const ROTAS_SEM_MENU = new Set([
   '/vendas',
   '/cadastros',
   '/configuracoes',
+  // Indice legado de acessos redireciona para Usuarios e nao tem item proprio.
+  '/configuracoes/acessos',
 ]);
 
 function lerRotas(origem) {

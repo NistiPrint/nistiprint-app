@@ -100,12 +100,6 @@ function LoginPage() {
               Entrar
             </Button>
           </form>
-
-          <div className="mt-6 text-center text-sm text-muted-foreground">
-            <p>Para fins de demonstração:</p>
-            <p><strong>Email:</strong> admin@admin.com</p>
-            <p><strong>Senha:</strong> admin123</p>
-          </div>
         </CardContent>
       </Card>
     </div>

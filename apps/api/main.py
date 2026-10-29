@@ -91,6 +91,7 @@ from routes.pedidos_sync import pedidos_sync_bp
 from routes.personalizados import personalizados_bp
 from routes.mercadolivre_personalizados import mercadolivre_personalizados_bp
 from routes.despacho import despacho_bp
+from routes.demanda_simulacao_api import simulacao_bp
 
 # Import Models to ensure they are registered
 from nistiprint_shared.models import *
@@ -215,6 +216,7 @@ def create_app():
     app.register_blueprint(uom_conversions_api_bp, url_prefix='/api/v2/cadastros/uom-conversions')
     app.register_blueprint(demanda_producao_bp)
     app.register_blueprint(demanda_producao_api_bp, url_prefix='/api/v2/demanda_producao')
+    app.register_blueprint(simulacao_bp)
     app.register_blueprint(tasks_api_bp)
     app.register_blueprint(admin_worker_logs_bp)
     app.register_blueprint(task_schedules_api_bp)

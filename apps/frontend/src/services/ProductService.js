@@ -106,7 +106,17 @@ const ProductService = {
 
   // Autocomplete Search
   search: async (query, params = {}) => {
-      const response = await api.get('/produtos/search', { params: { q: query, ...params } });
+      const response = await api.get('/produtos/search', {
+        params: { q: query, ...params },
+        paramsSerializer: (values) => {
+          const search = new URLSearchParams();
+          Object.entries(values).forEach(([key, value]) => {
+            if (Array.isArray(value)) value.forEach((entry) => search.append(key, entry));
+            else if (value !== undefined && value !== null && value !== '') search.append(key, value);
+          });
+          return search.toString();
+        },
+      });
       return response.data;
   },
 
