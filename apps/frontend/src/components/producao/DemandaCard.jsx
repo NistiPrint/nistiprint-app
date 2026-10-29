@@ -102,7 +102,7 @@ const DemandaCard = React.memo(({
     : urgente ? { texto: 'URGENTE', variant: 'destructive' }
     : null;
 
-  const totalItens = demanda.total_itens || demanda.total_quantidade || 1;
+  const totalItens = Number(demanda.total_itens ?? demanda.total_quantidade ?? 0);
   // itens_prontos_para_retirar = unidades completas (capa + miolo) no buffer de prontos
   const itensProntosParaRetirar = demanda.itens_concluidos || 0;
   // itens_finalizados = itens que foram FINALIZADOS manualmente no dashboard (progresso real)
@@ -111,7 +111,7 @@ const DemandaCard = React.memo(({
   const itensEmFechamento = demanda.itens_em_fechamento || 0;
 
   // Progresso total considera estritamente itens finalizados manualmente
-  const percentualConcluido = (itensFinalizados / totalItens) * 100;
+  const percentualConcluido = totalItens > 0 ? Math.min((itensFinalizados / totalItens) * 100, 100) : 0;
 
   const capasImpressas = demanda.capas_impressas_qtd || 0;
   const capasProduzidas = demanda.capas_produzidas_qtd || 0;
@@ -181,7 +181,7 @@ const DemandaCard = React.memo(({
         <svg width={size} height={size}>
           <circle cx={center} cy={center} r={radius} fill="none" stroke="#f3f4f6" strokeWidth={strokeWidth} />
           {setoresData.map((setor, idx) => {
-            const percentage = (setor.val || 0) / totalItens;
+            const percentage = totalItens > 0 ? (setor.val || 0) / totalItens : 0;
             const segmentLength = circumference * percentage;
             const dashArray = `${segmentLength} ${circumference}`;
             const rotation = currentAngle;
@@ -208,7 +208,7 @@ const DemandaCard = React.memo(({
     <div className="space-y-3 w-full">
       {progressData.map((step, i) => {
         const currentVal = step.val || 0;
-        const totalScope = step.scope || 1;
+        const totalScope = step.scope ?? 0;
         const percentage = totalScope > 0 ? Math.min(Math.round((currentVal / totalScope) * 100), 100) : 0;
         return (
           <div key={i}>

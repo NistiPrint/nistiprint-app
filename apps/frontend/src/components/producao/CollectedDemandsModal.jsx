@@ -147,7 +147,7 @@ function CollectedDemandsModal({ isOpen, onClose, demandasColetadas, demandasAgu
                                 itens
                               </span>
                               <span>
-                                Coletado {demanda.quantidade_coletada_total} de {demanda.total_itens}
+                                Coletado {demanda.quantidade_coletada_total || 0} de {demanda.total_itens ?? demanda.total_quantidade ?? 0}
                               </span>
                             </div>
                           </div>

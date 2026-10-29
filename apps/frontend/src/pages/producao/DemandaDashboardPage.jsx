@@ -294,9 +294,7 @@ function DemandaDashboardPage() {
       const algumComponenteRetirado =
         (orig.expedicao_capas_retiradas_qtd || 0) > 0 ||
         (orig.expedicao_miolos_retirados_qtd || 0) > 0
-      const isEmFechamento =
-        !isFinalizado &&
-        (orig.status_item === 'Fechando' || algumComponenteRetirado)
+      const isEmFechamento = !isFinalizado && paresRetirados > (orig.finalizados_qtd || 0)
       // Cada componente pode ser retirado em um momento diferente.
       const capasParaRetirar = Math.max(0, (orig.capas_prontas_retirada_qtd || 0) - (orig.expedicao_capas_retiradas_qtd || 0))
       const miolosParaRetirar = Math.max(0, (orig.miolos_prontos_retirada_qtd || 0) - (orig.expedicao_miolos_retirados_qtd || 0))
@@ -344,7 +342,7 @@ function DemandaDashboardPage() {
       totals.capas += capasDisp
       totals.miolos += miolosDisp
       totals.pares += Math.min(capasDisp, miolosDisp)
-      totals.emFechamento += Math.max(0, Math.max(capasRet, miolosRet) - finalizados)
+      totals.emFechamento += Math.max(0, Math.min(capasRet, miolosRet) - finalizados)
       totals.finalizados += finalizados
     }
     return totals

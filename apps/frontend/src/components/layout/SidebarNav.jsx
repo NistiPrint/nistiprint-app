@@ -15,6 +15,23 @@ export default function SidebarNav({ secao, podeVer = () => true, onNavigate }) 
   const renderItem = (item) => {
     const Icon = item.icon;
     const ativo = estaAtivo(item);
+
+    if (item.disabled) {
+      return (
+        <li key={item.href}>
+          <span
+            aria-disabled="true"
+            title="Temporariamente indisponível"
+            className="flex min-h-11 cursor-not-allowed items-center gap-3 rounded-lg border-l-2 border-transparent px-3 py-2 text-sm text-muted-foreground/60"
+          >
+            {Icon && <Icon className="h-4 w-4 shrink-0" />}
+            <span className="min-w-0 truncate leading-tight">{item.name}</span>
+            <span className="ml-auto shrink-0 text-[10px]">Indisponível</span>
+          </span>
+        </li>
+      );
+    }
+
     return (
       <li key={item.href}>
         <Link

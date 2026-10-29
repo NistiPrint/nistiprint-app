@@ -144,7 +144,7 @@ export default function PartialCollectionModal({ isOpen, onClose, demandaId, onC
                         </div>
                     </div>
 
-                    {coletasHistory.length > 0 && (
+                    {(isLoadingHistory || coletasHistory.length > 0) && (
                       <div className="space-y-2 pt-2">
                         <h4 className="text-sm font-bold text-gray-700 flex items-center gap-2">
                           <History className="h-4 w-4" />
