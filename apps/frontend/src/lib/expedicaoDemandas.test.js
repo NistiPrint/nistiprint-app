@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { groupByStage, stageOf } from './expedicaoDemandas.js';
+import { demandsForExpedition, groupByStage, stageOf } from './expedicaoDemandas.js';
 
 const item = (item_id, overrides = {}) => ({
   item_id, demanda_id: 1, demanda_nome: 'Demanda 1', trilha: 'URGENTE',
@@ -28,4 +28,14 @@ test('priority filter uses values from the consolidated API', () => {
   const grouped = groupByStage([item(11), item(12, { demanda_id: 2, trilha: 'FLEX' })], 'FLEX');
   assert.deepEqual(grouped.waiting.map((group) => group.id), [2]);
   assert.equal(stageOf(item(20, { match_disponivel: 2, expedicao_capas_retiradas_qtd: 1, expedicao_miolos_retirados_qtd: 1 })), 'ready');
+});
+
+test('expedition keeps all demands, dims those without action, and sorts by collection time', () => {
+  const demands = demandsForExpedition([
+    item(1, { demanda_id: 1, horario_coleta: '14:00', match_disponivel: 0 }),
+    item(2, { demanda_id: 2, horario_coleta: '09:00', match_disponivel: 2 }),
+    item(3, { demanda_id: 3, horario_coleta: '11:00', match_disponivel: 0 }),
+  ]);
+  assert.deepEqual(demands.map((d) => d.id), [2, 3, 1]);
+  assert.deepEqual(demands.map((d) => d.needsAction), [true, false, false]);
 });

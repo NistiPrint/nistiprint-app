@@ -31,6 +31,33 @@ def _as_float(value):
     return float(value)
 
 
+def _unmapped_entry(demanda, item, pending, reason):
+    miolo_nome = (item.get('miolo_chave') or item.get('miolo_nome') or item.get('miolo_name')
+                  or item.get('produto_miolo_nome') or item.get('nome_miolo'))
+    sku = item.get('sku') or item.get('sku_externo')
+    if not miolo_nome and sku:
+        # Match the Torre/Escopo rule: use the first ten SKU characters and
+        # apply the shared legacy miolo corrections (CADMNA -> VACMNA, etc.).
+        from nistiprint_shared.utils import apply_miolo_fixes
+        miolo_nome = apply_miolo_fixes(str(sku)[:10])
+    return {
+        'demanda_id': demanda['id'],
+        'demanda_nome': demanda.get('nome') or demanda.get('descricao') or f'Demanda {demanda["id"]}',
+        'item_id': item.get('id'),
+        'item_nome': item.get('item_descricao') or item.get('descricao') or item.get('sku') or 'Item sem nome',
+        'simulacao': bool(demanda.get('simulacao')),
+        'motivo': reason,
+        # Informações opcionais para exibição; não entram nos totais do produto.
+        'miolo_nome': miolo_nome,
+        'miolo_key': miolo_nome,
+        'sku': sku,
+        'pendente': _as_float(pending),
+        'data_entrega': demanda.get('data_entrega'),
+        'horario_coleta': demanda.get('horario_coleta'),
+        'prioridade': _as_float(_number(demanda.get('prioridade_manual') or demanda.get('manual_priority_score'))),
+    }
+
+
 def components_for_product(product_id, target_ids, nodes):
     """Return target components and their per-unit BOM quantities."""
     found = defaultdict(Decimal)
@@ -80,7 +107,7 @@ def prepare_component_distributions(product_id, role, distributions, items_by_id
     return prepared
 
 
-def build_production_demand_plan(tipo, products, demandas, items_by_demanda, graph, stage_product_ids=None):
+def build_production_demand_plan(tipo, products, demandas, items_by_demanda, graph, stage_product_ids=None, horizonte=None, data_referencia=None):
     """Build product totals and a per-demand forecast from already fetched data."""
     if tipo not in STAGE_FIELDS:
         raise ValueError('Tipo de planejamento inválido')
@@ -91,6 +118,17 @@ def build_production_demand_plan(tipo, products, demandas, items_by_demanda, gra
     entries = defaultdict(list)
     unmapped = []
     stage_field = STAGE_FIELDS[tipo]
+
+    if horizonte:
+        from datetime import date as _date
+        reference = _date.fromisoformat(data_referencia) if data_referencia else _date.today()
+        def bucket(demanda):
+            due = demanda.get('data_entrega')
+            if not due:
+                return 'sem_prazo'
+            due = _date.fromisoformat(str(due)[:10])
+            return 'atrasado' if due < reference else 'hoje' if due == reference else 'amanha' if (due-reference).days == 1 else 'depois'
+        demandas = [d for d in demandas if bucket(d) in horizonte]
 
     for demanda in demandas:
         demand_id = str(demanda['id'])
@@ -103,47 +141,26 @@ def build_production_demand_plan(tipo, products, demandas, items_by_demanda, gra
             components = components_for_product(item_product_id, target_ids, nodes) if item_product_id else {}
             explicit_miolo_id = str(item.get('id_produto_miolo') or '')
             if tipo == 'miolo' and explicit_miolo_id and components and explicit_miolo_id not in components:
-                unmapped.append({
-                    'demanda_id': demanda['id'],
-                    'demanda_nome': demanda.get('nome') or demanda.get('descricao') or f'Demanda {demanda["id"]}',
-                    'item_id': item.get('id'),
-                    'item_nome': item.get('item_descricao') or item.get('descricao') or item.get('sku') or 'Item sem nome',
-                    'simulacao': bool(demanda.get('simulacao')),
-                    'motivo': 'Miolo informado na demanda diverge da ficha de materiais',
-                })
+                unmapped.append(_unmapped_entry(
+                    demanda, item, pending, 'Miolo informado na demanda diverge da ficha de materiais'))
                 continue
             if tipo == 'miolo' and not components:
                 if explicit_miolo_id in target_ids:
                     components = {explicit_miolo_id: Decimal(1)}
             if len(components) > 1:
-                unmapped.append({
-                    'demanda_id': demanda['id'],
-                    'demanda_nome': demanda.get('nome') or demanda.get('descricao') or f'Demanda {demanda["id"]}',
-                    'item_id': item.get('id'),
-                    'item_nome': item.get('item_descricao') or item.get('descricao') or item.get('sku') or 'Item sem nome',
-                    'simulacao': bool(demanda.get('simulacao')),
-                    'motivo': 'Mais de um produto da etapa na ficha; o progresso do item não identifica qual componente já foi atendido',
-                })
+                unmapped.append(_unmapped_entry(
+                    demanda, item, pending,
+                    'Mais de um produto da etapa na ficha; o progresso do item não identifica qual componente já foi atendido'))
                 continue
             if any(component_id not in product_map for component_id in components):
-                unmapped.append({
-                    'demanda_id': demanda['id'],
-                    'demanda_nome': demanda.get('nome') or demanda.get('descricao') or f'Demanda {demanda["id"]}',
-                    'item_id': item.get('id'),
-                    'item_nome': item.get('item_descricao') or item.get('descricao') or item.get('sku') or 'Item sem nome',
-                    'simulacao': bool(demanda.get('simulacao')),
-                    'motivo': 'Produto da etapa está inativo ou indisponível no controle de estoque',
-                })
+                unmapped.append(_unmapped_entry(
+                    demanda, item, pending,
+                    'Produto da etapa está inativo ou indisponível no controle de estoque'))
                 continue
             if not components:
-                unmapped.append({
-                    'demanda_id': demanda['id'],
-                    'demanda_nome': demanda.get('nome') or demanda.get('descricao') or f'Demanda {demanda["id"]}',
-                    'item_id': item.get('id'),
-                    'item_nome': item.get('item_descricao') or item.get('descricao') or item.get('sku') or 'Item sem nome',
-                    'simulacao': bool(demanda.get('simulacao')),
-                    'motivo': 'Produto da etapa ausente ou sem vínculo confiável na ficha de materiais',
-                })
+                unmapped.append(_unmapped_entry(
+                    demanda, item, pending,
+                    'Produto da etapa ausente ou sem vínculo confiável na ficha de materiais'))
                 continue
             for component_id, factor in components.items():
                 entries[component_id].append({
@@ -167,8 +184,8 @@ def build_production_demand_plan(tipo, products, demandas, items_by_demanda, gra
         remaining_stock = available
         demand_rows = []
         ordered_entries = sorted(entries[product_id], key=lambda row: (
-            -row['prioridade'], row['data_entrega'] or '9999-12-31',
-            row['horario_coleta'] or '23:59', str(row['demanda_id']), str(row['item_id']),
+            -row['prioridade'], row['data_entrega'] or '9999-12-31', row['horario_coleta'] or '23:59',
+            str(row['demanda_id']), str(row['item_id']),
         ))
         for entry in ordered_entries:
             covered = min(remaining_stock, entry['pendente'])

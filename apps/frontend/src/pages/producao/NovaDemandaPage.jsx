@@ -497,6 +497,7 @@ function NovaDemandaPage() {
                   onRemoverItem={removeItem}
                   onColarItens={colarItens}
                   onSelecionarProduto={selecionarProduto}
+                  fluxo={fluxo}
                 />
               )}
             </CardContent>

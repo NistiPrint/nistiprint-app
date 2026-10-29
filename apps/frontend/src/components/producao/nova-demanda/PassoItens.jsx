@@ -6,7 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { ClipboardPaste, PlusCircle, Trash2 } from 'lucide-react';
 
 /** Passo 2: itens da demanda. */
-function PassoItens({ form, itemFields, onAdicionarItem, onRemoverItem, onColarItens, onSelecionarProduto }) {
+function PassoItens({ form, itemFields, onAdicionarItem, onRemoverItem, onColarItens, onSelecionarProduto, fluxo }) {
   const itens = form.watch('itens') || [];
   const quantidadeTotal = itens.reduce((total, item) => total + (Number(item?.quantidade) || 0), 0);
   const erroItens = form.formState.errors.itens?.message || form.formState.errors.itens?.root?.message;
@@ -55,7 +55,8 @@ function PassoItens({ form, itemFields, onAdicionarItem, onRemoverItem, onColarI
                             onChange={field.onChange}
                             onProductSelect={(produto) => onSelecionarProduto(index, produto)}
                             placeholder="Digite para buscar ou descrever..."
-                            showProductLevelBadge={false}
+                            materialTypes={fluxo === 'producao_interna' ? ['intermediario', 'produto_acabado'] : ['produto_acabado']}
+                            showProductLevelBadge
                           />
                         </FormControl>
                         <FormMessage />
@@ -105,7 +106,7 @@ function PassoItens({ form, itemFields, onAdicionarItem, onRemoverItem, onColarI
                               form.setValue(`itens.${index}.id_produto_miolo`, String(produto.id));
                             }}
                             placeholder="Digite para buscar miolo..."
-                            showProductLevelBadge={false}
+                            materialTypes={['intermediario']}
                             showCheckIndicator
                           />
                         </FormControl>

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import re
 from uuid import UUID
 
 from flask import Blueprint, jsonify, request
@@ -64,6 +65,65 @@ def _database_error(exc):
     return jsonify({'success': False, 'message': 'Falha ao salvar a simulação'}), 500
 
 
+def _normalizar_chave_miolo(valor):
+    """Normaliza códigos e identificadores cadastrados para comparação exata."""
+    chave = re.sub(r'[^A-Z0-9]', '', str(valor or '').upper())
+    return chave[5:] if chave.startswith('MIOLO') else chave
+
+
+def _produto_miolo_id_unico(codigo, produtos):
+    """Retorna o ID apenas quando SKU/nome apontam para um único produto."""
+    chave = _normalizar_chave_miolo(codigo)
+    if not chave:
+        return None
+
+    ids = {}
+    for produto in produtos or []:
+        if (_normalizar_chave_miolo(produto.get('sku')) == chave
+                or _normalizar_chave_miolo(produto.get('nome')) == chave):
+            if produto.get('id') is not None:
+                ids[str(produto['id'])] = produto['id']
+    return next(iter(ids.values())) if len(ids) == 1 else None
+
+
+def _categoria_miolos_id():
+    try:
+        from nistiprint_shared.services.app_config_service import app_config_service
+        return app_config_service.get_config('producao_miolos_category_id') or 6
+    except Exception:
+        logger.exception('Falha ao ler categoria de miolos; usando categoria padrão')
+        return 6
+
+
+def _resolver_miolos_simulacao(linhas):
+    """Completa IDs de miolo a partir do código sem sobrescrever IDs enviados."""
+    resultado = [dict(linha) for linha in linhas]
+    for linha in resultado:
+        codigo = linha.get('miolo') or linha.get('miolo_nome') or linha.get('miolo_name')
+        if codigo and not linha.get('miolo'):
+            linha['miolo'] = codigo
+    pendentes = [linha for linha in resultado
+                 if not linha.get('id_produto_miolo')
+                 and (linha.get('miolo') or linha.get('miolo_nome') or linha.get('miolo_name'))]
+    if not pendentes:
+        return resultado
+
+    try:
+        categoria_id = _categoria_miolos_id()
+        produtos = (supabase_db.table('produtos').select('id,nome,sku')
+                    .eq('categoria_id', categoria_id).execute().data or [])
+    except Exception:
+        logger.exception('Falha ao buscar produtos de miolo para simulação')
+        return resultado
+
+    for linha in pendentes:
+        codigo = linha.get('miolo') or linha.get('miolo_nome') or linha.get('miolo_name')
+        produto_id = _produto_miolo_id_unico(codigo, produtos)
+        if produto_id is not None:
+            linha['id_produto_miolo'] = produto_id
+    return resultado
+
+
 @simulacao_bp.route('', methods=['GET', 'POST'])
 def simulations():
     user, error = _permission('ler' if request.method == 'GET' else 'criar')
@@ -123,7 +183,7 @@ def simulations():
             return jsonify({'success': False, 'message': 'O conjunto de pedidos mudou'}), 409
         orders = [{**by_id[order_id], 'pedido_id': order_id} for order_id in ids]
         scope = {key: body.get(key) for key in ('marketplace_nome', 'modalidade_nome')}
-        state = create_state(lines, orders, scope)
+        state = create_state(_resolver_miolos_simulacao(lines), orders, scope)
         fingerprint = supabase_db.rpc('demanda_simulacao_fingerprint', {'p_pedido_ids': ids}).execute().data
         if fingerprint != fingerprint_before:
             return jsonify({'success': False, 'message': 'Os pedidos mudaram durante a cópia. Recarregue a Torre.'}), 409

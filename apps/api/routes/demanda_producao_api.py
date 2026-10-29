@@ -1081,6 +1081,12 @@ def api_get_planejamento_insumos():
         demandas_raw = demanda_producao_service.get_demandas_by_status(
             ['AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL']) or []
         demandas = [d for d in demandas_raw if isinstance(d, dict) and d.get('id') is not None]
+        horizonte = request.args.getlist('horizonte')
+        if horizonte:
+            from nistiprint_shared.utils.date_utils import get_now
+            data_referencia = request.args.get('data') or get_now().date().isoformat()
+        else:
+            data_referencia = None
         ids = [str(d['id']) for d in demandas]
         items_by_demanda = demanda_producao_service.get_items_for_multiple_demandas(ids) or {}
         if _incluir_simulacoes():
@@ -1091,7 +1097,8 @@ def api_get_planejamento_insumos():
                            for item in items if str(item.get('produto_id') or '').isdigit()})
         graph = bom_service.load_effective_graph(root_ids) if root_ids else {'nodes': {}}
         result = build_production_demand_plan(tipo, products, demandas, items_by_demanda, graph,
-                                              stage_product_ids=[p['id'] for p in products_data])
+                                              stage_product_ids=[p['id'] for p in products_data],
+                                              horizonte=horizonte or None, data_referencia=data_referencia)
         return jsonify({'success': True, **result})
     except Exception:
         logger.exception('Falha no planejamento de insumos de produção')
@@ -1109,17 +1116,34 @@ def api_get_ativas_por_item(produto_id):
 @check_permission('demanda_producao', 'editar')
 def api_registrar_retirada_expedicao(demanda_id, item_id):
     try:
-        data = request.get_json()
-        quantidade = int(data.get('quantidade', 1))
-        denied = _deny_unauthorized_demand_fields(['expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'])
+        import uuid
+        data = request.get_json(silent=True) or {}
+        quantidade_raw = data.get('quantidade', 1)
+        if isinstance(quantidade_raw, bool) or not str(quantidade_raw).isdigit():
+            raise ValueError('A quantidade deve ser um inteiro positivo.')
+        quantidade = int(quantidade_raw)
+        operation_id = str(uuid.UUID(str(data.get('operation_id'))))
+        componente = data.get('componente')
+        fields_by_component = {
+            'capas': ['expedicao_capas_retiradas_qtd'],
+            'miolos': ['expedicao_miolos_retirados_qtd'],
+        }
+        if componente is not None and componente not in fields_by_component:
+            raise ValueError('Componente inválido. Use capas ou miolos.')
+        fields = fields_by_component.get(componente, [
+            'expedicao_capas_retiradas_qtd', 'expedicao_miolos_retirados_qtd'])
+        denied = _deny_unauthorized_demand_fields(fields)
         if denied:
             return denied
         user_id = session.get('user_email', 'System')
-        updated_item = demanda_producao_service.registrar_retirada_expedicao(demanda_id, item_id, quantidade, user_id)
+        updated_item = demanda_producao_service.registrar_retirada_expedicao(
+            demanda_id, item_id, quantidade, user_id, operation_id, componente=componente)
         return jsonify({'success': True, 'message': 'Retirada registrada com sucesso!', 'data': updated_item})
     except ValueError as ve:
         return jsonify({'success': False, 'message': str(ve)}), 400
     except Exception as e:
+        if '40001' in str(e) or 'Revisão do item mudou' in str(e):
+            return jsonify({'success': False, 'message': 'O saldo do item mudou. Atualize a expedição antes de tentar novamente.'}), 409
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @demanda_producao_api_bp.route('/prioritized', methods=['GET'])

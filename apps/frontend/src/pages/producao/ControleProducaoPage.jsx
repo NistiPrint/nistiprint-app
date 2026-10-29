@@ -30,7 +30,7 @@ const ControleProducaoPage = ({tipo}) => {
   // A visão Previsão (só miolos) mora na URL (?vista=previsao) para poder ser compartilhada.
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTabState] = useState(() =>
-    tipo === 'miolo' && searchParams.get('vista') === 'previsao' ? 'previsao' : 'produto');
+    tipo === 'miolo' && searchParams.get('vista') === 'previsao' ? 'previsao' : 'demanda');
   const setActiveTab = (view) => {
     setActiveTabState(view);
     setSearchParams((current) => {
@@ -42,12 +42,13 @@ const ControleProducaoPage = ({tipo}) => {
   const [planning, setPlanning] = useState(null);
   const [planningLoading, setPlanningLoading] = useState(false);
   const [planningError, setPlanningError] = useState('');
-  const [includeSimulations, setIncludeSimulations] = useState(true);
+  const [includeSimulations, setIncludeSimulations] = useState(false);
   const [capaSubTab, setCapaSubTab] = useState('impressas'); // Sub-tab para capas: impressas vs acabadas
   const [previsao, setPrevisao] = useState(null);
   const [previsaoLoading, setPrevisaoLoading] = useState(false);
   const [previsaoError, setPrevisaoError] = useState('');
-  const [previsaoFiltros, setPrevisaoFiltros] = useState({ horizonte: ['atrasado', 'hoje', 'amanha'], incluirPronto: false });
+  const [previsaoFiltros, setPrevisaoFiltros] = useState({ horizonte: ['atrasado', 'hoje', 'sem_prazo'], incluirPronto: false });
+  const [horizonte, setHorizonte] = useState(['atrasado', 'hoje', 'sem_prazo']);
 
   // Estados para Distribuição de Saída
   const [distributionModalOpen, setDistributionModalOpen] = useState(false);
@@ -114,7 +115,7 @@ const ControleProducaoPage = ({tipo}) => {
     setPlanning(null);
     try {
       const tipoParam = tipo === 'miolo' ? 'miolo' : capaSubTab === 'impressas' ? 'capa' : 'capa_acabada';
-      const data = await ProductionService.getDemandPlanning(tipoParam, includeSimulations);
+      const data = await ProductionService.getDemandPlanning(tipoParam, includeSimulations, { horizonte });
       if (!data.success) throw new Error(data.message || 'Erro ao carregar planejamento.');
       if (requestId === planningRequestId.current) setPlanning({ products: data.products || [], unmapped: data.unmapped || [] });
     } catch (error) {
@@ -125,7 +126,7 @@ const ControleProducaoPage = ({tipo}) => {
     } finally {
       if (requestId === planningRequestId.current) setPlanningLoading(false);
     }
-  }, [tipo, capaSubTab, includeSimulations]);
+  }, [tipo, capaSubTab, includeSimulations, horizonte]);
 
   useEffect(() => {
     fetchData();
@@ -201,34 +202,52 @@ const ControleProducaoPage = ({tipo}) => {
     }
   };
 
-  const handleRemovalClick = async (product) => {
-    const totalToDistribute = parseFloat(inputs[product.id]);
-    if (!totalToDistribute || totalToDistribute <= 0) {
+  const handleRemovalClick = async (product, allocation = {}) => {
+    // Na visão Estoque os produtos vêm do planejamento com `product_id`;
+    // no cadastro de estoque vêm com `id`. Normalize antes de ler o campo e
+    // antes de seguir para os fluxos de reserva.
+    const productId = product?.id ?? product?.product_id;
+    const rawQuantity = allocation.quantity ?? inputs[productId];
+    const totalToDistribute = Number(rawQuantity);
+    if (rawQuantity === undefined || rawQuantity === null || rawQuantity === '' || !Number.isFinite(totalToDistribute) || totalToDistribute <= 0) {
       toast.warning('Insira uma quantidade válida no campo Qtd antes de clicar em saída.');
       return;
     }
+    if (allocation.maxQuantity !== undefined && totalToDistribute > Number(allocation.maxQuantity)) {
+      toast.warning(`A quantidade não pode exceder o pendente desta demanda (${allocation.maxQuantity}).`);
+      return;
+    }
 
-    setSelectedProductForDistribution({ ...product, totalToDistribute });
+    setSelectedProductForDistribution({ ...product, id: productId, totalToDistribute });
     setDistributionModalOpen(true);
     setDistributionQuantities({});
-    setSelectedDemandaId(null);
+    setSelectedDemandaId(allocation.demandaId ? String(allocation.demandaId) : null);
     setDistributionLoading(true);
     
     try {
-      // Buscar TODAS as demandas ativas para o usuário selecionar
-      const response = await fetch('/api/v2/demanda_producao/');
-      const data = await response.json();
-      if (data.success) {
-        // Filtrar apenas demandas em andamento
-        const activeStatuses = ['Pendente', 'Em Produção', 'Em Andamento', 'Criada', 'AGUARDANDO', 'EM_PRODUCAO', 'COLETA_PARCIAL'];
-        const relatedIds = new Set((planning?.products || [])
-          .find(row => String(row.product_id) === String(product.id))?.demandas
-          .map(row => String(row.demanda_id)) || []);
-        const active = data.demandas.filter(d => activeStatuses.includes(d.status) && relatedIds.has(String(d.id)));
-        setPendingDemandsForProduct(active);
-      } else {
-        toast.error(data.message);
-      }
+      // O cadastro ainda não é suficientemente consistente para filtrar por
+      // vínculo de produto. Mostramos todas as demandas e os cenários salvos.
+      const [realResponse, simulationsResponse] = await Promise.all([
+        fetch('/api/v2/demanda_producao/'),
+        fetch('/api/v2/demanda-simulacoes'),
+      ]);
+      const [realData, simulationsData] = await Promise.all([
+        realResponse.json(), simulationsResponse.json(),
+      ]);
+      if (!realData.success) throw new Error(realData.message || 'Erro ao buscar demandas.');
+      const real = (realData.demandas || []).map(d => ({ ...d, simulacao: false }));
+      const simulations = simulationsData.success
+        ? (simulationsData.data || []).map(d => ({ ...d, simulacao: true }))
+        : [];
+      const all = [...real, ...simulations]
+        .filter(d => {
+          const status = String(d.status ?? d.demanda_status ?? '').trim().toLocaleUpperCase('pt-BR');
+          const name = String(d.nome ?? d.name ?? d.descricao ?? '').trim().toLocaleUpperCase('pt-BR');
+          return status !== 'RASCUNHO' && status !== 'CANCELADO' && !name.startsWith('RASCUNHO ');
+        })
+        .filter(d => !allocation.demandaId || String(d.id) === String(allocation.demandaId));
+      setPendingDemandsForProduct(all);
+      if (!simulationsData.success) toast.warning('Não foi possível carregar as simulações. As demandas reais estão disponíveis.');
     } catch (error) {
       const errorMessage = error.response?.data?.error || error.message || 'Erro ao buscar demandas.';
       toast.error(errorMessage);
@@ -456,6 +475,8 @@ const ControleProducaoPage = ({tipo}) => {
         onLog={handleLogClick}
         includeSimulations={includeSimulations}
         setIncludeSimulations={setIncludeSimulations}
+        horizonte={horizonte}
+        setHorizonte={(next) => setHorizonte(next.length ? next : ['atrasado', 'hoje', 'sem_prazo'])}
         onRefresh={() => { fetchData(); fetchPlanning(); if (activeTab === 'previsao') fetchPrevisao(); }}
         previsao={tipo === 'miolo' ? {
           data: previsao, loading: previsaoLoading, error: previsaoError,
@@ -478,7 +499,7 @@ const ControleProducaoPage = ({tipo}) => {
           <div className="flex-1 overflow-hidden flex flex-col gap-4 py-4">
             <div className="bg-blue-50 p-3 rounded-lg border border-blue-100">
               <p className="text-sm text-blue-900 font-medium">Para onde vão estas <strong>{selectedProductForDistribution?.totalToDistribute}</strong> unidades?</p>
-              <p className="text-[10px] text-blue-700 mt-1">Escolha uma demanda abaixo — o item fica <strong>reservado</strong> para ela e a baixa física acontece na finalização — ou registre uma saída avulsa.</p>
+              <p className="text-[10px] text-blue-700 mt-1">Em demandas reais, o item fica reservado até a finalização. Nas simulações, a atualização afeta somente o cenário. Também é possível registrar uma saída avulsa.</p>
             </div>
 
             {/* Saída avulsa como destino de primeira classe, no mesmo lugar em que
@@ -500,7 +521,7 @@ const ControleProducaoPage = ({tipo}) => {
               <Badge variant="outline" className="border-destructive/40 text-destructive shrink-0">Selecionar</Badge>
             </button>
 
-            <ScrollArea className="flex-1 border rounded-md">
+            <ScrollArea type="always" className="h-[55vh] max-h-[55vh] min-h-0 flex-none border rounded-md">
               {distributionLoading ? (
                 <div className="flex justify-center py-12"><Loader2 className="animate-spin h-8 w-8" /></div>
               ) : pendingDemandsForProduct.length === 0 ? (
@@ -522,22 +543,29 @@ const ControleProducaoPage = ({tipo}) => {
                       return (
                         <TableRow key={demanda.id} className="hover:bg-gray-50">
                           <TableCell className="py-3">
-                            <div className="font-bold text-sm text-gray-900">{demanda.nome}</div>
-                            <div className="text-[10px] text-muted-foreground uppercase">{format(new Date(demanda.data_entrega), 'dd/MM/yyyy')} - {demanda.canal_venda_nome}</div>
+                            <div className="font-bold text-sm text-gray-900 flex items-center gap-2">
+                              {demanda.nome}
+                              {demanda.simulacao && <Badge variant="outline" className="border-amber-400 text-amber-700">Simulação</Badge>}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground uppercase">
+                              {demanda.data_entrega ? format(new Date(demanda.data_entrega), 'dd/MM/yyyy') : 'Sem prazo'} - {demanda.canal_venda_nome || demanda.status || ''}
+                            </div>
                           </TableCell>
                           <TableCell className="text-center py-3">
                             <Badge variant="outline">{(planning?.products || []).find(row => String(row.product_id) === String(selectedProductForDistribution.id))?.demandas
                               .filter(row => String(row.demanda_id) === String(demanda.id))
-                              .reduce((sum, row) => sum + row.pendente, 0) || 0} pendentes</Badge>
+                              .reduce((sum, row) => sum + row.pendente, 0) || '—'} pendentes</Badge>
                           </TableCell>
                           <TableCell className="text-right py-3">
                             <Button 
                               size="sm" 
+                              disabled={demanda.simulacao && demanda.status === 'RASCUNHO'}
                               onClick={async () => {
                                 setSelectedDemandaId(demanda.id);
                                 // 1. Buscar os itens detalhados desta demanda para validar
                                 try {
-                                  const res = await fetch(`/api/v2/demanda_producao/${demanda.id}`);
+                                  const apiBase = demanda.simulacao ? '/api/v2/demanda-simulacoes' : '/api/v2/demanda_producao';
+                                  const res = await fetch(`${apiBase}/${demanda.id}`);
                                   const dData = await res.json();
                                   
                                   if (!dData.success || !dData.demanda?.itens) {
@@ -550,10 +578,48 @@ const ControleProducaoPage = ({tipo}) => {
                                     .find(row => String(row.product_id) === String(selectedProductForDistribution.id))?.demandas
                                     .filter(row => String(row.demanda_id) === String(demanda.id)) || [];
                                   const relatedItemIds = new Set(relatedRows.map(row => String(row.item_id)));
-                                  const matchingItens = itens.filter(i => relatedItemIds.has(String(i.id)));
+                                  const matchingItens = itens.filter(i => relatedItemIds.has(String(i.id))
+                                    || String(i.id_produto_miolo || '') === String(selectedProductForDistribution.id)
+                                    || String(i.produto_id || '') === String(selectedProductForDistribution.id)
+                                    || (selectedProductForDistribution.sku && String(i.sku || '').trim().toLowerCase() === String(selectedProductForDistribution.sku).trim().toLowerCase()));
 
                                   if (matchingItens.length === 0) {
-                                    toast.error('Esta demanda não contém este produto nesta etapa.');
+                                    toast.error('Não foi possível identificar um item correspondente nesta demanda.');
+                                    return;
+                                  }
+
+                                  if (demanda.simulacao) {
+                                    const field = tipo === 'miolo' ? 'miolos_prontos_retirada_qtd' : capaSubTab === 'impressas' ? 'capas_impressas_qtd' : 'capas_produzidas_qtd';
+                                    let remaining = selectedProductForDistribution.totalToDistribute;
+                                    const updates = [];
+                                    matchingItens.forEach(item => {
+                                      if (remaining <= 0) return;
+                                      const needed = Math.max(0, Number(item.quantidade_total || item.quantidade || 0) - Number(item[field] || 0));
+                                      const quantity = Math.min(remaining, needed);
+                                      if (quantity > 0) {
+                                        updates.push({ item_id: item.id, producao_incremental: { [field]: quantity } });
+                                        remaining -= quantity;
+                                      }
+                                    });
+                                    if (!updates.length) {
+                                      toast.warning('Não há saldo pendente correspondente nesta simulação.');
+                                      return;
+                                    }
+                                    if (remaining > 0) toast.warning(`A simulação aceita somente ${selectedProductForDistribution.totalToDistribute - remaining} unidades pendentes.`);
+                                    const simResult = await fetch(`${apiBase}/${demanda.id}/acoes`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({
+                                        version: dData.demanda.version,
+                                        operation_id: crypto.randomUUID(),
+                                        action: 'producao',
+                                        payload: { updates },
+                                      }),
+                                    }).then(response => response.json());
+                                    if (!simResult.success) throw new Error(simResult.message || 'Falha ao atualizar a simulação.');
+                                    toast.success('Produção registrada somente na simulação.');
+                                    setDistributionModalOpen(false);
+                                    fetchPlanning();
                                     return;
                                   }
 
@@ -592,7 +658,7 @@ const ControleProducaoPage = ({tipo}) => {
                                 }
                               }}
                             >
-                              Selecionar
+                              {demanda.simulacao && demanda.status === 'RASCUNHO' ? 'Não publicada' : 'Selecionar'}
                             </Button>
                           </TableCell>
                         </TableRow>

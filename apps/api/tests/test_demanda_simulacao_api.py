@@ -92,6 +92,55 @@ class SimulationApiTest(unittest.TestCase):
         saved_state = db.rpc.call_args_list[-1].args[1]['p_state']
         self.assertEqual(saved_state['itens'][1]['item_descricao'], 'Manual')
 
+    def test_creation_resolves_miolo_sku_before_saving_state(self):
+        db = MagicMock()
+        db.table.return_value.select.return_value.in_.return_value.execute.return_value = SimpleNamespace(
+            data=[{'id': 7, 'numero_pedido': 'P-7', 'cliente_nome': 'Cliente'}])
+        db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = SimpleNamespace(data=[])
+        db.table.return_value.select.return_value.eq.return_value.execute.return_value = SimpleNamespace(data=[
+            {'id': 88, 'nome': 'Miolo VACMNO', 'sku': 'MIOLO-VACMNO'},
+        ])
+        db.rpc.side_effect = lambda name, params: SimpleNamespace(execute=lambda: SimpleNamespace(
+            data='fp' if name == 'demanda_simulacao_fingerprint' else self.row))
+        preview = {'previsao_versao': 'v1', 'itens': [{'linha_chave': 'original'}]}
+        with self._auth()[0], self._auth()[1], patch.object(module, 'supabase_db', db), \
+             patch.object(module, '_categoria_miolos_id', return_value=6), \
+             patch.object(despacho, '_pedido_ids_do_lote', return_value=([7], 'scope')), \
+             patch.object(despacho, '_previsao_do_lote', return_value=preview):
+            response = self.client.post('/api/v2/demanda-simulacoes', json={
+                'operation_id': str(uuid4()), 'previsao_versao': 'v1',
+                'linhas': [{'linha_chave': 'original', 'produto': 'Caderneta',
+                            'sku': 'VACMNO_MNV2_BVB', 'miolo': 'VACMNO', 'quantidade': 1}],
+            })
+
+        self.assertEqual(response.status_code, 201)
+        saved_state = db.rpc.call_args_list[-1].args[1]['p_state']
+        self.assertEqual(saved_state['itens'][0]['id_produto_miolo'], 88)
+        self.assertEqual(saved_state['itens'][0]['miolo_nome'], 'VACMNO')
+
+    def test_miolo_match_requires_one_unique_product_and_preserves_existing_id(self):
+        products = [
+            {'id': 88, 'nome': 'Miolo VACMNO', 'sku': 'MIOLO-VACMNO'},
+            {'id': 89, 'nome': 'Miolo VACMNO alternativo', 'sku': 'OUTRO'},
+        ]
+        self.assertEqual(module._produto_miolo_id_unico('VACMNO', products), 88)
+        self.assertIsNone(module._produto_miolo_id_unico('SEM-CADASTRO', products))
+        self.assertIsNone(module._produto_miolo_id_unico('DUPLICADO', [
+            {'id': 1, 'nome': 'Miolo Duplicado', 'sku': 'MIOLO-DUPLICADO'},
+            {'id': 2, 'nome': 'Miolo Duplicado', 'sku': 'OUTRO'},
+        ]))
+        db = MagicMock()
+        db.table.return_value.select.return_value.eq.return_value.execute.return_value = SimpleNamespace(data=products)
+        with patch.object(module, 'supabase_db', db), \
+             patch.object(module, '_categoria_miolos_id', return_value=6):
+            linhas = module._resolver_miolos_simulacao([
+                {'miolo': 'VACMNO', 'id_produto_miolo': 777},
+                {'miolo_nome': 'SEM-CADASTRO'},
+            ])
+        self.assertEqual(linhas[0]['id_produto_miolo'], 777)
+        self.assertNotIn('id_produto_miolo', linhas[1])
+        self.assertEqual(linhas[1]['miolo'], 'SEM-CADASTRO')
+
     def test_creation_rejects_stale_preview_without_write(self):
         db = MagicMock()
         db.rpc.return_value.execute.return_value = SimpleNamespace(data='fp')

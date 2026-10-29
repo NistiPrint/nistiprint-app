@@ -37,9 +37,12 @@ import {
     ArrowLeft,
     CheckCircle,
     Copy,
+    FileCheck2,
     FileText,
     Flame,
     History,
+    Layers,
+    Hand,
     List,
     Loader2,
     MoreHorizontal,
@@ -288,15 +291,17 @@ function DemandaDashboardPage() {
         orig.expedicao_capas_retiradas_qtd || 0,
         orig.expedicao_miolos_retirados_qtd || 0,
       )
+      const algumComponenteRetirado =
+        (orig.expedicao_capas_retiradas_qtd || 0) > 0 ||
+        (orig.expedicao_miolos_retirados_qtd || 0) > 0
       const isEmFechamento =
         !isFinalizado &&
-        (orig.status_item === 'Fechando' || paresRetirados > 0)
-      // Capas prontas e miolos prontos ainda não retirados pela expedição.
-      const paresParaRetirar = Math.min(
-        Math.max(0, (orig.capas_prontas_retirada_qtd || 0) - (orig.expedicao_capas_retiradas_qtd || 0)),
-        Math.max(0, (orig.miolos_prontos_retirada_qtd || 0) - (orig.expedicao_miolos_retirados_qtd || 0)),
-      )
-      const isParaRetirar = !isFinalizado && paresParaRetirar > 0
+        (orig.status_item === 'Fechando' || algumComponenteRetirado)
+      // Cada componente pode ser retirado em um momento diferente.
+      const capasParaRetirar = Math.max(0, (orig.capas_prontas_retirada_qtd || 0) - (orig.expedicao_capas_retiradas_qtd || 0))
+      const miolosParaRetirar = Math.max(0, (orig.miolos_prontos_retirada_qtd || 0) - (orig.expedicao_miolos_retirados_qtd || 0))
+      const paresParaRetirar = Math.min(capasParaRetirar, miolosParaRetirar)
+      const isParaRetirar = !isFinalizado && (capasParaRetirar > 0 || miolosParaRetirar > 0)
       // Ainda há quantidade que não passou pela retirada da expedição.
       const isEmProducao = !isFinalizado && paresRetirados < item.quantidade_total
 
@@ -339,7 +344,7 @@ function DemandaDashboardPage() {
       totals.capas += capasDisp
       totals.miolos += miolosDisp
       totals.pares += Math.min(capasDisp, miolosDisp)
-      totals.emFechamento += Math.max(0, Math.min(capasRet, miolosRet) - finalizados)
+      totals.emFechamento += Math.max(0, Math.max(capasRet, miolosRet) - finalizados)
       totals.finalizados += finalizados
     }
     return totals
@@ -691,14 +696,15 @@ function DemandaDashboardPage() {
   // `short` vai no cabeçalho e `label` no tooltip; a borda esquerda marca o
   // início de cada grupo (capa / prontos / expedição) no lugar de pintar a coluna.
   const columnMeta = {
-    produto_miolo: { short: 'Produto / Miolo', label: 'Produto e miolo', className: 'w-[34%] min-w-[260px]' },
+    produto_miolo: { short: 'Produto', label: 'Produto', className: 'w-[30%] min-w-[220px]' },
+    miolo: { short: 'Miolo', label: 'Miolo', className: 'w-[18%] min-w-[140px]' },
     total: { short: 'Total', label: 'Quantidade total', className: 'w-[52px] text-center' },
-    capas_impressas: { short: 'Imp.', label: 'Capas impressas', className: 'w-[60px] text-center border-l' },
-    capas_produzidas: { short: 'Prod.', label: 'Capas produzidas', className: 'w-[60px] text-center' },
-    capas_prontas: { short: 'Prontas', label: 'Capas prontas para retirada', className: 'w-[60px] text-center border-l' },
-    miolos_prontos: { short: 'Miolos', label: 'Miolos prontos para retirada', className: 'w-[60px] text-center' },
-    expedicao_capas: { short: 'Capas ret.', label: 'Capas retiradas pela expedição', className: 'w-[60px] text-center border-l' },
-    expedicao_miolos: { short: 'Miolos ret.', label: 'Miolos retirados pela expedição', className: 'w-[60px] text-center' },
+    capas_impressas: { short: 'Imp.', label: 'Capas impressas', icon: FileText, className: 'w-[60px] text-center border-l' },
+    capas_produzidas: { short: 'Prod.', label: 'Capas produzidas', icon: Copy, className: 'w-[60px] text-center' },
+    capas_prontas: { short: 'Prontas', label: 'Capas prontas para retirada', icon: FileCheck2, className: 'w-[60px] text-center border-l' },
+    miolos_prontos: { short: 'Miolos', label: 'Miolos prontos para retirada', icon: Layers, className: 'w-[60px] text-center' },
+    expedicao_capas: { short: 'Capas ret.', label: 'Capas retiradas pela expedição', icon: FileText, hand: true, className: 'w-[60px] text-center border-l' },
+    expedicao_miolos: { short: 'Miolos ret.', label: 'Miolos retirados pela expedição', icon: Layers, hand: true, className: 'w-[60px] text-center' },
     acoes: { short: 'Finalização', label: 'Finalização', className: 'w-[104px] text-right' },
   }
 
@@ -707,6 +713,7 @@ function DemandaDashboardPage() {
       case 'capas_miolos':
         return [
           'produto_miolo',
+          'miolo',
           'total',
           'capas_impressas',
           'capas_produzidas',
@@ -716,6 +723,7 @@ function DemandaDashboardPage() {
       case 'expedicao':
         return [
           'produto_miolo',
+          'miolo',
           'total',
           'capas_prontas',
           'miolos_prontos',
@@ -727,6 +735,7 @@ function DemandaDashboardPage() {
       default:
         return [
           'produto_miolo',
+          'miolo',
           'total',
           'capas_impressas',
           'capas_produzidas',
@@ -782,7 +791,34 @@ function DemandaDashboardPage() {
     if (columnName === 'produto_miolo') {
       let statusBadge = null
       if (item.status_item !== 'Concluído') {
-        if ((item.finalizados_qtd || 0) > 0) {
+        const capasParaRetirar = Math.max(0, (item.capas_prontas_retirada_qtd || 0) - (item.expedicao_capas_retiradas_qtd || 0))
+        const miolosParaRetirar = Math.max(0, (item.miolos_prontos_retirada_qtd || 0) - (item.expedicao_miolos_retirados_qtd || 0))
+        const paresParaRetirar = Math.min(capasParaRetirar, miolosParaRetirar)
+        const algumComponenteRetirado =
+          (item.expedicao_capas_retiradas_qtd || 0) > 0 ||
+          (item.expedicao_miolos_retirados_qtd || 0) > 0
+        if (capasParaRetirar > 0 || miolosParaRetirar > 0) {
+          const disponibilidade = [
+            capasParaRetirar > 0 && `${numero(capasParaRetirar)} cap.`,
+            miolosParaRetirar > 0 && `${numero(miolosParaRetirar)} miol.`,
+          ].filter(Boolean).join(' · ')
+          statusBadge = (
+            <Badge
+              variant='outline'
+              title={`${numero(capasParaRetirar)} capa(s) e ${numero(miolosParaRetirar)} miolo(s) disponível(is) para retirada${paresParaRetirar ? `; ${numero(paresParaRetirar)} par(es) completo(s)` : ''}`}
+              className='h-4 shrink-0 px-1.5 text-[10px] tabular-nums border-green-300 text-green-600 bg-green-50'>
+              {disponibilidade} p/ retirar
+            </Badge>
+          )
+        } else if (algumComponenteRetirado) {
+          statusBadge = (
+            <Badge
+              variant='outline'
+              className='h-4 shrink-0 px-1.5 text-[10px] border-amber-300 text-amber-700 bg-amber-50'>
+              Em fechamento
+            </Badge>
+          )
+        } else if ((item.finalizados_qtd || 0) > 0) {
           statusBadge = (
             <Badge
               variant='outline'
@@ -791,33 +827,6 @@ function DemandaDashboardPage() {
               Parcial
             </Badge>
           )
-        } else {
-          const paresParaRetirar = Math.min(
-            Math.max(0, (item.capas_prontas_retirada_qtd || 0) - (item.expedicao_capas_retiradas_qtd || 0)),
-            Math.max(0, (item.miolos_prontos_retirada_qtd || 0) - (item.expedicao_miolos_retirados_qtd || 0)),
-          )
-          const paresRetirados = Math.min(
-            item.expedicao_capas_retiradas_qtd || 0,
-            item.expedicao_miolos_retirados_qtd || 0,
-          )
-          if (paresParaRetirar > 0) {
-            statusBadge = (
-              <Badge
-                variant='outline'
-                title={`${paresParaRetirar} disponível(is) para retirada`}
-                className='h-4 shrink-0 px-1.5 text-[10px] tabular-nums border-green-300 text-green-600 bg-green-50'>
-                {paresParaRetirar} p/ retirar
-              </Badge>
-            )
-          } else if (paresRetirados > 0) {
-            statusBadge = (
-              <Badge
-                variant='outline'
-                className='h-4 shrink-0 px-1.5 text-[10px] border-amber-300 text-amber-700 bg-amber-50'>
-                Em fechamento
-              </Badge>
-            )
-          }
         }
       }
 
@@ -843,17 +852,8 @@ function DemandaDashboardPage() {
             <div className='flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground'>
               <span
                 className='truncate'
-                title={`Variação: ${variacao} · Miolo: ${miolo}`}>
-                {variacao} ·{' '}
-                {!isSimulation && item.id_produto_miolo ? (
-                  <Link
-                    to={`/produtos/${item.id_produto_miolo}/editar`}
-                    className='text-blue-600 hover:underline'>
-                    {miolo}
-                  </Link>
-                ) : (
-                  miolo
-                )}
+                title={`Variação: ${variacao}`}>
+                {variacao}
               </span>
               {statusBadge}
             </div>
@@ -897,6 +897,17 @@ function DemandaDashboardPage() {
               </DropdownMenu>
             </div>
           )}
+        </TableCell>
+      )
+    }
+
+    if (columnName === 'miolo') {
+      const miolo = item.miolo_name || item.miolo || '-'
+      return (
+        <TableCell key='miolo' className='px-2 py-1.5 text-sm'>
+          {!isSimulation && item.id_produto_miolo ? (
+            <Link to={`/produtos/${item.id_produto_miolo}/editar`} className='block truncate text-blue-600 hover:underline' title={miolo}>{miolo}</Link>
+          ) : <span className='block truncate' title={miolo}>{miolo}</span>}
         </TableCell>
       )
     }
@@ -1221,7 +1232,7 @@ function DemandaDashboardPage() {
         {[
           ['Capas p/ retirar', stageTotals.capas],
           ['Miolos p/ retirar', stageTotals.miolos],
-          ['Produtos p/ retirar', stageTotals.pares],
+          ['Pares completos', stageTotals.pares],
           ['Em fechamento', stageTotals.emFechamento],
           ['Finalizados', stageTotals.finalizados],
         ].map(([label, value]) => (
@@ -1277,17 +1288,21 @@ function DemandaDashboardPage() {
 
       <Card>
         <CardContent className='p-0'>
-          <Table>
+          <Table containerClassName='overflow-visible'>
             <TableHeader>
               <TableRow>
-                {activeColumns.map(col => (
-                  <TableHead
+                {activeColumns.map(col => {
+                  const ColumnIcon = columnMeta[col].icon
+                  return <TableHead
                     key={col}
                     title={columnMeta[col].label}
                     className={`h-9 px-2 text-xs ${columnMeta[col].className}`}>
                     <div
                       className={`flex items-center gap-1 ${col === 'produto_miolo' ? 'justify-start px-1' : col === 'acoes' ? 'justify-end' : 'justify-center'}`}>
-                      <span>{columnMeta[col].short}</span>
+                      {columnMeta[col].icon ? <span className='inline-flex items-center justify-center' aria-label={columnMeta[col].label}>
+                        {columnMeta[col].hand ? <span className='relative inline-flex h-5 w-5 items-center justify-center'><ColumnIcon className='h-4 w-4' aria-hidden='true'/><Hand className='absolute -bottom-1 -right-1 h-2.5 w-2.5 rounded-full bg-background' aria-hidden='true'/></span> : <ColumnIcon className='h-4 w-4' aria-hidden='true'/>}
+                        <span className='sr-only'>{columnMeta[col].short}</span>
+                      </span> : <span>{columnMeta[col].short}</span>}
                       {[
                         'capas_impressas',
                         'capas_produzidas',
@@ -1308,7 +1323,7 @@ function DemandaDashboardPage() {
                         )}
                     </div>
                   </TableHead>
-                ))}
+                })}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1320,7 +1335,7 @@ function DemandaDashboardPage() {
                     {statusFilter === 'ativos'
                       ? 'Nenhum item em produção ou aguardando retirada.'
                       : statusFilter === 'retirar'
-                        ? 'Nenhum produto com capa e miolo prontos para retirar.'
+                        ? 'Nenhuma capa ou miolo pronto para retirar.'
                       : statusFilter === 'prontos'
                         ? 'Nenhum produto em fechamento.'
                         : 'Nenhum item com quantidade total finalizada.'}

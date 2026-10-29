@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { DEMANDA_FLOW_OPTIONS } from '@/lib/demandaFlow';
 import { datasRapidas, janelasColeta } from '@/lib/novaDemanda';
 import { Briefcase, Factory, PackageCheck, RotateCcw, Search, ShoppingCart } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 const FLOW_ICONS = { venda_diaria: ShoppingCart, fulfillment: PackageCheck, venda_corporativa: Briefcase, producao_interna: Factory };
 const MODALIDADES = [{ value: 'STANDARD', label: 'Comum' }, { value: 'EXPRESS', label: 'Flex' }, { value: 'FULFILLMENT', label: 'Full' }, { value: 'RETIRADA', label: 'Retirada' }];
@@ -20,6 +20,7 @@ function PassoOrigem({ form, canais, moduleIcons, hoje, canalSelecionado, fluxo,
   const [busca, setBusca] = useState('');
   const [nomeManual, setNomeManual] = useState(isEditing);
   const [etapa, setEtapa] = useState(0);
+  const nomeInputRef = useRef(null);
   const nome = form.watch('nome');
   const horarioColeta = form.watch('horario_coleta_especifico');
   const dataEntrega = form.watch('data_entrega');
@@ -28,30 +29,39 @@ function PassoOrigem({ form, canais, moduleIcons, hoje, canalSelecionado, fluxo,
   const janelas = useMemo(() => canalSelecionado ? janelasColeta(canalSelecionado, modalidade) : [], [canalSelecionado, modalidade]);
   const datas = useMemo(() => datasRapidas(hoje), [hoje]);
 
+  useEffect(() => {
+    if (etapa === 0 && form.formState.errors.nome) nomeInputRef.current?.focus();
+  }, [etapa, form.formState.errors.nome]);
+
   // Sugere o nome sem interferir em uma edição manual ou em demandas existentes.
   useEffect(() => {
     if (!nomeManual && !isEditing && nomeSugerido && nome !== nomeSugerido) form.setValue('nome', nomeSugerido, { shouldDirty: true, shouldValidate: true });
   }, [form, isEditing, nome, nomeManual, nomeSugerido]);
 
-  const titulos = ['Nome e tipo', 'Canal e modalidade', 'Prazos'];
+  const pularCanal = fluxo === 'producao_interna';
+  const titulos = pularCanal ? ['Nome e tipo', 'Prazos'] : ['Nome e tipo', 'Canal e modalidade', 'Prazos'];
+  const etapaConteudo = pularCanal && etapa === 1 ? 2 : etapa;
   return <div className="space-y-6">
     <div className="flex items-center justify-center gap-3" aria-label="Etapas da origem">
-      {titulos.map((titulo, index) => <button key={titulo} type="button" onClick={() => index < etapa && setEtapa(index)} className={`rounded-full px-4 py-2 text-sm font-semibold ${index === etapa ? 'bg-primary text-primary-foreground' : index < etapa ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`} aria-current={index === etapa ? 'step' : undefined}>{index + 1}. {titulo}</button>)}
+      {titulos.map((titulo, index) => {
+        const etapaAlvo = pularCanal && index === 1 ? 2 : index;
+        return <button key={titulo} type="button" onClick={() => etapaAlvo < etapa && setEtapa(etapaAlvo)} className={`rounded-full px-4 py-2 text-sm font-semibold ${etapaAlvo === etapa ? 'bg-primary text-primary-foreground' : etapaAlvo < etapa ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`} aria-current={etapaAlvo === etapa ? 'step' : undefined}>{index + 1}. {titulo}</button>;
+      })}
     </div>
-    {etapa === 0 && <div className="mx-auto max-w-5xl space-y-6">
+    {etapaConteudo === 0 && <div className="mx-auto max-w-5xl space-y-6">
       <Section title="Nome da demanda">
         <FormField control={form.control} name="nome" render={({ field }) => <FormItem>
-          <FormControl><Input className="h-10" placeholder="Ex.: Shopee - Flex" {...field} onChange={(event) => { setNomeManual(true); field.onChange(event); }} /></FormControl>
+          <FormControl><Input ref={(element) => { field.ref(element); nomeInputRef.current = element; }} aria-invalid={!!form.formState.errors.nome} aria-describedby={form.formState.errors.nome ? 'nome-demanda-erro' : undefined} className={`h-10 ${form.formState.errors.nome ? 'border-destructive ring-1 ring-destructive focus-visible:ring-destructive' : ''}`} placeholder="Ex.: Shopee - Flex" {...field} onChange={(event) => { setNomeManual(true); field.onChange(event); }} /></FormControl>
           {!nomeManual && nomeSugerido && <p className="text-xs text-muted-foreground">Sugestão automática · você pode editar</p>}
           {nomeManual && nomeSugerido && <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={() => { setNomeManual(false); form.setValue('nome', nomeSugerido, { shouldDirty: true, shouldValidate: true }); }}>Usar sugestão: {nomeSugerido}</Button>}
-          <FormMessage />
+          {form.formState.errors.nome ? <p id="nome-demanda-erro" role="alert" className="text-sm font-medium text-destructive">Preencha o nome da demanda para continuar.</p> : <FormMessage />}
         </FormItem>} />
       </Section>
       <Section title="Tipo da demanda">
         <div className="grid grid-cols-2 gap-4">{DEMANDA_FLOW_OPTIONS.map((option) => <OpcaoBotao key={option.id} ativo={fluxo === option.id} onClick={() => onEscolherFluxo(option.id)} titulo={{ venda_corporativa: 'Empresa', fulfillment: 'Full', producao_interna: 'Estoque', venda_diaria: 'Venda avulsa' }[option.id]} descricao={option.description} icone={FLOW_ICONS[option.id]} className="min-h-24 items-center p-5" />)}</div>
       </Section>
     </div>}
-    {etapa === 1 && <div className="mx-auto max-w-6xl space-y-6">
+    {!pularCanal && etapaConteudo === 1 && <div className="mx-auto max-w-6xl space-y-6">
       <Section title="Plataforma / canal">
         <div className="relative max-w-sm"><Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" /><Input value={busca} onChange={(event) => setBusca(event.target.value)} placeholder="Buscar canal..." className="h-9 pl-8" /></div>
         {canaisFiltrados.length ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">{canaisFiltrados.map((canal) => <CanalBotao key={canal.id} canal={canal} moduleIcons={moduleIcons} ativo={String(canal.id) === form.watch('canal_venda_id')} onClick={() => onEscolherCanal(canal)} />)}</div> : <p className="text-sm text-muted-foreground">Nenhum canal encontrado.</p>}
@@ -59,7 +69,7 @@ function PassoOrigem({ form, canais, moduleIcons, hoje, canalSelecionado, fluxo,
       </Section>
       <Section title="Modalidade logística"><div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{MODALIDADES.map((option) => <PilulaBotao key={option.value} ativo={modalidade === option.value} onClick={() => onEscolherModalidade(option.value)} className="rounded-lg px-5 py-4 text-base">{option.label}</PilulaBotao>)}</div></Section>
     </div>}
-    {etapa === 2 && <div className="mx-auto grid max-w-6xl grid-cols-1 gap-5 md:grid-cols-2">
+    {etapaConteudo === 2 && <div className="mx-auto grid max-w-6xl grid-cols-1 gap-5 md:grid-cols-2">
     <div className="space-y-3 rounded-lg border bg-muted/20 p-5">
       <Section title="Prazos">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -84,8 +94,11 @@ function PassoOrigem({ form, canais, moduleIcons, hoje, canalSelecionado, fluxo,
       </FormItem>} />
     </div></div>}
     <div className="flex justify-between border-t pt-4">
-      <Button type="button" variant="outline" disabled={etapa === 0} onClick={() => setEtapa((value) => Math.max(0, value - 1))}>Voltar</Button>
-      {etapa < 2 ? <Button type="button" onClick={() => setEtapa((value) => Math.min(2, value + 1))}>Próximo</Button> : <Button type="button" onClick={onFinalizar}>Continuar para itens</Button>}
+      <Button type="button" variant="outline" disabled={etapa === 0} onClick={() => setEtapa((value) => pularCanal && value === 2 ? 0 : Math.max(0, value - 1))}>Voltar</Button>
+      {etapaConteudo < 2 ? <Button type="button" onClick={async () => {
+        if (etapa === 0 && !(await form.trigger('nome'))) return;
+        setEtapa((value) => pularCanal && value === 0 ? 2 : Math.min(2, value + 1));
+      }}>Próximo</Button> : <Button type="button" onClick={onFinalizar}>Continuar para itens</Button>}
     </div>
   </div>;
 }

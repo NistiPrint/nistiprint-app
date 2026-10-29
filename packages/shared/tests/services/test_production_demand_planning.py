@@ -72,6 +72,47 @@ class ProductionDemandPlanningTest(unittest.TestCase):
             {'1': [{**item(11, 100, 3), 'id_produto_miolo': 99}]}, graph((10, 1)))
         self.assertEqual(result['products'][0]['demanda_pendente'], 0)
         self.assertIn('diverge', result['unmapped'][0]['motivo'])
+        self.assertEqual(result['unmapped'][0]['pendente'], 3)
+
+    def test_unmapped_simulation_miolos_keep_display_code_and_pending_units(self):
+        items = [
+            {**item(1, None, 5), 'miolo_nome': 'VACMNA', 'sku': 'VACMNA_FLR_BRR'},
+            {**item(2, None, 1), 'miolo_nome': 'Miolo VACMNA', 'sku': 'VACMNA_JAEN1_BBB'},
+            {**item(3, None, 1, miolos_prontos_retirada_qtd=1),
+             'miolo_name': 'VACMNA', 'sku': 'VACMNA_JAEN2_BBB'},
+            {**item(4, None, 4), 'miolo_nome': 'VACMNO', 'sku': 'VACMNO_MCP1_BBB'},
+            {**item(5, None, 1), 'miolo_nome': 'VACMNO', 'sku': 'VACMNO_BLUE_PBP'},
+            {**item(6, None, 1), 'miolo_nome': 'VACMNO', 'sku': 'VACMNO_MCP2_BBB'},
+            {**item(7, None, 1), 'miolo_nome': 'VACMNO', 'sku': 'VACMNO_MCP3_BBB'},
+            {**item(8, None, 1), 'miolo_nome': 'VACMNA', 'sku': 'VACMNA_JAEN3_RBB'},
+            {**item(9, None, 1), 'miolo_nome': 'VACMNA', 'sku': 'VACMNA_JDF3_BRR'},
+            {**item(10, None, 1), 'miolo_nome': 'VACMNA', 'sku': 'VACMNA_LILAS_BBB'},
+            {**item(11, None, 5, miolos_prontos_retirada_qtd=2),
+             'miolo_nome': 'PARCIAL', 'sku': 'PARCIAL-1'},
+            {**item(12, None, 1), 'miolo_nome': 'VACMNA', 'sku': 'VACMNA_EXTRA'},
+        ]
+        result = build_production_demand_plan(
+            'miolo', [product(56, 20), product(88, 10)],
+            [{**demand('sim', 0, '2026-10-27'), 'simulacao': True}],
+            {'sim': items}, {'nodes': {}},
+        )
+
+        self.assertEqual([row['demanda_pendente'] for row in result['products']], [0, 0])
+        self.assertEqual(len(result['unmapped']), 11)
+        vacmna = sum(row['pendente'] for row in result['unmapped']
+                     if row['miolo_nome'].replace('Miolo ', '') == 'VACMNA')
+        vacmno = sum(row['pendente'] for row in result['unmapped']
+                     if row['miolo_nome'] == 'VACMNO')
+        parcial = next(row['pendente'] for row in result['unmapped'] if row['miolo_nome'] == 'PARCIAL')
+        self.assertEqual((vacmna, vacmno, parcial), (10, 7, 3))
+
+    def test_unmapped_miolo_name_uses_torre_sku_slice_and_corrections(self):
+        result = build_production_demand_plan(
+            'miolo', [product(56, 0)], [demand(1, 0, '2026-10-27')],
+            {'1': [{**item(12, None, 2), 'sku': 'CADMNA_JAEN3_RBB'}]},
+            {'nodes': {}},
+        )
+        self.assertEqual(result['unmapped'][0]['miolo_nome'], 'VACMNA')
 
     def test_multiple_products_in_one_stage_are_ambiguous(self):
         result = build_production_demand_plan('capa', [product(20, 0), product(21, 0)],
