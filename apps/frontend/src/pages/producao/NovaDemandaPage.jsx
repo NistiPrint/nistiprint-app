@@ -275,48 +275,24 @@ function NovaDemandaPage() {
     irPara(passoSeguinte(passo));
   }, [form, irPara, passo, passoSeguinte]);
 
-  /** Passo 1 já tem o necessário? Define se o clique no canal avança sozinho. */
-  const origemCompleta = useCallback(() => {
-    const valores = form.getValues();
-    return Boolean(valores.nome?.trim() && valores.data_entrega && valores.canal_venda_id);
-  }, [form]);
-
   const escolherFluxo = (fluxoId) => {
     const config = getDemandFlowConfig(fluxoId);
     autoPrazosAtivo.current = true;
     form.setValue('fluxo_demanda', fluxoId, { shouldDirty: true });
     form.setValue('classificacao_cliente', config.classificacao_cliente);
-    form.setValue('modalidade_logistica', config.modalidade_logistica);
-    if (canalSelecionado) {
-      aplicarPrazos({ modalidade: config.modalidade_logistica });
-    }
   };
 
   const escolherCanal = (canal) => {
     autoPrazosAtivo.current = true;
     form.setValue('canal_venda_id', String(canal.id), { shouldDirty: true, shouldValidate: true });
 
-    const disponiveis = modalidadesDisponiveis(canal, fluxo);
-    const modalidadeAtual = form.getValues('modalidade_logistica');
-    const modalidadeFinal = disponiveis.includes(modalidadeAtual) ? modalidadeAtual : disponiveis[0];
-    form.setValue('modalidade_logistica', modalidadeFinal);
-
-    aplicarPrazos({ canal, modalidade: modalidadeFinal });
-
-    // "Avançar ao clicar": se o passo já está completo, segue; senão, o foco
-    // vai para o único campo que ainda falta digitar.
-    if (origemCompleta()) {
-      irPara(passoSeguinte(PASSO_ORIGEM));
-    } else {
-      form.setFocus('nome');
-    }
+    aplicarPrazos({ canal, modalidade: form.getValues('modalidade_logistica') });
   };
 
   const escolherModalidade = (novaModalidade) => {
     autoPrazosAtivo.current = true;
     form.setValue('modalidade_logistica', novaModalidade, { shouldDirty: true });
     aplicarPrazos({ modalidade: novaModalidade });
-    if (origemCompleta()) irPara(passoSeguinte(PASSO_ORIGEM));
   };
 
   const selecionarProduto = useCallback(
@@ -435,7 +411,9 @@ function NovaDemandaPage() {
   const onSubmitForm = (evento) => {
     evento.preventDefault();
     if (passo === PASSO_ITENS) {
-      form.handleSubmit((valores) => enviar(valores, false))(evento);
+      form.trigger('itens').then((valido) => {
+        if (valido) enviar(form.getValues(), false);
+      });
       return;
     }
     avancar();
@@ -504,6 +482,8 @@ function NovaDemandaPage() {
                   onAlterarData={alterarData}
                   onRecalcularPrazos={() => aplicarPrazos({ forcar: true })}
                   prazosSobrescritos={prazosSobrescritos}
+                  isEditing={isEditing}
+                  onFinalizar={avancar}
                 />
               )}
 
@@ -522,7 +502,7 @@ function NovaDemandaPage() {
             </CardContent>
           </Card>
 
-          <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">
+          {passo !== PASSO_ORIGEM && <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">
             <Button
               type="button"
               variant="outline"
@@ -553,7 +533,7 @@ function NovaDemandaPage() {
                 Próximo <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
             )}
-          </div>
+          </div>}
         </form>
       </Form>
     </div>

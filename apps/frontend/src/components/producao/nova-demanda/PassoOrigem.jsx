@@ -1,304 +1,93 @@
 import CanalBotao from '@/components/producao/nova-demanda/CanalBotao';
 import { OpcaoBotao, PilulaBotao } from '@/components/producao/nova-demanda/OpcaoBotao';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { DEMANDA_FLOW_OPTIONS, getModalidadeLabel } from '@/lib/demandaFlow';
-import { datasRapidas, janelasColeta, modalidadesDisponiveis } from '@/lib/novaDemanda';
+import { DEMANDA_FLOW_OPTIONS } from '@/lib/demandaFlow';
+import { datasRapidas, janelasColeta } from '@/lib/novaDemanda';
 import { Briefcase, Factory, PackageCheck, RotateCcw, Search, ShoppingCart } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-const ICONES_FLUXO = {
-  venda_diaria: ShoppingCart,
-  fulfillment: PackageCheck,
-  venda_corporativa: Briefcase,
-  producao_interna: Factory,
-};
+const FLOW_ICONS = { venda_diaria: ShoppingCart, fulfillment: PackageCheck, venda_corporativa: Briefcase, producao_interna: Factory };
+const MODALIDADES = [{ value: 'STANDARD', label: 'Comum' }, { value: 'EXPRESS', label: 'Flex' }, { value: 'FULFILLMENT', label: 'Full' }, { value: 'RETIRADA', label: 'Retirada' }];
 
-const LIMITE_BUSCA_CANAIS = 12;
-
-function Grupo({ titulo, descricao, children, ...rest }) {
-  return (
-    <section className="space-y-3" {...rest}>
-      <div>
-        <h3 className="text-sm font-semibold">{titulo}</h3>
-        {descricao && <p className="text-xs text-muted-foreground">{descricao}</p>}
-      </div>
-      {children}
-    </section>
-  );
+function Section({ title, children, className = '' }) {
+  return <section className={`space-y-2 ${className}`}><h3 className="text-sm font-semibold">{title}</h3>{children}</section>;
 }
 
-/**
- * Passo 1: fluxo, canal e modalidade em botões; data, horário de coleta e
- * finalização prevista já preenchidos a partir do canal escolhido.
- */
-function PassoOrigem({
-  form,
-  canais,
-  moduleIcons,
-  hoje,
-  canalSelecionado,
-  fluxo,
-  modalidade,
-  onEscolherFluxo,
-  onEscolherCanal,
-  onEscolherModalidade,
-  onAlterarData,
-  onRecalcularPrazos,
-  prazosSobrescritos,
-}) {
+function PassoOrigem({ form, canais, moduleIcons, hoje, canalSelecionado, fluxo, modalidade, onEscolherFluxo, onEscolherCanal, onEscolherModalidade, onAlterarData, onRecalcularPrazos, prazosSobrescritos, isEditing, onFinalizar }) {
   const [busca, setBusca] = useState('');
-
-  const canaisDoFluxo = useMemo(() => {
-    const termo = busca.trim().toLowerCase();
-    const filtrados = termo
-      ? canais.filter((canal) =>
-          `${canal.nome} ${canal.plataforma || ''}`.toLowerCase().includes(termo)
-        )
-      : canais;
-
-    if (fluxo !== 'fulfillment') return filtrados;
-    // Em fulfillment, os canais que fazem Full vêm primeiro.
-    return [...filtrados].sort((a, b) => Number(Boolean(b.fulfillment)) - Number(Boolean(a.fulfillment)));
-  }, [canais, busca, fluxo]);
-
-  const gruposDeCanais = useMemo(() => {
-    const grupos = new Map();
-    canaisDoFluxo.forEach((canal) => {
-      const chave = canal.plataforma || 'Outros';
-      if (!grupos.has(chave)) grupos.set(chave, []);
-      grupos.get(chave).push(canal);
-    });
-    return [...grupos.entries()];
-  }, [canaisDoFluxo]);
-
-  const modalidades = useMemo(
-    () => (canalSelecionado ? modalidadesDisponiveis(canalSelecionado, fluxo) : []),
-    [canalSelecionado, fluxo]
-  );
-
-  const janelas = useMemo(
-    () => (canalSelecionado ? janelasColeta(canalSelecionado, modalidade) : []),
-    [canalSelecionado, modalidade]
-  );
-
-  const datas = useMemo(() => datasRapidas(hoje), [hoje]);
-  const dataEntrega = form.watch('data_entrega');
+  const [nomeManual, setNomeManual] = useState(isEditing);
+  const [etapa, setEtapa] = useState(0);
+  const nome = form.watch('nome');
   const horarioColeta = form.watch('horario_coleta_especifico');
+  const dataEntrega = form.watch('data_entrega');
+  const nomeSugerido = canalSelecionado ? `${canalSelecionado.nome.trim()} - ${MODALIDADES.find((item) => item.value === modalidade)?.label || 'Comum'}` : '';
+  const canaisFiltrados = useMemo(() => canais.filter((canal) => `${canal.nome} ${canal.plataforma || ''}`.toLowerCase().includes(busca.trim().toLowerCase())), [canais, busca]);
+  const janelas = useMemo(() => canalSelecionado ? janelasColeta(canalSelecionado, modalidade) : [], [canalSelecionado, modalidade]);
+  const datas = useMemo(() => datasRapidas(hoje), [hoje]);
 
-  return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-      <div className="space-y-5">
-      <Grupo titulo="Fluxo da demanda" descricao="Define o tipo, a classificação do cliente e a modalidade padrão.">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {DEMANDA_FLOW_OPTIONS.map((opcao) => (
-            <OpcaoBotao
-              key={opcao.id}
-              ativo={fluxo === opcao.id}
-              onClick={() => onEscolherFluxo(opcao.id)}
-              titulo={opcao.label}
-              descricao={opcao.description}
-              icone={ICONES_FLUXO[opcao.id]}
-            />
-          ))}
-        </div>
-      </Grupo>
+  // Sugere o nome sem interferir em uma edição manual ou em demandas existentes.
+  useEffect(() => {
+    if (!nomeManual && !isEditing && nomeSugerido && nome !== nomeSugerido) form.setValue('nome', nomeSugerido, { shouldDirty: true, shouldValidate: true });
+  }, [form, isEditing, nome, nomeManual, nomeSugerido]);
 
-      <Grupo titulo="Plataforma / canal" descricao="Um clique seleciona a origem e preenche data e horário de coleta.">
-        {canais.length > LIMITE_BUSCA_CANAIS && (
-          <div className="relative max-w-sm">
-            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              value={busca}
-              onChange={(evento) => setBusca(evento.target.value)}
-              placeholder="Filtrar canais..."
-              className="pl-8"
-            />
-          </div>
-        )}
-
-        {gruposDeCanais.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Nenhum canal de venda ativo encontrado.</p>
-        ) : (
-          gruposDeCanais.map(([plataforma, lista]) => (
-            <div key={plataforma} className="space-y-2">
-              <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">{plataforma}</p>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                {lista.map((canal) => (
-                  <CanalBotao
-                    key={canal.id}
-                    canal={canal}
-                    moduleIcons={moduleIcons}
-                    ativo={String(canal.id) === form.watch('canal_venda_id')}
-                    onClick={() => onEscolherCanal(canal)}
-                  />
-                ))}
-              </div>
-            </div>
-          ))
-        )}
-        <FormField
-          control={form.control}
-          name="canal_venda_id"
-          render={() => (
-            <FormItem>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-      </Grupo>
-
-      {canalSelecionado && (
-        <Grupo titulo="Modalidade logística">
-          {modalidades.length > 1 ? (
-            <div className="flex flex-wrap gap-2">
-              {modalidades.map((opcao) => (
-                <PilulaBotao
-                  key={opcao}
-                  ativo={modalidade === opcao}
-                  onClick={() => onEscolherModalidade(opcao)}
-                >
-                  {getModalidadeLabel(opcao)}
-                </PilulaBotao>
-              ))}
-            </div>
-          ) : (
-            <Badge variant="outline">{getModalidadeLabel(modalidade)}</Badge>
-          )}
-        </Grupo>
-      )}
-
-      </div>
-
-      <div className="space-y-5 lg:sticky lg:top-4 lg:self-start lg:rounded-lg lg:border lg:bg-muted/20 lg:p-5">
-      <Grupo titulo="Entrega" descricao="Preenchido pelo canal e pela modalidade; altere se precisar.">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-3">
-          <FormField
-            control={form.control}
-            name="data_entrega"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Data de entrega</FormLabel>
-                <div className="mb-2 flex flex-wrap gap-2">
-                  {datas.map((data) => (
-                    <PilulaBotao
-                      key={data.value}
-                      ativo={dataEntrega === data.value}
-                      onClick={() => onAlterarData(data.value)}
-                    >
-                      {data.label}
-                    </PilulaBotao>
-                  ))}
-                </div>
-                <FormControl>
-                  <Input type="date" {...field} onChange={(evento) => onAlterarData(evento.target.value)} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name="horario_coleta_especifico"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Horário de coleta</FormLabel>
-                {janelas.length > 0 && (
-                  <div className="mb-2 flex flex-wrap gap-2">
-                    {janelas.map((janela, indice) => (
-                      <PilulaBotao
-                        key={`${janela.horario}-${indice}`}
-                        ativo={horarioColeta === janela.horario}
-                        title={[janela.tipo, janela.ponto].filter(Boolean).join(' · ') || undefined}
-                        onClick={() =>
-                          form.setValue('horario_coleta_especifico', janela.horario, {
-                            shouldDirty: true,
-                            shouldValidate: true,
-                          })
-                        }
-                      >
-                        {janela.horario}
-                        {janela.ponto ? ` · ${janela.ponto}` : ''}
-                      </PilulaBotao>
-                    ))}
-                  </div>
-                )}
-                <FormControl>
-                  <Input type="time" {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name="data_finalizacao_prevista"
-            render={({ field }) => (
-              <FormItem className="sm:col-span-2 2xl:col-span-1">
-                <FormLabel className="flex items-center gap-2">
-                  Finalização prevista
-                  {prazosSobrescritos ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 text-xs"
-                      onClick={onRecalcularPrazos}
-                    >
-                      <RotateCcw className="mr-1 h-3 w-3" /> Recalcular
-                    </Button>
-                  ) : (
-                    <Badge variant="outline" className="text-[10px] uppercase">auto</Badge>
-                  )}
-                </FormLabel>
-                <FormControl>
-                  <Input type="datetime-local" {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-        </div>
-      </Grupo>
-
-      <Grupo titulo="Identificação">
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          <FormField
-            control={form.control}
-            name="nome"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Nome da demanda</FormLabel>
-                <FormControl>
-                  <Input placeholder="Ex: Pedido Bling 12345" {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="observacoes"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Observações</FormLabel>
-                <FormControl>
-                  <Textarea placeholder="Observações gerais..." rows={1} className="min-h-[40px]" {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-        </div>
-      </Grupo>
-      </div>
+  const titulos = ['Nome e tipo', 'Canal e modalidade', 'Prazos'];
+  return <div className="space-y-6">
+    <div className="flex items-center justify-center gap-3" aria-label="Etapas da origem">
+      {titulos.map((titulo, index) => <button key={titulo} type="button" onClick={() => index < etapa && setEtapa(index)} className={`rounded-full px-4 py-2 text-sm font-semibold ${index === etapa ? 'bg-primary text-primary-foreground' : index < etapa ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`} aria-current={index === etapa ? 'step' : undefined}>{index + 1}. {titulo}</button>)}
     </div>
-  );
+    {etapa === 0 && <div className="mx-auto max-w-5xl space-y-6">
+      <Section title="Nome da demanda">
+        <FormField control={form.control} name="nome" render={({ field }) => <FormItem>
+          <FormControl><Input className="h-10" placeholder="Ex.: Shopee - Flex" {...field} onChange={(event) => { setNomeManual(true); field.onChange(event); }} /></FormControl>
+          {!nomeManual && nomeSugerido && <p className="text-xs text-muted-foreground">Sugestão automática · você pode editar</p>}
+          {nomeManual && nomeSugerido && <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={() => { setNomeManual(false); form.setValue('nome', nomeSugerido, { shouldDirty: true, shouldValidate: true }); }}>Usar sugestão: {nomeSugerido}</Button>}
+          <FormMessage />
+        </FormItem>} />
+      </Section>
+      <Section title="Tipo da demanda">
+        <div className="grid grid-cols-2 gap-4">{DEMANDA_FLOW_OPTIONS.map((option) => <OpcaoBotao key={option.id} ativo={fluxo === option.id} onClick={() => onEscolherFluxo(option.id)} titulo={{ venda_corporativa: 'Empresa', fulfillment: 'Full', producao_interna: 'Estoque', venda_diaria: 'Venda avulsa' }[option.id]} descricao={option.description} icone={FLOW_ICONS[option.id]} className="min-h-24 items-center p-5" />)}</div>
+      </Section>
+    </div>}
+    {etapa === 1 && <div className="mx-auto max-w-6xl space-y-6">
+      <Section title="Plataforma / canal">
+        <div className="relative max-w-sm"><Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" /><Input value={busca} onChange={(event) => setBusca(event.target.value)} placeholder="Buscar canal..." className="h-9 pl-8" /></div>
+        {canaisFiltrados.length ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">{canaisFiltrados.map((canal) => <CanalBotao key={canal.id} canal={canal} moduleIcons={moduleIcons} ativo={String(canal.id) === form.watch('canal_venda_id')} onClick={() => onEscolherCanal(canal)} />)}</div> : <p className="text-sm text-muted-foreground">Nenhum canal encontrado.</p>}
+        <FormField control={form.control} name="canal_venda_id" render={() => <FormItem><FormMessage /></FormItem>} />
+      </Section>
+      <Section title="Modalidade logística"><div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{MODALIDADES.map((option) => <PilulaBotao key={option.value} ativo={modalidade === option.value} onClick={() => onEscolherModalidade(option.value)} className="rounded-lg px-5 py-4 text-base">{option.label}</PilulaBotao>)}</div></Section>
+    </div>}
+    {etapa === 2 && <div className="mx-auto grid max-w-6xl grid-cols-1 gap-5 md:grid-cols-2">
+    <div className="space-y-3 rounded-lg border bg-muted/20 p-5">
+      <Section title="Prazos">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <FormField control={form.control} name="data_finalizacao_prevista" render={({ field }) => <FormItem className="sm:col-span-2">
+            <FormLabel className="flex items-center gap-2">Data de finalização {prazosSobrescritos ? <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onRecalcularPrazos}><RotateCcw className="mr-1 h-3 w-3" />Recalcular</Button> : <span className="text-xs text-muted-foreground">auto</span>}</FormLabel>
+            <FormControl><Input type="datetime-local" {...field} /></FormControl><FormMessage />
+          </FormItem>} />
+          <FormField control={form.control} name="data_entrega" render={({ field }) => <FormItem>
+            <FormLabel>Data / hora de envio ou coleta</FormLabel>
+            <div className="flex flex-wrap gap-1">{datas.map((data) => <PilulaBotao key={data.value} ativo={dataEntrega === data.value} onClick={() => onAlterarData(data.value)}>{data.label}</PilulaBotao>)}</div>
+            <FormControl><Input type="date" {...field} onChange={(event) => onAlterarData(event.target.value)} /></FormControl><FormMessage />
+          </FormItem>} />
+          <FormField control={form.control} name="horario_coleta_especifico" render={({ field }) => <FormItem>
+            <FormLabel>Horário de envio / coleta</FormLabel>
+            {janelas.length > 0 && <div className="flex flex-wrap gap-1">{janelas.map((janela, index) => <PilulaBotao key={`${janela.horario}-${index}`} ativo={horarioColeta === janela.horario} title={[janela.tipo, janela.ponto].filter(Boolean).join(' · ')} onClick={() => form.setValue('horario_coleta_especifico', janela.horario, { shouldDirty: true, shouldValidate: true })}>{janela.horario}{janela.ponto ? ` · ${janela.ponto}` : ''}</PilulaBotao>)}</div>}
+            <FormControl><Input type="time" {...field} /></FormControl><FormMessage />
+          </FormItem>} />
+        </div>
+      </Section>
+      <FormField control={form.control} name="observacoes" render={({ field }) => <FormItem>
+        <FormLabel>Observações</FormLabel><FormControl><Textarea placeholder="Observações gerais..." rows={5} {...field} /></FormControl><FormMessage />
+      </FormItem>} />
+    </div></div>}
+    <div className="flex justify-between border-t pt-4">
+      <Button type="button" variant="outline" disabled={etapa === 0} onClick={() => setEtapa((value) => Math.max(0, value - 1))}>Voltar</Button>
+      {etapa < 2 ? <Button type="button" onClick={() => setEtapa((value) => Math.min(2, value + 1))}>Próximo</Button> : <Button type="button" onClick={onFinalizar}>Continuar para itens</Button>}
+    </div>
+  </div>;
 }
 
 export default PassoOrigem;
