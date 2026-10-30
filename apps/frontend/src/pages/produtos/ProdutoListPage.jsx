@@ -344,6 +344,9 @@ function ProdutoListPage() {
         description="Gerencie seus produtos, composições e integrações"
         actions={
           <div className="flex items-center gap-2">
+            <Link to="/produtos/composicao-lote">
+              <Button variant="outline">Composição em lote</Button>
+            </Link>
             <Link to="/produtos/novo">
               <Button>
                 <PlusCircle className="h-4 w-4 mr-2" /> Novo Produto

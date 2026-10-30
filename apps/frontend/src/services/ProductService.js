@@ -39,6 +39,11 @@ const ProductService = {
     return response.data;
   },
 
+  getBOMBatchCandidates: async (params) => (await api.get('/produtos/bom/lote/candidatos', { params })).data,
+  getBOMBatchSnapshot: async (produto_ids, componente_ids) => (await api.post('/produtos/bom/lote/consulta', { produto_ids, componente_ids })).data,
+  previewBOMBatch: async (produto_ids, operacoes, tokens) => (await api.post('/produtos/bom/lote/previa', { produto_ids, operacoes, tokens })).data,
+  applyBOMBatch: async (payload) => (await api.post('/produtos/bom/lote/aplicar', payload)).data,
+
   getCategoryRulesByProductId: async (productId) => {
     const response = await api.get(`/produtos/${productId}/category_rules`);
     return response.data;

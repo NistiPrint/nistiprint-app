@@ -954,7 +954,10 @@ def _linha_consolidada(row: dict) -> dict:
         "quantidade": quantidade,
         "produto_id": row.get("produto_id"),
         "produto_nome": row.get("produto_nome"),
-        "miolo_nome": row.get("miolo_nome") or row.get("miolo"),
+        # O codigo e a identidade operacional do miolo. O nome descritivo do
+        # componente pode variar entre cadastros, mas a coluna da demanda deve
+        # agrupar/exibir pelo mesmo codigo usado no SKU.
+        "miolo_nome": row.get("miolo_chave") or row.get("miolo_nome") or row.get("miolo"),
         "miolo_chave": row.get("miolo_chave"),
         "miolo_origem": row.get("miolo_origem"),
         "id_produto_miolo": row.get("id_produto_miolo"),

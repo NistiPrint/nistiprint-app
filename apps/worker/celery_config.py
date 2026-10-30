@@ -51,6 +51,7 @@ def get_default_schedules():
         **mercadolivre_schedules(),
         **gestao_schedules(),
         **catalog_schedules(),
+        **bom_batch_schedules(),
         'reconcile-pending-erp-references': {
             'task': 'nistiprint_shared.services.order_erp_reference_service.reconcile_pending',
             'schedule': 60,
@@ -309,6 +310,7 @@ def load_dynamic_schedules():
         schedules.update(mercadolivre_schedules())
         schedules.update(gestao_schedules())
         schedules.update(catalog_schedules())
+        schedules.update(bom_batch_schedules())
         return schedules
     except Exception as e:
         logger.error(f"Erro ao carregar tasks dinâmicas: {e}. Usando padrões de código.")
@@ -332,6 +334,17 @@ def operational_read_model_schedules():
             'schedule': 2,
             'kwargs': {'limit': 100},
             'options': {'queue': 'operational_read_models', 'expires': 4},
+        },
+    }
+
+
+def bom_batch_schedules():
+    """Durable recovery path for recalculation jobs created in BOM transactions."""
+    return {
+        'dispatch-pending-bom-batch-costs': {
+            'task': 'tasks.bom_cost_tasks.dispatch_pending_batch_recalculations',
+            'schedule': 60,
+            'options': {'queue': 'celery', 'expires': 55},
         },
     }
 

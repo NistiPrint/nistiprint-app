@@ -79,6 +79,7 @@ import ProducaoPage from './pages/producao/ProducaoPage'
 import ResumoProducaoPage from './pages/producao/ResumoProducaoPage'
 import ProdutoFormPage from './pages/produtos/ProdutoFormPage'
 import ProdutoListPage from './pages/produtos/ProdutoListPage'
+import ComposicaoLotePage from './pages/produtos/ComposicaoLotePage'
 import VendasPage from './pages/vendas/VendasPage'
 import VendasPersonalizadasPage from './pages/vendas/VendasPersonalizadasPage'
 import PersonalizacoesLayoutPage from './pages/vendas/PersonalizacoesLayoutPage'
@@ -196,6 +197,7 @@ function App() {
 
           {/* 1. Produtos (Dados Mestres) */}
           <Route path='produtos' element={<ProtectedRoute permission={{ a: 'produtos', I: 'ler' }}><ProdutoListPage /></ProtectedRoute>} />
+          <Route path='produtos/composicao-lote' element={<ProtectedRoute permission={{ a: 'produtos', I: 'editar' }}><ComposicaoLotePage /></ProtectedRoute>} />
           <Route path='anuncios' element={<ProtectedRoute permission={{ a: 'produtos', I: 'ler' }}><Suspense fallback={<p>Carregando anúncios…</p>}><AnunciosPage /></Suspense></ProtectedRoute>} />
           <Route path='produtos/novo' element={<ProtectedRoute permission={{ a: 'produtos', I: 'criar' }}><ProdutoFormPage /></ProtectedRoute>} />
           <Route path='produtos/:id/editar' element={<ProtectedRoute permission={{ a: 'produtos', I: 'editar' }}><ProdutoFormPage /></ProtectedRoute>} />

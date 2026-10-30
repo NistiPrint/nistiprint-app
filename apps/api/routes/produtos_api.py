@@ -10,6 +10,93 @@ from routes.auth import login_required, get_current_user
 from .produtos_base import produtos_api_bp
 import logging
 
+
+def _bom_lote_error(exc):
+    message = str(exc)
+    if 'BOM_CONFLICT' in message or 'BOM_REVIEW_CONFLICT' in message:
+        return jsonify({'code': 'BOM_CONFLICT', 'error': 'A composição mudou durante a revisão. Recarregue e revise novamente.'}), 409
+    if 'BOM_' in message or isinstance(exc, ValueError):
+        return jsonify({'code': message.split(':', 1)[0], 'error': message}), 422
+    logging.exception('Falha na composição em lote')
+    return jsonify({'error': 'Não foi possível processar a composição em lote.'}), 500
+
+
+@produtos_api_bp.route('/bom/lote/candidatos', methods=['GET'])
+def api_bom_lote_candidatos():
+    try:
+        page = max(1, request.args.get('page', 1, type=int))
+        per_page = max(1, min(100, request.args.get('per_page', 50, type=int)))
+        products, pages = product_service.get_products(
+            q=request.args.get('q', '').strip() or None,
+            categoria_id=request.args.get('category_id') or None,
+            material_type=request.args.get('tipo_material') or None,
+            page=page, per_page=per_page, include_variants=True, enrich=False,
+        )
+        products = [product for product in products if
+                    product.get('papel_catalogo') != 'modelo'
+                    and not product.get('has_variants')
+                    and (product.get('tipo_material') or product.get('material_type')) != 'servico']
+        return jsonify({'produtos': products, 'page': page, 'per_page': per_page, 'total_pages': pages})
+    except Exception as exc:
+        return _bom_lote_error(exc)
+
+
+@produtos_api_bp.route('/bom/lote/consulta', methods=['POST'])
+def api_bom_lote_consulta():
+    data = request.get_json(silent=True) or {}
+    try:
+        from nistiprint_shared.services.bom_lote_service import bom_lote_service
+        return jsonify(bom_lote_service.consulta(data.get('produto_ids') or [], data.get('componente_ids') or []))
+    except Exception as exc:
+        return _bom_lote_error(exc)
+
+
+@produtos_api_bp.route('/bom/lote/previa', methods=['POST'])
+def api_bom_lote_previa():
+    data = request.get_json(silent=True) or {}
+    try:
+        from nistiprint_shared.services.bom_lote_service import bom_lote_service
+        return jsonify(bom_lote_service.previa(data.get('produto_ids') or [], data.get('operacoes') or [], data.get('tokens') or {}))
+    except Exception as exc:
+        return _bom_lote_error(exc)
+
+
+@produtos_api_bp.route('/bom/lote/aplicar', methods=['POST'])
+def api_bom_lote_aplicar():
+    data = request.get_json(silent=True) or {}
+    try:
+        from nistiprint_shared.services.bom_lote_service import bom_lote_service
+        user = get_current_user() or {}
+        result = bom_lote_service.aplicar(
+            data.get('produto_ids') or [], data.get('operacoes') or [], data.get('tokens') or {},
+            data.get('revisao'), data.get('idempotency_key'), user.get('id'),
+            data.get('composicoes_anteriores') or {}, data.get('produtos_esperados') or [],
+        )
+        result = result or {}
+        recalculation_id = result.get('recalculo_id')
+        if recalculation_id:
+            try:
+                from nistiprint_shared.services.celery_app import celery_app
+                celery_app.send_task('tasks.bom_cost_tasks.process_batch_recalculation', args=[recalculation_id])
+            except Exception:
+                # Keep a broker outage from presenting a saved BOM as a failed save.
+                logging.exception('Falha ao enfileirar recálculo durável %s; usando atualização síncrona.', recalculation_id)
+                try:
+                    for product_id in data.get('produto_ids') or []:
+                        bom_service._update_cost_and_enqueue_cascade(int(product_id))
+                    from nistiprint_shared.database.supabase_db_service import supabase_db
+                    from datetime import datetime, timezone
+                    supabase_db.table('bom_lote_recalculos').update({'status': 'concluido', 'ultimo_erro': None, 'updated_at': datetime.now(timezone.utc).isoformat()}).eq('id', recalculation_id).execute()
+                    result['custos_status'] = 'concluido'
+                    supabase_db.table('bom_lotes').update({'resultado': result}).eq('id', result.get('lote_id')).execute()
+                except Exception as cost_exc:
+                    logging.exception('Falha no recálculo síncrono do lote %s', recalculation_id)
+                    result['custos_status'] = 'pendente'
+                    result['custos_erro'] = str(cost_exc)[:300]
+        return jsonify({'success': True, 'resultado': result})
+    except Exception as exc:
+        return _bom_lote_error(exc)
+
 @produtos_api_bp.route('', methods=['GET'])
 def api_index():
     page = max(1, request.args.get('page', 1, type=int))

@@ -17,6 +17,16 @@ class TestLeiturasDespacho(unittest.TestCase):
         app.register_blueprint(modulo.despacho_bp, url_prefix='/api/v2/despacho')
         self.client = app.test_client()
 
+    def test_linha_consolidada_exibe_codigo_de_miolo_quando_disponivel(self):
+        linha = modulo._linha_consolidada({
+            'titulo_anuncio': 'Agenda', 'sku_externo': 'VACMNA_AGENDA_BBB',
+            'quantidade': 1, 'produto_id': 10,
+            'miolo_nome': 'Vacina menina — 118 páginas — padrao',
+            'miolo_chave': 'VACMNA', 'id_produto_miolo': 56,
+        })
+        self.assertEqual(linha['miolo_nome'], 'VACMNA')
+        self.assertEqual(linha['miolo_chave'], 'VACMNA')
+
     def test_escopo_previa_acoes_compartilham_ids_sem_reler_arvore(self):
         banco = MagicMock()
         linhas = [
