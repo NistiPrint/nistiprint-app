@@ -46,14 +46,21 @@ def order_batch(db,account,cp):
 def collect_batch(db,account,capability):
     if capability not in CAPABILITIES:
         raise ValueError('Capacidade desconhecida')
-    if not db.rpc('gestao_collection_lease',{'p_account':account,'p_capability':capability}).execute().data:
-        return {'status':'busy'}
-    row=db.table('gestao_coletas').select('*').eq('account_id',account).eq('capability',capability).single().execute().data
+    statistics = capability in {'ml_visits', 'shopee_product'}
+    if statistics:
+        row = db.rpc('gestao_statistics_claim', {'p_account':account,'p_capability':capability}).execute().data
+        if not row:
+            return {'status':'busy'}
+    else:
+        if not db.rpc('gestao_collection_lease',{'p_account':account,'p_capability':capability}).execute().data:
+            return {'status':'busy'}
+        row=db.table('gestao_coletas').select('*').eq('account_id',account).eq('capability',capability).single().execute().data
     cp=dict(row.get('checkpoint') or {})
     if row.get('enabled') is False or row.get('status')=='forbidden':
         db.table('gestao_coletas').update({'lease_until':'-infinity'}).eq('account_id',account).eq('capability',capability).execute()
         return {'status':'paused'}
     status,error='available',None
+    retry_after = None
     has_more=False
     try:
         rows=db.table('installed_integrations').select('*').eq('id',account).eq('is_active',True).limit(1).execute().data or []
@@ -74,11 +81,28 @@ def collect_batch(db,account,capability):
                 raise CollectionError('analytics_budget_wait')
         def limited_get(*args,**kwargs):
             reserve()
+            if statistics and not db.rpc('gestao_statistics_renew', {'p_account':account,'p_capability':capability,'p_owner':row['owner_token']}).execute().data:
+                raise CollectionError('statistics_lease_lost')
             return provider_get(*args,**kwargs)
         integration['_insights_reserve']=reserve
         cp['_capability']=capability
-        has_more=driver_for(CAPABILITIES[capability]).collect(db,account,capability,integration,cp,limited_get,metric,finance,order_batch)
+        def store_metric(_db, metric_account, resource, day, kind, values, source, **options):
+            if not statistics:
+                return metric(_db, metric_account, resource, day, kind, values, source, **options)
+            if metric_account != account:
+                raise CollectionError('account_platform_mismatch', True)
+            saved = db.rpc('gestao_statistics_metric', {'p_account':account,'p_capability':capability,
+                'p_owner':row['owner_token'], 'p_row': {
+                    'resource_id':str(resource),'day':day,'kind':kind,'metrics':values,'source':source,
+                    'resource_type':options.get('resource_type','listing'),
+                    'timezone':options.get('timezone_name','America/Sao_Paulo'),
+                    'semantic':options.get('semantic','contador_acumulado' if kind=='counter' else 'diaria'),
+                    'partial':options.get('partial',False)}}).execute().data
+            if not saved:
+                raise CollectionError('statistics_lease_lost')
+        has_more=driver_for(CAPABILITIES[capability]).collect(db,account,capability,integration,cp,limited_get,store_metric,finance,order_batch)
     except CollectionError as exc:
+        retry_after = exc.retry_after
         status,error=('forbidden' if exc.forbidden else 'failed'),exc.code
         if error=='analytics_budget_wait':
             status,has_more='available',True
@@ -89,7 +113,20 @@ def collect_batch(db,account,capability):
     cp.pop('_capability',None)
     attempts=(row.get('attempts') or 0)+1 if status=='failed' else 0
     delay=min(21600,30*2**min(attempts,9)) if status=='failed' else (15 if has_more else 21600)
-    db.table('gestao_coletas').update({'status':status,'error_code':error,'checkpoint':cp,'attempts':attempts,
+    if retry_after is not None:
+        delay = max(delay, int(retry_after))
+    if statistics and status == 'available' and not has_more:
+        now = datetime.now(TZ)
+        next_run = (now + timedelta(days=1)).replace(hour=3, minute=0, second=0, microsecond=0)
+        delay = max(1, int((next_run-now).total_seconds()))
+    state={'status':status,'error_code':error,'checkpoint':cp,'attempts':attempts,
         'next_attempt_at':(datetime.now(TZ)+timedelta(seconds=delay)).isoformat(),
-        'checked_at':datetime.now(TZ).isoformat(),'lease_until':'-infinity'}).eq('account_id',account).eq('capability',capability).execute()
+        'checked_at':datetime.now(TZ).isoformat(),'lease_until':'-infinity'}
+    if statistics:
+        saved = db.rpc('gestao_statistics_finish', {'p_account':account,'p_capability':capability,
+                    'p_owner':row['owner_token'],'p_state':state}).execute().data
+        if not saved:
+            return {'status':'lease_lost','has_more':False}
+    else:
+        db.table('gestao_coletas').update(state).eq('account_id',account).eq('capability',capability).execute()
     return {'status':status,'has_more':has_more,'error_code':error}

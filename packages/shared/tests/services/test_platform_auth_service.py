@@ -8,6 +8,11 @@ from nistiprint_shared.services.platform_drivers import shopee
 
 
 class PlatformAuthServiceTest(unittest.TestCase):
+    def setUp(self):
+        limiter = patch('nistiprint_shared.services.mercadolivre_rate_limit.mercadolivre_rate_limit_coordinator.acquire')
+        limiter.start()
+        self.addCleanup(limiter.stop)
+
     @patch("nistiprint_shared.services.platform_auth_service.requests.post")
     def test_bling_oauth_exchange_requests_jwt_and_rejects_opaque_tokens(self, mock_post):
         context = {
@@ -162,6 +167,7 @@ class PlatformAuthServiceTest(unittest.TestCase):
 
         result = mercadolivre.test_connection(
             {
+                "id": 7091,
                 "credentials": {"access_token": "token"},
             }
         )
@@ -177,6 +183,7 @@ class PlatformAuthServiceTest(unittest.TestCase):
 
         result = mercadolivre.test_connection(
             {
+                "id": 7091,
                 "access_token": "top-token",
                 "credentials": {},
             }
@@ -206,6 +213,7 @@ class PlatformAuthServiceTest(unittest.TestCase):
         )
 
         self.assertIn("client_id=client-123", auth_url)
+        self.assertTrue(auth_url.startswith("https://auth.mercadolivre.com.br/authorization?"))
         self.assertIn("state=opaque-state", auth_url)
         self.assertIn("code_challenge_method=S256", auth_url)
         self.assertIn("code_challenge=challenge-123", auth_url)

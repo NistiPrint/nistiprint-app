@@ -5,6 +5,20 @@ from nistiprint_shared.services.catalogo_familia_service import CatalogoFamiliaS
 
 
 class CatalogoFamiliaServiceTests(unittest.TestCase):
+    def test_reuses_case_insensitive_axis_and_option_before_rpc(self):
+        db=MagicMock()
+        axes=MagicMock(); options=MagicMock()
+        db.table.side_effect=lambda name: axes if name=='produto_eixos' else options
+        axes.select.return_value.execute.return_value.data=[{'id':4,'nome':'CAPAS'}]
+        options.select.return_value.eq.return_value.execute.return_value.data=[{'id':8,'nome':'ROSA'}]
+        service=CatalogoFamiliaService(db)
+        service.save(10,{'expected_version':1,'eixos':[{'name':'Capas','options':['Rosa','Azul']}],
+                         'variacoes':[{'sku':'X','variation_values':{'Capas':'Rosa'}}]})
+        arguments=db.rpc.call_args.args[1]
+        self.assertEqual(arguments['p_eixos'][0]['eixo_id'],4)
+        self.assertEqual(arguments['p_eixos'][0]['options'],['ROSA','Azul'])
+        self.assertEqual(arguments['p_variacoes'][0]['variation_values'],{'CAPAS':'ROSA'})
+
     def test_save_passes_version_and_explicit_inactivation_to_atomic_rpc(self):
         db = MagicMock()
         db.rpc.return_value.execute.return_value.data = {'catalogo_versao': 5}

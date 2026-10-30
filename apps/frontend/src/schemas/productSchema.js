@@ -23,6 +23,8 @@ export const productSchema = z.object({
   requires_personalization: z.boolean().default(false),
   status: z.enum(["ativo", "rascunho", "inativo"], { message: "Status inválido." }),
   formato: z.enum(["simples", "com_variacao", "variacao", "composicao", "kit"], { message: "Formato do produto inválido." }),
+  papel_catalogo: z.enum(['individual', 'modelo', 'variacao']).optional(),
+  estrutura: z.enum(['simples', 'manufaturado', 'kit']).optional(),
   herdar_dados_pai: z.boolean().default(true),
   herdar_bom_pai: z.boolean().default(true),
   external_product_links: z.object({

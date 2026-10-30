@@ -44,6 +44,21 @@ jobs:
         run: python scripts/test_integridade.py
       - name: Compile Python packages
         run: python -m compileall -q packages/shared/nistiprint_shared apps/api/routes apps/worker apps/local_agent
+      - name: Validate catalog and management on isolated PostgreSQL
+        env:
+          GESTAO_TEST_DSN: postgresql://postgres:postgres@127.0.0.1:5432/nistiprint_catalog_test
+          PYTHONPATH: packages/shared
+          SUPABASE_URL: http://127.0.0.1:54321
+          SUPABASE_SERVICE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdWIiLCJyZWYiOiJ0ZXN0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSJ9.signature
+        run: |
+          python -c "import psycopg2; c=psycopg2.connect('postgresql://postgres:postgres@127.0.0.1:5432/postgres'); c.autocommit=True; c.cursor().execute('CREATE DATABASE nistiprint_catalog_test'); c.close()"
+          python -m unittest discover -s packages/shared/tests/services -p 'test_gestao*.py'
+          python -m unittest discover -s packages/shared/tests/services -p 'test_catalog*.py'
+          python -m unittest discover -s packages/shared/tests/services -p test_anuncio_service.py
+          python -m unittest discover -s packages/shared/tests/services -p test_platform_auth_service.py
+          python -m unittest discover -s apps/api/tests -p test_catalogo_api.py
+          python -m unittest discover -s apps/api/tests -p test_gestao_api.py
+          python -m unittest discover -s apps/worker/tests -p test_gestao_tasks.py
       - name: Install frontend dependencies
         working-directory: apps/frontend
         run: npm ci

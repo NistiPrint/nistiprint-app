@@ -85,6 +85,11 @@ class Catalog:
             candidates.add(direct)
         candidates = {product_id for product_id in candidates
                       if product_id in self.products and not self._is_model(self.products[product_id])}
+        unit = self.listing_unit(item, account)
+        if unit and unit.get('origem_vinculo') in {'manual','confirmado'}:
+            confirmed = unit.get('produto_id')
+            if confirmed in self.products and not self._is_model(self.products[confirmed]):
+                return self.products[confirmed], 'confirmed_conflict' if candidates - {confirmed} else 'manual'
         if len(candidates) == 1:
             product_id = next(iter(candidates))
             return self.products[product_id], 'direct' if product_id == direct else 'matched'
@@ -106,6 +111,33 @@ class Catalog:
             return number(c['unit_cost']), bool(c['estimated']), c['source']
         # Never present today's price as an observed historical cost.
         return number(product.get('preco_custo')), True, 'cadastro_atual_reconstruido'
+
+
+def item_group(item):
+    listing = str(item.get('listing') or '').strip()
+    if listing:
+        return f"listing:{listing}:variation:{item.get('variation') or ''}"
+    sku = str(item.get('sku') or '').strip().lower()
+    return f'sku:{sku}' if sku else 'unidentified'
+
+
+def preserve_item_attribution(projection, previous_facts, catalog):
+    """Ordinary refreshes update sales, while explicit review owns attribution."""
+    by_group = {fact['chave_grupo']:fact for fact in previous_facts}
+    for item in projection.get('items') or []:
+        fact = by_group.get(item_group(item))
+        if fact is None:
+            continue
+        product = catalog.products.get(fact.get('produto_id')) or {}
+        item.update(product_id=fact.get('produto_id'),mapping=fact['origem_atribuicao'],
+                    announcement_id=fact.get('anuncio_id'),listing_unit_id=fact.get('unidade_anuncio_id'),
+                    family_id=product.get('parent_id') or product.get('id'),
+                    family_name=(catalog.products.get(product.get('parent_id')) or product).get('nome'),
+                    category_id=product.get('categoria_id'),format=product.get('formato'))
+        item['name'] = product.get('nome') or item.get('listing_title') or 'Não identificado'
+        cost, estimated, source = catalog.cost(product,local_time(projection['sold_at']))
+        item.update(unit_cost=cost,cost_estimated=estimated,cost_source=source)
+    return projection
 
 
 def project(source, catalog):

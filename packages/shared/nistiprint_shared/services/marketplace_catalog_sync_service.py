@@ -5,7 +5,7 @@ from time import monotonic, sleep
 from nistiprint_shared.services.credential_resolver_service import credential_resolver_service
 
 
-DRIVERS = {'mercadolivre': 'mercadolivre_catalog'}
+DRIVERS = {'mercadolivre': 'mercadolivre_catalog', 'shopee': 'shopee_catalog'}
 
 
 class MarketplaceCatalogSyncService:
@@ -45,11 +45,11 @@ class MarketplaceCatalogSyncService:
         hydrated['_catalog_reserve'] = self._budget_reserver(integration)
         try:
             page = driver.list_listings(hydrated, cursor)
-            if not page.ok:
+            if not page.ok or page.partial:
                 return self._fail(account_id, token, page)
             item_ids = (page.value or {}).get('item_ids') or []
             details = driver.get_listing_details(hydrated, item_ids)
-            if not details.ok:
+            if not details.ok or details.partial:
                 return self._fail(account_id, token, details)
             value = page.value or {}
             saved = self.db.rpc('marketplace_catalog_sync_store_page', {
@@ -60,7 +60,7 @@ class MarketplaceCatalogSyncService:
             if not saved:
                 return {'status': 'lease_lost'}
             return {'status': 'complete' if value.get('complete') else 'available',
-                    'has_more': not bool(value.get('complete')), 'items': len(item_ids)}
+                    'has_more': not bool(value.get('complete')), 'items': len(item_ids), 'item_ids': item_ids}
         except Exception:
             self.db.rpc('marketplace_catalog_sync_fail', {'p_account': account_id,
                 'p_owner_token': token, 'p_error': 'catalog_sync_internal_error'}).execute()
@@ -84,6 +84,6 @@ class MarketplaceCatalogSyncService:
 
     def _fail(self, account_id, token, result):
         self.db.rpc('marketplace_catalog_sync_fail', {'p_account': account_id,
-            'p_owner_token': token, 'p_error': (result.error_type or 'provider_error')[:100]}).execute()
+            'p_owner_token': token, 'p_error': (result.error_type or ('partial_catalog_response' if result.partial else 'provider_error'))[:100]}).execute()
         return {'status': 'failed', 'error_code': result.error_type,
                 'retryable': bool(result.retryable), 'retry_after': result.retry_after}

@@ -1,58 +1,40 @@
 import { useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
 import ProductService from '@/services/ProductService';
-import api from '@/services/api';
-import ProductSearchInput from '@/components/produtos/ProductSearchInput';
+import { Link } from 'react-router-dom';
+import AnnouncementUnit from './AnnouncementUnit';
+import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 export default function ProductAnnouncementsPanel({ productId }) {
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission('produtos','editar');
+  const [error, setError] = useState('');
   const [data, setData] = useState(null);
-  const [selected, setSelected] = useState({});
-  const [busy, setBusy] = useState(null);
   const load = useCallback(async () => {
-    try { setData(await ProductService.getAnnouncements(productId)); }
-    catch (error) { toast.error(error.message || 'Não foi possível consultar anúncios.'); }
+    try { const result = await ProductService.getAnnouncements(productId); setData(result); setError(''); }
+    catch (error) { setError(error.message || 'Não foi possível consultar anúncios.'); }
   }, [productId]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    let cancelled = false;
+    ProductService.getAnnouncements(productId).then(result => {
+      if (!cancelled) { setData(result); setError(''); }
+    }).catch(err => { if (!cancelled) setError(err.message || 'Não foi possível consultar anúncios.'); });
+    return () => { cancelled = true; };
+  }, [productId]);
 
-  const linkUnit = async unit => {
-    const target = selected[unit.id];
-    if (!target) return toast.error('Selecione um produto para vincular.');
-    setBusy(unit.id);
-    try {
-      await api.put(`/anuncios/unidades/${unit.id}/vinculo`, {
-        integration_id: unit.integration_id,
-        produto_id: target.id,
-        expected_version: unit.vinculo_versao || 1,
-        motivo: 'Vínculo revisado na ficha do produto',
-      });
-      toast.success('Vínculo atualizado.');
-      await load();
-    } catch (error) { toast.error(error.message || 'Falha ao vincular a unidade.'); }
-    finally { setBusy(null); }
-  };
-
+  if (error) return <p role="alert" className="py-6 text-sm text-red-700">{error}</p>;
   if (!data) return <p className="py-6 text-sm text-muted-foreground">Carregando anúncios…</p>;
   const headers = data.anuncios || [];
   const units = headers.flatMap(header => (header.unidades || []).map(unit => ({ ...unit, header })));
   return <div className="space-y-4">
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 p-4"><div><p className="font-medium">{headers.length} anúncios · {units.length} variações vinculadas</p><p className="text-sm text-muted-foreground">Acompanhe este produto em cada conta e revise o histórico das relações.</p></div><div className="flex gap-2"><Button variant="outline" onClick={load}>Atualizar</Button><Button variant="outline" asChild><Link to={`/anuncios?produto_id=${productId}`}>Ver na central de vínculos</Link></Button></div></div>
     {!units.length && <p className="py-6 text-sm text-muted-foreground">Nenhum anúncio sincronizado para este produto.</p>}
     {units.map(unit => <Card key={unit.id}>
       <CardHeader className="pb-2"><CardTitle className="text-base">{unit.header.titulo || 'Título ainda não sincronizado'}</CardTitle>
         <p className="text-xs text-muted-foreground">{unit.header.conta_nome || `Conta ${unit.header.integration_id}`} · anúncio {unit.header.item_externo_id}</p>
       </CardHeader>
-      <CardContent className="space-y-2">
-        <p className="text-sm">Variação: {Object.entries(unit.atributos_variacao || {}).map(([name, value]) => `${name}: ${value}`).join(' · ') || (unit.variacao_externa_id || 'simples')}</p>
-        <p className="text-sm">SKU externo: {unit.sku_externo || 'não informado pelo anúncio'} · preço observado: {unit.preco_observado ?? '—'} · disponibilidade: {unit.disponibilidade_observada || 'não informada'}</p>
-        <p className="text-sm">Produto vinculado: {unit.produto?.nome || (unit.produto_id ? `Produto ${unit.produto_id}` : 'pendente de revisão')}{unit.produto?.sku ? ` · SKU ${unit.produto.sku}` : ''}{unit.produto_id ? ` · #${unit.produto_id}` : ''}</p>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-          <div className="min-w-64 flex-1"><ProductSearchInput value={selected[unit.id]?.name || ''} selectedProductId={selected[unit.id]?.id}
-            onChange={() => setSelected(current => ({ ...current, [unit.id]: null }))}
-            onProductSelect={product => setSelected(current => ({ ...current, [unit.id]: product }))}
-            onlyMarketable placeholder="Buscar produto/SKU para vincular" /></div>
-          <Button disabled={busy === unit.id || !selected[unit.id]} onClick={() => linkUnit(unit)}>{busy === unit.id ? 'Salvando…' : 'Vincular produto'}</Button>
-        </div>
+      <CardContent><AnnouncementUnit unit={unit} header={unit.header} canEdit={canEdit} onSaved={load} />
       </CardContent>
     </Card>)}
     {(data.unidades_sem_cabecalho || []).length > 0 && <p className="text-sm text-amber-700">Há unidades legadas sem cabeçalho de anúncio associado.</p>}

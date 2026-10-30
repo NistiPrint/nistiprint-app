@@ -146,7 +146,7 @@ class PlatformAuthService:
         if not client_id:
             return ""
         url = (
-            "https://auth.mercadolibre.com.br/authorization"
+            "https://auth.mercadolivre.com.br/authorization"
             f"?response_type=code&client_id={quote_plus(client_id)}"
             f"&redirect_uri={quote_plus(redirect_uri)}"
         )

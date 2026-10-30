@@ -27,11 +27,12 @@ def collect(db, account, capability, integration, cp, provider_get, metric, fina
             item = str(listing['item_externo_id'])
             if not re.fullmatch('[A-Za-z0-9_-]{1,64}', item):
                 raise CollectionError('invalid_listing_identity')
-            data = provider_get(integration, f'/items/{item}/visits/time_window', {'last': 90, 'unit': 'day', 'ending': today.isoformat()})
+            data = provider_get(integration, f'/items/{item}/visits/time_window', {'last': int(cp.get('window_days', 7)), 'unit': 'day', 'ending': today.isoformat()})
             if not isinstance(data.get('results'), list):
                 raise CollectionError('invalid_visits_response')
             for d in data['results']:
-                metric(db, account, item, str(d['date'])[:10], 'visits', {'visits': d.get('total', d.get('total_visits'))}, capability)
+                metric(db, account, item, str(d['date'])[:10], 'visits', {'visits': d.get('total', d.get('total_visits'))}, capability,
+                       timezone_name='UTC' if str(d['date']).endswith(('Z','+00:00')) else 'unspecified')
             cp['listing_id'] = listing['id']
         has_more = len(listings) == 5
         if not has_more:
@@ -75,7 +76,7 @@ def get(integration, resource, params=None, headers=None, request_json=None):
     headers = {**_auth_headers(integration), **(headers or {})}
     response = request_json(requests.get, url, provider=platform, resource_type='analytics', params=params, headers=headers)
     if not response.ok:
-        raise CollectionError(response.error_type or 'provider_error', response.status_code in {401, 403} or (response.status_code == 404 and resource.startswith('/advertising/')))
+        raise CollectionError(response.error_type or 'provider_error', response.status_code in {401, 403} or (response.status_code == 404 and resource.startswith('/advertising/')), retry_after=response.retry_after)
     value = response.value or {}
     if value.get('error'):
         code = str(value['error'])

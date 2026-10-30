@@ -91,13 +91,21 @@ def gestao_schedules():
                                  'options': {'queue':'marketplace_insights','expires':25}},
             'gestao-refresh': {'task': 'tasks.gestao_tasks.refresh', 'schedule': 5,
                              'kwargs': {'limit': 100},
-                             'options': {'queue': 'gestao_projection', 'expires': 4}}}
+                             'options': {'queue': 'gestao_projection', 'expires': 4}},
+            'gestao-reprocess-pending': {'task':'tasks.gestao_tasks.reprocess_pending','schedule':30,
+                                       'options':{'queue':'gestao_projection','expires':25}}}
 
 
 def catalog_schedules():
+    statistics = {}
+    if os.getenv('MARKETPLACE_STATISTICS_ENABLED', '0').lower() not in {'0', 'false', 'no'}:
+        statistics['marketplace-statistics-daily'] = {
+            'task': 'tasks.gestao_tasks.statistics_due', 'schedule': crontab(hour=3, minute=0),
+            'options': {'queue': 'marketplace_analytics', 'expires': 3600},
+        }
     if os.getenv('MARKETPLACE_CATALOG_ENABLED', '0').lower() in {'0', 'false', 'no'}:
-        return {}
-    return {'marketplace-catalog-sync-due': {
+        return statistics
+    return {**statistics, 'marketplace-catalog-sync-due': {
         'task': 'tasks.catalog_tasks.sync_due', 'schedule': 21600,
         'options': {'queue': 'marketplace_analytics', 'expires': 3600},
     }}
@@ -438,6 +446,12 @@ celery_app.conf.task_routes = {
     'tasks.gestao_tasks.collect_due': {'queue':'marketplace_insights'},
     'tasks.catalog_tasks.sync_account': {'queue':'marketplace_analytics'},
     'tasks.catalog_tasks.sync_due': {'queue':'marketplace_analytics'},
+    'tasks.catalog_tasks.reconcile_account': {'queue':'marketplace_analytics'},
+    'tasks.catalog_tasks.reconcile_page': {'queue':'marketplace_analytics'},
+    'tasks.gestao_tasks.statistics_due': {'queue':'marketplace_analytics'},
+    'tasks.gestao_tasks.backfill_order_items': {'queue':'gestao_projection'},
+    'tasks.gestao_tasks.reprocess_items': {'queue':'gestao_projection'},
+    'tasks.gestao_tasks.reprocess_pending': {'queue':'gestao_projection'},
     'tasks.operational_read_model_tasks.refresh_operational_read_models': {'queue': 'operational_read_models'},
     'services.ai_personalization.processar_batch': {'queue': 'ai_personalization'},
     'services.ai_personalization.processar_pedido': {'queue': 'ai_personalization'},

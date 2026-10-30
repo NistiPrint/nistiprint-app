@@ -36,7 +36,7 @@ const variationSchema = z.object({
   material_type: z.string().optional()
 });
 
-const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSaveSuccess }) => {
+const VariationEditModal = ({ isOpen, onClose, variationId, onSaveSuccess }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [activeTab, setActiveTab] = useState("general");
@@ -86,6 +86,8 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
     try {
       const data = await ProductService.getById(variationId);
       const product = data.produto;
+      const family = await ProductService.getFamily(product.parent_id);
+      product.familia_versao = family.catalogo_versao;
       setCurrentVariation(product);
 
       form.reset({
@@ -143,6 +145,7 @@ const VariationEditModal = ({ isOpen, onClose, variationId, parentProduct, onSav
       // Preparar payload
       // Mapear campos específicos para atributos JSON se necessário
       const payload = {
+        expected_version: currentVariation.familia_versao,
         sku: data.sku,
         name: data.name,
         cost_price: data.cost_price,

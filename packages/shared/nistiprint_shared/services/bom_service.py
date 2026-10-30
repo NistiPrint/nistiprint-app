@@ -31,12 +31,17 @@ class BomService:
             logging.exception('Falha ao enfileirar propagação de custo da BOM %s', product_id)
             product_service.propagate_composite_cost_to_parents(product_id)
 
-    def _validate_component_can_be_used(self, component_id: int) -> Dict[str, Any]:
+    def _validate_component_can_be_used(self, component_id: int, parent_id: int = None) -> Dict[str, Any]:
         component = product_service.get_by_id(str(component_id))
         if not component:
             raise ValueError(f"Componente com ID '{component_id}' nao encontrado")
 
-        if component.get('tipo_produto') == 'PRODUTO_ACABADO':
+        parent = product_service.get_by_id(str(parent_id)) if parent_id is not None else None
+        is_kit = parent and parent.get('formato') == 'kit'
+        if is_kit:
+            if component.get('tipo_produto') != 'PRODUTO_ACABADO' or component.get('formato') == 'kit':
+                raise ValueError('Kit deve conter produtos acabados e não pode conter outro kit.')
+        elif component.get('tipo_produto') == 'PRODUTO_ACABADO':
             raise ValueError(
                 f"Produto acabado nao pode ser componente de BOM: "
                 f"{component.get('sku') or component.get('nome') or component_id}"
@@ -51,7 +56,7 @@ class BomService:
         """
         for item in components_data:
             try:
-                self._validate_component_can_be_used(item['component_id'])
+                self._validate_component_can_be_used(item['component_id'], product_id)
             except (ValueError, KeyError) as e:
                 raise ValueError(f"Invalid component data format: {item}. Error: {e}")
 
@@ -399,13 +404,13 @@ class BomService:
         """
         return self.get_component_by_role(product_id, 'MIOLO')
 
-    def add_bom_component(self, parent_product_id: int, component_product_id: int, quantity: float, unit: str = 'un'):
+    def add_bom_component(self, parent_product_id: int, component_product_id: int, quantity: float, unit: str = 'un', *, recalculate_cost: bool = True):
         """
         Adds a single component to a product's BOM with category rule validation.
         """
         # --- Validation Start ---
         parent_product = product_service.get_by_id(str(parent_product_id))
-        component_product = self._validate_component_can_be_used(component_product_id)
+        component_product = self._validate_component_can_be_used(component_product_id, parent_product_id)
         
         if parent_product and parent_product.get('categoria_id'):
             from nistiprint_shared.services.category_bom_rule_service import category_bom_rule_service
@@ -454,7 +459,9 @@ class BomService:
             self.bom_table.insert(bom_entry).execute()
 
         # Update the composite cost with cascade propagation
-        self._update_cost_and_enqueue_cascade(parent_product_id)
+        # Partial, evidence-based imports must not price an incomplete BOM.
+        if recalculate_cost:
+            self._update_cost_and_enqueue_cascade(parent_product_id)
 
     def remove_bom_component(self, parent_product_id: int, component_product_id: int):
         """
