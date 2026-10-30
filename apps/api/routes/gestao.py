@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def authorize():
     if request.method == 'OPTIONS':
         return None
-    if request.endpoint == 'gestao.performance':
+    if request.endpoint in {'gestao.performance','gestao.reprocessing_preview','gestao.reprocessing_confirm','gestao.reprocessing_status'}:
         return require_request_permission('relatorios', 'ler')
     denied = require_request_permission('gestao', 'ler' if request.method == 'GET' else 'editar')
     if denied:
@@ -104,10 +104,14 @@ def performance():
                 filters[key] = value
         page = max(1, int(request.args.get('page',1)))
         per_page = min(500, max(1, int(request.args.get('per_page',100))))
+        sort = request.args.get('sort', 'sales')
+        direction = request.args.get('direction', 'desc')
+        if sort not in {'sales','orders','units','group_label'} or direction not in {'asc','desc'}:
+            raise ValueError()
     except (ValueError, TypeError):
         return ApiResponse.error('Informe período, agrupamento e filtros válidos.',400)
     data = GestaoDesempenhoService(supabase_db).report(
-        start,end,filters,group_by,per_page,(page-1)*per_page)
+        start,end,filters,group_by,per_page,(page-1)*per_page,sort,direction)
     return ApiResponse.success(data)
 
 
@@ -261,8 +265,77 @@ def refresh():
 @gestao_bp.post('/itens/backfill')
 def backfill_items():
     from nistiprint_shared.services.celery_app import celery_app
-    task=celery_app.send_task('tasks.gestao_tasks.backfill_order_items',queue='gestao_projection')
-    return ApiResponse.success({'task_id':task.id},status_code=202)
+    from nistiprint_shared.services.catalog_operations import create_operation
+    operation_id=create_operation(get_current_user()['id'],title='Preenchimento dos fatos por item')
+    task=celery_app.send_task('tasks.gestao_tasks.backfill_order_items',kwargs={'operation_id':operation_id},queue='gestao_projection')
+    return ApiResponse.success({'task_id':task.id,'operation_id':operation_id},status_code=202)
+
+
+def _historical_access():
+    user = get_current_user() or {}
+    if not user.get('is_admin'):
+        return ApiResponse.error('Acesso de administrador necessário.', 403)
+    return require_request_permission('produtos', 'editar')
+
+
+@gestao_bp.post('/itens/reprocessamento/previa')
+def reprocessing_preview():
+    denied = _historical_access()
+    if denied:
+        return denied
+    data = request.get_json(silent=True) or {}
+    scope = data.get('scope')
+    if not isinstance(scope, dict) or not isinstance(data.get('motivo'), str) or not data['motivo'].strip():
+        return ApiResponse.error('Informe scope e motivo.', 400)
+    try:
+        start, end = date.fromisoformat(scope['date_from']), date.fromisoformat(scope['date_to'])
+        if end < start or (end-start).days > 730 or end > datetime.now(TZ).date():
+            raise ValueError()
+        for key in ('account_id','product_id','announcement_id'):
+            if key == 'account_id' or key in scope:
+                if type(scope.get(key)) is not int or scope[key] <= 0:
+                    raise ValueError()
+    except (KeyError, TypeError, ValueError):
+        return ApiResponse.error('Informe conta, período e filtros válidos.', 400)
+    result = supabase_db.rpc('gestao_item_reprocessamento_previa', {
+        'p_actor':get_current_user()['id'],'p_scope':scope,'p_motivo':data['motivo'].strip(),
+    }).execute().data
+    return ApiResponse.success(result)
+
+
+@gestao_bp.post('/itens/reprocessamento')
+def reprocessing_confirm():
+    denied = _historical_access()
+    if denied:
+        return denied
+    from uuid import UUID
+    try:
+        token = str(UUID((request.get_json(silent=True) or {}).get('token', '')))
+    except (ValueError, TypeError, AttributeError):
+        return ApiResponse.error('Token de prévia inválido.', 400)
+    try:
+        result = supabase_db.rpc('gestao_item_reprocessamento_confirmar', {
+            'p_token':token,'p_actor':get_current_user()['id'],
+        }).execute().data
+    except Exception as exc:
+        code = getattr(exc, 'code', None) or getattr(exc, 'sqlstate', None)
+        if code in {'40001','22023'}:
+            return ApiResponse.error('A prévia expirou, mudou ou já foi utilizada. Gere uma nova prévia.',409)
+        raise
+    from nistiprint_shared.services.celery_app import celery_app
+    celery_app.send_task('tasks.gestao_tasks.reprocess_items', args=[token], task_id=token, queue='gestao_projection')
+    return ApiResponse.success(result, status_code=202)
+
+
+@gestao_bp.get('/itens/reprocessamento/<uuid:token>')
+def reprocessing_status(token):
+    denied = _historical_access()
+    if denied:
+        return denied
+    rows = supabase_db.table('gestao_item_reprocessamentos').select(
+        'id,status,scope,processed,created_at,finished_at,error_code'
+    ).eq('id',str(token)).eq('usuario_id',get_current_user()['id']).execute().data or []
+    return ApiResponse.success(rows[0]) if rows else ApiResponse.error('Execução não encontrada.',404)
 
 
 @gestao_bp.post('/coletar/<int:account_id>')

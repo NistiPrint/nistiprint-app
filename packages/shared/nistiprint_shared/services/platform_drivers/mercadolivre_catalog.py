@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import requests
+from decimal import Decimal
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from nistiprint_shared.services.marketplace_contracts import ProviderCallResult
 from nistiprint_shared.services.marketplace_http import request_json
@@ -58,8 +61,12 @@ def list_listings(integration, cursor=None):
         return ProviderCallResult(False, provider='mercadolivre', resource_type='catalog',
             error_type='invalid_catalog_response', message='Resposta de catálogo inválida.')
     scroll = data.get('scroll_id')
+    complete = not ids or not scroll
+    if ids and not scroll and len(ids) >= params['limit']:
+        return ProviderCallResult(False, provider='mercadolivre', resource_type='catalog',
+            error_type='catalog_cursor_missing', retryable=False)
     return ProviderCallResult(True, value={'item_ids': [str(value) for value in ids if value],
-        'cursor': {'scroll_id': scroll, 'seller_id': str(seller_id)} if scroll else {}, 'complete': not bool(scroll)},
+        'cursor': {'scroll_id': scroll, 'seller_id': str(seller_id)} if not complete else {}, 'complete': complete},
         provider='mercadolivre', resource_type='catalog')
 
 
@@ -87,22 +94,57 @@ def get_listing_details(integration, item_ids):
             units.append({'variacao_externa_id': str(variation.get('id') or ''),
                 'sku_externo': seller_sku,
                 'atributos_variacao': variation_attributes,
-                'preco_observado': variation.get('price', item.get('price')),
+                'preco_observado': _money(variation.get('price', item.get('price'))),
                 'disponibilidade_observada': str(variation.get('available_quantity', item.get('available_quantity', ''))),
             })
         if not units:
             units.append({'variacao_externa_id': '', 'sku_externo': item_sku,
                 'atributos_variacao': {},
-                'preco_observado': item.get('price'),
+                'preco_observado': _money(item.get('price')),
                 'disponibilidade_observada': str(item.get('available_quantity', ''))})
         updated = item.get('last_updated') or item.get('date_created')
         listings.append({'item_externo_id': item_id, 'titulo': item.get('title'),
             'imagem_comercial': item.get('secure_thumbnail') or item.get('thumbnail'), 'url': item.get('permalink'),
             'situacao_original': item.get('status'), 'situacao_normalizada': normalize_status(item.get('status')),
-            'user_product_id': item.get('user_product_id'), 'familia_externa_id': item.get('family_name'),
+            'user_product_id': item.get('user_product_id'), 'familia_externa_id': item.get('family_id'),
             'catalogo_externo_id': item.get('catalog_product_id'), 'provider_updated_at': updated,
             'unidades': units})
     return ProviderCallResult(True, value={'listings': listings}, provider='mercadolivre', resource_type='catalog')
+
+
+def _money(value):
+    return str(Decimal(str(value))) if value is not None else None
+
+
+def get_listing_variations(integration, item_id):
+    result = get_listing_details(integration, [item_id])
+    if not result.ok:
+        return result
+    return ProviderCallResult(True, value={'units': result.value['listings'][0]['unidades']},
+                              provider='mercadolivre', resource_type='catalog')
+
+
+def get_listing_statistics(integration, resources, period):
+    start, end = date.fromisoformat(period['date_from']), date.fromisoformat(period['date_to'])
+    days = (end-start).days + 1
+    today = datetime.now(ZoneInfo('America/Sao_Paulo')).date()
+    if days < 1 or days > 90 or end > today or start < today-timedelta(days=90):
+        return ProviderCallResult(False, provider='mercadolivre', resource_type='catalog', error_type='statistics_period_unavailable')
+    rows = []
+    for resource in dict.fromkeys(map(str, resources)):
+        if not resource.replace('-', '').isalnum() or len(resource) > 64:
+            raise ValueError('Invalid listing identity')
+        result = _get(integration, f'/items/{resource}/visits/time_window', {'last':days,'unit':'day','ending':end.isoformat()})
+        if not result.ok:
+            return result
+        if not isinstance((result.value or {}).get('results'), list):
+            return ProviderCallResult(False, provider='mercadolivre', resource_type='catalog', error_type='invalid_visits_response')
+        for entry in result.value['results']:
+            rows.append({'resource_id':resource,'period_start':str(entry['date'])[:10],
+                'period_end':str(entry['date'])[:10],'source':'ml_visits','metric_type':'visits',
+                'semantic':'diaria','timezone':'UTC' if str(entry['date']).endswith(('Z','+00:00')) else 'unspecified',
+                'metrics':{'visits':entry.get('total',entry.get('total_visits'))},'partial':result.partial})
+    return ProviderCallResult(True, value={'metrics':rows}, provider='mercadolivre', resource_type='catalog')
 
 
 def normalize_status(value):

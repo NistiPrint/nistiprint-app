@@ -10,8 +10,12 @@ import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import VariationEditModal from './VariationEditModal';
 import ProductService from '@/services/ProductService';
+import { familyChanges } from '@/lib/catalogFamily';
+import { useAuth } from '@/contexts/AuthContext';
 
 const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission('produtos', 'editar');
   const [variationsConfig, setVariationsConfig] = useState([]);
   const [variationsTable, setVariationsTable] = useState([]);
   const [editingInlineIndex, setEditingInlineIndex] = useState(null);
@@ -26,31 +30,28 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
   const [newAttributeValue, setNewAttributeValue] = useState('');
   const [selectedAttributeIndex, setSelectedAttributeIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [assigningVariantId, setAssigningVariantId] = useState(null);
   const [assignedValues, setAssignedValues] = useState({});
   const [deactivateIds, setDeactivateIds] = useState([]);
   const [catalogState, setCatalogState] = useState(null);
-
-  // Initialize from product data if available
-  useEffect(() => {
-    if (product?.atributos?.variations_config) {
-      setVariationsConfig([...product.atributos.variations_config]);
-    }
-
-    // Initial table generation logic
-    if (product?.variants || product?.atributos?.variations_config) {
-        refreshTable(product.atributos?.variations_config || [], product.variants || []);
-    }
-  }, [product]);
+  const [review, setReview] = useState(null);
+  const [conflict, setConflict] = useState(false);
 
   useEffect(() => {
     let active = true;
     if (!product?.id) { setCatalogState(null); return () => { active = false; }; }
-    ProductService.getFamily(product.id).then(value => { if (active) setCatalogState(value); })
+    setCatalogState(null);
+    ProductService.getFamily(product.id).then(value => {
+      if (active) {
+        setCatalogState(value);
+        const config = value.produto?.atributos?.variations_config || [];
+        setVariationsConfig(config);
+        refreshTable(config, value.variacoes || []);
+      }
+    })
       .catch(() => { if (active) setCatalogState(null); });
     return () => { active = false; };
-  }, [product?.id]);
+  }, [product]);
 
   // Auto-open variation modal when autoOpenVariationId is provided
   useEffect(() => {
@@ -230,7 +231,7 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
     setEditingInlineIndex(index);
   };
 
-  const saveInlineEditing = (index) => {
+  const saveInlineEditing = () => {
     setEditingInlineIndex(null);
   };
 
@@ -263,7 +264,7 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
   // --- Actions ---
 
   const handleSave = async () => {
-    if (!product) {
+    if (!product || !catalogState) {
       toast.warning("Produto não selecionado");
       return;
     }
@@ -284,16 +285,14 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
         parent_id: product.id
       }));
 
-      const preview = [
-        `Eixos na configuração: ${variationsConfig.length}`,
-        `Variações incluídas ou atualizadas: ${variationsData.length}`,
-        `Variações a inativar: ${deactivateIds.length}`,
-      ].join('\n');
-      if (!window.confirm(`Revise as alterações da família antes de salvar:\n\n${preview}\n\nConfirmar gravação?`)) return;
-      await onSave({
-        variations_config: variationsConfig,
-        variations_data: variationsData,
-        inativar_ids: deactivateIds
+      setReview({
+        changes: familyChanges(catalogState, variationsConfig, variationsData, deactivateIds),
+        payload: {
+          expected_version: catalogState.catalogo_versao,
+          variations_config: variationsConfig,
+          variations_data: variationsData,
+          inativar_ids: deactivateIds,
+        },
       });
       // The parent component (ProdutoFormPage) handles the toast and data refresh
     } catch (error) {
@@ -304,8 +303,29 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
     }
   };
 
+  const confirmSave = async () => {
+    if (!review) return;
+    setIsLoading(true);
+    try {
+      await onSave(review.payload);
+      setReview(null); setConflict(false);
+    } catch (error) {
+      if (error.response?.status === 409) setConflict(true);
+      toast.error(error.response?.data?.error || error.message);
+    } finally { setIsLoading(false); }
+  };
+
   return (
     <>
+    <Dialog open={!!review} onOpenChange={open => { if (!open && !isLoading) setReview(null); }}>
+      <DialogContent><DialogHeader><DialogTitle>Revisar alterações da família</DialogTitle><DialogDescription>Versão {review?.payload.expected_version}. As variações ausentes são preservadas.</DialogDescription></DialogHeader>
+        <ul className="max-h-72 list-inside list-disc overflow-y-auto text-sm">{review?.changes.map((change, i) => <li key={i}>{change}</li>)}</ul>
+        {!review?.changes.length && <p className="text-sm">Nenhuma alteração identificada.</p>}
+        {conflict && <div role="alert" className="text-sm text-amber-700">A família mudou. Seu rascunho foi preservado. Recarregue a referência e revise as diferenças antes de salvar.<Button variant="outline" onClick={async () => { setCatalogState(await ProductService.getFamily(product.id)); setReview(null); setConflict(false); }}>Recarregar referência</Button></div>}
+        <DialogFooter><Button variant="outline" disabled={isLoading} onClick={() => setReview(null)}>Voltar</Button><Button disabled={isLoading || conflict} onClick={confirmSave}>Confirmar gravação</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+
     <Card className="w-full">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4 pt-6">
         <div className="flex items-center space-x-2">
@@ -315,7 +335,7 @@ const VariationManager = ({ product, onSave, autoOpenVariationId }) => {
         <div className="flex space-x-2">
             <Button
             onClick={handleSave}
-            disabled={isLoading}
+            disabled={isLoading || !catalogState || !canEdit}
             className="gap-2"
             >
             {isLoading ? (

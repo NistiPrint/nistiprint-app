@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink, RefreshCw, Store } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import api from '@/services/api';
-import ProductSearchInput from '@/components/produtos/ProductSearchInput';
+import { useAuth } from '@/contexts/AuthContext';
+import AnnouncementUnit from '@/components/produtos/AnnouncementUnit';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
@@ -17,12 +18,6 @@ const statusTones = {
   desconhecido: 'bg-slate-100 text-slate-700',
 };
 
-const money = value => {
-  if (value === null || value === undefined || value === '') return 'Não informado';
-  const number = Number(value);
-  return Number.isFinite(number) ? number.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : 'Não informado';
-};
-
 const dateTime = value => value ? new Date(value).toLocaleString('pt-BR') : null;
 
 function SyncState({ sync }) {
@@ -34,16 +29,24 @@ function SyncState({ sync }) {
 }
 
 export default function AnunciosPage() {
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission('produtos', 'editar');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const [data, setData] = useState({ rows: [], page: 1, total: 0, accounts: [] });
-  const [filters, setFilters] = useState({ integration_id: '', q: '', status: '' });
-  const [selected, setSelected] = useState({});
-  const [busy, setBusy] = useState(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters = useMemo(() => Object.fromEntries(['integration_id', 'q', 'status', 'relationship', 'produto_id'].map(key => [key, searchParams.get(key) || ''])), [searchParams]);
+  const setFilters = next => { setSearchParams(Object.fromEntries(Object.entries(next).filter(([, value]) => value))); };
+  const requestId = useRef(0);
   const [syncing, setSyncing] = useState(false);
   const load = useCallback(async (page = 1) => {
+    const currentRequest = ++requestId.current;
+    setLoading(true); setError('');
     try {
       const params = { page, per_page: 50 };
       Object.entries(filters).forEach(([key, value]) => { if (value) params[key] = value; });
       const response = await api.get('/anuncios', { params });
+      if (currentRequest !== requestId.current) return;
       const payload = response.data?.data || {};
       setData({
         rows: Array.isArray(payload.rows) ? payload.rows : [],
@@ -51,35 +54,23 @@ export default function AnunciosPage() {
         total: Number(payload.total) || 0,
         accounts: Array.isArray(payload.accounts) ? payload.accounts : [],
       });
-    } catch (error) { toast.error(error.message || 'Não foi possível carregar anúncios.'); }
+    } catch (error) { if (currentRequest === requestId.current) setError(error.message || 'Não foi possível carregar anúncios.'); }
+    finally { if (currentRequest === requestId.current) setLoading(false); }
   }, [filters]);
-  useEffect(() => { load(); }, [load]);
+  const invalidateRequest = useCallback(() => { requestId.current++; }, []);
+  useEffect(() => { const timer = window.setTimeout(() => load(), 300); return () => { window.clearTimeout(timer); invalidateRequest(); }; }, [load, invalidateRequest]);
+  useEffect(() => { if (!data.accounts.some(account => account.sync?.status === 'running')) return; const timer = window.setInterval(() => load(data.page), 15000); return () => window.clearInterval(timer); }, [data.accounts, data.page, load]);
 
-  const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+  const accounts = useMemo(() => Array.isArray(data.accounts) ? data.accounts : [], [data.accounts]);
   const selectedAccount = useMemo(() => accounts.find(account => String(account.id) === filters.integration_id), [accounts, filters.integration_id]);
   const linkedOnPage = data.rows.reduce((total, header) => total + (header.unidades || []).filter(unit => unit.produto_id).length, 0);
   const unitsOnPage = data.rows.reduce((total, header) => total + (header.unidades || []).length, 0);
 
-  const linkUnit = async (unit, header) => {
-    const product = selected[unit.id];
-    if (!product) return toast.error('Selecione um produto.');
-    setBusy(unit.id);
-    try {
-      await api.put(`/anuncios/unidades/${unit.id}/vinculo`, {
-        integration_id: header.integration_id, produto_id: product.id,
-        expected_version: unit.vinculo_versao || 1, motivo: 'Reconciliação manual na central de anúncios',
-      });
-      toast.success('Vínculo atualizado e auditado.');
-      await load(data.page);
-    } catch (error) { toast.error(error.message || 'Não foi possível atualizar o vínculo.'); }
-    finally { setBusy(null); }
-  };
-
-  const syncAccount = async () => {
+  const syncAccount = async (reconcile = false) => {
     if (!filters.integration_id) return toast.error('Selecione uma conta integrada.');
     setSyncing(true);
     try {
-      await api.post(`/integracoes/${filters.integration_id}/catalogo/sincronizar`);
+      await api.post(`/integracoes/${filters.integration_id}/catalogo/${reconcile ? 'reconciliar' : 'sincronizar'}`);
       toast.success('Sincronização enfileirada. Os dados aparecem aqui quando o worker terminar.');
       window.setTimeout(() => load(data.page), 5000);
     } catch (error) { toast.error(error.message || 'Não foi possível enfileirar a sincronização.'); }
@@ -88,10 +79,15 @@ export default function AnunciosPage() {
 
   return <div className="mx-auto max-w-6xl space-y-5 py-6">
     <header className="flex flex-wrap items-end justify-between gap-3">
-      <div><h1 className="text-2xl font-semibold">Anúncios</h1><p className="text-sm text-muted-foreground">Publicações do marketplace, dados comerciais e vínculo com o catálogo interno.</p></div>
+      <div><h1 className="text-2xl font-semibold">Vínculos com marketplaces</h1><p className="text-sm text-muted-foreground">Acompanhe anúncios e variações, revise pendências e mantenha os produtos internos relacionados.</p></div>
       <div className="text-right text-sm text-muted-foreground">{data.total} anúncios · {linkedOnPage}/{unitsOnPage} unidades vinculadas nesta página</div>
     </header>
 
+    <div className="grid gap-3 sm:grid-cols-3">{[
+      ['Anúncios encontrados', data.total], ['Unidades vinculadas nesta página', `${linkedOnPage} de ${unitsOnPage}`], ['Revisões nesta página', data.rows.reduce((sum, header) => sum + (header.unidades || []).filter(unit => unit.pendencia).length, 0)],
+    ].map(([label, value]) => <Card key={label}><CardContent className="p-4"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-2 text-2xl font-semibold">{value}</p></CardContent></Card>)}</div>
+    <nav aria-label="Filtrar por vínculo" className="flex flex-wrap gap-2">{[['', 'Todos os vínculos'], ['unlinked', 'Com unidades sem vínculo'], ['review', 'Com pendências de revisão'], ['linked', 'Com unidades vinculadas']].map(([value, label]) => <Button key={value} variant={filters.relationship === value ? 'default' : 'outline'} aria-pressed={filters.relationship === value} onClick={() => setFilters({ ...filters, relationship: value })}>{label}</Button>)}{Object.values(filters).some(Boolean) && <Button variant="ghost" onClick={() => setFilters({})}>Limpar filtros</Button>}</nav>
+    {filters.produto_id && <p className="text-sm">Exibindo anúncios do produto #{filters.produto_id}.</p>}
     <Card><CardContent className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-[1.3fr_1.3fr_1fr_auto_auto] lg:items-end">
       <label className="grid gap-1 text-sm">{accounts.length ? 'Conta do marketplace' : 'ID da conta integrada'}
         {accounts.length ? <select className="h-10 rounded-md border bg-background px-3" value={filters.integration_id} onChange={e => setFilters({ ...filters, integration_id: e.target.value })}>
@@ -104,16 +100,20 @@ export default function AnunciosPage() {
       </label>
       <label className="grid gap-1 text-sm">Situação
         <select className="h-10 rounded-md border bg-background px-3" value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })}>
-          <option value="">Todas</option><option value="ativo">Ativo</option><option value="pausado">Pausado</option><option value="encerrado">Encerrado</option><option value="desconhecido">Desconhecido</option>
+          <option value="">Todas</option><option value="ativo">Ativo</option><option value="pausado">Pausado</option><option value="encerrado">Encerrado</option><option value="em_revisao">Em revisão</option><option value="desconhecido">Desconhecido</option>
         </select>
       </label>
-      <Button variant="outline" onClick={() => load(data.page)}><RefreshCw className="mr-2 h-4 w-4" />Atualizar</Button>
-      <Button disabled={syncing || !filters.integration_id} onClick={syncAccount}>{syncing ? 'Enfileirando…' : 'Sincronizar conta'}</Button>
+      <Button variant="outline" disabled={loading} onClick={() => load(data.page)}><RefreshCw className="mr-2 h-4 w-4" />Atualizar</Button>
+      <Button disabled={!canEdit || syncing || !filters.integration_id} onClick={() => syncAccount(false)}>{syncing ? 'Enfileirando…' : 'Sincronizar conta'}</Button>
+      <Button variant="outline" disabled={!canEdit || syncing || !filters.integration_id} onClick={() => syncAccount(true)}>Reconciliar vínculos</Button>
       {selectedAccount && <div className="flex items-center gap-2 text-sm text-muted-foreground sm:col-span-2 lg:col-span-5"><Store className="h-4 w-4" /><span>{selectedAccount.name}</span><span>·</span><SyncState sync={selectedAccount.sync} /></div>}
     </CardContent></Card>
 
-    {!data.rows.length && <Card><CardContent className="p-8 text-center text-sm text-muted-foreground">Nenhum anúncio encontrado. Se esta conta ainda não foi importada, selecione-a e sincronize.</CardContent></Card>}
-    {data.rows.map(header => <Card key={header.id}>
+    {!selectedAccount && accounts.length > 0 && <div className="grid gap-3 sm:grid-cols-2">{accounts.map(account => <div key={account.id} className="rounded-lg border p-3"><p className="text-sm font-medium">{account.name}</p><SyncState sync={account.sync} /></div>)}</div>}
+    {loading && <p role="status">Carregando anúncios…</p>}
+    {error && <p role="alert" className="text-red-700">{error}</p>}
+    {!loading && !error && !data.rows.length && <Card><CardContent className="p-8 text-center text-sm text-muted-foreground">Nenhum anúncio encontrado. Se esta conta ainda não foi importada, selecione-a e sincronize.</CardContent></Card>}
+    {!error && data.rows.map(header => <Card key={header.id}>
       <CardHeader className="flex flex-row items-start gap-4 pb-3">
         {header.imagem_comercial ? <img src={header.imagem_comercial} alt="" className="h-20 w-20 shrink-0 rounded-md border object-cover" /> : <div className="grid h-20 w-20 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground"><Store className="h-7 w-7" /></div>}
         <div className="min-w-0 flex-1">
@@ -128,20 +128,10 @@ export default function AnunciosPage() {
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        {(header.unidades || []).map(unit => <div key={unit.id} className="grid gap-3 border-t pt-3 md:grid-cols-[1fr_1.4fr_auto] md:items-end">
-          <div className="space-y-1 text-sm">
-            <p className="font-medium">{Object.entries(unit.atributos_variacao || {}).map(([name, value]) => `${name}: ${value}`).join(' · ') || (unit.variacao_externa_id ? 'Variação sem atributos descritivos' : 'Anúncio sem variações')}</p>
-            {unit.variacao_externa_id && <p className="text-xs text-muted-foreground">ID da variação: {unit.variacao_externa_id}</p>}
-            <p className="text-muted-foreground">SKU do marketplace: {unit.sku_externo || 'não informado pelo anúncio'}</p>
-            <p className="text-muted-foreground">Preço: {money(unit.preco_observado)} · Disponibilidade: {unit.disponibilidade_observada || 'não informada'}</p>
-            {unit.produto_id ? <p>Produto vinculado: <Link className="font-medium underline" to={`/produtos/${unit.produto_id}/editar`}>{unit.produto?.nome || `Produto ${unit.produto_id}`}{unit.produto?.sku ? ` · SKU ${unit.produto.sku}` : ''}</Link><span className="ml-1 text-xs text-muted-foreground">#{unit.produto_id}</span></p> : <p className="font-medium text-amber-700">Vínculo de produto pendente</p>}
-          </div>
-          <ProductSearchInput value={selected[unit.id]?.name || ''} selectedProductId={selected[unit.id]?.id} onChange={() => setSelected(current => ({ ...current, [unit.id]: null }))} onProductSelect={product => setSelected(current => ({ ...current, [unit.id]: product }))} onlyMarketable placeholder="Buscar produto pelo nome ou SKU" />
-          <Button disabled={busy === unit.id || !selected[unit.id]} onClick={() => linkUnit(unit, header)}>{busy === unit.id ? 'Salvando…' : 'Salvar vínculo'}</Button>
-        </div>)}
+        {(header.unidades || []).map(unit => <AnnouncementUnit key={unit.id} unit={unit} header={header} canEdit={canEdit} onSaved={() => load(data.page)} />)}
         {!header.unidades?.length && <p className="text-sm text-amber-700">Este anúncio ainda não possui unidades sincronizadas.</p>}
       </CardContent>
     </Card>)}
-    <div className="flex items-center justify-between"><span className="text-sm text-muted-foreground">Página {data.page} · {data.total} anúncios</span><div className="flex gap-2"><Button variant="outline" disabled={data.page <= 1} onClick={() => load(data.page - 1)}>Anterior</Button><Button variant="outline" disabled={data.page * 50 >= data.total} onClick={() => load(data.page + 1)}>Próxima</Button></div></div>
+    <div className="flex items-center justify-between"><span className="text-sm text-muted-foreground">Página {data.page} · {data.total} anúncios</span><div className="flex gap-2"><Button variant="outline" disabled={loading || data.page <= 1} onClick={() => load(data.page - 1)}>Anterior</Button><Button variant="outline" disabled={loading || data.page * 50 >= data.total} onClick={() => load(data.page + 1)}>Próxima</Button></div></div>
   </div>;
 }

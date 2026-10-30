@@ -33,6 +33,7 @@ import ExternalIdentifiersManager from '@/components/produtos/ExternalIdentifier
 import LocalArtworkSection from '@/components/produtos/LocalArtworkSection';
 import VariationManager from '@/components/produtos/VariationManager';
 import ProductAnnouncementsPanel from '@/components/produtos/ProductAnnouncementsPanel';
+import ProductImageGallery from '@/components/produtos/ProductImageGallery';
 
 function ProdutoFormPage() {
   const { id: produto_id } = useParams();
@@ -70,6 +71,8 @@ function ProdutoFormPage() {
       requires_personalization: false,
       status: 'rascunho',
       formato: 'simples',
+      papel_catalogo: 'individual',
+      estrutura: 'simples',
       herdar_dados_pai: true,
       herdar_bom_pai: true,
       tags: [],
@@ -121,6 +124,11 @@ function ProdutoFormPage() {
       try {
         const data = await ProductService.getById(produto_id);
         const product = data.produto;
+        if (product.parent_id) {
+          const family = await ProductService.getFamily(product.parent_id);
+          product.familia_versao = family.catalogo_versao;
+        }
+
         
         const productCategory = (data.categorias || []).find(
           category => String(category.id) === String(product.categoria_id),
@@ -157,6 +165,8 @@ function ProdutoFormPage() {
           requires_personalization: !!product.requires_personalization,
           status: product.status || 'ativo',
           formato: formatoProduto,
+          papel_catalogo: product.papel_catalogo || (product.parent_id ? 'variacao' : formatoProduto === 'com_variacao' ? 'modelo' : 'individual'),
+          estrutura: product.estrutura || (formatoProduto === 'kit' ? 'kit' : formatoProduto === 'composicao' ? 'manufaturado' : 'simples'),
           herdar_dados_pai: product.herdar_dados_pai !== undefined ? product.herdar_dados_pai : true,
           herdar_bom_pai: product.herdar_bom_pai !== undefined ? product.herdar_bom_pai : true,
           external_product_links: product.external_product_links || { skus: [], names: [], ids: [] },
@@ -209,6 +219,7 @@ function ProdutoFormPage() {
       const formData = data;
       const isDraftStage = String(productData?.estagio || '').toUpperCase() === 'RASCUNHO';
       const payload = {
+        ...(productData?.parent_id ? { expected_version: productData.familia_versao } : {}),
         ...formData,
         // A constraint do banco não permite ativar um produto ainda em
         // RASCUNHO. O status comercial só pode avançar quando o cadastro
@@ -224,6 +235,10 @@ function ProdutoFormPage() {
         toast.success("Produto atualizado com sucesso!");
         // Refresh product data to ensure consistency
         const updatedData = await ProductService.getById(produto_id);
+        if (updatedData.produto.parent_id) {
+          const family = await ProductService.getFamily(updatedData.produto.parent_id);
+          updatedData.produto.familia_versao = family.catalogo_versao;
+        }
         setProductData(updatedData.produto);
         if (isDraftStage) {
           form.setValue('status', updatedData.produto.status || 'rascunho');
@@ -419,6 +434,18 @@ function ProdutoFormPage() {
         </Card>
       )}
 
+      {productData?.atributos?.catalog_merged_into && <Card className="border-amber-300"><CardContent className="p-4 text-sm"><p className="font-medium">Este registro foi consolidado em outro produto.</p><Link className="mt-2 inline-block underline" to={`/produtos/${productData.atributos.catalog_merged_into}/editar`}>Abrir cadastro canônico #{productData.atributos.catalog_merged_into}</Link><p className="mt-1 text-muted-foreground">Os anúncios estão relacionados ao cadastro canônico. Este registro inativo preserva a referência anterior.</p></CardContent></Card>}
+      {activeTab === 'general' && productData && <ProductImageGallery key={productData.id} product={productData} />}
+      {activeTab === 'general' && productData?.atributos?.catalog_import_pending?.length > 0 && (
+        <Card className="mb-6 border-amber-300">
+          <CardHeader><CardTitle>Pendências da importação</CardTitle></CardHeader>
+          <CardContent>
+            <ul className="list-disc space-y-1 pl-5 text-sm">
+              {productData.atributos.catalog_import_pending.map((issue) => <li key={issue}>{issue}</li>)}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
       <Form {...form}>
         {/* Conditional rendering based on activeTab */}
         {activeTab === "general" && (
@@ -485,6 +512,8 @@ function ProdutoFormPage() {
                           <Select
                             onValueChange={(value) => {
                               field.onChange(value);
+                              form.setValue('papel_catalogo', value === 'com_variacao' ? 'modelo' : value === 'variacao' ? 'variacao' : 'individual');
+                              form.setValue('estrutura', value === 'kit' ? 'kit' : value === 'composicao' ? 'manufaturado' : 'simples');
                               if (value === 'composicao' || value === 'kit') {
                                 form.setValue('status', 'rascunho', { shouldDirty: true });
                               }
@@ -693,6 +722,25 @@ function ProdutoFormPage() {
                   </div>
 
                   {/* Additional Options */}
+                  <div className="grid gap-4 rounded-lg border p-4 sm:grid-cols-2">
+                    <FormField control={form.control} name="papel_catalogo" render={({ field }) => (
+                      <FormItem><FormLabel>Papel no catálogo</FormLabel><Select value={field.value} disabled={!!productData?.parent_id} onValueChange={value => {
+                        field.onChange(value);
+                        form.setValue('formato', value === 'modelo' ? 'com_variacao' : value === 'variacao' ? 'variacao' : form.watch('estrutura') === 'kit' ? 'kit' : form.watch('estrutura') === 'manufaturado' ? 'composicao' : 'simples');
+                      }}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent>
+                        <SelectItem value="individual">Individual</SelectItem><SelectItem value="modelo">Modelo de família</SelectItem>
+                        {productData?.parent_id && <SelectItem value="variacao">Variação</SelectItem>}
+                      </SelectContent></Select><FormMessage /></FormItem>
+                    )} />
+                    <FormField control={form.control} name="estrutura" render={({ field }) => (
+                      <FormItem><FormLabel>Estrutura</FormLabel><Select value={field.value} onValueChange={value => {
+                        field.onChange(value);
+                        if (form.watch('papel_catalogo') === 'individual') form.setValue('formato', value === 'kit' ? 'kit' : value === 'manufaturado' ? 'composicao' : 'simples');
+                      }}><FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl><SelectContent>
+                        <SelectItem value="simples">Simples</SelectItem><SelectItem value="manufaturado">Manufaturado</SelectItem><SelectItem value="kit">Kit</SelectItem>
+                      </SelectContent></Select><FormMessage /></FormItem>
+                    )} />
+                  </div>
                   <div className="border rounded-lg p-4">
                     <h3 className="text-lg font-medium mb-4 text-primary">Opções Adicionais</h3>
                     <FormField
@@ -858,7 +906,8 @@ function ProdutoFormPage() {
                         produto_id,
                         variationsData.variations_config,
                         variationsData.variations_data,
-                        variationsData.inativar_ids
+                        variationsData.inativar_ids,
+                        variationsData.expected_version
                       );
                       toast.success("Variações salvas com sucesso!");
                       // Refresh the product data
@@ -867,6 +916,7 @@ function ProdutoFormPage() {
                     } catch (error) {
                       console.error("Error saving variations:", error);
                       toast.error(`Erro ao salvar variações: ${error.message}`);
+                      throw error;
                     }
                   } else {
                     toast.error("Salve o produto primeiro antes de adicionar variações.");

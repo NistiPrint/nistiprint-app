@@ -133,10 +133,10 @@ const ProductService = {
   },
 
   // Variations Operations
-  createProductWithVariations: async (productId, variationsConfig, variationsData, deactivateIds = []) => {
-    const current = await api.get(`/produtos/${productId}/familia`);
+  createProductWithVariations: async (productId, variationsConfig, variationsData, deactivateIds = [], expectedVersion) => {
+    if (!Number.isInteger(expectedVersion)) throw new Error('Recarregue a família antes de salvar.');
     const response = await api.put(`/produtos/${productId}/familia`, {
-      expected_version: current.data.data.catalogo_versao,
+      expected_version: expectedVersion,
       eixos: variationsConfig,
       variacoes: variationsData,
       inativar_ids: deactivateIds

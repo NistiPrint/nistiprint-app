@@ -79,7 +79,7 @@ def get(integration, resource, params=None, headers=None, request_json=None):
     headers = headers or {}
     response = request_json(requests.get, url, provider=platform, resource_type='analytics', params=params, headers=headers)
     if not response.ok:
-        raise CollectionError(response.error_type or 'provider_error', response.status_code in {401, 403} or (response.status_code == 404 and resource.startswith('/advertising/')))
+        raise CollectionError(response.error_type or 'provider_error', response.status_code in {401, 403} or (response.status_code == 404 and resource.startswith('/advertising/')), retry_after=response.retry_after)
     value = response.value or {}
     if value.get('error'):
         code = str(value['error'])

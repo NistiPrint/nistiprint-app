@@ -17,6 +17,19 @@ class FakeRedis:
 
 
 class SignatureVerdictTest(unittest.TestCase):
+    def test_unsupported_webhook_is_finalized_and_acknowledged_without_retry(self):
+        item = {'webhook_event_id':123,'event_id':'ignored-topic'}
+        result = {'status':'skipped','event_status':'skipped_unsupported_topic','retryable':False}
+        client = FakeRedis()
+        with patch.object(worker,'claim',return_value=item), \
+             patch.object(worker,'finalize_event') as finalize, \
+             patch.object(worker,'complete',return_value=True) as complete, \
+             patch.object(worker,'_retry') as failure:
+            worker._consume_once('ready','processing',lambda _:result,client=client)
+        finalize.assert_called_once_with(123,'skipped_unsupported_topic',result=result)
+        complete.assert_called_once_with(item,'processing',client)
+        failure.assert_not_called()
+
     def test_shutdown_finishes_current_iteration_and_stops_new_claims(self):
         worker.SHUTDOWN_REQUESTED.clear()
         client = FakeRedis()

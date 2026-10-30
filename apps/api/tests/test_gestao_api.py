@@ -86,6 +86,25 @@ class ApiTests(unittest.TestCase):
     def test_events_require_idempotency_uuid(self):
         self.assertEqual(self.client.post('/api/v2/gestao/apontamentos',json={'pedido_id':1,'stage':'producao'}).status_code,400)
 
+    def test_historical_preview_requires_admin_before_database_access(self):
+        with patch.object(gestao,'supabase_db') as db:
+            response = self.client.post('/api/v2/gestao/itens/reprocessamento/previa',json={})
+        self.assertEqual(response.status_code,403)
+        db.rpc.assert_not_called()
+
+    def test_performance_rejects_unrecognized_sort(self):
+        with patch.object(gestao,'supabase_db') as db:
+            response = self.client.get('/api/v2/gestao/desempenho?sort=sql&direction=desc')
+        self.assertEqual(response.status_code,400)
+        db.rpc.assert_not_called()
+
+    def test_reprocessing_rejects_wrong_account_and_invalid_period(self):
+        with patch.object(gestao,'get_current_user',return_value={'id':1,'is_admin':True}),patch.object(gestao,'supabase_db') as db:
+            response = self.client.post('/api/v2/gestao/itens/reprocessamento/previa',json={
+                'scope':{'account_id':-1,'date_from':'2026-10-01','date_to':'2026-10-02'},'motivo':'Revisão'})
+        self.assertEqual(response.status_code,400)
+        db.rpc.assert_not_called()
+
 
 if __name__=='__main__':
     unittest.main()

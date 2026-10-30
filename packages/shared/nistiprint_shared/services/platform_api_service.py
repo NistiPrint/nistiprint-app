@@ -31,6 +31,42 @@ class PlatformApiService:
             "lojaintegrada": "nistiprint_shared.services.platform_drivers.lojaintegrada",
         }
 
+    def _catalog_call(self, integration_id, operation, *args):
+        """Catalog calls always resolve exactly the requested account."""
+        from nistiprint_shared.database.supabase_db_service import supabase_db
+        from nistiprint_shared.services.marketplace_contracts import ProviderCallResult
+        from nistiprint_shared.services.marketplace_catalog_sync_service import MarketplaceCatalogSyncService, DRIVERS
+        rows = supabase_db.table('installed_integrations').select('*').eq('id', int(integration_id)).eq('is_active', True).execute().data or []
+        if not rows:
+            return ProviderCallResult(False, resource_type='catalog', error_type='account_missing')
+        account = rows[0]
+        provider = (account.get('platform_slug') or account.get('module_id') or '').lower()
+        module = DRIVERS.get(provider)
+        if not module:
+            return ProviderCallResult(False, provider=provider, resource_type='catalog', error_type='catalog_adapter_unavailable')
+        driver = importlib.import_module(f'nistiprint_shared.services.platform_drivers.{module}')
+        method = getattr(driver, operation, None)
+        if method is None:
+            return ProviderCallResult(False, provider=provider, resource_type='catalog', error_type='capability_unavailable')
+        hydrated = credential_resolver_service.hydrate_integration(account)
+        hydrated['_catalog_reserve'] = MarketplaceCatalogSyncService(supabase_db)._budget_reserver(account)
+        return method(hydrated, *args)
+
+    def get_catalog_capabilities(self, integration_id):
+        return self._catalog_call(integration_id, 'get_catalog_capabilities')
+
+    def list_listings(self, integration_id, cursor=None):
+        return self._catalog_call(integration_id, 'list_listings', cursor)
+
+    def get_listing_details(self, integration_id, item_ids):
+        return self._catalog_call(integration_id, 'get_listing_details', item_ids)
+
+    def get_listing_variations(self, integration_id, item_id):
+        return self._catalog_call(integration_id, 'get_listing_variations', item_id)
+
+    def get_listing_statistics(self, integration_id, resources, period):
+        return self._catalog_call(integration_id, 'get_listing_statistics', resources, period)
+
     def _get_driver(self, module_id: str):
         driver_path = self.drivers.get(module_id)
         if not driver_path:

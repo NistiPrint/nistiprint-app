@@ -200,7 +200,7 @@ def get_mercado_livre_module_definition():
             }
         },
         auth_config={
-            "oauth_authorization_url": "https://auth.mercadolibre.com.br/authorization",
+            "oauth_authorization_url": "https://auth.mercadolivre.com.br/authorization",
             "oauth_token_url": "https://api.mercadolibre.com/oauth/token",
         },
         data_mapping_spec={

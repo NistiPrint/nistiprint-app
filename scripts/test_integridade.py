@@ -30,6 +30,8 @@ os.environ["SUPABASE_SERVICE_KEY"] = (
 )
 
 TEST_MODULES = (
+    "tests.services.test_bom_kit_validation",
+    "tests.services.test_product_import_metadata",
     "tests.services.test_alocacao_reserva_producao",
     "tests.services.test_integration_secret_service",
     "tests.services.test_installed_integration_service",

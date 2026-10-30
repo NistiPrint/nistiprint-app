@@ -93,6 +93,9 @@ def api_criar():
             'parent_id': data.get('parent_id'), 'herdar_dados_pai': data.get('herdar_dados_pai', True),
             'herdar_bom_pai': data.get('herdar_bom_pai', True), 'tags': [{'tag_id': tid} for tid in data.get('tags', []) if tid]
         }
+        for field in ('papel_catalogo','estrutura','expected_version','variation_values'):
+            if field in data:
+                dados_produto[field] = data[field]
         if not dados_produto['sku'] or not dados_produto['name']: return jsonify({'error': 'SKU e Nome são obrigatórios'}), 400
         produto = product_service.create(dados_produto)
         return jsonify({'success': True, 'message': f'Produto "{produto.get("nome", produto.get("name"))}" criado!', 'produto_id': produto['id']}), 201
@@ -201,11 +204,15 @@ def api_editar(produto_id):
             dados['parent_id'] = data['parent_id']
         if 'formato' in data:
             dados['formato'] = data['formato']
+        for field in ('papel_catalogo','estrutura','expected_version','variation_values','price','preco_venda'):
+            if field in data:
+                dados[field] = data[field]
         if not dados['sku'] or not dados['name']: return jsonify({'error': 'SKU e Nome são obrigatórios'}), 400
         p_atualizado = product_service.update(produto_id, dados)
         return jsonify({'success': True, 'message': 'Produto atualizado!', 'produto': p_atualizado})
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        from routes.catalogo_api import _error
+        return _error(e)
 
 @produtos_api_bp.route('/<produto_id>', methods=['DELETE'])
 def api_deletar(produto_id):

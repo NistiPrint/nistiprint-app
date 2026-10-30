@@ -12,7 +12,7 @@ class AnuncioService:
         supported = []
         for row in rows:
             platform = (row.get('platform_slug') or row.get('module_id') or '').lower()
-            if platform != 'mercadolivre':
+            if platform not in {'mercadolivre', 'shopee'}:
                 continue
             supported.append({
                 'id': row['id'],
@@ -37,11 +37,17 @@ class AnuncioService:
         ).in_('id', integration_ids).execute().data or [] if integration_ids else []
         integration_by_id = {row['id']: row for row in integrations}
         all_units = [unit for header in headers for unit in units_by_header.get(header['id'], [])]
+        unit_ids = [unit['id'] for unit in all_units]
+        pending = self.db.table('marketplace_anuncio_pendencias').select('*').in_('unidade_id', unit_ids).is_('resolved_at', 'null').execute().data or [] if unit_ids else []
+        history = self.db.table('marketplace_anuncio_vinculos_historico').select('*').in_('unidade_anuncio_id', unit_ids).order('ocorrido_em', desc=True).limit(200).execute().data or [] if unit_ids else []
+        pending_by_id = {row['unidade_id']: row for row in pending}
         product_ids = list({unit.get('produto_id') for unit in all_units if unit.get('produto_id') is not None})
-        products = self.db.table('produtos').select('id,nome,sku').in_('id', product_ids).execute().data or [] if product_ids else []
+        products = self.db.table('produtos').select('id,nome,sku,status').in_('id', product_ids).execute().data or [] if product_ids else []
         product_by_id = {row['id']: row for row in products}
         for unit in all_units:
             unit['produto'] = product_by_id.get(unit.get('produto_id'))
+            unit['pendencia'] = pending_by_id.get(unit['id'])
+            unit['historico'] = [entry for entry in history if entry['unidade_anuncio_id'] == unit['id']]
         for header in headers:
             integration = integration_by_id.get(header.get('integration_id')) or {}
             platform = integration.get('platform_slug') or integration.get('module_id') or 'Marketplace'
@@ -50,15 +56,46 @@ class AnuncioService:
             header['unidades'] = units_by_header.get(header['id'], [])
         return headers
 
-    def list(self, *, page=1, per_page=50, integration_id=None, produto_id=None, status=None, query=None):
+    def _relationship_ids(self, relationship, integration_id=None):
+        """Read every matching unit; never limit relationship filters to the visible page."""
+        ids = set()
+        offset = 0
+        while True:
+            if relationship == 'review':
+                q = self.db.table('marketplace_anuncio_pendencias').select('unidade_id').is_('resolved_at', 'null')
+                if integration_id:
+                    q = q.eq('integration_id', int(integration_id))
+            else:
+                q = self.db.table('produto_anuncios').select('id,anuncio_id,produto_id')
+                if integration_id:
+                    q = q.eq('integration_id', int(integration_id))
+            rows = q.order('unidade_id' if relationship == 'review' else 'id').range(offset, offset + 499).execute().data or []
+            if relationship == 'review':
+                unit_ids = [row['unidade_id'] for row in rows]
+                units = self.db.table('produto_anuncios').select('anuncio_id').in_('id', unit_ids).execute().data or [] if unit_ids else []
+                ids.update(row['anuncio_id'] for row in units if row.get('anuncio_id') is not None)
+            else:
+                ids.update(row['anuncio_id'] for row in rows if row.get('anuncio_id') is not None and bool(row.get('produto_id')) == (relationship == 'linked'))
+            if len(rows) < 500:
+                return ids
+            offset += 500
+
+    def list(self, *, page=1, per_page=50, integration_id=None, produto_id=None, status=None, query=None, relationship=None):
         page, per_page = max(1, int(page)), min(100, max(1, int(per_page)))
+        if relationship and relationship not in {'linked', 'unlinked', 'review'}:
+            raise ValueError('Filtro de vínculo inválido.')
         if produto_id is not None:
             linked = self.db.table('produto_anuncios').select('anuncio_id').eq('produto_id', int(produto_id)).execute().data or []
             announcement_ids = list({row['anuncio_id'] for row in linked if row.get('anuncio_id') is not None})
             if not announcement_ids:
-                return {'rows': [], 'page': page, 'per_page': per_page, 'total': 0}
+                return {'rows': [], 'page': page, 'per_page': per_page, 'total': 0, 'accounts': self.accounts()}
         else:
             announcement_ids = None
+        if relationship:
+            matching = self._relationship_ids(relationship, integration_id)
+            announcement_ids = list(matching if announcement_ids is None else matching.intersection(announcement_ids))
+            if not announcement_ids:
+                return {'rows': [], 'page': page, 'per_page': per_page, 'total': 0, 'accounts': self.accounts()}
         q = self.db.table('marketplace_anuncios').select('*', count='exact').order('id', desc=True)
         if integration_id:
             q = q.eq('integration_id', int(integration_id))

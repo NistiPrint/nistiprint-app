@@ -58,6 +58,8 @@ export default function GestaoPage() {
   const [search,setSearch]=useSearchParams();
   const {isAdmin,hasPermission}=useAuth();
   const canFinance=isAdmin()||hasPermission('gestao_financeiro','ler');
+  const canPerformance=isAdmin()||hasPermission('relatorios','ler');
+  const [performanceSort,setPerformanceSort]=useState('sales:desc');
   const [data,setData]=useState(null),[error,setError]=useState(''),[loading,setLoading]=useState(true),[revision,setRevision]=useState(0);
   const [draft,setDraft]=useState(()=>({start:search.get('start')||initialStart(),end:search.get('end')||dateHere(),marketplace:search.get('marketplace')||'',account_id:search.get('account_id')||'',product_id:search.get('product_id')||'',category_id:search.get('category_id')||'',logistics:search.get('logistics')||''}));
   const [notice,setNotice]=useState(''),[details,setDetails]=useState(null),[detailPage,setDetailPage]=useState(1),[busy,setBusy]=useState(false);
@@ -78,17 +80,19 @@ export default function GestaoPage() {
     return ()=>controller.abort();
   },[query,revision]);
   useEffect(()=>{
-    if(area!=='produtos')return;
+    if(area!=='produtos'||!canPerformance)return;
     const controller=new AbortController();
     setPerformanceLoading(true);setPerformanceError('');
-    const params=new URLSearchParams({date_from:draft.start,date_to:draft.end,group_by:performanceGroup,page:String(performancePage),per_page:'100'});
-    if(draft.marketplace)params.set('platform',draft.marketplace);
-    if(draft.account_id)params.set('account_id',draft.account_id);
-    if(draft.product_id)params.set('product_id',draft.product_id);
+    const applied=new URLSearchParams(query);
+    const params=new URLSearchParams({date_from:applied.get('start')||initialStart(),date_to:applied.get('end')||dateHere(),group_by:performanceGroup,page:String(performancePage),per_page:'100'});
+    const [sort,direction]=performanceSort.split(':');params.set('sort',sort);params.set('direction',direction);
+    if(applied.get('marketplace'))params.set('platform',applied.get('marketplace'));
+    if(applied.get('account_id'))params.set('account_id',applied.get('account_id'));
+    if(applied.get('product_id'))params.set('product_id',applied.get('product_id'));
     Object.entries(performanceFilters).forEach(([key,value])=>{if(value)params.set(key,value);});
     api(`desempenho?${params}`,{signal:controller.signal}).then(r=>setPerformance(r.data)).catch(e=>{if(e.name!=='AbortError')setPerformanceError(e.message);}).finally(()=>{if(!controller.signal.aborted)setPerformanceLoading(false);});
     return ()=>controller.abort();
-  },[area,draft.start,draft.end,draft.marketplace,draft.account_id,draft.product_id,performanceGroup,performancePage,performanceFilters,revision]);
+  },[area,query,performanceGroup,performancePage,performanceFilters,revision,performanceSort,canPerformance]);
   const act=async(path,payload,method='POST')=>{
     setBusy(true);setNotice('');
     try { const result=await api(path,{method,body:JSON.stringify(payload)});setNotice(result.message||'Salvo. A atualização dos indicadores ocorre em lotes.');setRevision(v=>v+1);return true; }
@@ -167,19 +171,23 @@ export default function GestaoPage() {
       </>}
       {area==='produtos'&&<>
         <Panel title="Desempenho comercial por produto e anúncio">
+          {!canPerformance && <p role="alert">Permissão de leitura de relatórios necessária para o detalhamento.</p>}
           <p className="mb-3 text-xs text-muted-foreground">Detalha fatos comerciais por pedido e unidade externa. Tráfego permanece no nível do anúncio e não é distribuído entre variações.</p>
           <div className="mb-4 flex flex-wrap items-end gap-3">
             <label className="grid gap-1 text-xs font-medium">Agrupar por<select className="h-10 rounded-md border bg-background px-3 text-sm" value={performanceGroup} onChange={e=>{setPerformanceGroup(e.target.value);setPerformanceFilters({});setPerformancePage(1);}}>{[['plataforma','Plataforma'],['conta','Conta'],['modelo','Modelo'],['produto','Produto/SKU'],['anuncio','Anúncio'],['variacao','Variação externa']].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
+            <label className="grid gap-1 text-xs font-medium">Ordenação<select className="h-10 rounded-md border bg-background px-3 text-sm" value={performanceSort} onChange={e=>{setPerformanceSort(e.target.value);setPerformancePage(1);}}>{[['sales:desc','Maior valor vendido'],['sales:asc','Menor valor vendido'],['orders:desc','Mais pedidos'],['units:desc','Mais unidades'],['group_label:asc','Nome A–Z']].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
             {Object.keys(performanceFilters).length>0&&<Button variant="outline" onClick={clearPerformanceDrill}>Voltar ao resumo</Button>}
             {performanceLoading&&<span role="status" className="text-xs text-muted-foreground">Carregando detalhamento…</span>}
           </div>
           {performanceError?<div role="alert" className="rounded-lg border border-amber-400/60 bg-warning-soft p-3 text-sm">Detalhamento indisponível: {performanceError}</div>:<>
             <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><MetricCard label="Valor dos itens" value={performance?.totals?.currency_count>1?'Por moeda':currencyMoney(performance?.totals?.sales,performance?.totals?.sales_by_currency?.[0]?.currency==='desconhecida'?null:performance?.totals?.sales_by_currency?.[0]?.currency)} icon={TrendingUp} description={`${numeric(performance?.coverage?.known_subtotals)} de ${numeric(performance?.coverage?.item_groups)} grupos com subtotal conhecido`}/><MetricCard label="Pedidos elegíveis" value={numeric(performance?.totals?.orders)} icon={BarChart3} accent="aqua"/><MetricCard label="Unidades" value={numeric(performance?.totals?.units)} icon={Sparkles} accent="pink"/><MetricCard label="Cancelamentos" value={numeric(performance?.totals?.cancellations)} icon={AlertTriangle} accent="yellow"/><MetricCard label="Devoluções / reembolsos" value={`${numeric(performance?.totals?.returns)} / ${numeric(performance?.totals?.refunds)}`} icon={AlertTriangle} accent="purple" description="Separados das vendas elegíveis"/></div>
             {performance?.totals?.currency_count>1&&<p className="mb-3 text-xs text-muted-foreground">Moedas mantidas separadas: {(performance.totals.sales_by_currency||[]).map(item=>`${item.currency}: ${currencyMoney(item.sales,item.currency==='desconhecida'?null:item.currency)}`).join(' · ')}</p>}
+            <p className="mb-2 text-xs text-muted-foreground">{numeric(performance?.coverage?.orders_materialized)} pedidos materializados no recorte · {numeric(performance?.coverage?.linked_item_groups)} grupos vinculados.</p>
             <p className="mb-2 text-xs text-muted-foreground">Fatos atualizados {performance?.updated_at?new Date(performance.updated_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'sem horário disponível'}.</p>
+            {performance?.totals?.currency_count===1 && !!performance?.series?.length && <Panel title="Evolução do desempenho no recorte"><Chart data={performance.series} x="day" y="sales" label="Valor conhecido dos itens" format={value=>currencyMoney(value,performance.totals.sales_by_currency?.[0]?.currency)}/></Panel>}
             <Table rows={performance?.rows||[]} columns={[{key:'group_label',label:'Agrupamento',render:(v,r)=><button className="text-left font-medium text-primary hover:underline disabled:cursor-default disabled:text-foreground" disabled={!performanceRowDrillable(r)} onClick={()=>drillPerformance(r)}>{v||'Não identificado'}{performanceRowDrillable(r)&&<span className="block text-xs font-normal text-muted-foreground">Abrir detalhamento</span>}</button>},{key:'currency',label:'Moeda',render:v=>v||'Não informada'},{key:'orders',label:'Pedidos',render:numeric},{key:'units',label:'Unidades',render:numeric},{key:'sales',label:'Valor dos itens',render:(v,r)=>currencyMoney(v,r.currency)},{key:'known_subtotals',label:'Subtotais conhecidos',render:(v,r)=>`${numeric(v)} / ${numeric(r.item_groups)}`}]}/>
-            <div className="mt-3 flex items-center gap-3"><Button variant="outline" disabled={performancePage<=1||performanceLoading} onClick={()=>setPerformancePage(p=>p-1)}>Anterior</Button><span className="text-sm">Página {performancePage}</span><Button variant="outline" disabled={(performance?.rows||[]).length<100||performanceLoading} onClick={()=>setPerformancePage(p=>p+1)}>Próxima</Button></div>
-            {!!performance?.traffic?.length&&<Panel title="Tráfego no período"><p className="mb-2 text-xs text-muted-foreground">Métricas compartilhadas por anúncio; contadores acumulados e totais entre variações não são somados. A razão pedidos/visitas aparece somente com visitas positivas e vendas atribuídas ao mesmo anúncio e dia.</p><Table rows={performance.traffic} columns={[{key:'day',label:'Data'},{key:'resource_id',label:'Anúncio externo'},{key:'kind',label:'Tipo'},{key:'source',label:'Origem'},{key:'metrics',label:'Métricas',render:v=>Object.entries(v||{}).map(([k,n])=>`${k}: ${numeric(n)}`).join(' · ')||'Sem valores conhecidos'},{key:'order_visit_rate',label:'Pedidos / visitas',render:v=>v==null?'—':percent(v)},{key:'partial',label:'Cobertura',render:v=>v?'Parcial':'Completa'}]}/></Panel>}
+            <div className="mt-3 flex items-center gap-3"><Button variant="outline" disabled={performancePage<=1||performanceLoading} onClick={()=>setPerformancePage(p=>p-1)}>Anterior</Button><span className="text-sm">Página {performancePage} · {performance?.total_rows ?? 0} grupos</span><Button variant="outline" disabled={performancePage*100 >= (performance?.total_rows ?? 0)||performanceLoading} onClick={()=>setPerformancePage(p=>p+1)}>Próxima</Button></div>
+            {!!performance?.traffic?.length&&<Panel title="Tráfego no período"><p className="mb-2 text-xs text-muted-foreground">Métricas compartilhadas por anúncio; contadores acumulados e totais entre variações não são somados. A razão pedidos/visitas aparece somente com visitas positivas e vendas atribuídas ao mesmo anúncio, dia e calendário.</p><Table rows={performance.traffic} columns={[{key:'day',label:'Data'},{key:'resource_id',label:'Anúncio externo'},{key:'kind',label:'Tipo'},{key:'source',label:'Origem'},{key:'fuso_origem',label:'Calendário da origem'},{key:'metrics',label:'Métricas',render:v=>Object.entries(v||{}).map(([k,n])=>`${k}: ${numeric(n)}`).join(' · ')||'Sem valores conhecidos'},{key:'order_visit_rate',label:'Pedidos / visitas',render:v=>v==null?'—':percent(v)},{key:'partial',label:'Cobertura',render:v=>v?'Parcial':'Completa'}]}/></Panel>}
             {!performance?.traffic?.length&&<Panel title="Tráfego no período"><p className="text-sm text-muted-foreground">Sem métricas diárias disponíveis para este recorte. Ausência de coleta não representa zero visitas.</p></Panel>}
             {performance?.definitions&&<p className="mt-3 text-xs text-muted-foreground">{Object.entries(performance.definitions).map(([k,v])=>`${k}: ${v}`).join(' · ')}</p>}
           </>}

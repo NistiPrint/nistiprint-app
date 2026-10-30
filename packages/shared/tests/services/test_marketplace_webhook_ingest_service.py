@@ -258,6 +258,25 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
         self.assertEqual(result['provider_topic'], 'fbm_stock_operations')
         resolve.assert_not_called()
 
+    def test_meli_additional_topics_are_ignored_without_provider_calls_or_retries(self):
+        service = MarketplaceWebhookIngestService()
+        topics = ('items', 'items_prices', 'questions', 'invoices',
+                  'stock_locations', 'fbm_stock_operations', 'unknown_future_topic')
+        for topic in topics:
+            for resource in ('/items/MLB123', '/orders/123'):
+                with self.subTest(topic=topic, resource=resource), \
+                     patch.object(service, '_resolve_marketplace_integration') as resolve, \
+                     patch.object(meli_driver, 'get_order_detail') as provider:
+                    result = service._process_mercadolivre({
+                        'topic': topic, 'resource': resource, 'user_id': 207584268,
+                    }, correlation_id='additional-topics-test')
+                self.assertEqual(result['status'], 'skipped')
+                self.assertEqual(result['event_status'], 'skipped_unsupported_topic')
+                self.assertEqual(result['provider_topic'], topic)
+                self.assertFalse(result['retryable'])
+                resolve.assert_not_called()
+                provider.assert_not_called()
+
     def test_meli_collection_notification_resolves_order(self):
         service = MarketplaceWebhookIngestService()
         with patch.object(service, '_resolve_marketplace_integration', return_value=({'id': 12}, None)), \

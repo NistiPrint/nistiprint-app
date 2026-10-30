@@ -27,7 +27,7 @@ class ProductService:
         """
         Get products with batching to avoid N+1 connection issues.
         """
-        query = self.table.select("*", count="exact")
+        query = self.table.select("*", count="exact").is_('atributos->>catalog_merged_into', 'null')
 
         if only_marketable:
             marketable_ids = category_service.get_marketable_ids()
@@ -65,7 +65,7 @@ class ProductService:
         # --- BATCH FETCHING ---
         all_variants = {}
         if include_variants:
-            v_query = self.table.select("*").in_('parent_id', product_ids)
+            v_query = self.table.select("*").is_('atributos->>catalog_merged_into', 'null').in_('parent_id', product_ids)
             v_resp = supabase_db.execute_with_retry(v_query)
             for v in v_resp.data:
                 pid = str(v['parent_id'])
@@ -131,8 +131,17 @@ class ProductService:
         product['status'] = product.get('status') if product.get('status') is not None else attributes.get('status', 'ativo')
         
         # Preços e Estoque
-        product['cost_price'] = float(product.get('preco_custo') or pricing.get('cost_price', 0))
-        product['price'] = float(product.get('preco_venda') or pricing.get('price', 0))
+        # Older rows may contain explicit nulls in either the normalized or
+        # legacy pricing fields.  ``dict.get(key, 0)`` does not replace an
+        # existing null, so normalize the fallback before converting it.
+        cost_price = product.get('preco_custo')
+        if cost_price is None:
+            cost_price = pricing.get('cost_price')
+        price = product.get('preco_venda')
+        if price is None:
+            price = pricing.get('price')
+        product['cost_price'] = float(cost_price or 0)
+        product['price'] = float(price or 0)
         product['stock_min'] = product.get('estoque_minimo') or attributes.get('stock_min', 0)
         
         # Categoria
@@ -202,6 +211,8 @@ class ProductService:
 
     def create(self, product_data: Dict[str, Any]):
         """Create a new product."""
+        if product_data.get('parent_id'):
+            return self.create_variant(str(product_data['parent_id']), product_data)
         # Validate product consistency before creation
         validation_errors = self.validate_product_consistency(product_data)
         if validation_errors:
@@ -266,6 +277,17 @@ class ProductService:
         }
         data['precificacao'] = pricing
 
+        # One-off catalog imports carry provenance in the initial insert so a
+        # disconnect can be resumed safely without inventing zero-valued costs.
+        import_metadata = product_data.get('import_metadata')
+        if import_metadata:
+            if not isinstance(import_metadata, dict) or not import_metadata.get('key') or not import_metadata.get('run_id'):
+                raise ValueError('Import metadata requires key and run_id.')
+            data['atributos']['importacao_catalogo'] = dict(import_metadata)
+            data['preco_custo'] = None
+            data['preco_venda'] = None
+            data['precificacao'] = {'cost_price': None, 'price': None}
+
         response = self.table.insert(data).execute()
         if response.data:
             result = dict(response.data[0])
@@ -283,6 +305,9 @@ class ProductService:
         current = self.get_by_id(product_id)
         if not current:
             raise ValueError(f"Product {product_id} not found")
+
+        if current.get('parent_id'):
+            return self.update_variant(product_id, product_data)
 
         # Merge current and new data for validation
         merged_product_data = current.copy()
@@ -404,8 +429,8 @@ class ProductService:
         return self.get_by_id(product_id)
 
     def delete(self, product_id: str):
-        """Delete a product."""
-        response = self.table.delete().eq('id', product_id).execute()
+        """Preserve all historical references by explicitly inactivating."""
+        response = self.table.update({'status': 'inativo'}).eq('id', product_id).execute()
         
         # Clear cache since we've removed a product
         self.clear_cache()
@@ -416,7 +441,7 @@ class ProductService:
         """Search for products by name or SKU with contextual filtering."""
         try:
             # Start query
-            db_query = self.table.select("*")
+            db_query = self.table.select("*").is_('atributos->>catalog_merged_into', 'null')
 
             if query:
                 db_query = db_query.or_(f"nome.ilike.%{query}%,sku.ilike.%{query}%")
@@ -443,6 +468,7 @@ class ProductService:
                 pass
 
             if only_marketable:
+                db_query = db_query.neq('papel_catalogo', 'modelo')
                 marketable_ids = category_service.get_marketable_ids()
                 if marketable_ids:
                     # Supabase requires tuple format for 'in' filter with multiple values
@@ -1200,237 +1226,47 @@ class ProductService:
             logging.warning(f"Error getting variants for parent {parent_id}: {e}")
             return []
 
+    def _save_family_variants(self, parent_id, variants, expected_version=None, axes=None, deactivate=None):
+        from .catalogo_familia_service import CatalogoFamiliaService
+        catalog = CatalogoFamiliaService(supabase_db)
+        family = catalog.get(int(parent_id))
+        if family is None:
+            raise ValueError('Produto pai não encontrado.')
+        if expected_version is None:
+            raise ValueError('expected_version é obrigatório para alterar a família.')
+        config = axes if axes is not None else [
+            {'eixo_id': a['eixo_id'], 'opcao_ids': [o['id'] for o in a['opcoes']], 'posicao': a['posicao']}
+            for a in family['eixos']]
+        result = catalog.save(int(parent_id), {
+            'expected_version': expected_version, 'eixos': config,
+            'variacoes': variants, 'inativar_ids': deactivate or [],
+        })
+        self.clear_cache()
+        return result
+
     def create_variant(self, parent_id: str, variant_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new product variant."""
-        sku = variant_data.get('sku')
-        if not isinstance(sku, str) or not sku.strip():
-            raise ValueError('Informe o SKU da variação.')
-        sku = sku.strip()
-        existing = self.get_by_sku(sku)
-        if existing:
-            raise ValueError(f"SKU '{sku}' já existe no sistema.")
-
-        # Get parent to inherit properties
-        parent = self.get_by_id(parent_id)
-        if not parent:
-            raise ValueError(f"Parent product {parent_id} not found")
-
-        # Prepare data for insertion with normalized columns
-        data = {
-            'sku': sku,
-            'nome': variant_data.get('name') or variant_data.get('nome'),
-            'descricao': variant_data.get('description') or variant_data.get('descricao') or parent.get('descricao'),
-            'categoria_id': variant_data.get('category_id') or variant_data.get('categoria_id') or parent.get('categoria_id'),
-            'tags': variant_data.get('tags') or parent.get('tags', []),
-            'parent_id': parent_id,
-
-            # Normalized columns
-            'preco_custo': float(variant_data.get('cost_price') or variant_data.get('preco_custo') or parent.get('preco_custo') or 0),
-            'preco_venda': float(variant_data.get('preco') or variant_data.get('price') or variant_data.get('preco_venda') or parent.get('preco_venda') or 0),
-            'estoque_minimo': int(variant_data.get('stock_min') or variant_data.get('estoque_minimo') or 0),
-            'estoque_maximo': int(variant_data.get('stock_max') or variant_data.get('estoque_maximo') or 0),
-            # Defesa em profundidade: o default seguro eh 'materia_prima'.
-            # 'produto_acabado' foi o fallback historico e gerou variacoes
-            # classificadas erradas (a guarda de BOM as rejeita). O trigger
-            # trg_validar_tipo_produto_variacao tambem auto-corrige no banco.
-            'tipo_material': variant_data.get('material_type') or parent.get('tipo_material') or 'materia_prima',
-            'unidade_medida_id': variant_data.get('unit_of_measure_id') or variant_data.get('unidade_medida_id') or parent.get('unidade_medida_id'),
-
-            # New fields for product formats and inheritance
-            'formato': 'variacao',  # Variants always have this formato
-            'papel_catalogo': 'variacao',
-            'estrutura': parent.get('estrutura') or ('kit' if parent.get('formato') == 'kit' else
-                'manufaturado' if parent.get('formato') == 'composicao' else 'simples'),
-            'status': variant_data.get('status') or 'rascunho',
-            'herdar_dados_pai': variant_data.get('herdar_dados_pai', True),
-            'herdar_bom_pai': variant_data.get('herdar_bom_pai', True),
-
-            'created_at': datetime.utcnow().isoformat(),
-            'updated_at': datetime.utcnow().isoformat()
-        }
-
-        # Validate the variant before creation
-        validation_errors = self.validate_product_consistency(data)
-        if validation_errors:
-            raise ValueError(f"Validation errors: {', '.join(validation_errors)}")
-
-        # Handle attributes mapping (LEGACY support)
-        parent_attrs = parent.get('atributos') or {}
-        variation_values = variant_data.get('variation_values') or {}
-        
-        attributes = {
-            'material_type': data['tipo_material'],
-            'stock_min': data['estoque_minimo'],
-            'stock_max': data['estoque_maximo'],
-            'requires_personalization': variant_data.get('requires_personalization') or parent_attrs.get('requires_personalization', False),
-            'unidade_medida_id': data['unidade_medida_id'],
-            'variation_values': variation_values
-        }
-        data['atributos'] = attributes
-
-        # Handle pricing (LEGACY support)
-        pricing = {
-            'cost_price': float(variant_data.get('cost_price') or 0),
-            'price': float(variant_data.get('preco') or variant_data.get('price') or 0)
-        }
-        data['precificacao'] = pricing
-
-        response = self.table.insert(data).execute()
-        if response.data:
-            result = dict(response.data[0])
-            result['id'] = result.get('id')
-            
-            # Os atributos da combinação já são persistidos em
-            # produtos.atributos.variation_values. Não duplicar em tabelas
-            # relacionais legadas que não existem em todos os ambientes.
-            # Clear cache since we've added a new product
-            self.clear_cache()
-            return result
-
-        return None
+        self._save_family_variants(parent_id, [variant_data], variant_data.get('expected_version'))
+        return self.get_by_sku(variant_data['sku'])
 
     def update_variant(self, variant_id: str, variant_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update an existing product variant."""
-        # Prepare update data
-        update_data = {'updated_at': datetime.utcnow().isoformat()}
-
-        # Core fields
-        if 'sku' in variant_data: update_data['sku'] = variant_data['sku']
-        if 'name' in variant_data: update_data['nome'] = variant_data['name']
-        if 'nome' in variant_data: update_data['nome'] = variant_data['nome']
-        if 'description' in variant_data: update_data['descricao'] = variant_data['description']
-        if 'descricao' in variant_data: update_data['descricao'] = variant_data['descricao']
-        if 'status' in variant_data: update_data['status'] = variant_data['status']
-
-        # Support both names for category_id
-        cat_id = variant_data.get('category_id') or variant_data.get('categoria_id')
-        if cat_id is not None or 'category_id' in variant_data or 'categoria_id' in variant_data:
-            update_data['categoria_id'] = cat_id if cat_id else None
-
-        if 'tags' in variant_data: update_data['tags'] = variant_data['tags']
-
-        # Normalized columns updates
-        if 'cost_price' in variant_data: update_data['preco_custo'] = float(variant_data['cost_price'] or 0)
-        if 'preco' in variant_data: update_data['preco_venda'] = float(variant_data['preco'] or 0)
-        if 'price' in variant_data: update_data['preco_venda'] = float(variant_data['price'] or 0)
-        if 'stock_min' in variant_data: update_data['estoque_minimo'] = int(variant_data['stock_min'] or 0)
-        if 'stock_max' in variant_data: update_data['estoque_maximo'] = int(variant_data['stock_max'] or 0)
-        if 'material_type' in variant_data: update_data['tipo_material'] = variant_data['material_type']
-        if 'unit_of_measure_id' in variant_data or 'unidade_medida_id' in variant_data:
-            update_data['unidade_medida_id'] = variant_data.get('unit_of_measure_id') or variant_data.get('unidade_medida_id')
-
-        # New fields for product formats and inheritance
-        if 'formato' in variant_data: update_data['formato'] = variant_data['formato']
-        update_data['papel_catalogo'] = 'variacao'
-        if 'estrutura' in variant_data:
-            update_data['estrutura'] = variant_data['estrutura']
-        if 'herdar_dados_pai' in variant_data: update_data['herdar_dados_pai'] = variant_data['herdar_dados_pai']
-        if 'herdar_bom_pai' in variant_data: update_data['herdar_bom_pai'] = variant_data['herdar_bom_pai']
-
-        # Get existing variant to merge JSONB fields
         current = self.get_by_id(variant_id)
-        if not current:
-            raise ValueError(f"Variant {variant_id} not found")
-
-        # Merge attributes (LEGACY support)
-        current_attributes = current.get('atributos') or {}
-        if 'material_type' in variant_data: current_attributes['material_type'] = variant_data['material_type']
-        if 'stock_min' in variant_data: current_attributes['stock_min'] = variant_data['stock_min']
-        if 'stock_max' in variant_data: current_attributes['stock_max'] = variant_data['stock_max']
-        if 'requires_personalization' in variant_data: current_attributes['requires_personalization'] = variant_data['requires_personalization']
-        if 'unit_of_measure_id' in variant_data or 'unidade_medida_id' in variant_data:
-             current_attributes['unidade_medida_id'] = variant_data.get('unit_of_measure_id') or variant_data.get('unidade_medida_id')
-
-        # Update variation values if provided
-        if 'variation_values' in variant_data:
-            current_attributes['variation_values'] = variant_data['variation_values']
-
-        update_data['atributos'] = current_attributes
-
-        # Merge pricing (LEGACY support)
-        current_pricing = current.get('precificacao') or {}
-        if 'cost_price' in variant_data: current_pricing['cost_price'] = float(variant_data['cost_price'] or 0)
-        if 'preco' in variant_data: current_pricing['price'] = float(variant_data['preco'] or 0)
-        if 'price' in variant_data: current_pricing['price'] = float(variant_data['price'] or 0)
-
-        update_data['precificacao'] = current_pricing
-
-        response = self.table.update(update_data).eq('id', variant_id).execute()
-
-        # Clear cache since we've updated a product
-        self.clear_cache()
-
-        # Return updated variant
+        if not current or not current.get('parent_id'):
+            raise ValueError('Variação não encontrada.')
+        from .catalogo_familia_service import CatalogoFamiliaService
+        normalized = CatalogoFamiliaService._normalize_variants([variant_data])[0]
+        merged = dict(current, **normalized)
+        # Existing relational values are projected in atributos; retain them
+        # for edits that change only commercial or identification fields.
+        if 'variation_values' not in merged:
+            merged['variation_values'] = (current.get('atributos') or {}).get('variation_values', {})
+        self._save_family_variants(current['parent_id'], [dict(merged, produto_id=int(variant_id))],
+                                   variant_data.get('expected_version'))
         return self.get_by_id(variant_id)
 
     def create_product_with_variations(self, parent_data: Dict[str, Any], variations_config: List[Dict[str, Any]], variations_data: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Create or Update a parent product and synchronize its variations."""
-        parent_id = parent_data.get('id')
-        if not parent_id:
-            raise ValueError("Parent product ID is required")
-
-        # Get the existing parent product
-        parent_product = self.get_by_id(str(parent_id))
-        if not parent_product:
-            raise ValueError(f"Parent product with ID {parent_id} not found")
-
-        # Update variations configuration on parent product
-        parent_attributes = parent_product.get('atributos') or {}
-        parent_attributes['variations_config'] = variations_config
-        update_data = {'atributos': parent_attributes}
-        parent_product = self.update(str(parent_id), update_data)
-
-        # --- Sync Logic: Handle Inactivation of Orphans ---
-        
-        # 1. Get all currently existing variants from DB
-        existing_variants = self.get_variants(str(parent_id))
-        existing_ids = {str(v['id']) for v in existing_variants}
-        
-        # 2. Get IDs present in the payload (active variations)
-        payload_ids = {str(v['id']) for v in variations_data if v.get('id')}
-        
-        # 3. Identify orphans (Existing in DB but NOT in Payload)
-        orphans_ids = existing_ids - payload_ids
-        
-        # 4. Inactivate orphans
-        for orphan_id in orphans_ids:
-            # We use update instead of delete to preserve history (Soft Delete)
-            orphan = next(v for v in existing_variants if str(v['id']) == orphan_id)
-            if orphan.get('status') == 'rascunho' and not (orphan.get('atributos') or {}).get('variation_values'):
-                continue
-            self.update(orphan_id, {'status': 'inativo'})
-
-        # --- Create / Update Active Variations ---
-
-        for variation in variations_data:
-            variation_values = variation.get('variation_values', {})
-            
-            # Generate Name following the format: $nome_pai - $attr1:$val1; $attr2:$val2...
-            if not variation.get('nome') and not variation.get('name'):
-                attrs_str = "; ".join([f"{k}:{v}" for k, v in variation_values.items()])
-                variation['nome'] = f"{parent_product.get('nome')} - {attrs_str}"
-
-            if not isinstance(variation.get('sku'), str) or not variation['sku'].strip():
-                raise ValueError('Informe o SKU para cada variação antes de salvar a grade.')
-
-            # Set the parent ID for the variation
-            variation['parent_id'] = parent_id
-            
-            # New combinations remain drafts; existing status is preserved.
-            variation['status'] = variation.get('status') or 'rascunho'
-
-            if variation.get('id'):
-                # Update existing variation
-                self.update_variant(str(variation['id']), variation)
-            else:
-                # Create new variation
-                self.create_variant(str(parent_id), variation)
-
-        # Clear cache
-        self.clear_cache()
-
-        # Return the updated parent product with variations
-        return self.enrich_product_data_with_variations(parent_product)
+        self._save_family_variants(parent_data['id'], variations_data, parent_data.get('expected_version'),
+                                   variations_config, parent_data.get('inativar_ids'))
+        return self.enrich_product_data_with_variations(self.get_by_id(str(parent_data['id'])))
 
     def resolve_variation(self, sku_externo: str, plataforma: str, nome_externo: str = None) -> Optional[Dict[str, Any]]:
         """

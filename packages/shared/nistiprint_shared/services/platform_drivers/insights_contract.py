@@ -5,9 +5,10 @@ import json
 
 
 class CollectionError(Exception):
-    def __init__(self, code, forbidden=False):
+    def __init__(self, code, forbidden=False, retry_after=None):
         self.code = code
         self.forbidden = forbidden
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
