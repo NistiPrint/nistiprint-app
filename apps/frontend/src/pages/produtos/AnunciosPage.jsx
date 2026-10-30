@@ -106,6 +106,12 @@ export default function AnunciosPage() {
       <Button variant="outline" disabled={loading} onClick={() => load(data.page)}><RefreshCw className="mr-2 h-4 w-4" />Atualizar</Button>
       <Button disabled={!canEdit || syncing || !filters.integration_id} onClick={() => syncAccount(false)}>{syncing ? 'Enfileirando…' : 'Sincronizar conta'}</Button>
       <Button variant="outline" disabled={!canEdit || syncing || !filters.integration_id} onClick={() => syncAccount(true)}>Reconciliar vínculos</Button>
+      <Button variant="outline" disabled={!canEdit || syncing || !filters.integration_id} onClick={async () => {
+        setSyncing(true);
+        try { await api.post(`/integracoes/${filters.integration_id}/catalogo/organizar`); toast.success('Organização enfileirada. Acompanhe na Central de Operações.'); }
+        catch (error) { toast.error(error.message || 'Não foi possível organizar os produtos.'); }
+        finally { setSyncing(false); }
+      }}>Organizar famílias</Button>
       {selectedAccount && <div className="flex items-center gap-2 text-sm text-muted-foreground sm:col-span-2 lg:col-span-5"><Store className="h-4 w-4" /><span>{selectedAccount.name}</span><span>·</span><SyncState sync={selectedAccount.sync} /></div>}
     </CardContent></Card>
 
@@ -128,6 +134,8 @@ export default function AnunciosPage() {
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
+        {header.familia?.produto_pai_id && <a className="text-sm underline" href={`/produtos/${header.familia.produto_pai_id}/editar`}>Abrir família #{header.familia.produto_pai_id}</a>}
+        {header.familia?.motivo && <p className="text-sm text-amber-700">Agrupamento pendente: {header.familia.motivo}</p>}
         {(header.unidades || []).map(unit => <AnnouncementUnit key={unit.id} unit={unit} header={header} canEdit={canEdit} onSaved={() => load(data.page)} />)}
         {!header.unidades?.length && <p className="text-sm text-amber-700">Este anúncio ainda não possui unidades sincronizadas.</p>}
       </CardContent>

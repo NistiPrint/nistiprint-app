@@ -10,6 +10,9 @@ def sync_account(self, account_id, operation_id=None):
     from nistiprint_shared.services.marketplace_catalog_sync_service import MarketplaceCatalogSyncService
     service = MarketplaceCatalogSyncService(supabase_db)
     result = service.sync_page(int(account_id))
+    if result.get('status') == 'complete':
+        reconcile_account.apply_async(args=[account_id,0,operation_id],queue='marketplace_analytics')
+        result['status'] = 'reconciling'
     if result.get('item_ids'):
         reconcile_page.apply_async(args=[account_id,result['item_ids']],queue='marketplace_analytics')
     from nistiprint_shared.services.catalog_operations import progress
@@ -40,10 +43,12 @@ def reconcile_account(account_id, after=0, operation_id=None):
     headers = supabase_db.table('marketplace_anuncios').select('id,item_externo_id').eq(
         'integration_id',int(account_id)).gt('id',int(after)).order('id').limit(25).execute().data or []
     result = AnuncioReconciliacaoService(supabase_db).reconcile(int(account_id), [h['item_externo_id'] for h in headers])
-    result['status'] = 'available' if len(headers)==25 else 'complete'
+    result['status'] = 'available' if len(headers)==25 else 'organizing'
     progress(operation_id,result)
     if len(headers)==25:
         reconcile_account.apply_async(args=[account_id,headers[-1]['id'],operation_id],countdown=1,queue='marketplace_analytics')
+    else:
+        organize_account.apply_async(args=[account_id,0,operation_id],queue='marketplace_analytics')
     return result
 
 
@@ -52,5 +57,24 @@ def reconcile_page(self, account_id, item_ids):
     from nistiprint_shared.services.anuncio_reconciliacao_service import AnuncioReconciliacaoService
     try:
         return AnuncioReconciliacaoService(supabase_db).reconcile(int(account_id),item_ids)
+    except Exception as exc:
+        raise self.retry(exc=RuntimeError(type(exc).__name__),countdown=30*2**min(self.request.retries,6))
+
+
+@celery_app.task(bind=True, name='tasks.catalog_tasks.organize_account', max_retries=6)
+def organize_account(self, account_id, after=0, operation_id=None, actor_id=None):
+    from nistiprint_shared.services.catalog_operations import progress
+    try:
+        headers = supabase_db.table('marketplace_anuncios').select('id').eq('integration_id',int(account_id)).is_('absent_since','null').gt('id',int(after)).order('id').limit(25).execute().data or []
+        counts = {}
+        for header in headers:
+            result = supabase_db.rpc('catalogo_organizar_anuncio', {'p_anuncio':header['id'],'p_actor':actor_id}).execute().data
+            state = result['status']
+            counts[state] = counts.get(state,0)+1
+        result = {'status':'available' if len(headers)==25 else 'complete','processed':len(headers),'families':counts}
+        progress(operation_id,result)
+        if len(headers)==25:
+            organize_account.apply_async(args=[account_id,headers[-1]['id'],operation_id,actor_id],queue='marketplace_analytics')
+        return result
     except Exception as exc:
         raise self.retry(exc=RuntimeError(type(exc).__name__),countdown=30*2**min(self.request.retries,6))

@@ -36,6 +36,8 @@ class AnuncioService:
             'id,instance_name,module_id,platform_slug'
         ).in_('id', integration_ids).execute().data or [] if integration_ids else []
         integration_by_id = {row['id']: row for row in integrations}
+        families = self.db.table('catalogo_anuncio_familias').select('*').in_('anuncio_id',[row['id'] for row in headers]).execute().data or []
+        family_by_id = {row['anuncio_id']:row for row in families}
         all_units = [unit for header in headers for unit in units_by_header.get(header['id'], [])]
         unit_ids = [unit['id'] for unit in all_units]
         pending = self.db.table('marketplace_anuncio_pendencias').select('*').in_('unidade_id', unit_ids).is_('resolved_at', 'null').execute().data or [] if unit_ids else []
@@ -49,6 +51,7 @@ class AnuncioService:
             unit['pendencia'] = pending_by_id.get(unit['id'])
             unit['historico'] = [entry for entry in history if entry['unidade_anuncio_id'] == unit['id']]
         for header in headers:
+            header['familia'] = family_by_id.get(header['id'])
             integration = integration_by_id.get(header.get('integration_id')) or {}
             platform = integration.get('platform_slug') or integration.get('module_id') or 'Marketplace'
             header['conta_nome'] = integration.get('instance_name') or f'{platform} #{header.get("integration_id")}'

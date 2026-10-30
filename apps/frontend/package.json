@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "verificar:rotas": "node scripts/verificar-rotas.mjs",
-    "test:unit": "node --test src/lib/productImages.test.js src/lib/catalogFamily.test.js src/lib/alertaTurbo.test.js src/lib/consolidacaoEditavel.test.js src/lib/dateTime.test.js src/lib/papeisDePedido.test.js src/lib/escopoDespacho.test.js src/lib/despachoEscopo.test.js src/lib/operationId.test.js src/lib/mercadolivreBatchProgress.test.js src/lib/coletaProducao.test.js src/lib/novaDemanda.test.js src/lib/miolosNaoMapeados.test.js src/lib/composicaoLote.test.js"
+    "test:unit": "node --test src/lib/productHierarchy.test.js src/lib/productImages.test.js src/lib/catalogFamily.test.js src/lib/alertaTurbo.test.js src/lib/consolidacaoEditavel.test.js src/lib/dateTime.test.js src/lib/papeisDePedido.test.js src/lib/escopoDespacho.test.js src/lib/despachoEscopo.test.js src/lib/operationId.test.js src/lib/mercadolivreBatchProgress.test.js src/lib/coletaProducao.test.js src/lib/novaDemanda.test.js src/lib/miolosNaoMapeados.test.js src/lib/composicaoLote.test.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

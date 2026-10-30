@@ -109,6 +109,12 @@ def api_index():
     include_variants = request.args.get('include_variants') == 'true'
 
     try:
+        if request.args.get('view') == 'hierarquia':
+            from nistiprint_shared.services.catalogo_lista_service import CatalogoListaService
+            from nistiprint_shared.database.supabase_db_service import supabase_db
+            rows, pages = CatalogoListaService(supabase_db).list(page=page, per_page=per_page, q=q,
+                category_id=category_id, status=status, material_type=material_type, setor_id=request.args.get('setor_id', ''))
+            return jsonify(produtos=rows, page=page, per_page=per_page, total_pages=pages)
         produtos, total_pages = product_service.get_products(
             q=q, categoria_id=category_id, status=status, page=page, per_page=per_page,
             material_type=material_type, only_marketable=only_marketable, include_variants=include_variants
@@ -124,6 +130,7 @@ def api_index():
                 'status': p.get('status'), 'material_type': p.get('tipo_material') or p.get('material_type'),
                 'cost_price': p.get('preco_custo') or p.get('cost_price', 0), 'price': p.get('preco_venda') or p.get('price', 0),
                 'parent_id': p.get('parent_id'), 'has_variants': p.get('has_variants', False),
+                'atributos': {'images': (p.get('atributos') or {}).get('images', [])},
                 'variants': p.get('variants', []), 'created_at': p.get('created_at'), 'updated_at': p.get('updated_at')
             })
         return jsonify({

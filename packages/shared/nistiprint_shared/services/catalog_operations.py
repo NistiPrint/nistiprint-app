@@ -29,6 +29,9 @@ def progress(operation_id, result):
         failed = status in {'unavailable','account_missing','lease_lost','failed'} and not result.get('retryable')
         complete = status == 'complete' or (status is None and result.get('has_more') is False)
         details = {**(previous.get('dados_adicionais') or {}),**result}
+        if result.get('families'):
+            old_counts = (previous.get('dados_adicionais') or {}).get('families') or {}
+            details['families'] = {key: old_counts.get(key,0) + result['families'].get(key,0) for key in set(old_counts) | set(result['families'])}
         started = datetime.fromisoformat(previous['created_at'].replace('Z','+00:00'))
         details['duration_ms'] = int((datetime.now(timezone.utc)-started).total_seconds()*1000)
         count = int(previous.get('progresso_atual') or 0) + int(result.get('items',result.get('processed',0)))

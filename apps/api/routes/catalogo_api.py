@@ -117,6 +117,25 @@ def product_announcements(product_id):
         return _error(exc)
 
 
+@catalogo_bp.post('/integracoes/<int:integration_id>/catalogo/organizar')
+def catalog_organize(integration_id):
+    denied = _permission('produtos', 'editar')
+    if denied:
+        return denied
+    try:
+        rows = supabase_db.table('installed_integrations').select('id').eq('id',integration_id).eq('is_active',True).execute().data or []
+        if not rows:
+            return ApiResponse.error('Conta não encontrada ou inativa.',404)
+        from nistiprint_shared.services.catalog_operations import create_operation
+        from nistiprint_shared.services.celery_app import celery_app
+        actor = get_current_user()['id']
+        operation = create_operation(actor,integration_id,'Organização de famílias')
+        task = celery_app.send_task('tasks.catalog_tasks.organize_account',args=[integration_id,0,operation,actor],queue='marketplace_analytics')
+        return ApiResponse.success({'operation_id':operation,'task_id':task.id},status_code=202)
+    except Exception as exc:
+        return _error(exc)
+
+
 @catalogo_bp.get('/anuncios')
 def announcement_list():
     denied = _permission('produtos', 'ler')

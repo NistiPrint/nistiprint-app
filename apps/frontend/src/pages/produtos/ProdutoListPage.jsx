@@ -30,11 +30,23 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import CategoryService from '../../services/CategoryService';
 import ProductService from '../../services/ProductService';
+import { productImages } from '@/lib/productImages';
+import { visibleProducts, normalizeProduct } from '@/lib/productHierarchy';
 import SectorService from '../../services/SectorService';
+
+function ProductThumbnail({ product }) {
+  const [failedUrl, setFailedUrl] = useState(null);
+  const url = product.imagem_principal || productImages(product)[0];
+  return url && failedUrl !== url
+    ? <img src={url} alt="" loading="lazy" width={48} height={48} className="h-12 w-12 shrink-0 rounded border object-contain" onError={() => setFailedUrl(url)} />
+    : <div className="grid h-12 w-12 shrink-0 place-items-center rounded border bg-muted"><Package aria-label="Sem imagem" className="h-5 w-5 text-muted-foreground" /></div>;
+}
 
 function ProdutoListPage() {
   const navigate = useNavigate();
   const [produtos, setProdutos] = useState([]);
+  const [expanded, setExpanded] = useState(new Set());
+  const visibleRows = visibleProducts(produtos, expanded).map(normalizeProduct);
   const [categorias, setCategorias] = useState([]);
   const [setores, setSetores] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -71,6 +83,7 @@ function ProdutoListPage() {
   const categoryFilter = searchParams.get('category_id') || 'all';
   const statusFilter = searchParams.get('status') || 'all';
   const materialTypeFilter = searchParams.get('material_type') || 'all';
+  const sectorFilter = searchParams.get('setor_id') || 'all';
 
   // Local search input state
   const [searchInput, setSearchInput] = useState(searchTerm);
@@ -81,7 +94,7 @@ function ProdutoListPage() {
 
   useEffect(() => {
     fetchProdutos();
-  }, [currentPage, searchTerm, categoryFilter, statusFilter, materialTypeFilter]);
+  }, [currentPage, searchTerm, categoryFilter, statusFilter, materialTypeFilter, sectorFilter]);
 
   // Sincroniza o input local se o searchTerm mudar (ex: navegação)
   useEffect(() => {
@@ -107,6 +120,7 @@ function ProdutoListPage() {
     try {
       const params = {
         page: currentPage,
+        view: 'hierarquia',
         q: searchTerm,
         category_id: categoryFilter === 'all' ? '' : categoryFilter,
         status: statusFilter === 'all' ? '' : statusFilter,
@@ -117,6 +131,7 @@ function ProdutoListPage() {
 
       const data = await ProductService.getAll(params);
       setProdutos(data.produtos || []);
+      setExpanded(new Set((data.produtos || []).filter(row => row.expand_variants).map(row => row.id)));
       setTotalPages(data.total_pages || 1);
     } catch (e) {
       toast.error("Erro ao carregar produtos: " + e.message);
@@ -186,7 +201,7 @@ function ProdutoListPage() {
 
   const handleSelectAll = (checked) => {
     if (checked) {
-      const allProductIds = produtos.map(produto => produto.id);
+      const allProductIds = visibleRows.map(produto => produto.id);
       setSelectedProductIds(allProductIds);
     } else {
       setSelectedProductIds([]);
@@ -506,7 +521,7 @@ function ProdutoListPage() {
                 <TableRow>
                   <TableHead className="w-[40px] text-center">
                     <Checkbox
-                        checked={selectedProductIds.length === produtos.length && produtos.length > 0}
+                        checked={visibleRows.length > 0 && visibleRows.every(row => selectedProductIds.includes(row.id))}
                         onCheckedChange={handleSelectAll}
                     />
                   </TableHead>
@@ -520,7 +535,7 @@ function ProdutoListPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {produtos.map((produto) => (
+                {visibleRows.map((produto) => (
                   <TableRow key={produto.id}>
                     <TableCell className="text-center">
                       <Checkbox
@@ -529,8 +544,13 @@ function ProdutoListPage() {
                       />
                     </TableCell>
                     <TableCell>
-                      <div className="font-medium flex items-center gap-2">
-                        {produto.name}
+                      <div className={`font-medium flex items-center gap-2 ${produto.parent_id ? 'pl-8 border-l-2' : ''}`}>
+                        {produto.variants?.length > 0 && <Button variant="ghost" size="sm" aria-expanded={expanded.has(produto.id)} aria-label={`${expanded.has(produto.id) ? 'Recolher' : 'Expandir'} variações de ${produto.name}`} onClick={() => {
+                          setExpanded(previous => { const next = new Set(previous); if (next.has(produto.id)) next.delete(produto.id); else next.add(produto.id); return next; });
+                          setSelectedProductIds(previous => previous.filter(id => !(produto.variants || []).some(child => child.id === id)));
+                        }}>{expanded.has(produto.id) ? '▾' : '▸'}</Button>}
+                        <ProductThumbnail product={produto} />
+                        {produto.display_name || produto.name}
                         {produto.has_variants && (
                           <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">
                             {produto.variants?.length || 0} variações
