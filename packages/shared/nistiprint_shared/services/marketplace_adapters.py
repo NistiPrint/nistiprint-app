@@ -120,6 +120,17 @@ class MercadoLivreAdapter:
                 occurred_at=_text(body.get("sent") or body.get("received")), topic=topic,
             )
             return WebhookResolution(self.provider, "chat", "parsed", resources=(reference,))
+        if topic == "items":
+            match = re.fullmatch(r"/items/(ML[A-Za-z][0-9]+)", resource_path, re.IGNORECASE)
+            if not match:
+                return WebhookResolution(self.provider, "invalid", "invalid_catalog_resource",
+                    error_type="invalid_provider_resource", message="Recurso de anúncio inválido")
+            reference = MarketplaceResourceRef(
+                provider=self.provider, resource_type="catalog", resource_id=match.group(1),
+                resource_path=resource_path, account_id=_text(body.get("user_id") or body.get("seller_id")),
+                provider_event_id=_text(body.get("_id") or body.get("id")),
+                occurred_at=_text(body.get("sent") or body.get("received")), topic=topic)
+            return WebhookResolution(self.provider, "catalog", "parsed", resources=(reference,))
         if topic not in self._TOPIC_RESOURCE:
             return WebhookResolution(
                 self.provider,

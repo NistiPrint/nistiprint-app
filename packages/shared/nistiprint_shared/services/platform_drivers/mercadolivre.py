@@ -366,13 +366,13 @@ def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[D
         offset = filters.get("offset", 0)
 
         if date_created_from:
-            params["date_created_from"] = date_created_from
+            params["order.date_created.from"] = date_created_from
         if date_created_to:
-            params["date_created_to"] = date_created_to
+            params["order.date_created.to"] = date_created_to
         if last_updated_after:
-            params["last_updated_after"] = last_updated_after
+            params["order.date_last_updated.from"] = last_updated_after
         if last_updated_before:
-            params["last_updated_before"] = last_updated_before
+            params["order.date_last_updated.to"] = last_updated_before
         if order_status:
             params["order_status"] = order_status
         if seller:
@@ -397,7 +397,9 @@ def get_orders_list(integration: Dict, filters: Optional[Dict] = None) -> List[D
 
     # Normalizar os dados para o DTO padrão
     normalized_orders = []
-    order_list = data.get("results", [])
+    order_list = data.get("results")
+    if not isinstance(order_list, list):
+        return [{"error": "Resposta de listagem de pedidos inválida", "error_type": "invalid_order_page"}]
 
     for order in order_list:
         # Obter nome do cliente

@@ -9,8 +9,15 @@ from ..marketplace_contracts import ProviderCallResult
 from ..marketplace_http import request_json
 from .shopee import _resolve_credentials, _generate_sign
 
+CATALOG_READ_PATHS = frozenset({
+    '/api/v2/product/get_item_extra_info', '/api/v2/product/get_item_list',
+    '/api/v2/product/get_model_list', '/api/v2/product/get_item_base_info',
+})
+
 
 def _get(integration, path, params):
+    if path not in CATALOG_READ_PATHS:
+        return ProviderCallResult(False, provider='shopee', resource_type='catalog', error_type='catalog_read_path_forbidden')
     credentials = _resolve_credentials(integration)
     if not all(credentials.get(k) for k in ('partner_id', 'partner_key', 'shop_id', 'access_token')):
         return ProviderCallResult(False, provider='shopee', resource_type='catalog', error_type='credential_action_required')
@@ -100,6 +107,7 @@ def _unit(row, variation='', attributes=None):
     quantity = (stock.get('summary_info') or {}).get('total_available_stock')
     return {'variacao_externa_id': variation, 'sku_externo': row.get('model_sku') or row.get('item_sku'),
             'atributos_variacao': attributes or {},
+            'dados_observados': {key: row[key] for key in ('model_name', 'gtin_code', 'weight', 'dimension', 'price_info', 'stock_info_v2') if key in row},
             'preco_observado': str(Decimal(str(price))) if price is not None else None,
             'disponibilidade_observada': str(quantity) if quantity is not None else None}
 
@@ -143,6 +151,7 @@ def get_listing_details(integration, item_ids):
             units = [_unit(item)]
         images = (item.get('image') or {}).get('image_url_list') or []
         listings.append({'item_externo_id': str(item['item_id']), 'titulo': item.get('item_name'),
+            'dados_observados': {key: item[key] for key in ('item_sku', 'description', 'category_id', 'brand', 'image', 'weight', 'dimension', 'logistic_info', 'gtin_code', 'attribute_list', 'condition', 'pre_order', 'price_info', 'stock_info_v2') if key in item},
             'imagem_comercial': images[0] if images else None, 'url': None,
             'situacao_original': item.get('item_status'),
             'situacao_normalizada': {'NORMAL': 'ativo', 'UNLIST': 'pausado', 'BANNED': 'em_revisao', 'DELETED': 'encerrado', 'SELLER_DELETE': 'encerrado', 'SHOPEE_DELETE': 'encerrado'}.get(item.get('item_status'), 'desconhecido'),

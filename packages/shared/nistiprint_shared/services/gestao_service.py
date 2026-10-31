@@ -66,6 +66,7 @@ def contribution(order):
     before = number(c['net_payout']) - cost - number(c['taxes']) - number(c['operating_cost']) if complete else None
     ads = number(c.get('ads'))
     return {'id': order['id'], 'number': order.get('number'), 'account': order['account_name'],
+            'currency': order.get('currency'),
             'source': finance.get('source'), 'components': c, 'cost': round(cost, 2) if cost is not None else None,
             'before_ads': round(before, 2) if before is not None else None,
             'after_ads': round(before - ads, 2) if before is not None and ads is not None else None,

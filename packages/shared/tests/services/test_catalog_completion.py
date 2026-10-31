@@ -4,6 +4,7 @@ from unittest.mock import patch
 from nistiprint_shared.services.anuncio_reconciliacao_service import resolve_unit
 from nistiprint_shared.services.marketplace_contracts import ProviderCallResult
 from nistiprint_shared.services.platform_drivers import mercadolivre_catalog as ml, shopee_catalog as shopee
+from nistiprint_shared.services.marketplace_adapters import mercadolivre_adapter
 from nistiprint_shared.services.gestao_projection import Catalog,preserve_item_attribution
 
 
@@ -38,6 +39,41 @@ class ReconciliationTests(unittest.TestCase):
 
 
 class CatalogDriverTests(unittest.TestCase):
+    def test_item_webhook_is_a_typed_catalog_resource(self):
+        result = mercadolivre_adapter.parse_webhook({'topic':'items','resource':'/items/MLB123','user_id':42})
+        self.assertEqual(result.classification,'catalog')
+        self.assertEqual(result.primary_resource.resource_id,'MLB123')
+        self.assertEqual(result.primary_resource.account_id,'42')
+        for path in ['/orders/123', '/items/MLB123/price', '/items/../orders']:
+            self.assertEqual(mercadolivre_adapter.parse_webhook({'topic':'items','resource':path}).classification,'invalid')
+    def test_catalog_drivers_reject_unknown_paths_before_network_or_credentials(self):
+        with patch.object(shopee.requests,'get') as request:
+            result = shopee._get({},'/api/v2/product/update_item',{})
+            self.assertEqual(result.error_type,'catalog_read_path_forbidden')
+            request.assert_not_called()
+        with patch.object(ml.requests,'get') as request:
+            result = ml._get({},'/items/MLB123/price')
+            self.assertEqual(result.error_type,'catalog_read_path_forbidden')
+            request.assert_not_called()
+    def test_shopee_observations_keep_zero_and_exclude_unlisted_fields(self):
+        model = {'model_id':101,'model_sku':'BLUE','tier_index':[0], 'model_name':'Azul',
+                 'gtin_code':'00','weight':'0.65','stock_info_v2':{'summary_info':{'total_available_stock':0}},
+                 'access_token':'never-store-this'}
+        response = {'model':[model], 'tier_variation':[{'name':'Cor','option_list':[{'option':'Azul'}]}]}
+        with patch.object(shopee,'_get',return_value=ProviderCallResult(True,response)):
+            unit = shopee.get_listing_variations({},'10').value['units'][0]
+        self.assertEqual(unit['disponibilidade_observada'],'0')
+        self.assertEqual(unit['dados_observados']['gtin_code'],'00')
+        self.assertNotIn('access_token',unit['dados_observados'])
+
+    def test_ml_observations_preserve_currency_and_variation_stock(self):
+        item = {'id':'MLB123','title':'Example','currency_id':'BRL','status':'active',
+                'pictures':[{'id':'abc'}], 'variations':[{'id':50,'available_quantity':0,'price':12.50}]}
+        with patch.object(ml,'_get',return_value=ProviderCallResult(True,item)):
+            listing = ml.get_listing_details({},['MLB123']).value['listings'][0]
+        self.assertEqual(listing['dados_observados']['currency_id'],'BRL')
+        self.assertEqual(listing['unidades'][0]['dados_observados']['available_quantity'],0)
+
     def test_shopee_verified_empty_status_can_omit_item_list(self):
         response={'total_count':0,'has_next_page':False,'next':''}
         with patch.object(shopee,'_get',return_value=ProviderCallResult(True,response)):

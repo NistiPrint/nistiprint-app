@@ -349,6 +349,13 @@ class MarketplaceWebhookIngestService:
                 account_error = self._confirm_meli_webhook_account(resource, integration)
         if account_error:
             return {**account_error, **metadata, "marketplace_integration_id": marketplace_inst.get("id")}
+        if parsed.classification == "catalog":
+            from nistiprint_shared.services.marketplace_catalog_sync_service import MarketplaceCatalogSyncService
+            result = MarketplaceCatalogSyncService(supabase_db).refresh_item(marketplace_inst,resource.resource_id,resource.account_id)
+            if result.get('status') == 'success' and result.get('event_status') == 'catalog_updated':
+                from nistiprint_shared.services.anuncio_reconciliacao_service import AnuncioReconciliacaoService
+                AnuncioReconciliacaoService(supabase_db).reconcile(int(marketplace_inst['id']),[resource.resource_id])
+            return {**result, **metadata}
         if parsed.classification == "chat":
             from nistiprint_shared.services.mercadolivre_personalization_service import enqueue_notification
             return {**enqueue_notification(payload, webhook_event_id=webhook_event_id), **metadata}

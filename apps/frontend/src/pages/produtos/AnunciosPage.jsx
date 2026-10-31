@@ -19,6 +19,9 @@ const statusTones = {
 };
 
 const dateTime = value => value ? new Date(value).toLocaleString('pt-BR') : null;
+const orderSyncLabel = value => ({ never:'Ainda não iniciada', idle:'Aguardando', running:'Em andamento',
+  available:'Disponível', complete:'Concluída', failed:'Falhou; nova tentativa agendada', unavailable:'Ação necessária',
+  pending:'Aguardando', forbidden:'Sem permissão', not_checked:'Ainda não verificada' })[value] || value || 'Ainda não iniciada';
 
 function SyncState({ sync }) {
   if (!sync || sync.status === 'never') return <span className="text-xs text-muted-foreground">Ainda não sincronizada</span>;
@@ -29,7 +32,7 @@ function SyncState({ sync }) {
 }
 
 export default function AnunciosPage() {
-  const { hasPermission } = useAuth();
+  const { hasPermission, isAdmin } = useAuth();
   const canEdit = hasPermission('produtos', 'editar');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -39,6 +42,7 @@ export default function AnunciosPage() {
   const setFilters = next => { setSearchParams(Object.fromEntries(Object.entries(next).filter(([, value]) => value))); };
   const requestId = useRef(0);
   const [syncing, setSyncing] = useState(false);
+  const [replication, setReplication] = useState(null);
   const load = useCallback(async (page = 1) => {
     const currentRequest = ++requestId.current;
     setLoading(true); setError('');
@@ -60,6 +64,16 @@ export default function AnunciosPage() {
   const invalidateRequest = useCallback(() => { requestId.current++; }, []);
   useEffect(() => { const timer = window.setTimeout(() => load(), 300); return () => { window.clearTimeout(timer); invalidateRequest(); }; }, [load, invalidateRequest]);
   useEffect(() => { if (!data.accounts.some(account => account.sync?.status === 'running')) return; const timer = window.setInterval(() => load(data.page), 15000); return () => window.clearInterval(timer); }, [data.accounts, data.page, load]);
+  useEffect(() => {
+    let active = true;
+    setReplication(null);
+    const refresh = () => api.get(`/integracoes/${filters.integration_id}/replicacao`)
+      .then(response => { if (active) setReplication(response.data?.data || null); })
+      .catch(() => { if (active) setReplication({ unavailable: true }); });
+    const timer = filters.integration_id ? window.setInterval(refresh,30000) : null;
+    if (filters.integration_id) refresh();
+    return () => { active = false; if (timer) window.clearInterval(timer); };
+  }, [filters.integration_id]);
 
   const accounts = useMemo(() => Array.isArray(data.accounts) ? data.accounts : [], [data.accounts]);
   const selectedAccount = useMemo(() => accounts.find(account => String(account.id) === filters.integration_id), [accounts, filters.integration_id]);
@@ -116,6 +130,20 @@ export default function AnunciosPage() {
     </CardContent></Card>
 
     {!selectedAccount && accounts.length > 0 && <div className="grid gap-3 sm:grid-cols-2">{accounts.map(account => <div key={account.id} className="rounded-lg border p-3"><p className="text-sm font-medium">{account.name}</p><SyncState sync={account.sync} /></div>)}</div>}
+    {filters.integration_id && replication && <Card><CardContent className="p-4 text-sm">
+      {replication.unavailable ? <p>Estado da replicação indisponível.</p> : <div className="flex flex-wrap gap-x-6 gap-y-2">
+        <span>Pedidos: {orderSyncLabel(replication.orders?.status)}{replication.orders?.last_complete_at ? ` · última coleta ${dateTime(replication.orders.last_complete_at)}` : ''}{replication.orders?.error_code ? ` · ${replication.orders.error_code}` : ''}</span>
+        {replication.orders?.search_field === 'created' && <span>Histórico: {replication.orders.status === 'complete' ? 'consulta concluída' : replication.orders?.processing_date ? `ponto de consulta ${dateTime(replication.orders.processing_date)}` : 'iniciando'} · disponibilidade depende da plataforma</span>}
+        <span>Pendências de vínculo: {replication.pending_links ?? 'indisponível'}</span>
+        {(replication.collections || []).map(item => <span key={item.capability}>{item.label}: {item.enabled ? orderSyncLabel(item.status) : 'Desativada'}{item.error_code ? ` · ${item.error_code}` : ''}</span>)}
+        {isAdmin() && canEdit && <Button size="sm" variant="outline" disabled={syncing || ['running','available'].includes(replication.orders?.status)} onClick={async () => {
+          setSyncing(true);
+          try { await api.post(`/integracoes/${filters.integration_id}/replicacao/pedidos/historico`); toast.success('Carga desde 01/01/2025 solicitada, sujeita à disponibilidade da plataforma. Acompanhe na Central de Operações.'); }
+          catch (error) { toast.error(error.message || 'Não foi possível solicitar a carga histórica.'); }
+          finally { setSyncing(false); }
+        }}>Buscar desde 01/01/2025</Button>}
+      </div>}
+    </CardContent></Card>}
     {loading && <p role="status">Carregando anúncios…</p>}
     {error && <p role="alert" className="text-red-700">{error}</p>}
     {!loading && !error && !data.rows.length && <Card><CardContent className="p-8 text-center text-sm text-muted-foreground">Nenhum anúncio encontrado. Se esta conta ainda não foi importada, selecione-a e sincronize.</CardContent></Card>}

@@ -5,6 +5,34 @@ from time import monotonic
 
 from celery_config import celery_app
 from nistiprint_shared.database.supabase_db_service import supabase_db
+
+
+@celery_app.task(name='tasks.gestao_tasks.replicate_orders', soft_time_limit=240, time_limit=270)
+def replicate_orders(account_id):
+    from nistiprint_shared.services.marketplace_order_replication import OrderReplication
+    from nistiprint_shared.services.catalog_operations import progress
+    result=OrderReplication(supabase_db).run_page(int(account_id))
+    if result.get('operation_id'):
+        progress(result['operation_id'],result)
+    if result.get('status') == 'available':
+        replicate_orders.apply_async(args=[account_id],countdown=1,queue='marketplace_insights')
+    return result
+
+
+@celery_app.task(name='tasks.gestao_tasks.replicate_orders_due', ignore_result=True)
+def replicate_orders_due():
+    if os.getenv('MARKETPLACE_ORDER_REPLICATION_ENABLED','0').lower() in {'0','false','no'}:
+        from datetime import datetime, timezone
+        now=datetime.now(timezone.utc).isoformat()
+        rows=supabase_db.table('marketplace_pedidos_coleta').select('account_id').in_('status',['available','failed','running']).lte('next_attempt_at',now).lte('lease_until',now).execute().data or []
+        for row in rows:
+            replicate_orders.apply_async(args=[row['account_id']],queue='marketplace_insights')
+        return {'status':'recovering','scheduled':len(rows)}
+    accounts=supabase_db.table('installed_integrations').select('id,platform_slug,module_id').eq('is_active',True).execute().data or []
+    for row in accounts:
+        if (row.get('platform_slug') or row.get('module_id') or '').lower() in {'shopee','mercadolivre'}:
+            replicate_orders.apply_async(args=[row['id']],queue='marketplace_insights')
+    return {'status':'scheduled'}
 from nistiprint_shared.services.gestao_projection import Catalog, project, preserve_item_attribution
 from nistiprint_shared.services.gestao_service import paginate
 

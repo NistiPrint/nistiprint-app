@@ -21,6 +21,15 @@ export default function AnnouncementUnit({ unit, header, canEdit, onSaved }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const variation = Object.entries(unit.atributos_variacao || {}).map(([key, value]) => `${key}: ${value}`).join(' · ') || (unit.variacao_externa_id ? `Variação ${unit.variacao_externa_id}` : 'Produto sem variações');
+  const currency = unit.dados_observados?.price_info?.[0]?.currency || header.dados_observados?.currency_id;
+  const observedPrice = unit.preco_observado == null ? 'não informado' : (() => {
+    const value = Number(unit.preco_observado);
+    if (!Number.isFinite(value)) return 'inválido';
+    if (typeof currency === 'string' && /^[A-Z]{3}$/.test(currency)) {
+      try { return value.toLocaleString('pt-BR', { style: 'currency', currency }); } catch { /* Keep the observed value visible. */ }
+    }
+    return `${value.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} · moeda não informada`;
+  })();
   const start = removing => { setTarget(null); setReason(''); setError(''); setUnlink(removing); setOpen(true); };
   const save = async () => {
     if (!canEdit || busy || !reason.trim() || (!unlink && (!target || target.id === unit.produto_id))) return;
@@ -46,7 +55,10 @@ export default function AnnouncementUnit({ unit, header, canEdit, onSaved }) {
       <ArrowRight className="hidden h-4 w-4 text-muted-foreground md:block" />
       <div className="rounded-md bg-muted/50 p-3">{unit.produto_id ? <><Link className="font-medium underline underline-offset-4" to={`/produtos/${unit.produto_id}/editar`}>{unit.produto?.nome || `Produto #${unit.produto_id}`}</Link><p className="mt-1 text-xs text-muted-foreground">SKU interno: {unit.produto?.sku || '—'} · #{unit.produto_id}</p></> : <p className="text-muted-foreground">Selecione o cadastro interno que representa esta variação.</p>}</div>
     </div>
-    <p className="text-xs text-muted-foreground">Preço observado: {unit.preco_observado == null ? 'não informado' : Number(unit.preco_observado).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} · Disponibilidade: {unit.disponibilidade_observada ?? 'não informada'}</p>
+    <p className="text-xs text-muted-foreground">Preço observado: {observedPrice} · Disponibilidade: {unit.disponibilidade_observada ?? 'não informada'}</p>
+    {(unit.dados_observados?.gtin_code || header.dados_observados?.gtin_code || unit.dados_observados?.weight || header.dados_observados?.weight) && <p className="text-xs text-muted-foreground">
+      GTIN observado: {unit.dados_observados?.gtin_code || header.dados_observados?.gtin_code || 'não informado'} · Peso informado: {unit.dados_observados?.weight || header.dados_observados?.weight || 'não informado'} kg
+    </p>}
     {unit.pendencia && <div className="rounded-md bg-amber-50 p-3 text-sm text-amber-900"><p>{reviewLabels[unit.pendencia.motivo] || unit.pendencia.motivo}</p>{!!unit.pendencia.candidatos?.length && <div className="mt-2 flex flex-wrap gap-3">{unit.pendencia.candidatos.map(id => <Link key={id} to={`/produtos/${id}/editar`} className="underline">Revisar produto #{id}</Link>)}</div>}</div>}
     {unit.produto?.status && unit.produto.status !== 'ativo' && <p className="text-xs text-amber-800">Cadastro interno {unit.produto.status === 'inativo' ? 'inativo' : unit.produto.status}. Confira a prontidão no cadastro do produto.</p>}
     <details className="text-xs"><summary className="cursor-pointer text-muted-foreground">Histórico de vínculos{unit.historico?.length ? ` (${unit.historico.length} registros disponíveis)` : ''}</summary>

@@ -88,13 +88,16 @@ def get_default_schedules():
 def gestao_schedules():
     if os.getenv('GESTAO_ENABLED', '1').lower() in {'0', 'false', 'no'}:
         return {}
-    return {'gestao-collect-due': {'task': 'tasks.gestao_tasks.collect_due','schedule':30,
+    schedules = {'gestao-collect-due': {'task': 'tasks.gestao_tasks.collect_due','schedule':30,
                                  'options': {'queue':'marketplace_insights','expires':25}},
             'gestao-refresh': {'task': 'tasks.gestao_tasks.refresh', 'schedule': 5,
                              'kwargs': {'limit': 100},
                              'options': {'queue': 'gestao_projection', 'expires': 4}},
             'gestao-reprocess-pending': {'task':'tasks.gestao_tasks.reprocess_pending','schedule':30,
                                        'options':{'queue':'gestao_projection','expires':25}}}
+    schedules['marketplace-orders-replication'] = {'task':'tasks.gestao_tasks.replicate_orders_due','schedule':60,
+        'options':{'queue':'marketplace_insights','expires':55}}
+    return schedules
 
 
 def catalog_schedules():

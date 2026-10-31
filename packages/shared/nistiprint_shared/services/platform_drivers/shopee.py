@@ -532,7 +532,9 @@ def get_orders_list_page(integration: Dict, filters: Optional[Dict] = None) -> D
     # Normalizar os dados para o DTO padrão
     normalized_orders = []
     raw_response = data.get("response", {}) or {}
-    order_list = raw_response.get("order_list", [])
+    order_list = raw_response.get("order_list")
+    if not isinstance(order_list, list) or not isinstance(raw_response.get('more'), bool):
+        return {"orders": [{"error": "Resposta de listagem de pedidos inválida", "error_type": "invalid_order_page"}], "next_cursor": None, "more": False}
 
     for order in order_list:
         # Converter timestamp Unix para ISO 8601

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import requests
+import re
 from decimal import Decimal
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -12,6 +13,9 @@ from .mercadolivre import ML_API_HOST, _auth_headers
 
 
 def _get(integration, path, params=None):
+    if not (path == '/users/me' or re.fullmatch(r'/users/[A-Za-z0-9_-]+/items/search', path)
+            or re.fullmatch(r'/items/[A-Za-z0-9_-]+(?:/description|/visits/time_window)?', path)):
+        return ProviderCallResult(False, provider='mercadolivre', resource_type='catalog', error_type='catalog_read_path_forbidden')
     reserve = integration.get('_catalog_reserve')
     if reserve and not reserve():
         return ProviderCallResult(False, provider='mercadolivre', resource_type='catalog',
@@ -92,6 +96,7 @@ def get_listing_details(integration, item_ids):
                 if attribute.get('value_name') not in (None, '')
             }
             units.append({'variacao_externa_id': str(variation.get('id') or ''),
+                'dados_observados': {key: variation[key] for key in ('attributes', 'picture_ids', 'available_quantity', 'price') if key in variation},
                 'sku_externo': seller_sku,
                 'atributos_variacao': variation_attributes,
                 'preco_observado': _money(variation.get('price', item.get('price'))),
@@ -99,11 +104,14 @@ def get_listing_details(integration, item_ids):
             })
         if not units:
             units.append({'variacao_externa_id': '', 'sku_externo': item_sku,
+                'dados_observados': {key: item[key] for key in ('attributes', 'available_quantity', 'price') if key in item},
                 'atributos_variacao': {},
                 'preco_observado': _money(item.get('price')),
                 'disponibilidade_observada': str(item.get('available_quantity', ''))})
         updated = item.get('last_updated') or item.get('date_created')
         listings.append({'item_externo_id': item_id, 'titulo': item.get('title'),
+            'seller_id': str(item.get('seller_id') or ''),
+            'dados_observados': {key: item[key] for key in ('seller_custom_field', 'category_id', 'pictures', 'attributes', 'shipping', 'currency_id') if key in item},
             'imagem_comercial': item.get('secure_thumbnail') or item.get('thumbnail'), 'url': item.get('permalink'),
             'situacao_original': item.get('status'), 'situacao_normalizada': normalize_status(item.get('status')),
             'user_product_id': item.get('user_product_id'), 'familia_externa_id': item.get('family_id'),

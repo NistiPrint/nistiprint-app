@@ -258,9 +258,37 @@ class TestMarketplaceWebhookIngestService(unittest.TestCase):
         self.assertEqual(result['provider_topic'], 'fbm_stock_operations')
         resolve.assert_not_called()
 
+    def test_catalog_notification_never_enters_order_path(self):
+        service = MarketplaceWebhookIngestService()
+        with patch.object(service, '_resolve_marketplace_integration',return_value=({'id':6},None)), \
+             patch.object(service, '_meli_integration',return_value={}), \
+             patch.object(service, '_confirm_meli_webhook_account',return_value=None), \
+             patch('nistiprint_shared.services.marketplace_catalog_sync_service.MarketplaceCatalogSyncService') as catalog, \
+             patch.object(meli_driver, 'get_order_detail') as provider:
+            catalog.return_value.refresh_item.return_value={'status':'success','event_status':'catalog_stale'}
+            result = service._process_mercadolivre({
+                'topic':'items', 'resource':'/items/MLB123', 'user_id':207584268,
+            }, correlation_id='catalog-test')
+        self.assertEqual(result['event_status'], 'catalog_stale')
+        self.assertEqual(result['provider_resource_type'], 'catalog')
+        catalog.return_value.refresh_item.assert_called_once_with({'id':6},'MLB123','207584268')
+        provider.assert_not_called()
+
+    def test_catalog_notification_reconciles_only_the_refreshed_listing(self):
+        service = MarketplaceWebhookIngestService()
+        with patch.object(service, '_resolve_marketplace_integration',return_value=({'id':6},None)), \
+             patch.object(service, '_meli_integration',return_value={}), \
+             patch.object(service, '_confirm_meli_webhook_account',return_value=None), \
+             patch('nistiprint_shared.services.marketplace_catalog_sync_service.MarketplaceCatalogSyncService') as catalog, \
+             patch('nistiprint_shared.services.anuncio_reconciliacao_service.AnuncioReconciliacaoService') as reconcile:
+            catalog.return_value.refresh_item.return_value={'status':'success','event_status':'catalog_updated'}
+            result = service._process_mercadolivre({'topic':'items','resource':'/items/MLB123','user_id':207584268},correlation_id='cid')
+        self.assertEqual(result['event_status'],'catalog_updated')
+        reconcile.return_value.reconcile.assert_called_once_with(6,['MLB123'])
+
     def test_meli_additional_topics_are_ignored_without_provider_calls_or_retries(self):
         service = MarketplaceWebhookIngestService()
-        topics = ('items', 'items_prices', 'questions', 'invoices',
+        topics = ('items_prices', 'questions', 'invoices',
                   'stock_locations', 'fbm_stock_operations', 'unknown_future_topic')
         for topic in topics:
             for resource in ('/items/MLB123', '/orders/123'):

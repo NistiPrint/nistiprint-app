@@ -30,6 +30,13 @@ class CatalogApiTests(unittest.TestCase):
         self.assertEqual(result.status_code,403)
         service.assert_not_called()
 
+    def test_replication_status_requires_product_read_permission(self):
+        with patch.object(catalogo_api,'require_request_permission',return_value=('denied',403)), \
+             patch.object(catalogo_api,'supabase_db') as db:
+            result = self.client.get('/api/v2/integracoes/6/replicacao')
+        self.assertEqual(result.status_code,403)
+        db.table.assert_not_called()
+
     def test_version_conflict_is_409(self):
         class Conflict(Exception):
             code = '40001'

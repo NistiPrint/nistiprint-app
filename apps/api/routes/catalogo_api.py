@@ -2,7 +2,7 @@
 import logging
 
 from flask import Blueprint, jsonify, request
-from routes.auth import get_current_user, require_request_permission
+from routes.auth import admin_required, get_current_user, require_request_permission
 from nistiprint_shared.database.supabase_db_service import supabase_db
 from nistiprint_shared.services.catalogo_familia_service import CatalogoFamiliaService
 from nistiprint_shared.services.anuncio_service import AnuncioService
@@ -85,6 +85,66 @@ def integration_capabilities(integration_id):
         collections = supabase_db.table('gestao_coletas').select('capability,status,checked_at,error_code,enabled').eq('account_id', integration_id).execute().data or []
         return ApiResponse.success({'integration_id': integration_id, 'catalog': catalog, 'statistics': collections})
     except Exception as exc:
+        return _error(exc)
+
+
+@catalogo_bp.get('/integracoes/<int:integration_id>/replicacao')
+def replication_status(integration_id):
+    denied = _permission('produtos', 'ler')
+    if denied:
+        return denied
+    try:
+        account = supabase_db.table('installed_integrations').select('id,instance_name,platform_slug,module_id,is_active').eq('id',integration_id).limit(1).execute().data or []
+        if not account:
+            return ApiResponse.error('Conta de integração não encontrada.',404)
+        sync = supabase_db.table('marketplace_catalog_sync').select('status,last_complete_at,error_code,updated_at').eq('account_id',integration_id).limit(1).execute().data or []
+        collections = supabase_db.table('gestao_coletas').select('capability,status,enabled,error_code,checked_at,next_attempt_at').eq('account_id',integration_id).execute().data or []
+        from nistiprint_shared.services.platform_drivers.insights_registry import CAPABILITIES
+        from nistiprint_shared.services.marketplace_insights_service import LABELS
+        provider=(account[0].get('platform_slug') or account[0].get('module_id') or '').lower()
+        states={row['capability']:row for row in collections}
+        collections=[{'capability':key,'label':LABELS.get(key,key),'status':'not_checked','enabled':False,**states.get(key,{})}
+                     for key,platform in CAPABILITIES.items() if platform==provider]
+        pending = supabase_db.table('marketplace_anuncio_pendencias').select('unidade_id',count='exact').eq('integration_id',integration_id).is_('resolved_at','null').limit(1).execute()
+        orders = supabase_db.table('marketplace_pedidos_coleta').select('status,window_start,window_end,last_complete_at,next_attempt_at,error_code,updated_at,search_field,cursor').eq('account_id',integration_id).limit(1).execute().data or []
+        if orders:
+            cursor=orders[0].pop('cursor',None) or {}
+            orders[0]['processing_date']=cursor.get('slice_end') if orders[0].get('search_field')=='created' else cursor.get('slice_start')
+        return ApiResponse.success({'account':account[0], 'catalog':sync[0] if sync else {'status':'never'},
+            'orders':orders[0] if orders else {'status':'never'},'collections':collections, 'pending_links':pending.count})
+    except Exception as exc:
+        return _error(exc)
+
+
+@catalogo_bp.post('/integracoes/<int:integration_id>/replicacao/pedidos/historico')
+@admin_required
+def replication_order_backfill(integration_id):
+    denied = _permission('produtos', 'editar')
+    if denied:
+        return denied
+    operation_id=None
+    try:
+        account = supabase_db.table('installed_integrations').select('id,platform_slug,module_id,is_active').eq('id',integration_id).eq('is_active',True).limit(1).execute().data or []
+        if not account or (account[0].get('platform_slug') or account[0].get('module_id') or '').lower() not in {'shopee','mercadolivre'}:
+            return ApiResponse.error('Conta de marketplace não encontrada ou inativa.',404)
+        from nistiprint_shared.services.catalog_operations import create_operation,progress
+        operation_id=create_operation(get_current_user()['id'],integration_id,'Carga histórica de pedidos')
+        queued = supabase_db.rpc('marketplace_pedidos_historico_operacao',{'p_account':integration_id,'p_operation':operation_id,'p_start':'2025-01-01T03:00:00Z'}).execute().data
+        if not queued:
+            progress(operation_id,{'status':'failed','error_code':'coleta_em_andamento'})
+            return ApiResponse.error('Já existe uma coleta de pedidos em andamento.',409)
+        from nistiprint_shared.services.celery_app import celery_app
+        try:
+            task=celery_app.send_task('tasks.gestao_tasks.replicate_orders',args=[integration_id],queue='marketplace_insights')
+            task_id=task.id
+        except Exception:
+            logger.exception('Falha ao enfileirar carga histórica durável; recuperação pelo agendador')
+            task_id=None
+        return ApiResponse.success({'task_id':task_id,'operation_id':operation_id,'start':'2025-01-01','status':'queued','coverage':'provider_dependent'},status_code=202)
+    except Exception as exc:
+        if operation_id:
+            from nistiprint_shared.services.catalog_operations import progress
+            progress(operation_id,{'status':'failed','error_code':'solicitacao_indisponivel'})
         return _error(exc)
 
 

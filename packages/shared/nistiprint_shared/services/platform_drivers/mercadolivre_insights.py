@@ -1,9 +1,27 @@
 """Account-local marketplace intelligence. Never fetch order detail for projection."""
 from datetime import datetime, timedelta
 import re
+import math
 from nistiprint_shared.services.gestao_projection import TZ, number
 from nistiprint_shared.services.platform_drivers.insights_contract import CollectionError
 from nistiprint_shared.services.platform_drivers.insights_location import location
+
+
+def observed_sale_fee(data, order_id):
+    """Extract only the documented net sale fee for a complete, single order."""
+    if not isinstance(data,dict) or data.get('errors') or not isinstance(data.get('results'),list):
+        return {}
+    rows=data['results']
+    if type(data.get('total')) is not int or data['total'] != len(rows):
+        return {}
+    matched=[row for row in rows if isinstance(row,dict) and str(row.get('order_id') or '')==str(order_id)]
+    if len(matched)!=1: return {}
+    sale_fee=matched[0].get('sale_fee')
+    if not isinstance(sale_fee,dict): return {}
+    fee=sale_fee.get('net')
+    if isinstance(fee,bool) or not isinstance(fee,(int,float)) or not math.isfinite(fee) or fee<0:
+        return {}
+    return {'sale_fee':fee}
 
 def collect(db, account, capability, integration, cp, provider_get, metric, finance, order_batch):
     today = datetime.now(TZ).date()
@@ -15,7 +33,7 @@ def collect(db, account, capability, integration, cp, provider_get, metric, fina
             if not re.fullmatch('[A-Za-z0-9_-]{1,64}', external):
                 raise CollectionError('invalid_order_identity')
             data = provider_get(integration, '/billing/integration/group/ML/order/details', {'order_ids': external})
-            db.rpc('marketplace_insights_store_finance', {'p_account': account, 'p_capability': capability, 'p_resource': external, 'p_version': o['insight_version'], 'p_components': {}, 'p_settled': False, 'p_evidence': data}).execute()
+            db.rpc('marketplace_insights_store_finance', {'p_account': account, 'p_capability': capability, 'p_resource': external, 'p_version': o['insight_version'], 'p_components': observed_sale_fee(data,external), 'p_settled': False, 'p_evidence': data}).execute()
             cp['order_id'] = o['id']
         has_more = bool(orders)
         if not has_more:

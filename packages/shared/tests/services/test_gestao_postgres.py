@@ -34,6 +34,14 @@ class PostgresTests(unittest.TestCase):
             legacy=(root/'supabase/migrations/20260926130000_clonar_produto_interno.sql').read_text(encoding='utf-8')
             cursor.execute(legacy[legacy.index('CREATE OR REPLACE FUNCTION public.validar_ativacao_variacao_clonada()'):])
             cursor.execute((root/'supabase/migrations/20261029235900_catalogo_canonical_activation.sql').read_text(encoding='utf-8'))
+            cursor.execute('ALTER TABLE public.pedidos ADD COLUMN IF NOT EXISTS codigo_pedido_externo text')
+            for migration in ('20261030120000_catalogo_organizacao.sql','20261030121000_catalogo_organizacao_canonical_names.sql',
+                              '20261030130000_catalogo_observacoes.sql','20261030140000_catalogo_webhook.sql',
+                              '20261030150000_replicacao_pedidos.sql','20261030160000_mercadolivre_taxa_venda.sql',
+                              '20261030170000_mercadolivre_taxa_pacotes.sql','20261030180000_catalogo_tempo_observacao.sql',
+                              '20261030190000_replicacao_operacao.sql','20261030200000_mercadolivre_taxa_automatica.sql',
+                              '20261030210000_replicacao_carga_inicial.sql','20261030220000_replicacao_historico.sql'):
+                cursor.execute((root/'supabase/migrations'/migration).read_text(encoding='utf-8-sig'))
         cls.db.commit()
         cls.db.autocommit=True
 
@@ -57,6 +65,25 @@ class PostgresTests(unittest.TestCase):
     def claim(self):
         self.c.execute('SELECT public.gestao_claim(100)')
         return self.c.fetchone()[0]
+
+    def _run_replication_sql(self, filename):
+        source=(Path(__file__).resolve().parents[4]/'supabase/tests'/filename).read_text(encoding='utf-8')
+        self.c.execute(source.removeprefix('BEGIN;').removesuffix('ROLLBACK;\n'))
+
+    def test_catalog_observations_transaction(self):
+        self._run_replication_sql('catalogo_observacoes.sql')
+
+    def test_catalog_webhook_snapshot_ordering(self):
+        self._run_replication_sql('catalogo_webhook.sql')
+
+    def test_order_replication_checkpoint(self):
+        self._run_replication_sql('replicacao_pedidos.sql')
+
+    def test_billing_fee_backfill(self):
+        self._run_replication_sql('mercadolivre_taxa_venda.sql')
+
+    def test_billing_fee_observation_trigger(self):
+        self._run_replication_sql('mercadolivre_taxa_automatica.sql')
 
     def finish(self,rows):
         self.c.execute('SELECT public.gestao_finish(%s::jsonb)',(json.dumps(rows),))
